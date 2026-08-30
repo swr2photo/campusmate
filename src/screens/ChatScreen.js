@@ -1,189 +1,292 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
+  Image,
+  Keyboard,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { router, useLocalSearchParams } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import { useApp } from '../context/AppContext';
-import { Avatar, Card, SectionTitle } from '../components/ui';
-import { colors, radius, spacing, type } from '../theme';
+import { useRemoteImage } from '../utils/useRemoteImage';
+import { radius, spacing, type, useTheme } from '../theme';
+
+function toDate(timestamp) {
+  if (!timestamp) return null;
+  if (timestamp instanceof Date) return isNaN(timestamp.getTime()) ? null : timestamp;
+  if (typeof timestamp === 'number') {
+    const ms = timestamp < 1e11 ? timestamp * 1000 : timestamp;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof timestamp.toDate === 'function') {
+    try {
+      const d = timestamp.toDate();
+      return isNaN(d.getTime()) ? null : d;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof timestamp.seconds === 'number') {
+    const d = new Date(timestamp.seconds * 1000 + (timestamp.nanoseconds ? timestamp.nanoseconds / 1e6 : 0));
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof timestamp._seconds === 'number') {
+    const d = new Date(timestamp._seconds * 1000 + (timestamp._nanoseconds ? timestamp._nanoseconds / 1e6 : 0));
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof timestamp === 'string') {
+    const parsed = Date.parse(timestamp);
+    if (!isNaN(parsed)) {
+      return new Date(parsed);
+    }
+    const timeMatch = timestamp.match(/^(\d{1,2}):(\d{2})$/);
+    if (timeMatch) {
+      const d = new Date();
+      d.setHours(parseInt(timeMatch[1], 10), parseInt(timeMatch[2], 10), 0, 0);
+      return d;
+    }
+  }
+  return null;
+}
+
+function formatTime(timestamp) {
+  const date = toDate(timestamp);
+  return date ? date.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+}
+
+function formatRelativeLabel(date) {
+  if (!date) return '';
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSec = Math.max(0, Math.floor(diffMs / 1000));
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHour = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHour / 24);
+  const diffMonth = Math.floor(diffDay / 30);
+  const diffYear = Math.floor(diffDay / 365);
+
+  if (diffSec < 60) return 'สักครู่';
+  if (diffMin < 60) return `${diffMin} นาทีที่แล้ว`;
+  if (diffHour < 24) return `${diffHour} ชม. ที่แล้ว`;
+  if (diffDay === 1) return 'เมื่อวานนี้';
+  if (diffDay < 7) return `${diffDay} วันที่แล้ว`;
+  if (diffDay < 30) return `${Math.ceil(diffDay / 7)} สัปดาห์ที่แล้ว`;
+  if (diffMonth < 12) return `${diffMonth || 1} เดือนที่แล้ว`;
+  return `${diffYear} ปีที่แล้ว`;
+}
+
+function formatListTime(conversation, currentUserId, unreadCount = 0) {
+  const messages = conversation.messages || [];
+  const lastMsg = messages[messages.length - 1];
+  const iSentLast = lastMsg && (lastMsg.senderId === currentUserId || lastMsg.sender === 'me');
+
+  // If there are multiple unread messages from the other person
+  if (unreadCount > 1) {
+    const date = toDate(lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
+    const label = formatRelativeLabel(date);
+    const timeText = label === 'สักครู่' ? 'เมื่อสักครู่' : label;
+    return `${unreadCount} ข้อความใหม่ · ${timeText || 'เมื่อสักครู่'}`;
+  }
+
+  // If there is exactly 1 unread message from the other person
+  if (unreadCount === 1 && !iSentLast) {
+    const date = toDate(lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
+    const label = formatRelativeLabel(date);
+    const timeText = label === 'สักครู่' ? 'เมื่อสักครู่' : (label.startsWith('เมื่อ') ? label : `เมื่อ ${label}`);
+    const textSnippet = (lastMsg?.text || conversation.lastMessage || '').trim();
+    return textSnippet ? `${textSnippet} · ${timeText}` : timeText;
+  }
+
+  // If the other person sent the last message (and already read)
+  if (!iSentLast) {
+    const date = toDate(lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
+    const label = formatRelativeLabel(date);
+    if (label === 'สักครู่') return 'เมื่อสักครู่';
+    return label ? `เมื่อ ${label}` : '';
+  }
+
+  // Current user sent the last message
+  const otherUserId = (conversation.participants || []).find((id) => id !== currentUserId);
+  const otherUnread = otherUserId ? (conversation.unreadCounts?.[otherUserId] || 0) : 0;
+
+  if (otherUnread === 0 && otherUserId) {
+    const readTimestamp = conversation.readReceipts?.[otherUserId] || conversation.updatedAt;
+    const readDate = toDate(readTimestamp);
+    const label = formatRelativeLabel(readDate);
+    if (label === 'สักครู่') return 'อ่านแล้วเมื่อสักครู่';
+    return label ? `อ่านแล้วเมื่อ ${label}` : 'อ่านแล้ว';
+  }
+
+  const sentDate = toDate(lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
+  const label = formatRelativeLabel(sentDate);
+  if (label === 'สักครู่') return 'ส่งเมื่อสักครู่';
+  return label ? `ส่งเมื่อ ${label}` : 'ส่งแล้ว';
+}
 
 export default function ChatScreen() {
-  const { conversations, sendMessage } = useApp();
-  const [selectedChatId, setSelectedChatId] = useState(null);
-  const [inputText, setInputText] = useState('');
-  const activeChat = useMemo(
-    () => conversations.find((conversation) => conversation.id === selectedChatId) || null,
-    [conversations, selectedChatId]
-  );
+  const { colors } = useTheme();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const { conversations, profile } = useApp();
+  const params = useLocalSearchParams();
+  const [query, setQuery] = useState('');
+  const [, setTick] = useState(0);
 
-  const handleSendMessage = () => {
-    if (!activeChat || !sendMessage(activeChat.id, inputText)) return;
-    setInputText('');
-  };
+  useEffect(() => {
+    const timer = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
 
-  if (activeChat) {
-    return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
-        style={styles.roomContainer}
-      >
-        <View style={styles.roomHeader}>
-          <Pressable accessibilityRole="button" onPress={() => setSelectedChatId(null)} style={styles.backButton}>
-            <Text style={styles.backIcon}>‹</Text>
-            <Text style={styles.backText}>แชททั้งหมด</Text>
-          </Pressable>
-          <View style={styles.roomPartner}>
-            <Avatar color={activeChat.avatarColor} emoji={activeChat.avatar} online={activeChat.online} size={40} />
-            <View style={styles.roomPartnerCopy}>
-              <Text style={styles.roomName}>{activeChat.name}</Text>
-              <Text style={styles.roomSubtitle}>{activeChat.online ? 'กำลังใช้งาน' : activeChat.subtitle}</Text>
-            </View>
-          </View>
-          <View style={styles.privateIcon}><Text style={styles.privateIconText}>🔒</Text></View>
-        </View>
+  useEffect(() => {
+    if (params?.chatId) {
+      router.push({ pathname: '/chat-room', params: { chatId: params.chatId } });
+    }
+  }, [params?.chatId]);
 
-        <FlatList
-          data={activeChat.messages}
-          keyExtractor={(item) => item.id}
-          contentContainerStyle={styles.messageList}
-          ListEmptyComponent={<Text style={styles.emptyConversation}>เริ่มทักทายเพื่อนใหม่ได้เลย 👋</Text>}
-          renderItem={({ item }) => {
-            const isMe = item.sender === 'me';
-            return (
-              <View style={[styles.messageGroup, isMe ? styles.messageGroupMe : styles.messageGroupThem]}>
-                <View style={[styles.bubble, isMe ? styles.myBubble : styles.theirBubble]}>
-                  <Text style={[styles.bubbleText, isMe ? styles.myBubbleText : styles.theirBubbleText]}>{item.text}</Text>
-                </View>
-                <Text style={[styles.messageTime, isMe && styles.messageTimeMe]}>{item.time}</Text>
-              </View>
-            );
-          }}
-          showsVerticalScrollIndicator={false}
-        />
-
-        <View style={styles.composer}>
-          <TextInput
-            autoCapitalize="sentences"
-            onChangeText={setInputText}
-            onSubmitEditing={handleSendMessage}
-            placeholder="พิมพ์ข้อความนัดหมาย..."
-            placeholderTextColor={colors.inkSoft}
-            returnKeyType="send"
-            style={styles.textInput}
-            value={inputText}
-          />
-          <Pressable accessibilityRole="button" onPress={handleSendMessage} style={({ pressed }) => [styles.sendButton, pressed && styles.pressed]}>
-            <Text style={styles.sendIcon}>↑</Text>
-          </Pressable>
-        </View>
-      </KeyboardAvoidingView>
-    );
-  }
+  const visibleConversations = useMemo(() => conversations.filter((conversation) => (
+    `${conversation.name || ''} ${conversation.lastMessage || ''}`.toLowerCase().includes(query.trim().toLowerCase())
+  )), [conversations, query]);
 
   return (
     <View style={styles.container}>
       <FlatList
-        data={conversations}
-        keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
+        data={visibleConversations}
+        keyExtractor={(item) => item.id}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
         ListHeaderComponent={(
-          <View style={styles.pageHeader}>
-            <Text style={styles.eyebrow}>CampusMate / MESSAGES</Text>
-            <SectionTitle title="ห้องสนทนา" subtitle="คุยกับเพื่อนที่จับคู่สำเร็จอย่างเป็นส่วนตัว" />
-            <View style={styles.securityBanner}>
-              <Text style={styles.securityIcon}>🔒</Text>
-              <View style={styles.securityCopy}>
-                <Text style={styles.securityTitle}>พื้นที่คุยที่ปลอดภัย</Text>
-                <Text style={styles.securityText}>เริ่มส่งข้อความได้เมื่อคุณและเพื่อนสนใจกันทั้งคู่</Text>
+          <View style={styles.listHeader}>
+            <View style={styles.titleRow}>
+              <View>
+                <Text style={styles.title}>ข้อความ</Text>
+                <Text style={styles.subtitle}>{conversations.length ? `${conversations.length} ห้องสนทนา` : 'พื้นที่คุยของคุณ'}</Text>
               </View>
+              <View style={styles.composeIcon}><SymbolView name="square.and.pencil" size={23} tintColor={colors.primary} /></View>
+            </View>
+            <View style={styles.searchBox}>
+              <SymbolView name="magnifyingglass" size={18} tintColor={colors.inkSoft} />
+              <TextInput
+                onChangeText={setQuery}
+                placeholder="ค้นหาชื่อหรือข้อความ"
+                placeholderTextColor={colors.inkSoft}
+                style={styles.searchInput}
+                value={query}
+              />
+              {query ? (
+                <Pressable
+                  accessibilityLabel="ล้างการค้นหา"
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  onPress={() => setQuery('')}
+                  style={({ pressed }) => [{ padding: 4 }, pressed && { opacity: 0.6 }]}
+                >
+                  <SymbolView name="xmark.circle.fill" size={18} tintColor={colors.inkSoft} />
+                </Pressable>
+              ) : null}
             </View>
           </View>
         )}
         ListEmptyComponent={(
-          <Card style={styles.emptyCard}>
-            <Text style={styles.emptyEmoji}>💬</Text>
+          <View style={styles.emptyState}>
+            <SymbolView name="bubble.left.and.bubble.right" size={44} tintColor={colors.inkSoft} />
             <Text style={styles.emptyTitle}>ยังไม่มีห้องสนทนา</Text>
-            <Text style={styles.emptyText}>ลองกดสนใจโปรไฟล์ในหน้าจับคู่ เพื่อเริ่มสร้างบทสนทนา</Text>
-          </Card>
+            <Text style={styles.emptyText}>เมื่อคุณรับคำขอถูกใจ ห้องสนทนาจะปรากฏที่นี่</Text>
+          </View>
         )}
-        renderItem={({ item }) => (
-          <Pressable onPress={() => setSelectedChatId(item.id)} style={({ pressed }) => [styles.chatCard, pressed && styles.pressed]}>
-            <Avatar color={item.avatarColor} emoji={item.avatar} online={item.online} size={54} />
-            <View style={styles.chatCopy}>
-              <View style={styles.chatTitleRow}>
-                <Text style={styles.chatName}>{item.name}</Text>
-                <Text style={styles.chatTime}>{item.updatedAt}</Text>
+        renderItem={({ item }) => {
+          const unreadCount = item.unreadCounts?.[profile?.id] || 0;
+          const timeLabel = formatListTime(item, profile?.id, unreadCount);
+          const isHighlight = unreadCount > 0 || timeLabel.startsWith('ส่ง') || timeLabel.startsWith('อ่าน');
+          return (
+            <Pressable onPress={() => router.push({ pathname: '/chat-room', params: { chatId: item.id } })} style={({ pressed }) => [styles.conversationRow, pressed && styles.pressed]}>
+              <Avatar avatarColor={item.avatarColor} colors={colors} emoji={item.avatar} size={62} uri={item.avatarUri} />
+              <View style={styles.conversationCopy}>
+                <View style={styles.conversationTitleRow}>
+                  <Text numberOfLines={1} style={[styles.conversationName, unreadCount > 0 && { fontWeight: '800' }]}>{item.name}</Text>
+                </View>
+                {timeLabel ? (
+                  <Text numberOfLines={1} style={[styles.partnerSubtitle, unreadCount > 0 ? { color: colors.ink, fontWeight: '700' } : (isHighlight ? { color: colors.primary, fontWeight: '600' } : null)]}>
+                    {timeLabel}
+                  </Text>
+                ) : null}
               </View>
-              <Text style={styles.chatSubtitle}>{item.subtitle}</Text>
-              <Text numberOfLines={1} style={styles.lastMessage}>{item.lastMessage}</Text>
-            </View>
-            {item.unread > 0 && <View style={styles.unread}><Text style={styles.unreadText}>{item.unread}</Text></View>}
-          </Pressable>
-        )}
+            </Pressable>
+          );
+        }}
         showsVerticalScrollIndicator={false}
       />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { backgroundColor: colors.canvas, flex: 1 },
-  listContent: { padding: spacing.lg, paddingBottom: spacing.xl },
-  pageHeader: { marginBottom: spacing.sm },
-  eyebrow: { color: colors.primary, fontSize: type.micro, fontWeight: '900', letterSpacing: 1.3, marginBottom: spacing.sm },
-  securityBanner: { alignItems: 'center', backgroundColor: colors.greenSoft, borderColor: '#CDEFE0', borderRadius: radius.md, borderWidth: 1, flexDirection: 'row', marginBottom: spacing.lg, padding: spacing.md },
-  securityIcon: { fontSize: 22, marginRight: spacing.md },
-  securityCopy: { flex: 1 },
-  securityTitle: { color: colors.green, fontSize: type.caption, fontWeight: '900' },
-  securityText: { color: '#4B806D', fontSize: type.micro, lineHeight: 16, marginTop: 2 },
-  chatCard: { alignItems: 'center', backgroundColor: colors.card, borderColor: colors.line, borderRadius: radius.md, borderWidth: 1, flexDirection: 'row', marginBottom: spacing.sm, padding: spacing.md },
-  chatCopy: { flex: 1, marginLeft: spacing.md },
-  chatTitleRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  chatName: { color: colors.ink, flex: 1, fontSize: type.body, fontWeight: '900' },
-  chatTime: { color: colors.inkSoft, fontSize: type.micro, marginLeft: spacing.sm },
-  chatSubtitle: { color: colors.primary, fontSize: type.micro, fontWeight: '700', marginTop: 3 },
-  lastMessage: { color: colors.inkMuted, fontSize: type.caption, marginTop: 6 },
-  unread: { alignItems: 'center', backgroundColor: colors.coral, borderRadius: 11, height: 22, justifyContent: 'center', marginLeft: spacing.sm, minWidth: 22, paddingHorizontal: 4 },
-  unreadText: { color: colors.card, fontSize: 10, fontWeight: '900' },
-  emptyCard: { alignItems: 'center', marginTop: spacing.lg, padding: spacing.xxl },
-  emptyEmoji: { fontSize: 42, marginBottom: spacing.md },
-  emptyTitle: { color: colors.ink, fontSize: type.section, fontWeight: '900' },
-  emptyText: { color: colors.inkMuted, fontSize: type.caption, lineHeight: 19, marginTop: spacing.sm, textAlign: 'center' },
-  roomContainer: { backgroundColor: colors.canvas, flex: 1 },
-  roomHeader: { alignItems: 'center', backgroundColor: colors.card, borderBottomColor: colors.line, borderBottomWidth: 1, flexDirection: 'row', minHeight: 72, paddingHorizontal: spacing.md },
-  backButton: { alignItems: 'center', flexDirection: 'row', marginRight: spacing.sm, paddingVertical: spacing.sm },
-  backIcon: { color: colors.primary, fontSize: 32, fontWeight: '300', lineHeight: 28 },
-  backText: { color: colors.primary, fontSize: type.micro, fontWeight: '800', marginLeft: 2 },
-  roomPartner: { alignItems: 'center', flex: 1, flexDirection: 'row' },
-  roomPartnerCopy: { flex: 1, marginLeft: spacing.sm },
-  roomName: { color: colors.ink, fontSize: type.body, fontWeight: '900' },
-  roomSubtitle: { color: colors.green, fontSize: type.micro, marginTop: 2 },
-  privateIcon: { alignItems: 'center', backgroundColor: colors.canvas, borderRadius: 18, height: 36, justifyContent: 'center', width: 36 },
-  privateIconText: { fontSize: 15 },
-  messageList: { padding: spacing.lg, paddingBottom: spacing.xl },
-  messageGroup: { marginBottom: spacing.md, maxWidth: '82%' },
-  messageGroupMe: { alignSelf: 'flex-end' },
-  messageGroupThem: { alignSelf: 'flex-start' },
-  bubble: { borderRadius: 18, paddingHorizontal: spacing.md, paddingVertical: 11 },
-  theirBubble: { backgroundColor: colors.card, borderColor: colors.line, borderTopLeftRadius: 5, borderWidth: 1 },
-  myBubble: { backgroundColor: colors.primary, borderTopRightRadius: 5 },
-  bubbleText: { fontSize: type.body, lineHeight: 20 },
-  theirBubbleText: { color: colors.ink },
-  myBubbleText: { color: colors.card },
-  messageTime: { color: colors.inkSoft, fontSize: 10, marginTop: 4 },
-  messageTimeMe: { textAlign: 'right' },
-  emptyConversation: { color: colors.inkMuted, fontSize: type.caption, marginTop: spacing.xxxl, textAlign: 'center' },
-  composer: { alignItems: 'center', backgroundColor: colors.card, borderTopColor: colors.line, borderTopWidth: 1, flexDirection: 'row', padding: spacing.md },
-  textInput: { backgroundColor: colors.canvas, borderRadius: radius.pill, color: colors.ink, flex: 1, fontSize: type.body, minHeight: 44, paddingHorizontal: spacing.lg, paddingVertical: 10 },
-  sendButton: { alignItems: 'center', backgroundColor: colors.primary, borderRadius: 22, height: 44, justifyContent: 'center', marginLeft: spacing.sm, width: 44 },
-  sendIcon: { color: colors.card, fontSize: 22, fontWeight: '900' },
-  pressed: { opacity: 0.72, transform: [{ scale: 0.98 }] },
-});
+function Avatar({ avatarColor, colors, emoji, size, uri }) {
+  const isUrl = typeof uri === 'string' && (uri.startsWith('http') || uri.startsWith('file://') || uri.startsWith('data:'));
+  const remoteUri = useRemoteImage(isUrl ? uri : null);
+  const resolvedEmoji = emoji || (!isUrl && typeof uri === 'string' && uri.length <= 6 ? uri : null);
+  return <ResolvedAvatar avatarColor={avatarColor} colors={colors} emoji={resolvedEmoji} size={size} uri={remoteUri} />;
+}
 
+function ResolvedAvatar({ avatarColor, colors, emoji, size, uri }) {
+  if (uri) {
+    return (
+      <Image
+        source={{ uri }}
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          overflow: 'hidden',
+        }}
+      />
+    );
+  }
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        backgroundColor: avatarColor || colors.primarySoft || colors.line,
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
+      }}
+    >
+      {emoji ? (
+        <Text style={{ fontSize: size * 0.52 }}>{emoji}</Text>
+      ) : (
+        <SymbolView name="person.fill" size={size * 0.48} tintColor={colors.inkSoft} />
+      )}
+    </View>
+  );
+}
+
+const createStyles = (colors) => StyleSheet.create({
+  composeIcon: { alignItems: 'center', backgroundColor: colors.primarySoft, borderRadius: 22, height: 44, justifyContent: 'center', width: 44 },
+  container: { backgroundColor: colors.canvas, flex: 1 },
+  conversationCopy: { flex: 1 },
+  conversationName: { ...type.body, color: colors.ink, flex: 1, fontWeight: '700' },
+  conversationRow: { alignItems: 'center', borderBottomColor: colors.line, borderBottomWidth: 1, flexDirection: 'row', gap: spacing.md, paddingVertical: spacing.md },
+  conversationTitleRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  emptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: spacing.xxxl * 1.5 },
+  emptyText: { ...type.bodySmall, color: colors.inkSoft, marginTop: spacing.xs, textAlign: 'center' },
+  emptyTitle: { ...type.headline, color: colors.ink, marginTop: spacing.md },
+  listContent: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg, paddingTop: spacing.xl },
+  listHeader: { marginBottom: spacing.lg },
+  listTime: { ...type.caption, color: colors.inkSoft },
+  partnerSubtitle: { ...type.caption, color: colors.inkMuted, marginTop: 2 },
+  preview: { ...type.bodySmall, color: colors.inkSoft, flex: 1 },
+  previewRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
+  pressed: { opacity: 0.7 },
+  searchBox: { alignItems: 'center', backgroundColor: colors.card, borderColor: colors.line, borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  searchInput: { ...type.body, color: colors.ink, flex: 1, padding: 0 },
+  subtitle: { ...type.bodySmall, color: colors.inkSoft, marginTop: 2 },
+  title: { ...type.title1, color: colors.ink, fontWeight: '800' },
+  titleRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  unread: { alignItems: 'center', backgroundColor: colors.primary, borderRadius: 10, minWidth: 20, paddingHorizontal: 6, paddingVertical: 2 },
+  unreadText: { ...type.caption2, color: '#FFFFFF', fontWeight: '700' },
+});

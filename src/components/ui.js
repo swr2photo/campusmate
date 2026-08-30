@@ -6,11 +6,14 @@ import {
   Text,
   View,
 } from 'react-native';
-import { colors, radius, shadow, spacing, type } from '../theme';
+import { radius, shadow, spacing, type, useTheme } from '../theme';
 
-export function Avatar({ emoji = '🙂', color = colors.primarySoft, size = 52, online = false }) {
+export function Avatar({ emoji = '🙂', color, size = 52, online = false }) {
+  const { colors } = useTheme();
+  const styles = getStyles(colors);
+  const bgColor = color || colors.primarySoft;
   return (
-    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: color }]}>
+    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: bgColor }]}>
       <Text style={{ fontSize: size * 0.48 }}>{emoji}</Text>
       {online && <View style={[styles.onlineDot, { width: size * 0.22, height: size * 0.22, borderRadius: size * 0.11 }]} />}
     </View>
@@ -18,12 +21,17 @@ export function Avatar({ emoji = '🙂', color = colors.primarySoft, size = 52, 
 }
 
 export function Card({ children, style }) {
+  const { colors } = useTheme();
+  const styles = getStyles(colors);
   return <View style={[styles.card, style]}>{children}</View>;
 }
 
-export function Chip({ label, icon, active = false, color = colors.primary, onPress, style }) {
+export function Chip({ label, icon, active = false, color, onPress, style }) {
+  const { colors } = useTheme();
+  const styles = getStyles(colors);
+  const activeColor = color || colors.primary;
   const content = (
-    <View style={[styles.chip, active && { backgroundColor: color, borderColor: color }, style]}>
+    <View style={[styles.chip, active && { backgroundColor: activeColor, borderColor: activeColor }, style]}>
       {!!icon && <Text style={styles.chipIcon}>{icon}</Text>}
       <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
     </View>
@@ -31,32 +39,57 @@ export function Chip({ label, icon, active = false, color = colors.primary, onPr
   return onPress ? <Pressable onPress={onPress}>{content}</Pressable> : content;
 }
 
-export function PrimaryButton({ label, icon, onPress, style, disabled = false, loading = false }) {
+export function PrimaryButton({ label, icon, onPress, style, disabled = false, loading = false, compact = false }) {
+  const { colors } = useTheme();
+  const styles = getStyles(colors);
+  const isCompact = compact || StyleSheet.flatten(style)?.minHeight <= 40;
   return (
     <Pressable
       accessibilityRole="button"
       disabled={disabled || loading}
       onPress={onPress}
-      style={({ pressed }) => [styles.primaryButton, style, pressed && styles.pressed, disabled && styles.disabled]}
+      style={({ pressed }) => [styles.primaryButton, isCompact && styles.compactPrimaryButton, style, pressed && styles.pressed, disabled && styles.disabled]}
     >
-      {loading ? <ActivityIndicator color={colors.card} /> : <Text style={styles.primaryButtonText}>{icon ? `${icon}  ` : ''}{label}</Text>}
+      {loading ? <ActivityIndicator color={colors.card} /> : (
+        <Text
+          adjustsFontSizeToFit={isCompact}
+          minimumFontScale={0.78}
+          numberOfLines={isCompact ? 1 : undefined}
+          style={[styles.primaryButtonText, isCompact && styles.compactButtonText]}
+        >
+          {icon ? `${icon}  ` : ''}{label}
+        </Text>
+      )}
     </Pressable>
   );
 }
 
-export function OutlineButton({ label, icon, onPress, style, danger = false }) {
+export function OutlineButton({ label, icon, onPress, style, danger = false, disabled = false, compact = false }) {
+  const { colors } = useTheme();
+  const styles = getStyles(colors);
+  const isCompact = compact || StyleSheet.flatten(style)?.minHeight <= 40;
   return (
     <Pressable
       accessibilityRole="button"
+      disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.outlineButton, danger && styles.outlineDanger, style, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.outlineButton, isCompact && styles.compactOutlineButton, danger && styles.outlineDanger, style, pressed && styles.pressed, disabled && styles.disabled]}
     >
-      <Text style={[styles.outlineButtonText, danger && styles.outlineDangerText]}>{icon ? `${icon}  ` : ''}{label}</Text>
+      <Text
+        adjustsFontSizeToFit={isCompact}
+        minimumFontScale={0.78}
+        numberOfLines={isCompact ? 1 : undefined}
+        style={[styles.outlineButtonText, isCompact && styles.compactButtonText, danger && styles.outlineDangerText]}
+      >
+        {icon ? `${icon}  ` : ''}{label}
+      </Text>
     </Pressable>
   );
 }
 
 export function SectionTitle({ title, subtitle, action, onAction }) {
+  const { colors } = useTheme();
+  const styles = getStyles(colors);
   return (
     <View style={styles.sectionHeader}>
       <View style={styles.sectionHeaderText}>
@@ -68,7 +101,7 @@ export function SectionTitle({ title, subtitle, action, onAction }) {
   );
 }
 
-export const styles = StyleSheet.create({
+export const getStyles = (colors) => StyleSheet.create({
   avatar: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -110,6 +143,7 @@ export const styles = StyleSheet.create({
     minHeight: 50,
     paddingHorizontal: spacing.xl,
   },
+  compactPrimaryButton: { borderRadius: 12, minHeight: 38, paddingHorizontal: 8 },
   primaryButtonText: { color: colors.card, fontSize: type.body, fontWeight: '800' },
   outlineButton: {
     alignItems: 'center',
@@ -121,8 +155,10 @@ export const styles = StyleSheet.create({
     minHeight: 50,
     paddingHorizontal: spacing.xl,
   },
+  compactOutlineButton: { borderRadius: 12, minHeight: 38, paddingHorizontal: 8 },
   outlineButtonText: { color: colors.ink, fontSize: type.body, fontWeight: '800' },
-  outlineDanger: { backgroundColor: colors.dangerSoft, borderColor: '#F7CACA' },
+  compactButtonText: { fontSize: type.caption, lineHeight: 16 },
+  outlineDanger: { backgroundColor: colors.dangerSoft, borderColor: colors.danger },
   outlineDangerText: { color: colors.danger },
   pressed: { opacity: 0.78, transform: [{ scale: 0.985 }] },
   disabled: { opacity: 0.45 },
@@ -137,4 +173,3 @@ export const styles = StyleSheet.create({
   sectionSubtitle: { color: colors.inkMuted, fontSize: type.caption, marginTop: 3 },
   sectionAction: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
 });
-

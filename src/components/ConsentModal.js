@@ -2,7 +2,7 @@ import React from 'react';
 import {
   Modal,
   Platform,
-  Pressable,
+  TouchableOpacity,
   ScrollView,
   StyleSheet,
   Text,
@@ -79,22 +79,23 @@ export default function ConsentModal({ visible, onAccept, onViewPolicy }) {
             </Text>
 
             {/* Policy link */}
-            <Pressable onPress={onViewPolicy} style={styles.policyLink}>
+            <TouchableOpacity onPress={onViewPolicy} style={styles.policyLink}>
               <FeatureIcon color={colors.primary} name="doc.text.fill" size={14} />
               <Text style={[styles.policyLinkText, { color: colors.primary }]}>
                 อ่านนโยบายความเป็นส่วนตัวฉบับเต็ม
               </Text>
-            </Pressable>
+            </TouchableOpacity>
           </ScrollView>
 
           {/* Accept button */}
           <View style={styles.buttonContainer}>
-            <Pressable
+            <TouchableOpacity
               onPress={onAccept}
               style={[styles.acceptButton, { backgroundColor: colors.primary }]}
+              activeOpacity={0.8}
             >
               <Text style={styles.acceptButtonText}>ยอมรับและเริ่มใช้งาน</Text>
-            </Pressable>
+            </TouchableOpacity>
             <Text style={[styles.disclaimer, { color: colors.subtle }]}>
               การกด "ยอมรับ" หมายความว่าคุณยินยอมให้เราเก็บรวบรวม
               ใช้ และเปิดเผยข้อมูลตามนโยบายความเป็นส่วนตัว

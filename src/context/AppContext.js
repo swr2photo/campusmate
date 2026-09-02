@@ -231,7 +231,7 @@ export function AppProvider({ children }) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [lastSyncError, setLastSyncError] = useState(null);
-  const [showConsent, setShowConsent] = useState(false);
+  const [consentDismissed, setConsentDismissed] = useState(false);
   const [showPrivacyPolicy, setShowPrivacyPolicy] = useState(false);
   const previousOnlineRef = useRef(true);
   const networkReadyRef = useRef(false);
@@ -1128,7 +1128,7 @@ export function AppProvider({ children }) {
     profile,
     selectedMeetup,
     syncNow,
-    showConsent,
+    consentDismissed,
     showPrivacyPolicy,
     user?.id,
   ]);
@@ -1187,7 +1187,7 @@ export function AppProvider({ children }) {
   const needsConsent = profile?.isNewUser && !profile?.consentAcceptedAt;
 
   const handleConsentAccept = async () => {
-    setShowConsent(false);
+    setConsentDismissed(true);
     if (user?.id) {
       await saveProfile({ consentAcceptedAt: Date.now(), isNewUser: false });
     }
@@ -1197,7 +1197,7 @@ export function AppProvider({ children }) {
     <AppContext.Provider value={value}>
       {children}
       <ConsentModal
-        visible={needsConsent && !showConsent === false}
+        visible={needsConsent && !consentDismissed}
         onAccept={handleConsentAccept}
         onViewPolicy={() => setShowPrivacyPolicy(true)}
       />

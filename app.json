@@ -15,7 +15,6 @@
     },
     "android": {
       "package": "com.campusmate.app",
-      "versionCode": 6,
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#5B5CE2"
@@ -59,7 +58,7 @@
     },
     "owner": "doralikon",
     "runtimeVersion": {
-      "policy": "fingerprint"
+      "policy": "appVersion"
     },
     "updates": {
       "url": "https://u.expo.dev/5ca64c3a-3182-460f-87f6-2342aaba4e2f"

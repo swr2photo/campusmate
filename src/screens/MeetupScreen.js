@@ -1,51 +1,100 @@
 import React, { useMemo, useState } from 'react';
 import {
   FlatList,
+  Image,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   TouchableWithoutFeedback,
+  useWindowDimensions,
   View,
 } from 'react-native';
-import { ACTIVITY_CATEGORIES } from '../data/activityCategories';
+import { DatePickerDialog, Host, TimePickerDialog } from '../components/Pickers';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useApp } from '../context/AppContext';
-import { Avatar, Card, Chip, OutlineButton, PrimaryButton, SectionTitle } from '../components/ui';
+import CampusMapView from '../components/CampusMapView';
+import {
+  IosLikeCard,
+  IosLikeHeader,
+  IosLikePill,
+  IosLikeScreen,
+  IosLikeSectionTitle,
+  IconButton,
+} from '../components/iosLike';
+import FeatureIcon from '../components/FeatureIcon';
 import { radius, spacing, type, useTheme } from '../theme';
 
-/** สร้างรายการ 7 วันถัดไป สำหรับ picker */
+const SPOT_CATEGORIES = [
+  { id: 'all', label: 'ทั้งหมด', icon: 'square.grid.2x2.fill', color: '#5B5CE2' },
+  { id: 'sports', label: 'สนามกีฬา', icon: 'sportscourt.fill', color: '#FF9F43' },
+  { id: 'chill', label: 'โซนนั่งเล่น', icon: 'leaf.fill', color: '#18A878' },
+  { id: 'cafe', label: 'คาเฟ่', icon: 'cup.and.saucer.fill', color: '#F47C6B' },
+  { id: 'study', label: 'โซนอ่านหนังสือ', icon: 'book.closed.fill', color: '#3986E8' },
+  { id: 'running', label: 'วิ่งออกกำลัง', icon: 'figure.run', color: '#FF7A6B' },
+  { id: 'gym', label: 'ยิม/ฟิตเนส', icon: 'dumbbell.fill', color: '#9A8CFF' },
+];
+
+function formatLocalDateValue(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function dateValueToDate(value) {
+  const [year, month, day] = String(value || '').split('-').map(Number);
+  if (year && month && day) return new Date(year, month - 1, day, 12, 0, 0, 0);
+  const fallback = new Date();
+  fallback.setHours(12, 0, 0, 0);
+  return fallback;
+}
+
+function dateTimeValueToDate(dateValue, timeValue) {
+  const date = dateValueToDate(dateValue);
+  const [hour, minute] = String(timeValue || '').split(':').map(Number);
+  date.setHours(Number.isFinite(hour) ? hour : 0, Number.isFinite(minute) ? minute : 0, 0, 0);
+  return date;
+}
+
+function formatTimeValue(date) {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function timeValueToMinutes(value) {
+  const [hour, minute] = String(value || '').split(':').map(Number);
+  return (Number.isFinite(hour) ? hour : 0) * 60 + (Number.isFinite(minute) ? minute : 0);
+}
+
+function minutesToTimeValue(minutes) {
+  const safeMinutes = Math.max(0, Math.min(minutes, (24 * 60) - 1));
+  return `${String(Math.floor(safeMinutes / 60)).padStart(2, '0')}:${String(safeMinutes % 60).padStart(2, '0')}`;
+}
+
+const CAMPUS_PHOTOS = [
+  require('../assets/images/campus/DSC_3614.jpg'),
+  require('../assets/images/campus/DSC_5070.jpg'),
+  require('../assets/images/campus/DSC_5071.jpg'),
+  require('../assets/images/campus/DSC_8697.jpg'),
+];
+
 function getNextDays(count = 7) {
   const days = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
   const months = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
   const result = [];
-  for (let i = 0; i < count; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() + i);
-    const iso = d.toISOString().slice(0, 10);
-    const label = i === 0 ? 'วันนี้' : i === 1 ? 'พรุ่งนี้' : `${days[d.getDay()]} ${d.getDate()} ${months[d.getMonth()]}`;
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  for (let i = 0; i < count; i += 1) {
+    const date = new Date(today);
+    date.setDate(today.getDate() + i);
+    const iso = formatLocalDateValue(date);
+    const label = i === 0 ? 'วันนี้' : i === 1 ? 'พรุ่งนี้' : `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]}`;
     result.push({ value: iso, label });
   }
   return result;
 }
-
-/** สร้างรายการช่วงเวลา */
-const TIME_OPTIONS = [
-  '06:00', '07:00', '08:00', '09:00', '10:00', '11:00', '12:00',
-  '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00',
-];
-
-const SPOT_CATEGORIES = [
-  { id: 'all', label: 'ทั้งหมด', icon: '✦', color: '#5B5CE2' },
-  { id: 'sports', label: 'สนามกีฬา', icon: '🏀', color: '#FF9F43' },
-  { id: 'chill', label: 'โซนนั่งเล่น', icon: '🌳', color: '#18A878' },
-  { id: 'cafe', label: 'คาเฟ่', icon: '☕', color: '#F47C6B' },
-  { id: 'study', label: 'โซนอ่านหนังสือ', icon: '📚', color: '#3986E8' },
-  { id: 'running', label: 'วิ่งออกกำลัง', icon: '🏃', color: '#FF7A6B' },
-  { id: 'gym', label: 'ยิม/ฟิตเนส', icon: '🏋️', color: '#9A8CFF' },
-];
 
 function matchesSpotQuery(spot, query) {
   if (!query) return true;
@@ -54,15 +103,32 @@ function matchesSpotQuery(spot, query) {
     .some((value) => String(value).toLowerCase().includes(query));
 }
 
+function activitySymbol(category) {
+  if (category === 'running') return 'figure.run';
+  if (category === 'study') return 'book.closed.fill';
+  if (category === 'gym') return 'dumbbell.fill';
+  if (category === 'sports') return 'sportscourt.fill';
+  if (category === 'cafe') return 'cup.and.saucer.fill';
+  if (category === 'chill') return 'leaf.fill';
+  return 'mappin.circle.fill';
+}
+
+function activityColor(category, colors) {
+  if (category === 'running') return { color: colors.coral, soft: colors.coralSoft };
+  if (category === 'study') return { color: colors.blue, soft: colors.blueSoft };
+  if (category === 'gym') return { color: colors.violet, soft: colors.violetSoft };
+  if (category === 'sports') return { color: colors.amber, soft: colors.amberSoft };
+  if (category === 'cafe' || category === 'chill') return { color: colors.green, soft: colors.greenSoft };
+  return { color: colors.primary, soft: colors.primarySoft };
+}
+
 export default function MeetupScreen({ onToast }) {
   const { colors } = useTheme();
-  const styles = getStyles(colors);
-
-  const { campusSpots, chooseMeetup, updateMeetupSchedule, clearMeetup, selectedMeetup } = useApp();
+  const { campusSpots = [], chooseMeetup, updateMeetupSchedule, clearMeetup, selectedMeetup } = useApp();
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Schedule modal state
+  const [mapTargetSpot, setMapTargetSpot] = useState(null);
+  const [mapModal, setMapModal] = useState(false);
   const [scheduleModal, setScheduleModal] = useState(false);
   const [pendingSpot, setPendingSpot] = useState(null);
   const [schedDate, setSchedDate] = useState(null);
@@ -72,7 +138,6 @@ export default function MeetupScreen({ onToast }) {
   const [message, setMessage] = useState('');
 
   const nextDays = useMemo(() => getNextDays(7), []);
-
   const visibleSpots = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
     return campusSpots.filter((spot) => (
@@ -81,344 +146,501 @@ export default function MeetupScreen({ onToast }) {
     ));
   }, [campusSpots, searchQuery, selectedCategory]);
 
+  const openMapForSpot = (spot) => {
+    setMapTargetSpot(spot || selectedMeetup || visibleSpots[0] || null);
+    setMapModal(true);
+  };
+
   const openScheduleFor = (spot) => {
+    const savedDate = spot?.schedule?.date || selectedMeetup?.schedule?.date;
     setPendingSpot(spot);
-    setSchedDate(nextDays[0].value);
-    setSchedStart('14:00');
-    setSchedEnd('16:00');
-    setMaxPeople('2');
-    setMessage('');
+    setSchedDate(nextDays.some((day) => day.value === savedDate) ? savedDate : nextDays[0].value);
+    setSchedStart(spot?.schedule?.startTime || selectedMeetup?.schedule?.startTime || '14:00');
+    setSchedEnd(spot?.schedule?.endTime || selectedMeetup?.schedule?.endTime || '16:00');
+    setMaxPeople(String(spot?.schedule?.maxPeople || selectedMeetup?.schedule?.maxPeople || 2));
+    setMessage(spot?.schedule?.message || selectedMeetup?.schedule?.message || '');
     setScheduleModal(true);
   };
 
-  const confirmSchedule = () => {
-    if (!pendingSpot) return;
-    const schedule = { 
-      date: schedDate, 
-      startTime: schedStart, 
+  const confirmSchedule = async () => {
+    if (!pendingSpot || !schedDate) return;
+    if (timeValueToMinutes(schedEnd) <= timeValueToMinutes(schedStart)) {
+      onToast?.('เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม', 'info');
+      return;
+    }
+    const schedule = {
+      date: schedDate,
+      startTime: schedStart,
       endTime: schedEnd,
       maxPeople: parseInt(maxPeople, 10) || 2,
-      message: message.trim()
+      message: message.trim(),
     };
-    chooseMeetup(pendingSpot, schedule);
-    setScheduleModal(false);
-    setPendingSpot(null);
-    onToast?.(`ปักหมุด ${pendingSpot.name} แล้ว`);
+    try {
+      if (selectedMeetup?.id === pendingSpot.id && updateMeetupSchedule) {
+        await updateMeetupSchedule(schedule);
+      } else {
+        await chooseMeetup(pendingSpot, schedule);
+      }
+      setScheduleModal(false);
+      setPendingSpot(null);
+      onToast?.(`ปักหมุด ${pendingSpot.name} แล้ว`);
+    } catch (error) {
+      onToast?.('บันทึกเวลานัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    }
   };
 
-  const handleQuickChoose = (spot) => {
-    chooseMeetup(spot);
-    onToast?.(`ปักหมุด ${spot.name} ให้แล้ว`);
+  const handleQuickChoose = async (spot) => {
+    try {
+      await chooseMeetup(spot);
+      onToast?.(`เลือก ${spot.name} เป็นจุดนัดหมายแล้ว`);
+    } catch (error) {
+      onToast?.('เลือกจุดนัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    }
+  };
+
+  const handleClear = async () => {
+    try {
+      await clearMeetup();
+      onToast?.('ยกเลิกจุดนัดหมายแล้ว', 'info');
+    } catch (error) {
+      onToast?.('ยกเลิกจุดนัดหมายไม่สำเร็จ', 'info');
+    }
   };
 
   const header = (
     <View>
-      <Text style={styles.title}>จุดนัดหมายในมอ</Text>
-      <Text style={styles.subtitle}>สถานที่จริงพร้อมระยะห่างจาก GPS ของคุณ</Text>
+      <CampusHero onOpenMap={() => openMapForSpot(selectedMeetup || visibleSpots[0])} selectedMeetup={selectedMeetup} />
 
-      <View style={styles.mapCard}>
-        <View style={styles.mapDecorOne} />
-        <View style={styles.mapDecorTwo} />
-        <View style={styles.mapPin}><Text style={styles.mapPinText}>📍</Text></View>
-        <View style={styles.mapCopy}>
-          <Text numberOfLines={2} style={styles.mapTitle}>มหาวิทยาลัยสงขลานครินทร์</Text>
-          <Text numberOfLines={2} style={styles.mapText}>เลือกจุดนัดพบ กำหนดวัน-เวลา แล้วนัดเจอกัน</Text>
-        </View>
-        <Text style={styles.mapGrid}>···{`\n`}· · ·{`\n`}···</Text>
-      </View>
-
-      <View style={styles.searchBar}>
-        <Text style={styles.searchIcon}>⌕</Text>
+      <View style={[styles.searchBar, { backgroundColor: colors.card, borderColor: colors.line }]}>
+        <FeatureIcon color={colors.inkSoft} name="magnifyingglass" size={18} />
         <TextInput
           accessibilityLabel="ค้นหาสถานที่หรือกิจกรรม"
           autoCapitalize="none"
           onChangeText={setSearchQuery}
           placeholder="ค้นหาสถานที่หรือกิจกรรม"
-          placeholderTextColor={colors.tertiary}
+          placeholderTextColor={colors.inkSoft}
           returnKeyType="search"
-          style={styles.searchInput}
+          style={[styles.searchInput, { color: colors.ink }]}
           value={searchQuery}
         />
-        {searchQuery ? (
-          <Pressable accessibilityLabel="ล้างคำค้นหา" onPress={() => setSearchQuery('')}>
-            <Text style={styles.searchClear}>×</Text>
-          </Pressable>
-        ) : null}
+        {searchQuery ? <IconButton accessibilityLabel="ล้างคำค้นหา" icon="xmark.circle.fill" onPress={() => setSearchQuery('')} size={18} style={styles.clearButton} tintColor={colors.inkSoft} /> : null}
       </View>
 
-      {selectedMeetup && (
-        <Card style={styles.selectedCard}>
-          <View style={styles.selectedHeader}>
-            <View style={styles.selectedTitleWrap}>
-              <Text style={styles.selectedEyebrow}>ปักหมุดล่าสุด</Text>
-              <Text style={styles.selectedTitle}>{selectedMeetup.name}</Text>
-            </View>
-            <Text style={styles.selectedCheck}>✓</Text>
-          </View>
-          <Text numberOfLines={2} style={styles.selectedMeta}>📍 {selectedMeetup.distance}  ·  🕒 {selectedMeetup.scheduledAt}</Text>
-          {selectedMeetup.schedule?.date && (
-            <View style={styles.scheduleRow}>
-              <View style={styles.scheduleChip}>
-                <Text numberOfLines={1} style={styles.scheduleChipText}>📅 {selectedMeetup.schedule.date}</Text>
-              </View>
-              <View style={styles.scheduleChip}>
-                <Text numberOfLines={1} style={styles.scheduleChipText}>🕐 {selectedMeetup.schedule.startTime}–{selectedMeetup.schedule.endTime}</Text>
-              </View>
-            </View>
-          )}
-          <View style={styles.selectedActions}>
-            <OutlineButton compact icon="🕒" label="เปลี่ยนเวลา" onPress={() => openScheduleFor(selectedMeetup)} style={styles.changeTimeBtn} />
-            <OutlineButton compact danger icon="×" label="ยกเลิก" onPress={() => { clearMeetup(); onToast?.('ยกเลิกจุดนัดหมายแล้ว', 'info'); }} style={styles.cancelButton} />
-          </View>
-        </Card>
-      )}
+      {selectedMeetup ? <SelectedMeetup meetup={selectedMeetup} onChangeTime={() => openScheduleFor(selectedMeetup)} onClear={handleClear} onOpenMap={() => openMapForSpot(selectedMeetup)} /> : null}
 
-      <View style={styles.sectionRow}>
-        <SectionTitle title="สถานที่แนะนำ" subtitle="สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล" />
-      </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryRow}>
+      <IosLikeSectionTitle subtitle="สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล" title="เลือกกิจกรรมที่สนใจ" />
+      <ScrollView contentContainerStyle={styles.categoryRow} horizontal showsHorizontalScrollIndicator={false}>
         {SPOT_CATEGORIES.map((category) => (
-          <Chip
-            key={category.id}
+          <IosLikePill
             active={selectedCategory === category.id}
             color={category.color}
             icon={category.icon}
-            label={category.label}
+            key={category.id}
             onPress={() => setSelectedCategory(category.id)}
-            style={styles.categoryChip}
-          />
+          >
+            {category.label}
+          </IosLikePill>
         ))}
       </ScrollView>
       <View style={styles.resultMeta}>
-        <Text style={styles.resultTitle}>สถานที่ใกล้คุณ</Text>
-        <Text style={styles.resultCount}>{visibleSpots.length} แห่ง · เรียงจากใกล้สุด</Text>
+        <Text style={[styles.resultTitle, { color: colors.ink }]}>จุดนัดพบแนะนำ</Text>
+        <Text style={[styles.resultCount, { color: colors.coral }]}>{visibleSpots.length} แห่ง · ใกล้สุดก่อน</Text>
       </View>
     </View>
   );
 
   return (
-    <View style={styles.container}>
+    <IosLikeScreen>
+      <IosLikeHeader
+        onRightPress={() => openMapForSpot(selectedMeetup || visibleSpots[0])}
+        rightIcon="map.fill"
+        subtitle="เลือกสถานที่และนัดหมายกับเพื่อน"
+        title="กิจกรรม"
+      />
       <FlatList
+        contentContainerStyle={styles.listContent}
         data={visibleSpots}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContent}
+        ListEmptyComponent={<EmptySpots query={searchQuery} />}
         ListHeaderComponent={header}
         renderItem={({ item }) => (
-          <Card style={styles.spotCard}>
-            <View style={styles.spotTopRow}>
-              <View style={[styles.spotEmojiBox, { backgroundColor: item.category === 'running' ? colors.coralSoft : item.category === 'study' ? colors.blueSoft : colors.greenSoft }]}>
-                <Text style={styles.spotEmoji}>{item.emoji}</Text>
-              </View>
-              <View style={styles.spotCopy}>
-              <Text numberOfLines={2} style={styles.spotName}>{item.name}</Text>
-              <Text numberOfLines={1} style={styles.spotCategory}>{item.categoryLabel}</Text>
-              </View>
-              <View style={styles.rating}><Text style={styles.ratingStar}>★</Text><Text style={styles.ratingText}>{item.rating}</Text></View>
-            </View>
-            <View style={styles.spotDetailBox}>
-              <Text numberOfLines={2} style={styles.detailText}>💡 {item.description}</Text>
-              <Text numberOfLines={1} style={styles.busyText}>⏰ {item.busyTime}</Text>
-              <Text numberOfLines={1} style={styles.distanceText}>📍 {item.distance}</Text>
-            </View>
-            <View style={styles.spotButtonRow}>
-              <PrimaryButton compact label="ปักหมุด + ตั้งเวลา" icon="📅" onPress={() => openScheduleFor(item)} style={styles.spotButtonSchedule} />
-              <OutlineButton compact label="ปักหมุดเลย" icon="⌖" onPress={() => handleQuickChoose(item)} style={styles.spotButtonQuick} />
-            </View>
-          </Card>
+          <SpotCard
+            onChoose={() => void handleQuickChoose(item)}
+            onOpenMap={() => openMapForSpot(item)}
+            onSchedule={() => openScheduleFor(item)}
+            selected={selectedMeetup?.id === item.id}
+            spot={item}
+          />
         )}
         showsVerticalScrollIndicator={false}
       />
 
-      {/* Schedule Picker Modal */}
-      <Modal
-        animationType="slide"
-        transparent
+      <MapModal
+        mapTargetSpot={mapTargetSpot}
+        onClose={() => setMapModal(false)}
+        onQuickChoose={(spot) => {
+          void handleQuickChoose(spot);
+          setMapModal(false);
+        }}
+        onSchedule={(spot) => {
+          setMapModal(false);
+          openScheduleFor(spot);
+        }}
+        selectedMeetup={selectedMeetup}
+        spots={visibleSpots.length ? visibleSpots : campusSpots}
+        visible={mapModal}
+      />
+
+      <ScheduleModal
+        maxPeople={maxPeople}
+        message={message}
+        nextDays={nextDays}
+        onClose={() => setScheduleModal(false)}
+        onConfirm={() => void confirmSchedule()}
+        onDate={setSchedDate}
+        onEnd={(value) => setSchedEnd(value)}
+        onMaxPeople={setMaxPeople}
+        onMessage={setMessage}
+        onStart={(value) => {
+          setSchedStart(value);
+          const startMinutes = timeValueToMinutes(value);
+          if (startMinutes >= timeValueToMinutes(schedEnd)) {
+            setSchedEnd(minutesToTimeValue(startMinutes + 60));
+          }
+        }}
+        pendingSpot={pendingSpot}
+        schedDate={schedDate}
+        schedEnd={schedEnd}
+        schedStart={schedStart}
         visible={scheduleModal}
-        onRequestClose={() => setScheduleModal(false)}
-      >
-        <TouchableWithoutFeedback onPress={() => setScheduleModal(false)}>
-          <View style={styles.modalOverlay}>
-            <TouchableWithoutFeedback onPress={() => {}}>
-              <View style={styles.modalContent}>
-                <View style={styles.modalHandle} />
-                <Text numberOfLines={2} style={styles.modalTitle}>ตั้งวันเวลานัดหมาย</Text>
-                {pendingSpot && <Text numberOfLines={1} style={styles.modalSpotName}>📍 {pendingSpot.name}</Text>}
+      />
+    </IosLikeScreen>
+  );
+}
 
-                <ScrollView showsVerticalScrollIndicator={false} style={styles.modalScroll} nestedScrollEnabled>
-                  {/* Date Picker */}
-                  <Text numberOfLines={2} style={styles.pickerLabel}>📅 เลือกวัน</Text>
-                  <View style={styles.pickerWrap}>
-                    {nextDays.map((day) => (
-                      <TouchableOpacity
-                        key={day.value}
-                        onPress={() => setSchedDate(day.value)}
-                        activeOpacity={0.7}
-                        style={[styles.dayChip, schedDate === day.value && styles.dayChipActive]}
-                      >
-                        <Text style={[styles.dayChipText, schedDate === day.value && styles.dayChipTextActive]}>{day.label}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  {/* Start Time */}
-                  <Text numberOfLines={2} style={styles.pickerLabel}>🕐 เวลาเริ่ม</Text>
-                  <View style={styles.pickerWrap}>
-                    {TIME_OPTIONS.map((t) => (
-                      <TouchableOpacity
-                        key={`s-${t}`}
-                        onPress={() => setSchedStart(t)}
-                        activeOpacity={0.7}
-                        style={[styles.timeChip, schedStart === t && styles.timeChipActive]}
-                      >
-                        <Text style={[styles.timeChipText, schedStart === t && styles.timeChipTextActive]}>{t}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  {/* End Time */}
-                  <Text numberOfLines={2} style={styles.pickerLabel}>🕐 เวลาสิ้นสุด</Text>
-                  <View style={styles.pickerWrap}>
-                    {TIME_OPTIONS.filter((t) => t > schedStart).map((t) => (
-                      <TouchableOpacity
-                        key={`e-${t}`}
-                        onPress={() => setSchedEnd(t)}
-                        activeOpacity={0.7}
-                        style={[styles.timeChip, schedEnd === t && styles.timeChipActive]}
-                      >
-                        <Text style={[styles.timeChipText, schedEnd === t && styles.timeChipTextActive]}>{t}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  {/* Settings */}
-                  <Text numberOfLines={2} style={styles.pickerLabel}>👥 จำนวนคน (รวมตัวเอง)</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    value={maxPeople}
-                    onChangeText={setMaxPeople}
-                    keyboardType="number-pad"
-                    placeholder="เช่น 2, 4"
-                    placeholderTextColor={colors.tertiary}
-                  />
-
-                  <Text numberOfLines={2} style={styles.pickerLabel}>💬 ประกาศ/รายละเอียด</Text>
-                  <TextInput
-                    style={[styles.textInput, styles.textArea]}
-                    value={message}
-                    onChangeText={setMessage}
-                    placeholder="เช่น หาเพื่อนไปวิ่งครับ"
-                    placeholderTextColor={colors.tertiary}
-                    multiline
-                    numberOfLines={3}
-                  />
-
-                  {/* Summary */}
-                  <View style={styles.summaryBox}>
-                    <Text style={styles.summaryText}>
-                      📅 {nextDays.find((d) => d.value === schedDate)?.label || '—'}  ·  🕐 {schedStart}–{schedEnd}
-                    </Text>
-                  </View>
-                </ScrollView>
-
-                <View style={styles.modalActions}>
-                  <PrimaryButton compact label="ยืนยันนัดหมาย" icon="✓" onPress={confirmSchedule} style={styles.confirmBtn} />
-                  <OutlineButton compact label="ยกเลิก" onPress={() => setScheduleModal(false)} style={styles.cancelModalBtn} />
-                </View>
-              </View>
-            </TouchableWithoutFeedback>
-          </View>
-        </TouchableWithoutFeedback>
-      </Modal>
+function CampusHero({ onOpenMap, selectedMeetup }) {
+  const { colors } = useTheme();
+  const { width } = useWindowDimensions();
+  const heroWidth = width - (spacing.lg * 2);
+  
+  return (
+    <View style={[styles.hero, { backgroundColor: colors.card, borderColor: colors.line }]}>
+      <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false}>
+        {CAMPUS_PHOTOS.map((photo, index) => <Image key={String(index)} source={photo} style={[styles.heroImage, { width: heroWidth }]} />)}
+      </ScrollView>
+      <LinearGradient colors={['transparent', 'rgba(8,16,30,0.86)']} style={styles.heroGradient} />
+      <View style={styles.heroCopy}>
+        <View style={styles.heroTopRow}>
+          <View style={[styles.heroPin, { backgroundColor: colors.coral }]}><FeatureIcon color="#FFFFFF" name="mappin.and.ellipse" size={18} /></View>
+          <Pressable accessibilityRole="button" onPress={onOpenMap} style={({ pressed }) => [styles.heroMapButton, { backgroundColor: 'rgba(255,255,255,0.18)', borderColor: 'rgba(255,255,255,0.24)' }, pressed && styles.pressed]}>
+            <FeatureIcon color="#FFFFFF" name="map.fill" size={14} />
+            <Text style={styles.heroMapText}>เปิดแผนที่</Text>
+          </Pressable>
+        </View>
+        <Text numberOfLines={1} style={styles.heroTitle}>{selectedMeetup?.name || 'มหาวิทยาลัยสงขลานครินทร์'}</Text>
+        <Text numberOfLines={2} style={styles.heroSubtitle}>{selectedMeetup ? 'จุดนัดหมายล่าสุดของคุณ · แตะเพื่อดูตำแหน่งบนแผนที่' : 'ดูพิกัดจริงและสถานที่รอบตัวบนแผนที่ ม.อ.'}</Text>
+      </View>
     </View>
   );
 }
 
-const getStyles = (colors) => StyleSheet.create({
-  container: { backgroundColor: colors.canvas, flex: 1 },
-  listContent: { padding: spacing.md, paddingBottom: spacing.xl },
-  title: { color: colors.ink, fontSize: 22, fontWeight: '900' },
-  subtitle: { color: colors.inkMuted, fontSize: 11, lineHeight: 16, marginTop: 4, maxWidth: '96%' },
-  mapCard: { backgroundColor: '#DCE8F0', borderRadius: radius.lg, height: 128, marginBottom: spacing.md, marginTop: spacing.lg, overflow: 'hidden', padding: spacing.md, position: 'relative' },
-  mapDecorOne: { backgroundColor: '#C2DED3', borderRadius: 55, height: 170, left: -30, position: 'absolute', top: 42, width: 180 },
-  mapDecorTwo: { borderColor: 'rgba(91,92,226,0.15)', borderRadius: 100, borderWidth: 18, height: 160, position: 'absolute', right: -55, top: -45, width: 160 },
-  mapPin: { alignItems: 'center', backgroundColor: colors.primary, borderColor: colors.card, borderRadius: 19, borderWidth: 3, height: 42, justifyContent: 'center', left: 18, position: 'absolute', top: 27, width: 42 },
-  mapPinText: { fontSize: 18 },
-  mapCopy: { left: 76, position: 'absolute', right: 14, top: 20 },
-  mapTitle: { color: colors.ink, fontSize: 13, fontWeight: '900', lineHeight: 17, maxHeight: 34 },
-  mapText: { color: colors.inkMuted, fontSize: 10, lineHeight: 14, marginTop: 4, maxHeight: 28 },
-  mapGrid: { color: 'rgba(91,92,226,0.4)', fontSize: 15, fontWeight: '900', lineHeight: 14, position: 'absolute', right: 18, top: 8 },
-  searchBar: { alignItems: 'center', backgroundColor: colors.card, borderColor: colors.line, borderRadius: radius.md, borderWidth: 1, flexDirection: 'row', marginBottom: spacing.md, minHeight: 44, paddingHorizontal: spacing.md },
-  searchIcon: { color: colors.primary, fontSize: 22, fontWeight: '700', marginRight: spacing.sm },
-  searchInput: { color: colors.ink, flex: 1, fontSize: 13, minWidth: 0, paddingHorizontal: 0, paddingVertical: 8 },
-  searchClear: { color: colors.inkMuted, fontSize: 22, lineHeight: 24, paddingLeft: spacing.sm },
-  resultMeta: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.sm, marginTop: spacing.xs },
-  resultTitle: { color: colors.ink, fontSize: 14, fontWeight: '900' },
-  resultCount: { color: colors.primary, flexShrink: 1, fontSize: 10, fontWeight: '800', marginLeft: spacing.sm, textAlign: 'right' },
+function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
+  const { colors } = useTheme();
+  return (
+    <IosLikeCard style={[styles.selectedCard, { backgroundColor: colors.mintSoft, borderColor: colors.mintSoft }]}>
+      <View style={styles.selectedHeader}>
+        <View style={styles.selectedIdentity}>
+          <FeatureIcon color={colors.mint} name="checkmark.circle.fill" size={19} />
+          <View style={styles.selectedCopy}>
+            <Text style={[styles.selectedEyebrow, { color: colors.mint }]}>เลือกไว้แล้ว</Text>
+            <Text numberOfLines={1} style={[styles.selectedTitle, { color: colors.ink }]}>{meetup.name}</Text>
+          </View>
+        </View>
+        <IconButton accessibilityLabel="ยกเลิกจุดนัดหมาย" icon="xmark" onPress={onClear} size={16} style={styles.smallIconButton} tintColor={colors.inkMuted} />
+      </View>
+      <View style={styles.metaRow}>
+        <Meta icon="location.fill" text={meetup.distance} />
+        <Meta icon="clock.fill" text={meetup.scheduledAt} />
+      </View>
+      {meetup.schedule?.date ? <View style={styles.scheduleRow}><Tag icon="calendar" text={meetup.schedule.date} /><Tag icon="clock.fill" text={`${meetup.schedule.startTime}–${meetup.schedule.endTime}`} /></View> : null}
+      <View style={styles.selectedActions}>
+        <ActionButton icon="calendar.badge.clock" label="เปลี่ยนเวลา" onPress={onChangeTime} tintColor={colors.mint} />
+        <ActionButton icon="map.fill" label="ดูแผนที่" onPress={onOpenMap} tintColor={colors.blue} />
+      </View>
+    </IosLikeCard>
+  );
+}
 
-  selectedCard: { borderColor: colors.greenSoft, marginBottom: spacing.lg, padding: spacing.md },
+function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
+  const { colors } = useTheme();
+  const accent = activityColor(spot.category, colors);
+  return (
+    <IosLikeCard style={styles.spotCard}>
+      <View style={styles.spotTopRow}>
+        <View style={[styles.spotIcon, { backgroundColor: accent.soft }]}><FeatureIcon color={accent.color} name={activitySymbol(spot.category)} size={21} /></View>
+        <View style={styles.spotCopy}>
+          <Text numberOfLines={2} style={[styles.spotName, { color: colors.ink }]}>{spot.name}</Text>
+          <Text numberOfLines={1} style={[styles.spotCategory, { color: accent.color }]}>{spot.categoryLabel}</Text>
+        </View>
+        <View style={[styles.rating, { backgroundColor: colors.amberSoft }]}><FeatureIcon color={colors.amber} name="star.fill" size={12} /><Text style={[styles.ratingText, { color: colors.amber }]}>{spot.rating}</Text></View>
+      </View>
+      <View style={[styles.spotDetails, { backgroundColor: colors.surfaceRaised }]}>
+        <Meta icon="info.circle.fill" text={spot.description} />
+        <Meta icon="person.2.fill" text={spot.busyTime} />
+        <Meta accent icon="location.fill" text={spot.distance} />
+      </View>
+      <View style={styles.spotButtonRow}>
+        <ActionButton emphasized icon="calendar.badge.clock" label="นัดหมาย" onPress={onSchedule} tintColor={colors.coral} />
+        <ActionButton icon={selected ? 'checkmark.circle.fill' : 'mappin.circle.fill'} label={selected ? 'เลือกแล้ว' : 'ปักหมุด'} onPress={onChoose} tintColor={selected ? colors.mint : colors.inkMuted} />
+        <ActionButton icon="map.fill" label="แผนที่" onPress={onOpenMap} tintColor={colors.blue} />
+      </View>
+    </IosLikeCard>
+  );
+}
+
+function Meta({ accent = false, icon, text }) {
+  const { colors } = useTheme();
+  return (
+    <View style={styles.metaItem}>
+      <FeatureIcon color={accent ? colors.coral : colors.inkSoft} name={icon} size={13} />
+      <Text numberOfLines={2} style={[styles.metaText, { color: accent ? colors.coral : colors.inkMuted }]}>{text || '—'}</Text>
+    </View>
+  );
+}
+
+function Tag({ icon, text }) {
+  const { colors } = useTheme();
+  return <View style={[styles.tag, { backgroundColor: colors.primarySoft }]}><FeatureIcon color={colors.primary} name={icon} size={12} /><Text numberOfLines={1} style={[styles.tagText, { color: colors.primary }]}>{text}</Text></View>;
+}
+
+function ActionButton({ disabled = false, emphasized = false, icon, label, onPress, tintColor }) {
+  const { colors } = useTheme();
+  return (
+    <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.actionButton, { backgroundColor: emphasized ? tintColor : colors.surfaceRaised, borderColor: emphasized ? tintColor : colors.line }, pressed && styles.pressed, disabled && styles.disabled]}>
+      <FeatureIcon color={emphasized ? '#FFFFFF' : tintColor} name={icon} size={14} />
+      <Text adjustsFontSizeToFit minimumFontScale={0.75} numberOfLines={1} style={[styles.actionText, { color: emphasized ? '#FFFFFF' : tintColor }]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function EmptySpots({ query }) {
+  const { colors } = useTheme();
+  return (
+    <IosLikeCard style={styles.emptySpots}>
+      <FeatureIcon color={colors.coral} name="mappin.slash.circle.fill" size={42} />
+      <Text style={[styles.emptyTitle, { color: colors.ink }]}>{query ? 'ไม่พบสถานที่ที่ค้นหา' : 'ยังไม่มีสถานที่ในหมวดนี้'}</Text>
+      <Text style={[styles.emptyText, { color: colors.inkMuted }]}>ลองเปลี่ยนคำค้นหาหรือเลือกหมวดกิจกรรมอื่น</Text>
+    </IosLikeCard>
+  );
+}
+
+function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedMeetup, spots, visible }) {
+  const { colors, isDark } = useTheme();
+  return (
+    <Modal animationType="slide" transparent visible={visible} onRequestClose={onClose}>
+      <View style={styles.modalOverlay}>
+        <TouchableWithoutFeedback onPress={onClose}><View style={StyleSheet.absoluteFill} /></TouchableWithoutFeedback>
+        <View style={[styles.mapModalContent, { backgroundColor: colors.card }]}>
+          <View style={[styles.modalHandle, { backgroundColor: colors.line }]} />
+          <View style={styles.modalHeader}><FeatureIcon color={colors.coral} name="map.fill" size={19} /><Text numberOfLines={1} style={[styles.modalTitle, { color: colors.ink }]}>แผนที่วิทยาเขต ม.อ. หาดใหญ่</Text><IconButton accessibilityLabel="ปิดแผนที่" icon="xmark" onPress={onClose} size={17} style={styles.smallIconButton} tintColor={colors.ink} /></View>
+          <View style={styles.mapFrame}><CampusMapView spots={spots} selectedSpot={mapTargetSpot || selectedMeetup} onSelectSpot={onQuickChoose} onScheduleSpot={onSchedule} height="100%" /></View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDate, onEnd, onMaxPeople, onMessage, onStart, pendingSpot, schedDate, schedEnd, schedStart, visible }) {
+  const { colors } = useTheme();
+  const [activePicker, setActivePicker] = useState(null);
+  const selectedDay = nextDays.find((day) => day.value === schedDate);
+  const validTimeRange = timeValueToMinutes(schedEnd) > timeValueToMinutes(schedStart);
+  const selectableDates = {
+    start: dateValueToDate(nextDays[0]?.value),
+    end: dateValueToDate(nextDays[nextDays.length - 1]?.value),
+  };
+  const closeModal = () => {
+    setActivePicker(null);
+    onClose();
+  };
+  return (
+    <Modal animationType="slide" transparent visible={visible} onRequestClose={closeModal}>
+      <View style={styles.modalOverlay}>
+        <TouchableWithoutFeedback onPress={closeModal}><View style={StyleSheet.absoluteFill} /></TouchableWithoutFeedback>
+        <View style={[styles.scheduleModalContent, { backgroundColor: colors.card }]}>
+          <View style={[styles.modalHandle, { backgroundColor: colors.line }]} />
+          <Text numberOfLines={1} style={[styles.modalTitle, { color: colors.ink }]}>ตั้งวันเวลานัดหมาย</Text>
+          {pendingSpot ? <View style={styles.modalSpot}><FeatureIcon color={colors.coral} name="mappin.and.ellipse" size={15} /><Text numberOfLines={1} style={[styles.modalSpotName, { color: colors.coral }]}>{pendingSpot.name}</Text></View> : null}
+          <ScrollView contentContainerStyle={styles.scheduleScroll} showsVerticalScrollIndicator={false}>
+            <PickerLabel icon="calendar" label="เลือกวัน" />
+            <PickerField icon="calendar" label="วันที่นัดหมาย" onPress={() => setActivePicker('date')} value={selectedDay?.label || schedDate || 'เลือกวัน'} />
+
+            <PickerLabel icon="clock.fill" label="เลือกเวลา" />
+            <View style={styles.timePickerRow}>
+              <PickerField compact icon="clock.fill" label="เวลาเริ่ม" onPress={() => setActivePicker('start')} value={schedStart} />
+              <PickerField compact icon="clock.fill" label="เวลาสิ้นสุด" onPress={() => setActivePicker('end')} value={schedEnd} />
+            </View>
+            {!validTimeRange ? <View style={[styles.timeError, { backgroundColor: colors.dangerSoft }]}><FeatureIcon color={colors.danger} name="exclamationmark.circle.fill" size={14} /><Text style={[styles.timeErrorText, { color: colors.danger }]}>เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม</Text></View> : null}
+
+            <PickerLabel icon="person.2.fill" label="จำนวนคน (รวมตัวเอง)" />
+            <TextInput keyboardType="number-pad" onChangeText={onMaxPeople} placeholder="เช่น 2, 4" placeholderTextColor={colors.inkSoft} style={[styles.textInput, { backgroundColor: colors.surfaceRaised, borderColor: colors.line, color: colors.ink }]} value={maxPeople} />
+            <PickerLabel icon="text.bubble.fill" label="ประกาศ/รายละเอียด" />
+            <TextInput multiline numberOfLines={3} onChangeText={onMessage} placeholder="เช่น หาเพื่อนไปวิ่งครับ" placeholderTextColor={colors.inkSoft} style={[styles.textInput, styles.textArea, { backgroundColor: colors.surfaceRaised, borderColor: colors.line, color: colors.ink }]} textAlignVertical="top" value={message} />
+            <View style={[styles.summaryBox, { backgroundColor: validTimeRange ? colors.coralSoft : colors.dangerSoft }]}><Text style={[styles.summaryText, { color: validTimeRange ? colors.coral : colors.danger }]}>{selectedDay?.label || '—'} · {schedStart}–{schedEnd}</Text></View>
+          </ScrollView>
+          <View style={styles.modalActions}><ActionButton disabled={!validTimeRange} emphasized icon="checkmark.circle.fill" label="ยืนยันนัดหมาย" onPress={onConfirm} tintColor={colors.coral} /><Pressable accessibilityRole="button" onPress={closeModal} style={({ pressed }) => [styles.cancelModalButton, { borderColor: colors.line }, pressed && styles.pressed]}><Text style={[styles.cancelModalText, { color: colors.inkMuted }]}>ยกเลิก</Text></Pressable></View>
+        </View>
+      </View>
+      {visible && activePicker === 'date' ? (
+        <Host>
+          <DatePickerDialog
+            color={colors.coral}
+            confirmButtonLabel="ตกลง"
+            dismissButtonLabel="ยกเลิก"
+            initialDate={dateValueToDate(schedDate).toISOString()}
+            onDateSelected={(date) => {
+              onDate(formatLocalDateValue(date));
+              setActivePicker(null);
+            }}
+            onDismissRequest={() => setActivePicker(null)}
+            selectableDates={selectableDates}
+            showVariantToggle={false}
+            variant="picker"
+          />
+        </Host>
+      ) : null}
+      {visible && activePicker === 'start' ? (
+        <Host>
+          <TimePickerDialog
+            color={colors.coral}
+            confirmButtonLabel="ตกลง"
+            dismissButtonLabel="ยกเลิก"
+            initialDate={dateTimeValueToDate(schedDate, schedStart).toISOString()}
+            is24Hour
+            onDateSelected={(date) => {
+              onStart(formatTimeValue(date));
+              setActivePicker(null);
+            }}
+            onDismissRequest={() => setActivePicker(null)}
+          />
+        </Host>
+      ) : null}
+      {visible && activePicker === 'end' ? (
+        <Host>
+          <TimePickerDialog
+            color={colors.coral}
+            confirmButtonLabel="ตกลง"
+            dismissButtonLabel="ยกเลิก"
+            initialDate={dateTimeValueToDate(schedDate, schedEnd).toISOString()}
+            is24Hour
+            onDateSelected={(date) => {
+              onEnd(formatTimeValue(date));
+              setActivePicker(null);
+            }}
+            onDismissRequest={() => setActivePicker(null)}
+          />
+        </Host>
+      ) : null}
+    </Modal>
+  );
+}
+
+function PickerField({ compact = false, icon, label, onPress, value }) {
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      accessibilityLabel={`${label} ${value}`}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.pickerField, compact && styles.pickerFieldCompact, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }, pressed && styles.pressed]}
+    >
+      <View style={[styles.pickerFieldIcon, { backgroundColor: colors.coralSoft }]}><FeatureIcon color={colors.coral} name={icon} size={17} /></View>
+      <View style={styles.pickerFieldCopy}><Text style={[styles.pickerFieldLabel, { color: colors.inkMuted }]}>{label}</Text><Text numberOfLines={1} style={[styles.pickerFieldValue, { color: colors.ink }]}>{value}</Text></View>
+      <FeatureIcon color={colors.inkSoft} name="chevron.right" size={14} />
+    </Pressable>
+  );
+}
+
+function PickerLabel({ icon, label }) {
+  const { colors } = useTheme();
+  return <View style={styles.pickerLabel}><FeatureIcon color={colors.coral} name={icon} size={14} /><Text style={{ color: colors.ink, fontSize: type.body, fontWeight: '800' }}>{label}</Text></View>;
+}
+
+const styles = StyleSheet.create({
+  listContent: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg },
+  hero: { borderRadius: radius.xl, borderWidth: 1, height: 220, marginBottom: spacing.lg, overflow: 'hidden', position: 'relative' },
+  heroImage: { height: 220 },
+  heroGradient: { bottom: 0, height: 130, left: 0, position: 'absolute', right: 0 },
+  heroCopy: { bottom: spacing.md, left: spacing.md, position: 'absolute', right: spacing.md },
+  heroTopRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.sm },
+  heroPin: { alignItems: 'center', borderRadius: radius.pill, height: 36, justifyContent: 'center', width: 36 },
+  heroMapButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flexDirection: 'row', gap: 5, paddingHorizontal: spacing.md, paddingVertical: 7 },
+  heroMapText: { color: '#FFFFFF', fontSize: type.caption2, fontWeight: '800' },
+  heroTitle: { color: '#FFFFFF', fontSize: type.headline, fontWeight: '900' },
+  heroSubtitle: { color: 'rgba(255,255,255,0.86)', fontSize: type.caption2, lineHeight: 16, marginTop: 3 },
+  searchBar: { alignItems: 'center', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, minHeight: 50, paddingHorizontal: spacing.md },
+  searchInput: { flex: 1, fontSize: type.body, minWidth: 0, paddingVertical: 0 },
+  clearButton: { elevation: 0, height: 30, shadowOpacity: 0, width: 30 },
+  selectedCard: { marginTop: spacing.lg, padding: spacing.md },
   selectedHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  selectedTitleWrap: { flex: 1 },
-  selectedEyebrow: { color: colors.green, fontSize: 10, fontWeight: '900', marginBottom: 2 },
-  selectedTitle: { color: colors.ink, fontSize: 14, fontWeight: '900', maxHeight: 18 },
-  selectedCheck: { alignItems: 'center', backgroundColor: colors.green, borderRadius: 13, color: colors.card, fontSize: 15, fontWeight: '900', height: 26, lineHeight: 26, textAlign: 'center', width: 26 },
-  selectedMeta: { color: colors.inkMuted, fontSize: 11, lineHeight: 16, marginTop: spacing.sm, maxHeight: 32 },
-  scheduleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: spacing.sm },
-  scheduleChip: { backgroundColor: colors.primarySoft, borderRadius: radius.sm, paddingHorizontal: 9, paddingVertical: 4 },
-  scheduleChipText: { color: colors.primary, fontSize: 10, fontWeight: '800' },
-  selectedActions: { flexDirection: 'row', gap: 6, marginTop: spacing.md },
-  changeTimeBtn: { flex: 1, minHeight: 38 },
-  cancelButton: { flex: 1, minHeight: 38 },
-
-  sectionRow: { marginBottom: 0 },
-  categoryRow: { paddingBottom: spacing.lg, paddingRight: spacing.lg },
-  categoryChip: { marginRight: spacing.sm },
-
+  selectedIdentity: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: spacing.sm },
+  selectedCopy: { flex: 1 },
+  selectedEyebrow: { fontSize: type.caption2, fontWeight: '800' },
+  selectedTitle: { fontSize: type.body, fontWeight: '900', marginTop: 2 },
+  smallIconButton: { elevation: 0, height: 34, shadowOpacity: 0, width: 34 },
+  metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, marginTop: spacing.md },
+  metaItem: { alignItems: 'flex-start', flexDirection: 'row', flexShrink: 1, gap: 6, maxWidth: '100%' },
+  metaText: { flexShrink: 1, fontSize: type.caption2, lineHeight: 17 },
+  scheduleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
+  tag: { alignItems: 'center', borderRadius: radius.sm, flexDirection: 'row', gap: 5, maxWidth: '100%', paddingHorizontal: 9, paddingVertical: 5 },
+  tagText: { flexShrink: 1, fontSize: type.caption2, fontWeight: '800' },
+  selectedActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  categoryRow: { gap: spacing.sm, paddingBottom: spacing.lg, paddingTop: spacing.md, paddingRight: spacing.lg },
+  resultMeta: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.md },
+  resultTitle: { fontSize: type.headline, fontWeight: '900' },
+  resultCount: { flexShrink: 1, fontSize: type.caption2, fontWeight: '800', marginLeft: spacing.sm, textAlign: 'right' },
   spotCard: { marginBottom: spacing.md, padding: spacing.md },
-  spotTopRow: { alignItems: 'flex-start', flexDirection: 'row' },
-  spotEmojiBox: { alignItems: 'center', borderRadius: 13, height: 44, justifyContent: 'center', marginRight: spacing.sm, width: 44 },
-  spotEmoji: { fontSize: 22 },
-  spotCopy: { flex: 1, minWidth: 0, paddingRight: spacing.xs },
-  spotName: { color: colors.ink, fontSize: 13, fontWeight: '900', lineHeight: 17, maxHeight: 34 },
-  spotCategory: { color: colors.primary, fontSize: 10, fontWeight: '700', lineHeight: 14, marginTop: 2 },
-  rating: { alignItems: 'center', backgroundColor: colors.amberSoft, borderRadius: 8, flexDirection: 'row', paddingHorizontal: 5, paddingVertical: 4 },
-  ratingStar: { color: colors.amber, fontSize: 11, marginRight: 2 },
-  ratingText: { color: colors.amber, fontSize: 10, fontWeight: '900' },
-  spotDetailBox: { backgroundColor: colors.canvas, borderRadius: radius.sm, marginTop: spacing.sm, padding: 10 },
-  detailText: { color: colors.ink, fontSize: 11, lineHeight: 16, maxHeight: 32 },
-  busyText: { color: colors.inkMuted, fontSize: 10, lineHeight: 14, marginTop: 4, maxHeight: 14 },
-  distanceText: { color: colors.primary, fontSize: 11, fontWeight: '800', lineHeight: 15, marginTop: 4, maxHeight: 15 },
-  spotButtonRow: { flexDirection: 'row', gap: 6, marginTop: spacing.md },
-  spotButtonSchedule: { flex: 1, minHeight: 38 },
-  spotButtonQuick: { flex: 1, minHeight: 38 },
-
-  // Modal styles
-  modalOverlay: { backgroundColor: 'rgba(0,0,0,0.5)', flex: 1, justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: colors.card, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, maxHeight: '90%', padding: spacing.lg, paddingBottom: 24 },
-  modalHandle: { alignSelf: 'center', backgroundColor: colors.line, borderRadius: 3, height: 4, marginBottom: spacing.md, width: 36 },
-  modalTitle: { color: colors.ink, fontSize: 18, fontWeight: '900', lineHeight: 23, maxHeight: 46, textAlign: 'center' },
-  modalSpotName: { color: colors.primary, fontSize: 13, fontWeight: '800', lineHeight: 18, marginTop: spacing.sm, maxHeight: 18, textAlign: 'center' },
-  modalScroll: { flexGrow: 0 },
-  pickerLabel: { color: colors.ink, fontSize: 13, fontWeight: '800', lineHeight: 18, marginBottom: spacing.sm, marginTop: spacing.md, maxHeight: 36 },
-  pickerWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-
-  textInput: { backgroundColor: colors.canvas, borderColor: colors.line, borderRadius: radius.md, borderWidth: 1.5, color: colors.ink, fontSize: 13, paddingHorizontal: spacing.md, paddingVertical: 9 },
-  textArea: { minHeight: 68, textAlignVertical: 'top' },
-
-  dayChip: { backgroundColor: colors.canvas, borderColor: colors.line, borderRadius: radius.md, borderWidth: 1.5, paddingHorizontal: 10, paddingVertical: 9 },
-  dayChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  dayChipText: { color: colors.ink, fontSize: 12, fontWeight: '700' },
-  dayChipTextActive: { color: colors.card },
-
-  timeChip: { alignItems: 'center', backgroundColor: colors.canvas, borderColor: colors.line, borderRadius: radius.sm, borderWidth: 1.5, minWidth: 54, paddingHorizontal: 8, paddingVertical: 8 },
-  timeChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  timeChipText: { color: colors.ink, fontSize: 12, fontWeight: '700' },
-  timeChipTextActive: { color: colors.card },
-  chipPressed: { opacity: 0.7, transform: [{ scale: 0.95 }] },
-
-  summaryBox: { backgroundColor: colors.primarySoft, borderRadius: radius.md, marginTop: spacing.md, padding: 10 },
-  summaryText: { color: colors.primary, fontSize: 12, fontWeight: '800', lineHeight: 17, textAlign: 'center' },
-
-  modalActions: { gap: 6, marginTop: spacing.md },
-  confirmBtn: { minHeight: 40 },
-  cancelModalBtn: { minHeight: 38 },
+  spotTopRow: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
+  spotIcon: { alignItems: 'center', borderRadius: radius.lg, height: 44, justifyContent: 'center', width: 44 },
+  spotCopy: { flex: 1, minWidth: 0 },
+  spotName: { fontSize: type.body, fontWeight: '900', lineHeight: 18 },
+  spotCategory: { fontSize: type.caption2, fontWeight: '700', marginTop: 3 },
+  rating: { alignItems: 'center', borderRadius: radius.sm, flexDirection: 'row', gap: 3, paddingHorizontal: 6, paddingVertical: 5 },
+  ratingText: { fontSize: type.caption2, fontWeight: '900' },
+  spotDetails: { borderRadius: radius.md, gap: 6, marginTop: spacing.md, padding: spacing.md },
+  spotButtonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
+  actionButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 4, justifyContent: 'center', minHeight: 40, paddingHorizontal: spacing.sm },
+  actionText: { fontSize: type.caption2, fontWeight: '800' },
+  emptySpots: { alignItems: 'center', marginTop: spacing.sm, padding: spacing.xxl },
+  emptyTitle: { fontSize: type.headline, fontWeight: '900', marginTop: spacing.md, textAlign: 'center' },
+  emptyText: { fontSize: type.caption, lineHeight: 18, marginTop: spacing.sm, textAlign: 'center' },
+  modalOverlay: { backgroundColor: 'rgba(0,0,0,0.48)', flex: 1, justifyContent: 'flex-end' },
+  mapModalContent: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, height: '84%', padding: spacing.lg },
+  scheduleModalContent: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, maxHeight: '92%', padding: spacing.lg },
+  modalHandle: { alignSelf: 'center', borderRadius: radius.pill, height: 5, marginBottom: spacing.md, width: 38 },
+  modalHeader: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
+  modalTitle: { flex: 1, fontSize: type.headline, fontWeight: '900', textAlign: 'center' },
+  mapFrame: { borderRadius: radius.lg, flex: 1, overflow: 'hidden' },
+  modalSpot: { alignItems: 'center', flexDirection: 'row', gap: 5, justifyContent: 'center', marginBottom: spacing.sm },
+  modalSpotName: { flexShrink: 1, fontSize: type.caption, fontWeight: '800' },
+  scheduleScroll: { paddingBottom: spacing.md },
+  pickerLabel: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm, marginTop: spacing.md },
+  pickerField: { alignItems: 'center', borderRadius: radius.md, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, minHeight: 62, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  pickerFieldCompact: { flex: 1, minWidth: 0 },
+  pickerFieldIcon: { alignItems: 'center', borderRadius: radius.sm, height: 36, justifyContent: 'center', width: 36 },
+  pickerFieldCopy: { flex: 1, minWidth: 0 },
+  pickerFieldLabel: { fontSize: type.caption2, fontWeight: '700' },
+  pickerFieldValue: { fontSize: type.body, fontWeight: '900', marginTop: 2 },
+  timePickerRow: { flexDirection: 'row', gap: spacing.sm },
+  timeError: { alignItems: 'center', borderRadius: radius.sm, flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  timeErrorText: { flex: 1, fontSize: type.caption2, fontWeight: '800' },
+  textInput: { borderRadius: radius.md, borderWidth: 1, fontSize: type.body, minHeight: 46, paddingHorizontal: spacing.md, paddingVertical: 9 },
+  textArea: { minHeight: 76 },
+  summaryBox: { borderRadius: radius.md, marginTop: spacing.md, padding: spacing.md },
+  summaryText: { fontSize: type.caption, fontWeight: '900', textAlign: 'center' },
+  modalActions: { gap: spacing.sm, marginTop: spacing.sm },
+  cancelModalButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, minHeight: 40, justifyContent: 'center' },
+  cancelModalText: { fontSize: type.caption, fontWeight: '800' },
+  disabled: { opacity: 0.45 },
+  pressed: { opacity: 0.76, transform: [{ scale: 0.985 }] },
 });

@@ -1,14 +1,19 @@
 import React, { useState } from 'react';
 import {
   FlatList,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useApp } from '../context/AppContext';
 import { Avatar, Card, Chip, OutlineButton, PrimaryButton } from '../components/ui';
+import { IosLikeAvatar, IosLikeScreen } from '../components/iosLike';
+import FeatureIcon from '../components/FeatureIcon';
+import { useRemoteImage } from '../utils/useRemoteImage';
 import { radius, spacing, type, useTheme } from '../theme';
 
 const TABS = [
@@ -64,6 +69,19 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
     }
   };
 
+  const handleRemoveMatch = async (like) => {
+    if (processingId) return;
+    setProcessingId(like.id);
+    try {
+      await respondToLike(like, 'reject');
+      onToast?.(`ลบ ${like.name} ออกจากรายการจับคู่แล้ว`, 'info');
+    } catch (error) {
+      onToast?.('ยังดำเนินการไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
   const header = (
     <View>
       <View style={styles.header}>
@@ -79,13 +97,13 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
         <View style={styles.headerCopy}>
           <Text style={styles.title}>คนที่สนใจคุณ</Text>
         </View>
-        <View style={styles.headerHeart}><Text style={styles.headerHeartText}>♥</Text></View>
+        <View style={styles.headerHeart}><FeatureIcon color={colors.coral} name="heart.fill" size={22} /></View>
       </View>
 
       <Text style={styles.subtitle}>เลือกคนที่อยากรู้จัก แล้วเริ่มเป็นเพื่อนกันได้เลย</Text>
 
       <View style={styles.summaryCard}>
-        <View style={styles.summaryIcon}><Text style={styles.summaryIconText}>♥</Text></View>
+        <View style={styles.summaryIcon}><FeatureIcon color={colors.coral} name="heart.circle.fill" size={26} /></View>
         <View style={styles.summaryCopy}>
           <Text style={styles.summaryTitle}>
             {pendingIncomingLikes.length ? `มี ${pendingIncomingLikes.length} คนรอคำตอบจากคุณ` : 'ไม่มีคำขอใหม่ในตอนนี้'}
@@ -116,7 +134,7 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
   );
 
   return (
-    <View style={styles.container}>
+    <IosLikeScreen>
       <FlatList
         data={visibleLikes}
         keyExtractor={(item) => item.id}
@@ -124,20 +142,21 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
         ListHeaderComponent={header}
         ListEmptyComponent={(
           <Card style={styles.emptyCard}>
-            <Text style={styles.emptyEmoji}>{activeTab === 'pending' ? '💌' : '✨'}</Text>
+            <FeatureIcon color={colors.coral} name={activeTab === 'pending' ? 'heart.slash' : 'person.2.fill'} size={42} />
             <Text style={styles.emptyTitle}>{activeTab === 'pending' ? 'ยังไม่มีคนกดใจใหม่' : 'ยังไม่มีคู่ที่จับคู่แล้ว'}</Text>
             <Text style={styles.emptyText}>
               {activeTab === 'pending' ? 'เมื่อมีคนสนใจกิจกรรมเดียวกับคุณ รายการจะแสดงที่นี่' : 'คนที่คุณรับเป็นเพื่อนแล้วจะแสดงในรายการนี้'}
             </Text>
           </Card>
         )}
-        ListFooterComponent={<Text style={styles.privacyNote}>🔒 คุณเป็นคนตัดสินใจเองทุกครั้ง และข้อมูลจะแสดงเมื่อจับคู่สำเร็จ</Text>}
+        ListFooterComponent={<View style={styles.privacyRow}><FeatureIcon color={colors.inkSoft} name="lock.shield.fill" size={14} /><Text style={styles.privacyNote}>ข้อมูลของคุณได้รับการเข้ารหัสความปลอดภัย</Text></View>}
         renderItem={({ item }) => (
           <LikeCard
             accepted={activeTab === 'accepted'}
             like={item}
             onAccept={() => handleResponse(item, 'accept')}
             onOpenChat={() => handleOpenChat(item)}
+            onRemove={() => handleRemoveMatch(item)}
             onReject={() => handleResponse(item, 'reject')}
             processing={processingId === item.id}
             styles={styles}
@@ -145,48 +164,63 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
         )}
         showsVerticalScrollIndicator={false}
       />
-    </View>
+    </IosLikeScreen>
   );
 }
 
-function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing, styles }) {
+function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, processing, styles }) {
   const { colors } = useTheme();
   const cardStyles = styles || getStyles(colors);
+  const imageUri = useRemoteImage(like.avatarUri);
   return (
     <Card style={cardStyles.likeCard}>
-      <View style={cardStyles.cardTopRow}>
-        <Avatar color={like.avatarColor} emoji={like.avatar} online size={68} />
-        <View style={cardStyles.identityCopy}>
-          <Text numberOfLines={1} style={cardStyles.name}>{like.name} <Text style={cardStyles.age}>· {like.age}</Text></Text>
-          <Text numberOfLines={1} style={cardStyles.nickname}>{like.nickname} · {like.faculty}</Text>
-          <View style={cardStyles.compatibility}><Text style={cardStyles.compatibilityText}>เข้ากันได้ {like.compatibility}%</Text></View>
+      <View style={[cardStyles.likeHero, { backgroundColor: like.avatarColor || colors.primarySoft }]}>
+        {imageUri ? <Image source={{ uri: imageUri }} style={StyleSheet.absoluteFill} /> : <IosLikeAvatar color={like.avatarColor} emoji={like.avatar} size={92} />}
+        <LinearGradient colors={['transparent', 'rgba(8,16,30,0.9)']} style={cardStyles.likeHeroGradient} />
+        <View style={cardStyles.likeHeroCopy}>
+          <Text numberOfLines={1} style={cardStyles.heroName}>{like.name}{like.age ? `, ${like.age}` : ''}</Text>
+          <Text numberOfLines={1} style={cardStyles.heroFaculty}>{like.faculty || like.nickname}</Text>
         </View>
-        <Text style={cardStyles.cardHeart}>♥</Text>
       </View>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 16 }}>
-        <View style={{ flexDirection: 'row', gap: 6, paddingBottom: 4 }}>
-          {like.year ? <Chip icon="🎓" label={like.year} style={cardStyles.activityChip} /> : null}
-          {like.activityLabel ? <Chip icon="🎯" label={like.activityLabel} style={cardStyles.activityChip} /> : null}
-          {like.location ? <Chip icon="📍" label={like.location} style={cardStyles.activityChip} /> : null}
-          {like.availability ? <Chip icon="⏰" label={like.availability} style={cardStyles.activityChip} /> : null}
+      <View style={cardStyles.likeBody}>
+        <View style={cardStyles.likeMessageRow}>
+          <FeatureIcon color={colors.coral} name="quote.bubble.fill" size={17} />
+          <Text style={cardStyles.message}>{like.likeMessage || 'สนใจอยากทำความรู้จัก'}</Text>
         </View>
-      </ScrollView>
 
-      <View style={cardStyles.messageBox}>
-        <Text style={cardStyles.quote}>“</Text>
-        <Text style={cardStyles.message}>{like.likeMessage}</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 14 }}>
+          <View style={cardStyles.metaChips}>
+            {like.year ? <MetaChip icon="graduationcap.fill" label={like.year} styles={cardStyles} /> : null}
+            {like.activityLabel ? <MetaChip icon="figure.run" label={like.activityLabel} styles={cardStyles} /> : null}
+            {like.location ? <MetaChip icon="mappin.and.ellipse" label={like.location} styles={cardStyles} /> : null}
+            {like.availability ? <MetaChip icon="clock.fill" label={like.availability} styles={cardStyles} /> : null}
+          </View>
+        </ScrollView>
+
+        {accepted ? (
+          <View style={cardStyles.actionRow}>
+            <OutlineButton disabled={processing} danger icon="×" label="ลบ" onPress={onRemove} style={cardStyles.rejectButton} />
+            <PrimaryButton disabled={processing} icon="→" label="เปิดห้องแชต" onPress={onOpenChat} style={cardStyles.acceptButton} />
+          </View>
+        ) : (
+          <View style={cardStyles.actionRow}>
+            <OutlineButton disabled={processing} danger icon="×" label="ไม่รับตอนนี้" onPress={onReject} style={cardStyles.rejectButton} />
+            <PrimaryButton disabled={processing} icon="♥" label="รับเป็นเพื่อน" loading={processing} onPress={onAccept} style={cardStyles.acceptButton} />
+          </View>
+        )}
       </View>
-
-      {accepted ? (
-        <PrimaryButton icon="→" label="เปิดห้องแชต" onPress={onOpenChat} style={cardStyles.chatButton} />
-      ) : (
-        <View style={cardStyles.actionRow}>
-          <OutlineButton disabled={processing} danger icon="×" label="ไม่รับตอนนี้" onPress={onReject} style={cardStyles.rejectButton} />
-          <PrimaryButton disabled={processing} icon="♥" label="รับเป็นเพื่อน" loading={processing} onPress={onAccept} style={cardStyles.acceptButton} />
-        </View>
-      )}
     </Card>
+  );
+}
+
+function MetaChip({ icon, label, styles: cardStyles }) {
+  const { colors } = useTheme();
+  return (
+    <View style={[cardStyles.metaChip, { backgroundColor: colors.surfaceRaised }]}>
+      <FeatureIcon color={colors.inkSoft} name={icon} size={12} />
+      <Text numberOfLines={1} style={[cardStyles.metaChipText, { color: colors.inkMuted }]}>{label}</Text>
+    </View>
   );
 }
 
@@ -217,7 +251,17 @@ const getStyles = (colors) => StyleSheet.create({
   tabBadgeActive: { backgroundColor: 'rgba(255,255,255,0.2)' },
   tabBadgeText: { color: colors.coral, fontSize: 10, fontWeight: '900' },
   tabBadgeTextActive: { color: colors.card },
-  likeCard: { marginBottom: spacing.md, padding: spacing.lg },
+  likeCard: { marginBottom: spacing.md, overflow: 'hidden', padding: 0 },
+  likeHero: { height: 250, justifyContent: 'flex-end', overflow: 'hidden', position: 'relative' },
+  likeHeroGradient: { bottom: 0, height: 130, left: 0, position: 'absolute', right: 0 },
+  likeHeroCopy: { bottom: spacing.lg, left: spacing.lg, position: 'absolute', right: spacing.lg },
+  heroName: { color: '#FFFFFF', fontSize: 24, fontWeight: '900' },
+  heroFaculty: { color: 'rgba(255,255,255,0.86)', fontSize: type.caption, fontWeight: '700', marginTop: 3 },
+  likeBody: { padding: spacing.lg },
+  likeMessageRow: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
+  metaChips: { flexDirection: 'row', gap: spacing.sm, paddingBottom: 2 },
+  metaChip: { alignItems: 'center', borderRadius: radius.pill, flexDirection: 'row', gap: 4, minHeight: 31, paddingHorizontal: 9 },
+  metaChipText: { fontSize: type.caption2, fontWeight: '700' },
   cardTopRow: { alignItems: 'flex-start', flexDirection: 'row' },
   identityCopy: { flex: 1, marginLeft: spacing.md, paddingRight: spacing.sm },
   name: { color: colors.ink, fontSize: 18, fontWeight: '900' },
@@ -229,8 +273,6 @@ const getStyles = (colors) => StyleSheet.create({
   metaRow: { alignItems: 'center', flexDirection: 'row', marginTop: spacing.md },
   activityChip: { backgroundColor: colors.primarySoft, borderColor: colors.primarySoft, flexShrink: 1, minHeight: 32, paddingHorizontal: 9 },
   likedAt: { color: colors.inkSoft, flexShrink: 0, fontSize: 10, marginLeft: spacing.sm },
-  messageBox: { backgroundColor: colors.canvas, borderRadius: radius.sm, flexDirection: 'row', marginTop: spacing.md, padding: spacing.md },
-  quote: { color: colors.primary, fontSize: 27, fontWeight: '900', lineHeight: 22, marginRight: 5 },
   message: { color: colors.inkMuted, flex: 1, fontSize: type.caption, lineHeight: 18 },
   actionRow: { flexDirection: 'row', marginTop: spacing.md },
   rejectButton: { flex: 0.95, minHeight: 46, paddingHorizontal: spacing.sm },
@@ -240,6 +282,7 @@ const getStyles = (colors) => StyleSheet.create({
   emptyEmoji: { fontSize: 42, marginBottom: spacing.md },
   emptyTitle: { color: colors.ink, fontSize: type.section, fontWeight: '900', textAlign: 'center' },
   emptyText: { color: colors.inkMuted, fontSize: type.caption, lineHeight: 19, marginTop: spacing.sm, textAlign: 'center' },
-  privacyNote: { color: colors.inkSoft, fontSize: type.micro, lineHeight: 16, marginTop: spacing.sm, textAlign: 'center' },
+  privacyRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, justifyContent: 'center', marginTop: spacing.sm, paddingHorizontal: spacing.sm },
+  privacyNote: { color: colors.inkSoft, flexShrink: 1, fontSize: type.micro, lineHeight: 16, textAlign: 'center' },
   pressed: { opacity: 0.76, transform: [{ scale: 0.985 }] },
 });

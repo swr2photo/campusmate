@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAssets } from 'expo-asset';
-import { Keyboard, Pressable, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { Keyboard, Platform, Pressable, useColorScheme, useWindowDimensions, View, Alert } from 'react-native';
 import {
   Button,
   HStack,
@@ -44,10 +44,12 @@ import {
   textInputAutocapitalization,
   tint,
 } from '@expo/ui/swift-ui/modifiers';
-import { signInWithGoogle } from '../services/authService';
 import { getSavedAccounts, removeSavedAccount, saveAccount, enrichSavedAccountsWithFirestore } from '../services/accountStorage';
 import { useRemoteImage } from '../utils/useRemoteImage';
+import * as WebBrowser from 'expo-web-browser';
+import * as Google from 'expo-auth-session/providers/google';
 
+WebBrowser.maybeCompleteAuthSession();
 const loginPhoto = require('../../assets/login-campus-hero.png');
 const panelShape = shapes.roundedRectangle({ cornerRadius: 28, roundedCornerStyle: 'continuous' });
 const cardShape = shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' });
@@ -85,6 +87,44 @@ function usePalette() {
 }
 
 export default function LoginScreen({ onLoginSuccess }) {
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+  });
+
+  React.useEffect(() => {
+    if (request) {
+      console.log('Google Auth Request URL (iOS):', request.url);
+    }
+    if (response?.type === 'success') {
+      const { id_token } = response.params;
+      if (id_token) {
+        handleGoogleCredential(id_token);
+      }
+    } else if (response?.type === 'error') {
+      console.error('Google Auth Error (iOS):', response.error);
+      setError('เกิดข้อผิดพลาดในการเข้าสู่ระบบด้วย Google');
+    } else if (response) {
+      console.log('Google Auth Response Type (iOS):', response.type);
+    }
+  }, [response, request]);
+
+  const handleGoogleCredential = async (id_token) => {
+    if (loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      const { signInWithGoogleCredential } = require('../services/authService');
+      const result = await signInWithGoogleCredential(id_token);
+      finishAuthentication(result);
+    } catch (err) {
+      setError(err.message || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const colorScheme = useColorScheme();
   const { height: screenHeight } = useWindowDimensions();
   const palette = usePalette();
@@ -126,6 +166,13 @@ export default function LoginScreen({ onLoginSuccess }) {
     setMode(nextMode);
   };
 
+  React.useEffect(() => {
+    if (error) {
+      const timer = setTimeout(() => setError(''), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [error]);
+
   const finishAuthentication = (result) => {
     saveAccount(result.user);
     onLoginSuccess(result.user);
@@ -153,13 +200,47 @@ export default function LoginScreen({ onLoginSuccess }) {
   };
 
   const handleGoogleLogin = async () => {
+    if (Platform.OS === 'web') {
+      if (loading) return;
+      setLoading(true);
+      setError('');
+      try {
+        const { signInWithGoogle } = require('../services/authService');
+        const result = await signInWithGoogle();
+        finishAuthentication(result);
+      } catch (loginError) {
+        setError(loginError.message || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      promptAsync();
+    }
+  };
+
+  const handleForgotPassword = async () => {
     if (loading) return;
+    if (!email.trim()) {
+      setError('กรุณากรอกอีเมลที่ต้องการรีเซ็ตรหัสผ่าน');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
-      finishAuthentication(await signInWithGoogle());
-    } catch (loginError) {
-      setError(loginError.message || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+      const { sendPasswordReset } = require('../services/authService');
+      await sendPasswordReset(email.trim());
+      Alert.alert('สำเร็จ', 'ส่งลิงก์รีเซ็ตรหัสผ่านไปยังอีเมลของคุณแล้ว');
+    } catch (err) {
+      console.error('Password reset error (iOS):', err);
+      if (err.code === 'auth/user-not-found') {
+        setError('ไม่พบบัญชีที่ใช้อีเมลนี้ กรุณาตรวจสอบอีกครั้ง');
+      } else if (err.code === 'auth/invalid-email') {
+        setError('รูปแบบอีเมลไม่ถูกต้อง');
+      } else if (err.code === 'auth/too-many-requests') {
+        setError('คุณส่งคำขอมากเกินไป กรุณารอสักครู่แล้วลองใหม่อีกครั้ง');
+      } else {
+        setError(err.message || 'ไม่สามารถส่งอีเมลรีเซ็ตรหัสผ่านได้');
+      }
     } finally {
       setLoading(false);
     }
@@ -419,7 +500,20 @@ export default function LoginScreen({ onLoginSuccess }) {
                         systemImage="lock.shield.fill"
                         type="newPassword"
                       />
-                    ) : null}
+                    ) : (
+                      <HStack modifiers={[frame({ maxWidth: Infinity, alignment: 'trailing' }), padding({ bottom: 8, top: 4, trailing: 4 })]}>
+                        <Button
+                          label="ลืมรหัสผ่าน?"
+                          onPress={handleForgotPassword}
+                          modifiers={[
+                            buttonStyle('plain'),
+                            tint(palette.purple),
+                            font({ textStyle: 'caption2', weight: 'bold' }),
+                            padding({ all: 8 })
+                          ]}
+                        />
+                      </HStack>
+                    )}
                     <AuthButton
                       label={mode === 'signup' ? 'สมัครสมาชิก' : 'เข้าสู่ระบบ'}
                       loading={loading}

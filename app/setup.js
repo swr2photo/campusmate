@@ -36,6 +36,7 @@ export default function SetupRoute() {
             router.replace('/');
           }}
           onToast={showToast}
+          showHeader={false}
           overrideSave={handleSave}
         />
       </View>

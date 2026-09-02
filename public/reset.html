@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>รีเซ็ตรหัสผ่าน | CampusMate</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background: linear-gradient(135deg, #f3e8ff 0%, #ffffff 100%);
+      font-family: 'Kanit', sans-serif;
+    }
+    .glass-panel {
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.5);
+      box-shadow: 0 8px 32px 0 rgba(107, 33, 168, 0.1);
+    }
+  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600&display=swap" rel="stylesheet">
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+  <div class="glass-panel w-full max-w-md p-8 rounded-3xl">
+    <div class="text-center mb-8">
+      <div class="w-16 h-16 bg-purple-600 rounded-2xl mx-auto flex items-center justify-center mb-4 shadow-lg">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+      </div>
+      <h1 class="text-2xl font-semibold text-gray-800">ตั้งรหัสผ่านใหม่</h1>
+      <p class="text-gray-500 text-sm mt-2" id="statusMessage">กำลังโหลดข้อมูล...</p>
+    </div>
+
+    <form id="resetForm" class="space-y-5 hidden">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">รหัสผ่านใหม่</label>
+        <input type="password" id="newPassword" required class="w-full px-4 py-3 rounded-xl border border-gray-200 bg-white/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all" placeholder="อย่างน้อย 6 ตัวอักษร">
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">ยืนยันรหัสผ่านใหม่</label>
+        <input type="password" id="confirmPassword" required class="w-full px-4 py-3 rounded-xl border border-gray-200 bg-white/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all" placeholder="กรอกรหัสผ่านอีกครั้ง">
+      </div>
+      
+      <div id="errorBox" class="hidden bg-red-50 text-red-600 text-sm p-3 rounded-lg border border-red-100"></div>
+
+      <button type="submit" id="submitBtn" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-medium py-3 rounded-xl shadow-md hover:shadow-lg transition-all flex items-center justify-center">
+        <span>บันทึกรหัสผ่านใหม่</span>
+      </button>
+    </form>
+
+    <div id="successBox" class="hidden text-center">
+      <div class="w-16 h-16 bg-green-100 rounded-full mx-auto flex items-center justify-center mb-4">
+        <svg class="w-8 h-8 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+      </div>
+      <h3 class="text-xl font-medium text-gray-800 mb-2">เปลี่ยนรหัสผ่านสำเร็จ</h3>
+      <p class="text-gray-500 mb-6">คุณสามารถกลับไปที่แอปพลิเคชันและเข้าสู่ระบบด้วยรหัสผ่านใหม่ได้ทันที</p>
+    </div>
+  </div>
+
+  <!-- Firebase Script -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-app.js";
+    import { getAuth, verifyPasswordResetCode, confirmPasswordReset } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-auth.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyACPwvYOrzMDgNYUK4hXxSenVmnaaVPXqs",
+      authDomain: "campusmate-7f1ab.firebaseapp.com",
+      projectId: "campusmate-7f1ab",
+      messagingSenderId: "865275661439",
+      appId: "1:865275661439:web:a8b550238c9115a1c9c34a"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const actionCode = urlParams.get('oobCode');
+
+    const resetForm = document.getElementById('resetForm');
+    const successBox = document.getElementById('successBox');
+    const statusMessage = document.getElementById('statusMessage');
+    const errorBox = document.getElementById('errorBox');
+    const submitBtn = document.getElementById('submitBtn');
+
+    if (!actionCode) {
+      statusMessage.textContent = 'ไม่พบรหัสอ้างอิงสำหรับรีเซ็ตรหัสผ่าน กรุณากดลิงก์จากอีเมลใหม่อีกครั้ง';
+      statusMessage.className = 'text-red-500 text-sm mt-2 font-medium';
+    } else {
+      statusMessage.textContent = 'กำลังตรวจสอบลิงก์...';
+      verifyPasswordResetCode(auth, actionCode).then((email) => {
+        statusMessage.textContent = `รีเซ็ตรหัสผ่านสำหรับอีเมล: ${email}`;
+        statusMessage.className = 'text-gray-500 text-sm mt-2';
+        resetForm.classList.remove('hidden');
+      }).catch((error) => {
+        statusMessage.textContent = 'ลิงก์นี้หมดอายุหรือถูกใช้งานไปแล้ว กรุณาขอลิงก์รีเซ็ตรหัสผ่านใหม่จากในแอปพลิเคชัน';
+        statusMessage.className = 'text-red-500 text-sm mt-2 font-medium';
+      });
+    }
+
+    resetForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      errorBox.classList.add('hidden');
+      
+      const newPassword = document.getElementById('newPassword').value;
+      const confirmPassword = document.getElementById('confirmPassword').value;
+
+      if (newPassword.length < 6) {
+        errorBox.textContent = 'รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร';
+        errorBox.classList.remove('hidden');
+        return;
+      }
+
+      if (newPassword !== confirmPassword) {
+        errorBox.textContent = 'รหัสผ่านทั้งสองช่องไม่ตรงกัน';
+        errorBox.classList.remove('hidden');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> กำลังบันทึก...';
+
+      confirmPasswordReset(auth, actionCode, newPassword).then(() => {
+        resetForm.classList.add('hidden');
+        statusMessage.classList.add('hidden');
+        successBox.classList.remove('hidden');
+      }).catch((error) => {
+        errorBox.textContent = 'เกิดข้อผิดพลาดในการบันทึกรหัสผ่าน: ' + error.message;
+        errorBox.classList.remove('hidden');
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = 'บันทึกรหัสผ่านใหม่';
+      });
+    });
+  </script>
+</body>
+</html>

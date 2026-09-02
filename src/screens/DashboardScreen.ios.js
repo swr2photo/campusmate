@@ -3,6 +3,7 @@ import { useRemoteImage } from '../utils/useRemoteImage';
 import { useColorScheme } from 'react-native';
 import {
   Button,
+  Chart,
   Host,
   HStack,
   Image,
@@ -45,8 +46,15 @@ const cardShape = shapes.roundedRectangle({
 export default function DashboardScreen({ onNavigate, onOpenProfile }) {
   const palette = usePalette();
   const colorScheme = useColorScheme();
-  const { conversations, pendingIncomingLikes, profile } = useApp();
-  const unreadCount = conversations.reduce((sum, item) => sum + (item.unread || 0), 0);
+  const { conversations, matchedProfileIds, pendingIncomingLikes, profile } = useApp();
+  const safeConversations = conversations || [];
+  const safePendingLikes = pendingIncomingLikes || [];
+  const matchedCount = Math.max(matchedProfileIds?.length || 0, safeConversations.length);
+  const activeUserId = profile?.id;
+  const unreadCount = safeConversations.reduce(
+    (sum, item) => sum + (item.unreadCounts?.[activeUserId] || item.unread || 0),
+    0
+  );
   const displayName = profile?.name || profile?.nickname || 'เพื่อน';
   const remoteAvatar = useRemoteImage(profile?.avatarUri);
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
@@ -110,7 +118,7 @@ export default function DashboardScreen({ onNavigate, onOpenProfile }) {
                 <ShortcutCard
                   accent={palette.coral}
                   accentSoft={palette.coralSoft}
-                  badge={pendingIncomingLikes.length}
+                  badge={safePendingLikes.length}
                   hint="ดูว่าใครสนใจคุณ แล้วเลือกรับหรือปฏิเสธ"
                   onPress={() => onNavigate('likes')}
                   systemImage="heart.fill"
@@ -146,6 +154,13 @@ export default function DashboardScreen({ onNavigate, onOpenProfile }) {
                 />
               </HStack>
             </VStack>
+
+            <MatchStatsCard
+              conversationsCount={safeConversations.length}
+              matchedCount={matchedCount}
+              pendingCount={safePendingLikes.length}
+              unreadCount={unreadCount}
+            />
           </VStack>
         </ScrollView>
       </Host>
@@ -196,6 +211,155 @@ function Header({ avatarUri, displayName, onOpenProfile }) {
           ]}
         />
       )}
+    </HStack>
+  );
+}
+
+function MatchStatsCard({ conversationsCount, matchedCount, pendingCount, unreadCount }) {
+  const palette = usePalette();
+  const activeRate = matchedCount > 0
+    ? Math.min(100, Math.round((conversationsCount / matchedCount) * 100))
+    : 0;
+  const waitingCount = Math.max(0, matchedCount - conversationsCount);
+  const insight = matchedCount === 0
+    ? 'เริ่มค้นหาเพื่อนเพื่อสร้างแมตช์แรกของคุณ'
+    : activeRate >= 75
+      ? 'แมตช์ส่วนใหญ่เริ่มบทสนทนาแล้ว'
+      : `ยังมี ${waitingCount} แมตช์ที่รอเริ่มบทสนทนา`;
+  const chartData = [
+    { x: 'แมตช์', y: matchedCount, color: palette.violet },
+    { x: 'รอรับ', y: pendingCount, color: palette.coral },
+    { x: 'แชต', y: conversationsCount, color: palette.blue },
+    { x: 'ใหม่', y: unreadCount, color: palette.mint },
+  ];
+
+  return (
+    <VStack
+      alignment="leading"
+      spacing={12}
+      modifiers={[
+        padding({ all: 16 }),
+        frame({ maxWidth: Infinity, alignment: 'topLeading' }),
+        background(palette.surface, cardShape),
+        shadow({ radius: 18, y: 8, color: 'rgba(0,0,0,0.18)' }),
+      ]}
+    >
+      <HStack alignment="top" spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
+        <VStack alignment="leading" spacing={4} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+          <Text
+            modifiers={[
+              font({ textStyle: 'headline', weight: 'bold', design: 'rounded' }),
+              foregroundStyle(palette.text),
+            ]}
+          >
+            สถิติแมตช์
+          </Text>
+          <Text
+            modifiers={[
+              font({ textStyle: 'caption', weight: 'medium' }),
+              foregroundStyle(palette.secondary),
+              lineLimit(1),
+            ]}
+          >
+            ภาพรวมการจับคู่และการเริ่มสนทนา
+          </Text>
+        </VStack>
+        <VStack alignment="trailing" spacing={1}>
+          <Text
+            modifiers={[
+              font({ textStyle: 'title2', weight: 'bold', design: 'rounded' }),
+              foregroundStyle(palette.violet),
+            ]}
+          >
+            {matchedCount}
+          </Text>
+          <Text
+            modifiers={[
+              font({ textStyle: 'caption2', weight: 'semibold' }),
+              foregroundStyle(palette.secondary),
+            ]}
+          >
+            แมตช์แล้ว
+          </Text>
+        </VStack>
+      </HStack>
+
+      <Chart
+        animate
+        barStyle={{ cornerRadius: 8, width: 28 }}
+        data={chartData}
+        showGrid={false}
+        showLegend={false}
+        style={{ height: 150, width: '100%' }}
+        type="bar"
+      />
+
+      <VStack spacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
+        <HStack spacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
+          <StatLegend accent={palette.violet} label="แมตช์" value={matchedCount} />
+          <StatLegend accent={palette.coral} label="รอรับ" value={pendingCount} />
+        </HStack>
+        <HStack spacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
+          <StatLegend accent={palette.blue} label="ห้องแชต" value={conversationsCount} />
+          <StatLegend accent={palette.mint} label="ยังไม่อ่าน" value={unreadCount} />
+        </HStack>
+      </VStack>
+
+      <HStack
+        alignment="center"
+        spacing={8}
+        modifiers={[
+          padding({ horizontal: 10, vertical: 9 }),
+          frame({ maxWidth: Infinity, alignment: 'leading' }),
+          background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 12, roundedCornerStyle: 'continuous' })),
+        ]}
+      >
+        <Image color={palette.violet} size={15} systemName="sparkles" />
+        <Text
+          modifiers={[
+            font({ textStyle: 'caption', weight: 'medium' }),
+            foregroundStyle(palette.secondary),
+            lineLimit(2),
+          ]}
+        >
+          {insight} · อัตราเริ่มแชต {activeRate}%
+        </Text>
+      </HStack>
+    </VStack>
+  );
+}
+
+function StatLegend({ accent, label, value }) {
+  const palette = usePalette();
+  return (
+    <HStack
+      alignment="center"
+      spacing={6}
+      modifiers={[
+        padding({ horizontal: 9, vertical: 8 }),
+        frame({ maxWidth: Infinity, alignment: 'leading' }),
+        background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 11, roundedCornerStyle: 'continuous' })),
+      ]}
+    >
+      <Image color={accent} size={9} systemName="circle.fill" />
+      <Text
+        modifiers={[
+          font({ textStyle: 'caption2', weight: 'semibold' }),
+          foregroundStyle(palette.secondary),
+          lineLimit(1),
+        ]}
+      >
+        {label}
+      </Text>
+      <Spacer />
+      <Text
+        modifiers={[
+          font({ textStyle: 'caption', weight: 'bold', design: 'rounded' }),
+          foregroundStyle(palette.text),
+        ]}
+      >
+        {value}
+      </Text>
     </HStack>
   );
 }

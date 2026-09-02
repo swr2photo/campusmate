@@ -83,7 +83,7 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
 
     setProcessingId(like.id);
     try {
-      await removeMatch(like.id);
+      await respondToLike(like, 'reject');
       onToast?.(`ลบ ${like.name} ออกจากรายการจับคู่แล้ว`, 'info');
     } catch (error) {
       onToast?.('ยังดำเนินการไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
@@ -173,6 +173,7 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
                 like={like}
                 onAccept={() => handleResponse(like, 'accept')}
                 onOpenChat={() => handleOpenChat(like)}
+                onRemove={() => handleRemoveMatch(like)}
                 onReject={() => handleResponse(like, 'reject')}
                 processing={processingId === like.id}
               />
@@ -287,7 +288,7 @@ function TabButton({ active, count, label, onPress, systemImage }) {
 }
 
 
-function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing }) {
+function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, processing }) {
   const palette = usePalette();
   const imageUri = useRemoteImage(like.avatarUri);
   return (
@@ -398,7 +399,7 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing }
           <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity })]}>
             <Button
               label="ลบ"
-              onPress={onReject}
+              onPress={onRemove}
               role="cancel"
               systemImage="trash.fill"
               modifiers={[

@@ -1,7 +1,7 @@
 import React from 'react';
 import { ActivityIndicator, ImageBackground, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { SymbolView } from 'expo-symbols';
+import FeatureIcon from './FeatureIcon';
 
 const heroImage = require('../../assets/login-campus-hero.png');
 
@@ -19,7 +19,7 @@ export default function AppSplashScreen({ message = 'กำลังเข้า
       >
         <View style={styles.centerContent}>
           <View style={styles.logoCircle}>
-            <SymbolView name="person.2.fill" size={40} tintColor="#FFFFFF" />
+            <FeatureIcon color="#FFFFFF" name="person.2.fill" size={40} />
           </View>
 
           <Text style={styles.appName}>CampusMate</Text>

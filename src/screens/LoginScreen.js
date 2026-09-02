@@ -12,17 +12,63 @@ import {
   TextInput,
   useWindowDimensions,
   View,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { SymbolView } from 'expo-symbols';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { signInWithGoogle } from '../services/authService';
+import * as WebBrowser from 'expo-web-browser';
+import * as Google from 'expo-auth-session/providers/google';
 import { getSavedAccounts, removeSavedAccount, saveAccount, enrichSavedAccountsWithFirestore } from '../services/accountStorage';
+import FeatureIcon from '../components/FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
+
+WebBrowser.maybeCompleteAuthSession();
 
 const loginPhoto = require('../../assets/login-campus-hero.png');
 
 export default function LoginScreen({ onLoginSuccess }) {
+  const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
+    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    redirectUri: require('expo-auth-session').makeRedirectUri({
+      scheme: 'campusmate',
+      preferLocalhost: true,
+    }),
+  });
+
+  React.useEffect(() => {
+    if (request) {
+      console.log('Google Auth Request URL:', request.url);
+    }
+    if (response?.type === 'success') {
+      const { id_token } = response.params;
+      if (id_token) {
+        handleGoogleCredential(id_token);
+      }
+    } else if (response?.type === 'error') {
+      console.error('Google Auth Error:', response.error);
+      setError('เกิดข้อผิดพลาดในการเข้าสู่ระบบด้วย Google');
+    } else if (response) {
+      console.log('Google Auth Response Type:', response.type);
+    }
+  }, [response, request]);
+
+  const handleGoogleCredential = async (id_token) => {
+    if (loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      const { signInWithGoogleCredential } = require('../services/authService');
+      const result = await signInWithGoogleCredential(id_token);
+      finishAuthentication(result);
+    } catch (err) {
+      setError(err.message || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const { colors } = useTheme();
   const { height: screenHeight } = useWindowDimensions();
   const styles = getStyles(colors);
@@ -59,6 +105,13 @@ export default function LoginScreen({ onLoginSuccess }) {
     setMode(nextMode);
   };
 
+  useEffect(() => {
+    if (error) {
+      const timer = setTimeout(() => setError(''), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [error]);
+
   const finishAuthentication = (result) => {
     saveAccount(result.user);
     onLoginSuccess(result.user);
@@ -83,13 +136,51 @@ export default function LoginScreen({ onLoginSuccess }) {
   };
 
   const handleGoogleLogin = async () => {
+    if (Platform.OS === 'web') {
+      if (loading) return;
+      setLoading(true);
+      setError('');
+      try {
+        const { signInWithGoogle } = require('../services/authService');
+        const result = await signInWithGoogle();
+        finishAuthentication(result);
+      } catch (loginError) {
+        setError(loginError.message || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      promptAsync();
+    }
+  };
+
+  const handleForgotPassword = async () => {
     if (loading) return;
+    if (!email.trim()) {
+      setError('กรุณากรอกอีเมลที่ต้องการรีเซ็ตรหัสผ่าน');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
-      finishAuthentication(await signInWithGoogle());
-    } catch (loginError) {
-      setError(loginError.message || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+      const { sendPasswordReset } = require('../services/authService');
+      await sendPasswordReset(email.trim());
+      if (Platform.OS === 'web') {
+        alert('สำเร็จ: ส่งลิงก์รีเซ็ตรหัสผ่านไปยังอีเมลของคุณแล้ว');
+      } else {
+        Alert.alert('สำเร็จ', 'ส่งลิงก์รีเซ็ตรหัสผ่านไปยังอีเมลของคุณแล้ว');
+      }
+    } catch (err) {
+      console.error('Password reset error:', err);
+      if (err.code === 'auth/user-not-found') {
+        setError('ไม่พบบัญชีที่ใช้อีเมลนี้ กรุณาตรวจสอบอีกครั้ง');
+      } else if (err.code === 'auth/invalid-email') {
+        setError('รูปแบบอีเมลไม่ถูกต้อง');
+      } else if (err.code === 'auth/too-many-requests') {
+        setError('คุณส่งคำขอมากเกินไป กรุณารอสักครู่แล้วลองใหม่อีกครั้ง');
+      } else {
+        setError(err.message || 'ไม่สามารถส่งอีเมลรีเซ็ตรหัสผ่านได้');
+      }
     } finally {
       setLoading(false);
     }
@@ -101,8 +192,9 @@ export default function LoginScreen({ onLoginSuccess }) {
         setError('กรุณากรอกข้อมูลให้ครบถ้วน');
         return;
       }
-      if (password.length < 6) {
-        setError('รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร');
+      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
+      if (!passwordRegex.test(password)) {
+        setError('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร ประกอบด้วยพิมพ์เล็ก พิมพ์ใหญ่ ตัวเลข และอักขระพิเศษ');
         return;
       }
       if (password !== confirmPassword) {
@@ -120,10 +212,21 @@ export default function LoginScreen({ onLoginSuccess }) {
     setLoading(true);
     setError('');
     try {
-      const { signInWithEmail, signUpWithEmail } = require('../services/authService');
+      const { signInWithEmail, signUpWithEmail, signOutUser } = require('../services/authService');
       const result = mode === 'signup'
         ? await signUpWithEmail(email.trim(), password)
         : await signInWithEmail(email.trim(), password);
+        
+      if (result.user.providerData?.some(p => p.providerId === 'password') && !result.user.emailVerified) {
+        if (mode === 'signup') {
+           setError('สมัครสมาชิกสำเร็จ กรุณาตรวจสอบอีเมลเพื่อยืนยันบัญชี');
+        } else {
+           setError('กรุณายืนยันอีเมลก่อนเข้าใช้งาน');
+        }
+        await signOutUser();
+        return;
+      }
+      
       finishAuthentication(result);
     } catch (loginError) {
       setError(mode === 'signup'
@@ -156,7 +259,7 @@ export default function LoginScreen({ onLoginSuccess }) {
               <View style={styles.contentFrame}>
                 <View style={styles.headerSection}>
                   <View style={styles.brandIconCircle}>
-                    <SymbolView name="person.2.fill" size={32} tintColor="#FFFFFF" />
+                    <FeatureIcon color="#FFFFFF" name="person.2.fill" size={32} />
                   </View>
                   <Text style={styles.heroTitle}>CampusMate</Text>
                   <Text style={styles.heroSubtitle}>พื้นที่เพื่อนใหม่ในรั้วมหาวิทยาลัย</Text>
@@ -165,7 +268,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                 <View style={styles.loginPanel}>
                   {error ? (
                     <View accessibilityLiveRegion="polite" style={styles.errorBox}>
-                      <SymbolView name="exclamationmark.triangle.fill" size={17} tintColor={colors.danger} />
+                      <FeatureIcon color={colors.danger} name="exclamationmark.triangle.fill" size={17} />
                       <Text style={styles.errorText}>{error}</Text>
                     </View>
                   ) : null}
@@ -173,7 +276,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                   {mode === 'saved' && savedAccounts.length > 0 ? (
                     <View style={styles.savedSection}>
                       <View style={styles.savedHeader}>
-                        <SymbolView name="person.crop.circle.badge.checkmark" size={16} tintColor={colors.primary} />
+                        <FeatureIcon color={colors.primary} name="person.crop.circle.badge.checkmark" size={16} />
                         <Text style={styles.savedTitle}>ลงชื่อเข้าใช้อีกครั้ง</Text>
                       </View>
 
@@ -186,7 +289,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                                 style={styles.savedAvatarImage}
                               />
                             ) : (
-                              <SymbolView name="person.fill" size={18} tintColor={colors.primary} />
+                              <FeatureIcon color={colors.primary} name="person.fill" size={18} />
                             )}
                           </View>
                           <View style={styles.savedInfo}>
@@ -203,7 +306,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                             style={({ pressed }) => [styles.quickLoginButton, pressed && styles.pressed]}
                           >
                             <Text numberOfLines={1} style={styles.quickLoginText}>เข้าใช้</Text>
-                            <SymbolView name="arrow.right" size={11} tintColor="#FFFFFF" />
+                            <FeatureIcon color="#FFFFFF" name="arrow.right" size={11} />
                           </Pressable>
                           <Pressable
                             accessibilityLabel="ลบบัญชีนี้"
@@ -212,7 +315,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                             onPress={() => handleRemoveAccount(acc.id || acc.email)}
                             style={({ pressed }) => [styles.removeButton, pressed && styles.pressed]}
                           >
-                            <SymbolView name="xmark" size={13} tintColor={colors.inkSoft} />
+                            <FeatureIcon color={colors.inkSoft} name="xmark" size={13} />
                           </Pressable>
                         </View>
                       ))}
@@ -228,7 +331,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                         }}
                         style={({ pressed }) => [styles.otherAccountButton, pressed && styles.pressed]}
                       >
-                        <SymbolView name="person.badge.plus" size={17} tintColor="#111318" />
+                        <FeatureIcon color="#111318" name="person.badge.plus" size={17} />
                         <Text style={styles.otherAccountText}>เข้าสู่ระบบด้วยบัญชีอื่น</Text>
                       </Pressable>
                     </View>
@@ -236,7 +339,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                     <View style={styles.form}>
                       {selectedAccount ? (
                         <View style={styles.selectedAccountNotice}>
-                          <SymbolView name="person.crop.circle.fill" size={17} tintColor="#111318" />
+                          <FeatureIcon color="#111318" name="person.crop.circle.fill" size={17} />
                           <Text style={styles.selectedAccountNoticeText}>
                             เข้าสู่ระบบในชื่อ {selectedAccount.displayName || selectedAccount.email}
                           </Text>
@@ -245,7 +348,7 @@ export default function LoginScreen({ onLoginSuccess }) {
 
                       <Text style={styles.inputLabel}>อีเมล</Text>
                       <View style={styles.inputShell}>
-                        <SymbolView name="envelope.fill" size={17} tintColor={colors.inkSoft} />
+                        <FeatureIcon color={colors.inkSoft} name="envelope.fill" size={17} />
                         <TextInput
                           autoCapitalize="none"
                           autoComplete="email"
@@ -260,7 +363,7 @@ export default function LoginScreen({ onLoginSuccess }) {
 
                       <Text style={styles.inputLabel}>รหัสผ่าน</Text>
                       <View style={styles.inputShell}>
-                        <SymbolView name="lock.fill" size={17} tintColor={colors.inkSoft} />
+                        <FeatureIcon color={colors.inkSoft} name="lock.fill" size={17} />
                         <TextInput
                           autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                           onChangeText={setPassword}
@@ -276,7 +379,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                         <>
                           <Text style={styles.inputLabel}>ยืนยันรหัสผ่าน</Text>
                           <View style={styles.inputShell}>
-                            <SymbolView name="lock.shield.fill" size={17} tintColor={colors.inkSoft} />
+                            <FeatureIcon color={colors.inkSoft} name="lock.shield.fill" size={17} />
                             <TextInput
                               autoComplete="new-password"
                               onChangeText={setConfirmPassword}
@@ -288,7 +391,15 @@ export default function LoginScreen({ onLoginSuccess }) {
                             />
                           </View>
                         </>
-                      ) : null}
+                      ) : (
+                        <Pressable 
+                          hitSlop={12}
+                          onPress={handleForgotPassword} 
+                          style={({ pressed }) => [styles.forgotPasswordButton, pressed && styles.pressed]}
+                        >
+                          <Text style={styles.forgotPasswordText}>ลืมรหัสผ่าน?</Text>
+                        </Pressable>
+                      )}
 
                       <PrimaryButton
                         label={mode === 'signup' ? 'สมัครสมาชิก' : 'เข้าสู่ระบบ'}
@@ -303,7 +414,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                         onPress={() => showMode(savedAccounts.length > 0 ? 'saved' : 'google')}
                         style={({ pressed }) => [styles.textButton, pressed && styles.pressed]}
                       >
-                        <SymbolView name="chevron.left" size={13} tintColor="#111318" />
+                        <FeatureIcon color="#111318" name="chevron.left" size={13} />
                         <Text style={styles.textButtonLabel}>
                           {savedAccounts.length > 0 ? 'กลับไปเลือกบัญชี' : 'ย้อนกลับ'}
                         </Text>
@@ -324,7 +435,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                         onPress={() => showMode('login')}
                         style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressed]}
                       >
-                        <SymbolView name="envelope.fill" size={18} tintColor="#111318" />
+                        <FeatureIcon color="#111318" name="envelope.fill" size={18} />
                         <Text style={styles.secondaryButtonText}>เข้าสู่ระบบด้วยอีเมล</Text>
                       </Pressable>
 
@@ -343,7 +454,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                           onPress={() => showMode('saved')}
                           style={({ pressed }) => [styles.textButton, pressed && styles.pressed]}
                         >
-                          <SymbolView name="person.2.circle" size={16} tintColor="#111318" />
+                          <FeatureIcon color="#111318" name="person.2.circle" size={16} />
                           <Text style={styles.textButtonLabel}>เลือกจากบัญชีที่บันทึกไว้</Text>
                         </Pressable>
                       ) : null}
@@ -375,7 +486,7 @@ function PrimaryButton({ label, loading, onPress, styles, symbol }) {
       {loading ? (
         <ActivityIndicator color="#FFFFFF" />
       ) : (
-        <SymbolView name={symbol} size={19} tintColor="#FFFFFF" />
+        <FeatureIcon color="#FFFFFF" name={symbol} size={19} />
       )}
       <Text style={styles.primaryButtonText}>{loading ? 'กำลังดำเนินการ...' : label}</Text>
     </Pressable>
@@ -475,6 +586,8 @@ const getStyles = (colors) => StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   input: { color: colors.ink, flex: 1, fontSize: type.body, minHeight: 46 },
+  forgotPasswordButton: { alignSelf: 'flex-end', marginBottom: spacing.sm, marginTop: -4, padding: 4, zIndex: 10 },
+  forgotPasswordText: { color: colors.primary, fontSize: type.caption2, fontWeight: '700' },
   textButton: {
     alignItems: 'center',
     alignSelf: 'center',

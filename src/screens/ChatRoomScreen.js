@@ -9,22 +9,24 @@ import {
   Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   StyleSheet,
   Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
-import { SymbolView } from 'expo-symbols';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
 import { useApp } from '../context/AppContext';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import { radius, spacing, type, useTheme } from '../theme';
+import FeatureIcon from '../components/FeatureIcon';
 import { formatReadableDate } from '../utils/formatters';
-import InstagramMessageOverlay from '../components/InstagramMessageOverlay';
+import InstagramMessageOverlay, { DEFAULT_MESSAGE_REACTION } from '../components/InstagramMessageOverlay';
+
+const DOUBLE_TAP_WINDOW_MS = 320;
 
 function toDate(timestamp) {
   if (!timestamp) return null;
@@ -199,6 +201,10 @@ export default function ChatRoomScreen() {
     }
   }, [chat?.id, reactToMessageInChat]);
 
+  const handleQuickReact = useCallback((item) => {
+    handleReact(item, DEFAULT_MESSAGE_REACTION);
+  }, [handleReact]);
+
   const handleReply = useCallback((item) => {
     setActionMessage(null);
     setReplyingTo(item);
@@ -366,7 +372,7 @@ export default function ChatRoomScreen() {
       <SafeAreaView style={styles.roomContainer}>
         <View style={styles.roomHeader}>
           <Pressable accessibilityLabel="ย้อนกลับ" onPress={onBack} style={styles.backButton}>
-            <SymbolView name="chevron.left" size={23} tintColor={colors.ink} />
+            <FeatureIcon color={colors.ink} name="chevron.left" size={23} />
           </Pressable>
           <Text style={styles.roomName}>ไม่พบห้องสนทนา</Text>
         </View>
@@ -382,7 +388,7 @@ export default function ChatRoomScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
         <View style={styles.roomHeader}>
           <Pressable accessibilityLabel="ย้อนกลับ" onPress={onBack} style={styles.backButton}>
-            <SymbolView name="chevron.left" size={23} tintColor={colors.ink} />
+            <FeatureIcon color={colors.ink} name="chevron.left" size={23} />
           </Pressable>
           <Avatar avatarColor={chat.avatarColor} colors={colors} emoji={chat.avatar} size={44} uri={chat.avatarUri} />
           <View style={styles.roomIdentity}>
@@ -395,7 +401,7 @@ export default function ChatRoomScreen() {
             onPress={() => setIsSettingsOpen(true)}
             style={({ pressed }) => [styles.headerMoreBtn, pressed && styles.pressed]}
           >
-            <SymbolView name="ellipsis" size={18} tintColor={colors.ink} />
+            <FeatureIcon color={colors.ink} name="ellipsis" size={18} />
           </Pressable>
         </View>
 
@@ -408,7 +414,7 @@ export default function ChatRoomScreen() {
                   style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs, flex: 1 }}
                 >
                   <View style={styles.chatMeetupIcon}>
-                    <SymbolView name="mappin.and.ellipse" size={14} tintColor={colors.primary} />
+                    <FeatureIcon color={colors.primary} name="mappin.and.ellipse" size={14} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -444,10 +450,10 @@ export default function ChatRoomScreen() {
                       pressed && styles.pressed,
                     ]}
                   >
-                    <SymbolView
+                    <FeatureIcon
+                      color="#FFFFFF"
                       name={isAcceptedByMe ? 'checkmark.circle.fill' : (meetupStats?.isFull ? 'xmark.circle' : 'person.badge.plus')}
                       size={12}
-                      tintColor="#FFFFFF"
                     />
                     <Text style={styles.chatMeetupMiniBtnText}>
                       {isAcceptedByMe ? 'ตอบรับแล้ว' : (meetupStats?.isFull ? 'เต็ม' : 'ยอมรับ')}
@@ -458,10 +464,10 @@ export default function ChatRoomScreen() {
                     onPress={() => setIsBannerExpanded((curr) => !curr)}
                     style={styles.expandToggleBtn}
                   >
-                    <SymbolView
+                    <FeatureIcon
+                      color={colors.inkSoft}
                       name={isBannerExpanded ? 'chevron.up' : 'chevron.down'}
                       size={13}
-                      tintColor={colors.inkSoft}
                     />
                   </Pressable>
                 </View>
@@ -472,7 +478,7 @@ export default function ChatRoomScreen() {
                   <View style={styles.chatMeetupMeta}>
                     {partnerMeetup.schedule?.date ? (
                       <View style={styles.chatMeetupInfoRow}>
-                        <SymbolView name="calendar" size={13} tintColor={colors.inkSoft} />
+                        <FeatureIcon color={colors.inkSoft} name="calendar" size={13} />
                         <Text style={styles.chatMeetupTime}>
                           วันที่: {formatReadableDate(partnerMeetup.schedule.date)}
                         </Text>
@@ -481,7 +487,7 @@ export default function ChatRoomScreen() {
 
                     {partnerMeetup.schedule?.startTime && partnerMeetup.schedule?.endTime ? (
                       <View style={styles.chatMeetupInfoRow}>
-                        <SymbolView name="clock" size={13} tintColor={colors.inkSoft} />
+                        <FeatureIcon color={colors.inkSoft} name="clock" size={13} />
                         <Text style={styles.chatMeetupTime}>
                           เวลา: {partnerMeetup.schedule.startTime} – {partnerMeetup.schedule.endTime} น.
                         </Text>
@@ -490,7 +496,7 @@ export default function ChatRoomScreen() {
 
                     {meetupStats ? (
                       <View style={styles.chatMeetupInfoRow}>
-                        <SymbolView name="person.2.fill" size={13} tintColor={colors.inkSoft} />
+                        <FeatureIcon color={colors.inkSoft} name="person.2.fill" size={13} />
                         <Text style={styles.chatMeetupCount}>
                           ผู้เข้าร่วม: {meetupStats.acceptedCount}/{meetupStats.maxPeople} คน
                         </Text>
@@ -509,10 +515,10 @@ export default function ChatRoomScreen() {
                     ]}
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <SymbolView
+                      <FeatureIcon
+                        color="#FFFFFF"
                         name={isAcceptedByMe ? 'checkmark.circle.fill' : (meetupStats?.isFull ? 'xmark.circle' : 'person.badge.plus')}
                         size={16}
-                        tintColor="#FFFFFF"
                       />
                       <Text style={[styles.chatMeetupBtnText, isAcceptedByMe && styles.chatMeetupBtnTextAccepted]}>
                         {isAcceptedByMe ? 'ยอมรับนัดหมายแล้ว (แตะเพื่อยกเลิก)' : (meetupStats?.isFull ? 'นัดหมายเต็มจำนวนแล้ว' : 'ยอมรับนัดหมาย')}
@@ -534,7 +540,7 @@ export default function ChatRoomScreen() {
           onTouchStart={Keyboard.dismiss}
           ListEmptyComponent={(
             <View style={styles.emptyRoom}>
-              <SymbolView name="hand.wave.fill" size={38} tintColor={colors.primary} />
+              <FeatureIcon color={colors.primary} name="hand.wave.fill" size={38} />
               <Text style={styles.emptyTitle}>เริ่มทักทายได้เลย</Text>
               <Text style={styles.emptyText}>ส่งข้อความแรกเพื่อเริ่มทำความรู้จักกัน</Text>
             </View>
@@ -546,6 +552,7 @@ export default function ChatRoomScreen() {
               colors={colors}
               index={index}
               item={item}
+              onQuickReact={handleQuickReact}
               onSelectMessage={handleSelectMessage}
               otherReadAt={otherReadAt}
               showDay={index === 0 || new Date(toDate(messageTimestamp(chat.messages[index - 1]))).toDateString() !== new Date(toDate(messageTimestamp(item))).toDateString()}
@@ -562,7 +569,7 @@ export default function ChatRoomScreen() {
               <Text numberOfLines={1} style={styles.replyComposerText}>{replyingTo.text}</Text>
             </View>
             <Pressable accessibilityLabel="ยกเลิกการตอบกลับ" onPress={() => setReplyingTo(null)} style={styles.replyComposerClose}>
-              <SymbolView name="xmark" size={12} tintColor={colors.inkSoft} />
+              <FeatureIcon color={colors.inkSoft} name="xmark" size={12} />
             </Pressable>
           </View>
         ) : null}
@@ -580,7 +587,7 @@ export default function ChatRoomScreen() {
             value={inputText}
           />
           <Pressable disabled={!inputText.trim() || sending} onPress={handleSend} style={({ pressed }) => [styles.sendButton, (!inputText.trim() || sending) && styles.sendDisabled, pressed && styles.pressed]}>
-            <SymbolView name="arrow.up" size={20} tintColor="#FFFFFF" />
+            <FeatureIcon color="#FFFFFF" name="arrow.up" size={20} />
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -613,6 +620,7 @@ export default function ChatRoomScreen() {
       <InstagramMessageOverlay
         conversations={conversations}
         currentConversationId={chat.id}
+        currentUserId={currentUserId}
         isOpen={Boolean(actionMessage)}
         item={actionMessage}
         onClose={() => setActionMessage(null)}
@@ -827,12 +835,16 @@ function ChatMessageItem({
   colors,
   index,
   item,
+  onQuickReact,
   onSelectMessage,
   otherReadAt,
   showDay,
   styles,
 }) {
   const bubbleRef = useRef(null);
+  const lastTapAtRef = useRef(0);
+  const doubleTapTimerRef = useRef(null);
+  const longPressRef = useRef(false);
   const mine = item.sender === 'me';
   const statusText = formatStatusTime(item, mine, index === chat.messages.length - 1, otherReadAt);
   const reactions = item.reactions || {};
@@ -840,7 +852,14 @@ function ChatMessageItem({
   const uniqueEmojis = Array.from(new Set(reactionValues));
   const reactionString = uniqueEmojis.join('') + (reactionValues.length > 1 ? ` ${reactionValues.length}` : '');
 
-  const handlePress = () => {
+  useEffect(() => () => {
+    if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
+  }, []);
+
+  const handleLongPress = () => {
+    longPressRef.current = true;
+    lastTapAtRef.current = 0;
+    if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
     if (bubbleRef.current?.measureInWindow) {
       bubbleRef.current.measureInWindow((x, y, width, height) => {
         onSelectMessage({
@@ -851,6 +870,29 @@ function ChatMessageItem({
     } else {
       onSelectMessage(item);
     }
+  };
+
+  const handlePress = () => {
+    if (longPressRef.current) {
+      longPressRef.current = false;
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - lastTapAtRef.current;
+    if (elapsed > 0 && elapsed <= DOUBLE_TAP_WINDOW_MS) {
+      lastTapAtRef.current = 0;
+      if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
+      onQuickReact?.(item);
+      return;
+    }
+
+    lastTapAtRef.current = now;
+    if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
+    doubleTapTimerRef.current = setTimeout(() => {
+      lastTapAtRef.current = 0;
+      doubleTapTimerRef.current = null;
+    }, DOUBLE_TAP_WINDOW_MS);
   };
 
   return (
@@ -868,7 +910,11 @@ function ChatMessageItem({
           <Pressable
             ref={bubbleRef}
             delayLongPress={220}
-            onLongPress={handlePress}
+            onLongPress={handleLongPress}
+            onPress={handlePress}
+            onPressIn={() => {
+              longPressRef.current = false;
+            }}
             style={({ pressed }) => [
               styles.bubble,
               mine ? styles.myBubble : styles.theirBubble,
@@ -935,7 +981,7 @@ function ResolvedAvatar({ avatarColor, colors, emoji, size, uri }) {
       {emoji ? (
         <Text style={{ fontSize: size * 0.52 }}>{emoji}</Text>
       ) : (
-        <SymbolView name="person.fill" size={size * 0.48} tintColor={colors.inkSoft} />
+        <FeatureIcon color={colors.inkSoft} name="person.fill" size={size * 0.48} />
       )}
     </View>
   );

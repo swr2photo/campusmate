@@ -9,17 +9,18 @@ import {
   Text,
   TextInput,
   View,
-  Image,
   Modal,
   Switch,
   useColorScheme,
+  Alert,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
-import { SymbolView } from 'expo-symbols';
 import * as ImagePicker from 'expo-image-picker';
 import { ACTIVITY_CATEGORIES } from '../data/activityCategories';
 import { useApp } from '../context/AppContext';
-import { Avatar, Card, Chip, OutlineButton, PrimaryButton, SectionTitle } from '../components/ui';
+import { Card, Chip, OutlineButton, PrimaryButton, SectionTitle } from '../components/ui';
+import { IosLikeAvatar } from '../components/iosLike';
+import FeatureIcon from '../components/FeatureIcon';
 import { radius, spacing, type, useTheme } from '../theme';
 
 import { FACULTIES } from '../data/faculties';
@@ -34,6 +35,16 @@ const GENDERS = [
   { label: 'นอนไบนารี', value: 'nonbinary' },
   { label: 'ไม่ระบุ', value: 'unspecified' },
 ];
+const PACE_OPTIONS = [
+  '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38',
+  '\u0e40\u0e14\u0e34\u0e19 / \u0e40\u0e23\u0e34\u0e48\u0e21\u0e15\u0e49\u0e19',
+  'Pace 8:00+ \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
+  'Pace 7:00 - 8:00 \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
+  'Pace 6:00 - 7:00 \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
+  'Pace 5:00 - 6:00 \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
+  'Pace \u0e15\u0e48\u0e33\u0e01\u0e27\u0e48\u0e32 5:00 \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
+];
+
 const generateAvailabilityOptions = () => {
   const options = [];
   const now = new Date();
@@ -68,13 +79,14 @@ export default function ProfileScreen({ onLogout, onToast, overrideSave }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
 
-  const { profile, saveProfile } = useApp();
+  const { profile, saveProfile, deleteAccount } = useApp();
   const [name, setName] = useState(profile.name || '');
   const [faculty, setFaculty] = useState(profile.faculty || FACULTIES[0]);
   const [year, setYear] = useState(profile.year || YEARS[0]);
   const [age, setAge] = useState(profile.age ? String(profile.age) : '');
   const [gender, setGender] = useState(profile.gender || 'unspecified');
   const [pace, setPace] = useState(profile.pace || '');
+  const [skill, setSkill] = useState(profile.skill || '');
   const [availability, setAvailability] = useState(profile.availability || '');
   const [bio, setBio] = useState(profile.bio || '');
   const [interests, setInterests] = useState(profile.interests || (profile.activities || (profile.activity ? [profile.activity] : [])));
@@ -97,6 +109,7 @@ export default function ProfileScreen({ onLogout, onToast, overrideSave }) {
       setAge(profile.age ? String(profile.age) : '');
       setGender(profile.gender || 'unspecified');
       setPace(profile.pace || '');
+      setSkill(profile.skill || '');
       setAvailability(profile.availability || '');
       setBio(profile.bio || '');
       setInterests(profile.interests || (profile.activities || (profile.activity ? [profile.activity] : [])));
@@ -142,7 +155,8 @@ export default function ProfileScreen({ onLogout, onToast, overrideSave }) {
         activity,
         activities,
         activityLabel,
-        pace,
+        pace: pace === '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38' ? '' : pace,
+        skill,
         availability,
         bio,
         interests: activities,
@@ -166,6 +180,29 @@ export default function ProfileScreen({ onLogout, onToast, overrideSave }) {
   const blurTint = colorScheme === 'dark' ? 'dark' : 'light';
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
 
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'ยืนยันการลบบัญชี',
+      'คุณแน่ใจหรือไม่ว่าต้องการลบบัญชี? ข้อมูลทั้งหมดของคุณรวมถึงโปรไฟล์ ข้อความแชท และการจับคู่จะถูกลบอย่างถาวรและไม่สามารถกู้คืนได้',
+      [
+        { text: 'ยกเลิก', style: 'cancel' },
+        { 
+          text: 'ลบบัญชี', 
+          style: 'destructive', 
+          onPress: async () => {
+            try {
+              onToast?.('กำลังลบบัญชี...', 'info');
+              await deleteAccount();
+              // When successful, the AppContext will be unmounted because auth state changes.
+            } catch (error) {
+              onToast?.(error.message || 'ลบบัญชีไม่สำเร็จ', 'info');
+            }
+          }
+        },
+      ]
+    );
+  };
+
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.container}>
       <BlurView intensity={blurIntensity} tint={blurTint} style={{ zIndex: 1, paddingHorizontal: spacing.lg, paddingTop: spacing.md, paddingBottom: spacing.sm }}>
@@ -180,20 +217,14 @@ export default function ProfileScreen({ onLogout, onToast, overrideSave }) {
       >
 
         <Card style={styles.identityCard}>
-          {avatarUri ? (
-            <Image source={{ uri: avatarUri }} style={{ width: 86, height: 86, borderRadius: 43 }} />
-          ) : (
-            <View style={{ width: 86, height: 86, borderRadius: 43, backgroundColor: colors.line, justifyContent: 'center', alignItems: 'center' }}>
-              <SymbolView name="person.fill" size={50} tintColor={colors.inkSoft} />
-            </View>
-          )}
+          <IosLikeAvatar color={colors.primarySoft} size={86} uri={avatarUri} />
           <View style={styles.identityCopy}>
             <Text style={styles.identityName}>{name || 'ชื่อของคุณ'}</Text>
             <Text style={styles.identityEmail}>{profile.email}</Text>
             <View style={styles.verifiedPill}><Text style={styles.verifiedText}>✓ ยืนยันอีเมลแล้ว</Text></View>
           </View>
           <Pressable onPress={pickImage} style={styles.cameraButton}>
-            <Text style={styles.cameraText}>📷</Text>
+            <FeatureIcon color={colors.ink} name="camera.fill" size={18} />
           </Pressable>
         </Card>
 
@@ -224,21 +255,26 @@ export default function ProfileScreen({ onLogout, onToast, overrideSave }) {
           <View style={styles.formSectionSpacing}>
             <SectionTitle title="กิจกรรมและไลฟ์สไตล์" subtitle="เลือกได้มากกว่าหนึ่งกิจกรรม" />
           </View>
-          <View style={styles.interestRow}>
+          <View style={styles.interestGrid}>
             {ACTIVITY_CATEGORIES.filter((category) => category.id !== 'all').map((category) => (
-              <Chip
-                key={category.id}
-                active={interests.includes(category.id)}
-                color={category.color}
-                icon={category.icon}
-                label={category.label}
-                onPress={() => toggleInterest(category.id)}
-                style={styles.interestChip}
-              />
+              <View key={category.id} style={styles.interestGridItem}>
+                <Chip
+                  active={interests.includes(category.id)}
+                  color={category.color}
+                  icon={category.icon}
+                  label={category.label}
+                  onPress={() => toggleInterest(category.id)}
+                  style={styles.uniformInterestChip}
+                />
+              </View>
             ))}
           </View>
 
-          <Field colors={colors} styles={styles} label="ระดับความเร็ว / ทักษะที่สนใจ" value={pace} onChangeText={setPace} placeholder="เช่น Pace 6:00 - 6:30 นาที/กม." />
+          <View style={styles.pickerContainer}>
+            <Text style={styles.label}>เพซวิ่ง</Text>
+            <CustomDropdown colors={colors} styles={styles} value={pace || '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38'} onSelect={setPace} options={PACE_OPTIONS} placeholder="เลือกเพซวิ่ง" />
+          </View>
+          <Field colors={colors} styles={styles} label="ทักษะเพิ่มเติม" value={skill} onChangeText={setSkill} placeholder="เช่น โค้ชวิ่ง ถ่ายรูป เล่นดนตรี" />
           <View style={styles.fieldContainer}>
               <Text style={styles.label}>ช่วงเวลาว่างสะดวก</Text>
               <CustomDropdown colors={colors} styles={styles} value={availability} onSelect={setAvailability} options={AVAILABILITIES} placeholder="เลือกช่วงเวลา" />
@@ -262,13 +298,14 @@ export default function ProfileScreen({ onLogout, onToast, overrideSave }) {
         </Card>
 
         <Card style={styles.securityCard}>
-          <View style={styles.securityIcon}><Text style={styles.securityIconText}>🔒</Text></View>
+          <View style={styles.securityIcon}><FeatureIcon color={colors.green} name="lock.fill" size={18} /></View>
           <View style={styles.securityCopy}>
             <Text style={styles.securityTitle}>ความเป็นส่วนตัวของคุณสำคัญ</Text>
             <Text style={styles.securityText}>เราจะแสดงข้อมูลโปรไฟล์กับผู้ใช้ที่จับคู่กันสำเร็จเท่านั้น</Text>
           </View>
         </Card>
 
+        <OutlineButton danger icon="trash.fill" label="ลบบัญชีอย่างถาวร" onPress={handleDeleteAccount} style={styles.logoutButton} />
         <OutlineButton danger icon="↪" label="ออกจากระบบ" onPress={onLogout} style={styles.logoutButton} />
       </ScrollView>
     </KeyboardAvoidingView>
@@ -351,42 +388,41 @@ const getStyles = (colors) => StyleSheet.create({
   eyebrow: { color: colors.primary, fontSize: type.micro, fontWeight: '800', letterSpacing: 1, marginBottom: spacing.xs, textTransform: 'uppercase' },
   title: { color: colors.ink, fontSize: type.h1, fontWeight: '900', letterSpacing: -0.5, marginBottom: spacing.xs },
   subtitle: { color: colors.inkMuted, fontSize: type.body, lineHeight: 22, marginBottom: spacing.xl },
-  identityCard: { alignItems: 'center', flexDirection: 'row', marginBottom: spacing.xl, padding: spacing.lg },
+  identityCard: { alignItems: 'center', borderCurve: 'continuous', flexDirection: 'row', marginBottom: spacing.xl, padding: spacing.lg },
   identityCopy: { flex: 1, marginLeft: spacing.lg },
   identityName: { color: colors.ink, fontSize: type.section, fontWeight: '800', marginBottom: 2 },
   identityEmail: { color: colors.inkMuted, fontSize: type.caption, marginBottom: spacing.sm },
-  verifiedPill: { alignSelf: 'flex-start', backgroundColor: colors.greenSoft, borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 4 },
+  verifiedPill: { alignSelf: 'flex-start', backgroundColor: colors.greenSoft, borderCurve: 'continuous', borderRadius: radius.pill, paddingHorizontal: spacing.sm, paddingVertical: 4 },
   verifiedText: { color: colors.green, fontSize: type.micro, fontWeight: '700' },
-  cameraButton: { alignItems: 'center', backgroundColor: colors.canvas, borderColor: colors.line, borderRadius: 20, borderWidth: 1, height: 40, justifyContent: 'center', position: 'absolute', right: spacing.lg, top: spacing.lg, width: 40 },
+  cameraButton: { alignItems: 'center', backgroundColor: colors.canvas, borderColor: colors.line, borderCurve: 'continuous', borderRadius: 20, borderWidth: 1, height: 40, justifyContent: 'center', position: 'absolute', right: spacing.lg, top: spacing.lg, width: 40 },
   cameraText: { color: colors.ink, fontSize: 18 },
-  formCard: { marginBottom: spacing.xl, padding: spacing.lg },
+  formCard: { borderCurve: 'continuous', marginBottom: spacing.xl, padding: spacing.lg },
   field: { marginBottom: spacing.lg },
   label: { color: colors.ink, fontSize: type.caption, fontWeight: '700', marginBottom: spacing.sm },
-  input: { backgroundColor: colors.canvas, borderColor: colors.line, borderRadius: radius.md, borderWidth: 1, color: colors.ink, fontSize: type.body, minHeight: 48, paddingHorizontal: spacing.md },
+  input: { backgroundColor: colors.canvas, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.md, borderWidth: 1, color: colors.ink, fontSize: type.body, minHeight: 48, paddingHorizontal: spacing.md },
   multilineInput: { minHeight: 100, paddingVertical: spacing.md },
   bioInput: { minHeight: 120 },
   pickerContainer: { marginBottom: spacing.lg },
-  dropdownButton: { backgroundColor: colors.canvas, borderColor: colors.line, borderRadius: radius.md, borderWidth: 1, minHeight: 48, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  dropdownButton: { backgroundColor: colors.canvas, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.md, borderWidth: 1, minHeight: 48, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   dropdownButtonText: { color: colors.ink, fontSize: type.body },
   dropdownButtonPlaceholder: { color: colors.inkSoft, fontSize: type.body },
   dropdownIcon: { color: colors.inkSoft, fontSize: 12 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: spacing.xl },
-  modalContent: { backgroundColor: colors.card, borderRadius: radius.lg, maxHeight: '80%', padding: spacing.lg, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 5 },
+  modalContent: { backgroundColor: colors.card, borderCurve: 'continuous', borderRadius: radius.lg, maxHeight: '80%', padding: spacing.lg, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 5 },
   modalTitle: { color: colors.ink, fontSize: type.h3, fontWeight: '800', marginBottom: spacing.md, textAlign: 'center' },
   modalScroll: { flexGrow: 0 },
   modalItem: { paddingVertical: spacing.md, borderBottomWidth: 1, borderBottomColor: colors.line },
   modalItemActive: { backgroundColor: colors.greenSoft, borderRadius: radius.sm, borderBottomWidth: 0, paddingHorizontal: spacing.sm },
   modalItemText: { color: colors.ink, fontSize: type.body, textAlign: 'center' },
   modalItemTextActive: { color: colors.primary, fontWeight: '800' },
-  interestRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.xl },
-  interestChip: { marginBottom: spacing.sm, marginRight: spacing.sm },
+  interestGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4, marginBottom: spacing.md },
+  interestGridItem: { width: '50%', paddingHorizontal: 4, marginBottom: 8 },
+  uniformInterestChip: { width: '100%', height: 46, justifyContent: 'center', alignItems: 'center' },
   formSectionSpacing: { marginTop: spacing.md },
-  interestRow: { flexDirection: 'row', flexWrap: 'wrap', marginBottom: spacing.md },
-  interestChip: { marginBottom: spacing.sm, marginRight: spacing.sm, minHeight: 34, paddingHorizontal: 10 },
   field: { marginBottom: spacing.md },
   label: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '800', marginBottom: 6 },
-  input: { backgroundColor: colors.canvas, borderColor: colors.line, borderRadius: radius.sm, borderWidth: 1, color: colors.ink, fontSize: type.body, minHeight: 46, paddingHorizontal: spacing.md, paddingVertical: 10 },
-  multilineInput: { minHeight: 90 },
+  input: { backgroundColor: colors.canvas, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.md, borderWidth: 1, color: colors.ink, fontSize: type.body, minHeight: 48, paddingHorizontal: spacing.md, paddingVertical: 10 },
+  multilineInput: { minHeight: 90, borderCurve: 'continuous', borderRadius: radius.md },
   bioInput: { lineHeight: 20 },
   saveButton: { marginTop: spacing.sm },
   toggleRow: { alignItems: 'center', borderBottomColor: colors.line, borderBottomWidth: 1, flexDirection: 'row', justifyContent: 'space-between', minHeight: 52 },

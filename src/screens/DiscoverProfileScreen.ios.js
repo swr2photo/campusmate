@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRemoteImage } from '../utils/useRemoteImage';
-import { Animated, Dimensions, PanResponder, Text as RNText, View, useColorScheme } from 'react-native';
+import { Animated, Dimensions, PanResponder, Text as RNText, View, useColorScheme, Image as RNImage } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaskedView from '@react-native-masked-view/masked-view';
@@ -19,6 +19,7 @@ import {
   Text,
   VStack,
   ZStack,
+  RNHostView,
 } from '@expo/ui/swift-ui';
 import {
   accessibilityLabel,
@@ -42,6 +43,8 @@ import {
   shadow,
   shapes,
   tint,
+  blur,
+  opacity,
 } from '@expo/ui/swift-ui/modifiers';
 import { useApp } from '../context/AppContext';
 
@@ -91,11 +94,16 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const [processing, setProcessing] = useState(false);
   const [sessionExcludedIds, setSessionExcludedIds] = useState([]);
   const [directProfile, setDirectProfile] = useState(null);
+  const [swipeBgColor, setSwipeBgColor] = useState('transparent');
+  const [swipeContentOpacity, setSwipeContentOpacity] = useState(1);
   const translateX = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
   const cardScale = useRef(new Animated.Value(1)).current;
   const cardOpacity = useRef(new Animated.Value(1)).current;
   const decisionStarted = useRef(false);
+  const decisionInFlight = useRef(false);
+  const decisionCandidateId = useRef(null);
+  const candidateCache = useRef(new Map());
 
   useEffect(() => {
     if (!profileId) {
@@ -117,6 +125,24 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
 
   const isViewOnly = Boolean(isViewOnlyParam);
 
+  const candidatePool = useMemo(() => {
+    const seenIds = new Set();
+    const excludedIds = new Set(sessionExcludedIds);
+    return [...(availableProfiles || []), ...(pendingIncomingLikes || [])].filter((item) => {
+      const id = item?.id;
+      if (!id || excludedIds.has(id) || seenIds.has(id)) return false;
+      seenIds.add(id);
+      return true;
+    });
+  }, [availableProfiles, pendingIncomingLikes, sessionExcludedIds]);
+
+  // Keep the last known pool so a short Firestore refresh cannot leave the
+  // card blank while the decision request is still being completed.
+  useEffect(() => {
+    if (isViewOnly) return;
+    candidatePool.forEach((item) => candidateCache.current.set(item.id, item));
+  }, [candidatePool, isViewOnly]);
+
   const candidate = useMemo(() => {
     if (isViewOnly) {
       if (directProfile && directProfile.id === profileId) return directProfile;
@@ -124,24 +150,42 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
       if (matchedConvo?.participantProfiles?.[profileId]) {
         return { id: profileId, ...matchedConvo.participantProfiles[profileId] };
       }
-      const fromAvailable = [...availableProfiles, ...pendingIncomingLikes].find((item) => item.id === profileId);
+      const fromAvailable = candidatePool.find((item) => item.id === profileId);
       if (fromAvailable) return fromAvailable;
       if (directProfile) return directProfile;
       return null;
     }
 
-    const unexcluded = [...availableProfiles, ...pendingIncomingLikes]
-      .filter((item, index, self) => (
-        !sessionExcludedIds.includes(item.id)
-        && self.findIndex((c) => c.id === item.id) === index
-      ));
+    // Keep the profile opened from Home as the first card when it is present.
+    const isDecisionExcluded = (id) => (
+      sessionExcludedIds.includes(id)
+      || (decisionInFlight.current && decisionCandidateId.current === id)
+    );
+    const requestedProfile = profileId && candidatePool.find((item) => (
+      item.id === profileId && !isDecisionExcluded(item.id)
+    ));
+    if (requestedProfile) return requestedProfile;
 
-    if (profileId && unexcluded.some((c) => c.id === profileId)) {
-      return unexcluded.find((c) => c.id === profileId);
+    const nextProfile = candidatePool.find((item) => !isDecisionExcluded(item.id));
+    if (nextProfile) return nextProfile;
+
+    // The Firestore profile subscription can briefly be ahead of the profiles
+    // list. Use the direct snapshot for the initial card instead of showing an
+    // empty state during that short window. It is excluded after a decision.
+    if (!candidatePool.length && directProfile?.id === profileId && !isDecisionExcluded(profileId)) {
+      return directProfile;
     }
 
-    return unexcluded[0] || null;
-  }, [isViewOnly, directProfile, conversations, availableProfiles, pendingIncomingLikes, profileId, sessionExcludedIds]);
+    if (processing && !isViewOnly) {
+      const cachedNext = Array.from(candidateCache.current.values())
+        .find((item) => !isDecisionExcluded(item.id));
+      if (cachedNext) return cachedNext;
+    }
+
+    return null;
+  }, [candidatePool, conversations, directProfile, isViewOnly, processing, profileId, sessionExcludedIds]);
+
+  const candidateId = candidate?.id || null;
 
   const isCandidateMatched = useMemo(() => {
     if (!candidate) return false;
@@ -166,9 +210,11 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   }, [onClose]);
 
   const handleDecision = useCallback(async (decision) => {
-    if (!candidate || processing) return;
+    if (!candidate || processing || decisionInFlight.current) return;
 
     const candidateId = candidate.id;
+    decisionInFlight.current = true;
+    decisionCandidateId.current = candidateId;
     setProcessing(true);
     setSessionExcludedIds((current) => [...current, candidateId]);
     decisionStarted.current = false;
@@ -176,6 +222,10 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     translateY.setValue(0);
     cardScale.setValue(1);
     cardOpacity.setValue(1);
+    // Animated listeners are asynchronous on iOS. Reset these values
+    // explicitly so the next profile cannot inherit an invisible card.
+    setSwipeBgColor('transparent');
+    setSwipeContentOpacity(1);
     try {
       if (decision === 'like') {
         if (isCandidateMatched) {
@@ -200,11 +250,13 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
       onToast?.(`Error: ${error.message}`, 'info');
     } finally {
       setProcessing(false);
+      decisionInFlight.current = false;
+      decisionCandidateId.current = null;
     }
   }, [candidate, cardOpacity, cardScale, dismissProfile, isCandidateMatched, matchProfile, onToast, processing, sendActivityInvite, translateX, translateY]);
 
   const finishSwipe = useCallback((decision) => {
-    if (processing || decisionStarted.current) return;
+    if (processing || decisionStarted.current || decisionInFlight.current) return;
     decisionStarted.current = true;
     const buttonCenterOffset = (screenWidth / 2) - actionSideInset - (actionButtonWidth / 2);
     const targetX = decision === 'like' ? buttonCenterOffset : -buttonCenterOffset;
@@ -239,6 +291,8 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
 
   const resetSwipe = useCallback(() => {
     decisionStarted.current = false;
+    setSwipeBgColor('transparent');
+    setSwipeContentOpacity(1);
     Animated.parallel([
       Animated.spring(translateX, {
         friction: 7,
@@ -306,7 +360,8 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     outputRange: [1.3, 1, 0.9],
     extrapolate: 'clamp',
   });
-    const skipActionBgOpacity = translateX.interpolate({
+
+  const skipActionBgOpacity = translateX.interpolate({
     inputRange: [-120, -20, 0],
     outputRange: [1, 0, 0],
     extrapolate: 'clamp',
@@ -322,21 +377,57 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     outputRange: [0.94, 1, 1.12],
     extrapolate: 'clamp',
   });
-  const skipBadgeOpacity = translateX.interpolate({
-    inputRange: [-110, -24, 0],
-    outputRange: [1, 0.25, 0],
-    extrapolate: 'clamp',
-  });
-  const likeBadgeOpacity = translateX.interpolate({
-    inputRange: [0, 24, 110],
-    outputRange: [0, 0.25, 1],
-    extrapolate: 'clamp',
-  });
 
   const remoteAvatar = useRemoteImage(candidate?.avatarUri);
   const imageUri = remoteAvatar || assets?.[0]?.localUri || assets?.[0]?.uri;
+  const nextCandidate = useMemo(
+    () => candidatePool.find((item) => item.id !== candidateId) || null,
+    [candidateId, candidatePool]
+  );
+  // Start downloading the next profile's image while the current card is on
+  // screen. useRemoteImage writes to the same local cache used by the card.
+  useRemoteImage(nextCandidate?.avatarUri);
+
+  useEffect(() => {
+    if (isViewOnly) return;
+    const listenerId = translateX.addListener(({ value }) => {
+      let newBgColor = 'transparent';
+      if (value > 20) newBgColor = palette.purple;
+      else if (value < -20) newBgColor = palette.coral;
+      setSwipeBgColor((prev) => prev !== newBgColor ? newBgColor : prev);
+
+      let newOpacity = 1;
+      const absValue = Math.abs(value);
+      if (absValue > 20) {
+        newOpacity = Math.max(0, 1 - ((absValue - 20) / 80));
+      }
+      setSwipeContentOpacity((prev) => Math.abs(prev - newOpacity) > 0.05 ? newOpacity : prev);
+    });
+    return () => translateX.removeListener(listenerId);
+  }, [translateX, isViewOnly, palette]);
+
+  // A new candidate must always start from a fully visible, neutral card.
+  // This also handles a short Firestore refresh where the old card is removed
+  // before the next one arrives.
+  const previousCandidateId = useRef(null);
+  useEffect(() => {
+    if (candidateId === previousCandidateId.current) return;
+    previousCandidateId.current = candidateId;
+    decisionStarted.current = false;
+    translateX.stopAnimation();
+    translateY.stopAnimation();
+    cardScale.stopAnimation();
+    cardOpacity.stopAnimation();
+    translateX.setValue(0);
+    translateY.setValue(0);
+    cardScale.setValue(1);
+    cardOpacity.setValue(1);
+    setSwipeBgColor('transparent');
+    setSwipeContentOpacity(1);
+  }, [candidateId, cardOpacity, cardScale, translateX, translateY]);
 
   if (!candidate) {
+    const waitingForNextProfile = processing;
     return (
       <View style={{ backgroundColor: palette.background, flex: 1 }}>
         <Host colorScheme={colorScheme} seedColor={palette.purple} style={{ flex: 1 }}>
@@ -345,23 +436,27 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
             spacing={16}
             modifiers={[padding({ horizontal: 24 }), frame({ maxWidth: Infinity, maxHeight: Infinity })]}
           >
-            <Image color={palette.secondary} size={54} systemName="person.crop.circle.badge.questionmark" />
-            <Text modifiers={[font({ textStyle: 'headline', weight: 'bold' }), foregroundStyle(palette.text)]}>
-              ไม่พบโปรไฟล์นี้แล้ว
-            </Text>
-            <Button
-              label="กลับไปค้นหาเพื่อน"
-              onPress={close}
-              systemImage="chevron.left"
-              modifiers={[buttonStyle('glassProminent'), buttonBorderShape('capsule'), controlSize('large'), tint(palette.purple)]}
+            <Image
+              color={palette.secondary}
+              size={54}
+              systemName={waitingForNextProfile ? 'arrow.triangle.2.circlepath' : 'person.crop.circle.badge.questionmark'}
             />
+            <Text modifiers={[font({ textStyle: 'headline', weight: 'bold' }), foregroundStyle(palette.text)]}>
+              {waitingForNextProfile ? 'กำลังโหลดเพื่อนคนถัดไป...' : 'ไม่พบโปรไฟล์นี้แล้ว'}
+            </Text>
+            {!waitingForNextProfile ? (
+              <Button
+                label="กลับไปค้นหาเพื่อน"
+                onPress={close}
+                systemImage="chevron.left"
+                modifiers={[buttonStyle('glassProminent'), buttonBorderShape('capsule'), controlSize('large'), tint(palette.purple)]}
+              />
+            ) : null}
           </VStack>
         </Host>
       </View>
     );
   }
-
-
 
   const safeTop = Math.max(insets.top, 44);
   const headerHeight = 56 + safeTop;
@@ -370,6 +465,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   return (
     <View style={{ backgroundColor: palette.background, flex: 1 }}>
       <Animated.View
+        key={candidateId}
         {...(isViewOnly ? {} : panResponder.panHandlers)}
         style={{
           flex: 1,
@@ -377,18 +473,6 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
           transform: isViewOnly ? [] : [{ translateX }, { translateY }, { rotate }, { scale: cardScale }],
         }}
       >
-        {!isViewOnly ? (
-          <>
-            <Animated.View pointerEvents="none" style={[decisionStyles.badge, decisionStyles.skipBadge, { opacity: skipBadgeOpacity }]}>
-              <RNText style={[decisionStyles.badgeText, { color: palette.purple }]}>ไม่เลือก</RNText>
-            </Animated.View>
-            <Animated.View pointerEvents="none" style={[decisionStyles.badge, decisionStyles.likeBadge, { backgroundColor: palette.purple, opacity: likeBadgeOpacity }]}>
-              <RNText style={[decisionStyles.badgeText, { color: palette.white }]}>
-                {isCandidateMatched ? 'ไปห้องแชต' : 'ถูกใจ'}
-              </RNText>
-            </Animated.View>
-          </>
-        ) : null}
         <Host colorScheme={colorScheme} seedColor={palette.purple} style={{ flex: 1 }}>
           <ScrollView
             showsIndicators={false}
@@ -398,16 +482,28 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
               alignment="leading"
               spacing={0}
               modifiers={[
-                padding({ top: headerHeight + 8, bottom: isViewOnly ? 36 : 128 }),
+                padding({ bottom: isViewOnly ? 36 : 128 }),
                 frame({ maxWidth: Infinity, alignment: 'topLeading' }),
               ]}
             >
-              <ProfileHero
-                candidate={candidate}
-                imageUri={imageUri}
-                palette={palette}
-              />
-              <ProfileDetails candidate={candidate} meetupStats={meetupStats} palette={palette} />
+              <ZStack modifiers={[
+                frame({ maxWidth: Infinity, alignment: 'topLeading' }),
+                background(swipeBgColor),
+                clipShape('roundedRectangle', 24, { style: 'continuous' }),
+              ]}>
+                <VStack alignment="leading" spacing={0} modifiers={[
+                  frame({ maxWidth: Infinity }),
+                  opacity(swipeContentOpacity)
+                ]}>
+                  <ProfileHero
+                    candidate={candidate}
+                    imageUri={imageUri}
+                    palette={palette}
+                    translateX={translateX}
+                  />
+                  <ProfileDetails candidate={candidate} meetupStats={meetupStats} palette={palette} />
+                </VStack>
+              </ZStack>
             </VStack>
           </ScrollView>
         </Host>
@@ -494,20 +590,32 @@ function Header({ candidate, isViewOnly, onClose, palette }) {
   );
 }
 
-function ProfileHero({ candidate, imageUri, palette }) {
+function ProfileHero({ candidate, imageUri, palette, translateX }) {
+  const [blurRadius, setBlurRadius] = useState(0);
+
+  useEffect(() => {
+    if (!translateX) return;
+    const listenerId = translateX.addListener(({ value }) => {
+      const newBlur = Math.min(Math.abs(value) / 8, 20); // 0 to 20
+      // Only update if difference is noticeable to avoid too many re-renders
+      setBlurRadius((prev) => (Math.abs(prev - newBlur) > 1.5 ? newBlur : prev));
+    });
+    return () => translateX.removeListener(listenerId);
+  }, [translateX]);
+
   return (
     <ZStack
       alignment="topLeading"
       modifiers={[
         frame({ height: 430, maxWidth: Infinity }),
         background(candidate.avatarColor || palette.surfaceRaised),
-        clipShape('roundedRectangle', 0),
+        clipShape('roundedRectangle', 24, { style: 'continuous' }),
       ]}
     >
       {imageUri ? (
         <Image
           uiImage={imageUri}
-          modifiers={[resizable(), aspectRatio({ contentMode: 'fill' }), frame({ height: 430, maxWidth: Infinity }), clipped()]}
+          modifiers={[resizable(), aspectRatio({ contentMode: 'fill' }), frame({ height: 430, maxWidth: Infinity }), clipped(), blurRadius > 0 ? blur(blurRadius) : null].filter(Boolean)}
         />
       ) : (
         <Image
@@ -517,15 +625,31 @@ function ProfileHero({ candidate, imageUri, palette }) {
           modifiers={[frame({ height: 430, maxWidth: Infinity }), background(candidate.avatarColor || palette.surfaceRaised)]}
         />
       )}
+      <RNHostView matchContents={false}>
+        <View style={{ width: '100%', height: 430, justifyContent: 'flex-end' }} pointerEvents="none">
+          <MaskedView
+            style={{ position: 'absolute', bottom: 0, width: '100%', height: 180 }}
+            maskElement={
+              <LinearGradient colors={['transparent', 'black', 'black']} locations={[0, 0.4, 1]} style={{ flex: 1 }} />
+            }
+          >
+            <RNImage
+              source={{ uri: imageUri }}
+              style={{ position: 'absolute', bottom: 0, width: '100%', height: 430 }}
+              blurRadius={30}
+            />
+            <View style={{ position: 'absolute', bottom: 0, width: '100%', height: 180, backgroundColor: 'rgba(0,0,0,0.3)' }} />
+          </MaskedView>
+        </View>
+      </RNHostView>
       <VStack spacing={0} modifiers={[frame({ maxWidth: Infinity, maxHeight: Infinity })]}>
         <Spacer />
         <VStack
           alignment="leading"
           spacing={5}
           modifiers={[
-            padding({ top: 42, bottom: 22, horizontal: 28 }),
+            padding({ top: 42, bottom: 50, horizontal: 28 }),
             frame({ maxWidth: Infinity, alignment: 'bottomLeading' }),
-            background('rgba(0,0,0,0.38)'),
           ]}
         >
           <Text modifiers={[font({ textStyle: 'largeTitle', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.white), lineLimit(1)]}>

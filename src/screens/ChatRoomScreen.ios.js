@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SymbolView } from 'expo-symbols';
 import { ActionSheetIOS, Alert, Keyboard, Modal, Pressable, Switch, Text as RNText, useColorScheme, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
@@ -34,6 +35,7 @@ import {
   labelStyle,
   lineLimit,
   multilineTextAlignment,
+  onTapGesture,
   onLongPressGesture,
   onSubmit,
   padding,
@@ -53,7 +55,12 @@ import { requireFirebase } from '../services/dbService';
 import { useApp } from '../context/AppContext';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import { formatReadableDate } from '../utils/formatters';
-import InstagramMessageOverlay from '../components/InstagramMessageOverlay';
+import InstagramMessageOverlay, { DEFAULT_MESSAGE_REACTION } from '../components/InstagramMessageOverlay';
+
+const DOUBLE_TAP_WINDOW_MS = 320;
+// Keep the context menu responsive while retaining a deliberate press-and-hold
+// gesture (Android uses the same ~220ms threshold).
+const LONG_PRESS_DURATION_SECONDS = 0.22;
 
 const darkPalette = {
   background: '#0D0F12',
@@ -274,6 +281,10 @@ export default function ChatRoomScreen() {
       console.error('react message error:', e);
     }
   }, [chat?.id, reactToMessageInChat]);
+
+  const handleQuickReact = useCallback((item) => {
+    handleReact(item, DEFAULT_MESSAGE_REACTION);
+  }, [handleReact]);
 
   const handleReply = useCallback((item) => {
     setActionMessage(null);
@@ -540,6 +551,7 @@ export default function ChatRoomScreen() {
                     avatarUri={resolvedPartnerAvatar}
                     isLatest={index === chat.messages.length - 1}
                     item={item}
+                    onQuickReact={handleQuickReact}
                     onSelectMessage={handleSelectMessage}
                     readAt={otherReadAt}
                     tick={index === chat.messages.length - 1 ? tick : 0}
@@ -612,6 +624,7 @@ export default function ChatRoomScreen() {
       <InstagramMessageOverlay
         conversations={conversations}
         currentConversationId={chat.id}
+        currentUserId={currentUserId}
         isOpen={Boolean(actionMessage)}
         item={actionMessage}
         onClose={() => setActionMessage(null)}
@@ -685,7 +698,7 @@ function ChatSettingsModal({
                 alignItems: 'center',
               }}
             >
-              <RNText style={{ fontSize: 14, fontWeight: '700', color: palette.secondary }}>✕</RNText>
+              <SymbolView name="xmark" size={13} weight="bold" tintColor={palette.secondary} />
             </Pressable>
           </View>
 
@@ -823,7 +836,7 @@ function ChatSettingsModal({
   );
 }
 
-const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmoji, avatarUri, isLatest, item, onSelectMessage, readAt }) {
+const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmoji, avatarUri, isLatest, item, onQuickReact, onSelectMessage, readAt }) {
   const palette = usePalette();
   const mine = item.sender === 'me';
   const statusText = formatStatusTime(item, mine, isLatest, readAt);
@@ -831,6 +844,43 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
   const reactionValues = Object.values(reactions);
   const uniqueEmojis = Array.from(new Set(reactionValues));
   const reactionString = uniqueEmojis.join('') + (reactionValues.length > 1 ? ` ${reactionValues.length}` : '');
+  const lastTapAtRef = useRef(0);
+  const doubleTapTimerRef = useRef(null);
+  const longPressAtRef = useRef(0);
+
+  useEffect(() => () => {
+    if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
+  }, []);
+
+  const handleTap = useCallback(() => {
+    const now = Date.now();
+    if (now - longPressAtRef.current < 500) {
+      longPressAtRef.current = 0;
+      return;
+    }
+
+    const elapsed = now - lastTapAtRef.current;
+    if (elapsed > 0 && elapsed <= DOUBLE_TAP_WINDOW_MS) {
+      lastTapAtRef.current = 0;
+      if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
+      onQuickReact?.(item);
+      return;
+    }
+
+    lastTapAtRef.current = now;
+    if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
+    doubleTapTimerRef.current = setTimeout(() => {
+      lastTapAtRef.current = 0;
+      doubleTapTimerRef.current = null;
+    }, DOUBLE_TAP_WINDOW_MS);
+  }, [item, onQuickReact]);
+
+  const handleLongPress = useCallback(() => {
+    longPressAtRef.current = Date.now();
+    lastTapAtRef.current = 0;
+    if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
+    onSelectMessage?.(item);
+  }, [item, onSelectMessage]);
 
   return (
     <HStack alignment="bottom" spacing={7} modifiers={[frame({ maxWidth: Infinity, alignment: mine ? 'trailing' : 'leading' })]}>
@@ -847,7 +897,8 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
         ) : null}
         <Text
           modifiers={[
-            onLongPressGesture(() => onSelectMessage?.(item), 0.35),
+            onTapGesture(handleTap),
+            onLongPressGesture(handleLongPress, LONG_PRESS_DURATION_SECONDS),
             padding({ horizontal: 12, vertical: 7 }),
             background(mine ? '#EA4335' : palette.incoming, messageShape),
             font({ textStyle: 'subheadline', weight: 'regular' }),
@@ -879,6 +930,7 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
   && previous.item.sender === next.item.sender
   && previous.item.text === next.item.text
   && previous.item.forwarded === next.item.forwarded
+  && previous.onQuickReact === next.onQuickReact
   && previous.tick === next.tick
   && JSON.stringify(previous.item.reactions || {}) === JSON.stringify(next.item.reactions || {})
   && JSON.stringify(previous.item.replyTo || null) === JSON.stringify(next.item.replyTo || null)

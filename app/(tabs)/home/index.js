@@ -1,6 +1,6 @@
 import React from 'react';
 import { router } from 'expo-router';
-import DashboardScreen from '../../src/screens/DashboardScreen';
+import DashboardScreen from '../../../src/screens/DashboardScreen';
 
 const ROUTES = {
   home: '/home',

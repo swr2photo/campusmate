@@ -10,12 +10,15 @@ import {
   Text,
   View,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BlurView } from 'expo-blur';
 import { router } from 'expo-router';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
 import { useApp } from '../context/AppContext';
 import FeatureIcon from '../components/FeatureIcon';
 import { Chip } from '../components/ui';
+import { useRemoteImage } from '../utils/useRemoteImage';
 import { formatDistance, formatReadableDate, genderLabel, getActivityLabel } from '../utils/formatters';
 import { radius, spacing, type, useTheme } from '../theme';
 
@@ -25,7 +28,8 @@ const actionButtonWidth = 136;
 const actionSideInset = 20;
 
 export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onClose, onToast }) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
+  const insets = useSafeAreaInsets();
   const styles = getStyles(colors);
   const { availableProfiles, conversations, dismissProfile, getMeetupStats, matchProfile, pendingIncomingLikes, sendActivityInvite } = useApp();
   const [processing, setProcessing] = useState(false);
@@ -105,6 +109,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     if (!candidate) return '';
     return getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities);
   }, [candidate]);
+  const remoteHeroImage = useRemoteImage(candidate?.avatarUri);
 
   const close = useCallback(() => {
     if (onClose) {
@@ -274,7 +279,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
 
   if (!candidate) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView edges={['top', 'right', 'bottom', 'left']} style={styles.container}>
         <View style={styles.emptyState}>
           <FeatureIcon color={colors.inkMuted} name="person.crop.circle.badge.questionmark" size={54} />
           <Text style={styles.emptyTitle}>ไม่พบโปรไฟล์นี้แล้ว</Text>
@@ -288,8 +293,9 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.fixedHeader}>
+    <SafeAreaView edges={['right', 'bottom', 'left']} style={styles.container}>
+      <View style={[styles.fixedHeader, { height: 68 + insets.top, paddingTop: insets.top }]}>
+        <BlurView intensity={isDark ? 34 : 48} tint={isDark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
         <Pressable accessibilityLabel="ย้อนกลับ" onPress={close} style={styles.headerBackButton}>
           <FeatureIcon color={colors.ink} name="chevron.left" size={22} />
         </Pressable>
@@ -324,11 +330,11 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
           </>
         ) : null}
         <ScrollView
-          contentContainerStyle={[styles.scrollContent, isViewOnly && { paddingBottom: spacing.xl }]}
+          contentContainerStyle={[styles.scrollContent, { paddingTop: 68 + insets.top }, isViewOnly && { paddingBottom: spacing.xl }]}
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.hero}>
-            <Image source={profilePhoto} style={styles.heroImage} />
+            <Image source={remoteHeroImage ? { uri: remoteHeroImage } : profilePhoto} style={styles.heroImage} />
             <View style={styles.heroOverlay} />
             <View style={styles.heroCopy}>
               <Text style={styles.heroName}>{candidate.name}{candidate.age ? `, ${candidate.age}` : ''}</Text>
@@ -442,7 +448,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
                 style={({ pressed }) => [styles.actionButton, styles.skipButton, pressed && styles.pressed, processing && styles.disabled]}
               >
                 <View style={[styles.actionIcon, styles.skipIcon]}>
-                  <Text style={styles.skipIconText}>×</Text>
+                  <FeatureIcon color={colors.primary} name="xmark" size={25} />
                 </View>
                 <Text style={styles.skipButtonText}>ไม่เลือก</Text>
               </Pressable>

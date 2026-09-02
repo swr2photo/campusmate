@@ -2,6 +2,8 @@ import React, { createContext, useContext, useEffect, useMemo, useState } from '
 import { signOutUser, subscribeToAuthChanges } from '../services/authService';
 import { saveAccount } from '../services/accountStorage';
 import AppSplashScreen from '../components/AppSplashScreen';
+import { clearOfflineDataForUser } from '../services/offlineStorage';
+import { unregisterPushNotificationsAsync } from '../services/notificationService';
 
 const AuthContext = createContext(null);
 
@@ -47,7 +49,25 @@ export function AuthProvider({ children }) {
       }
     },
     logout: async () => {
+      const activeUserId = user?.id;
+      if (activeUserId) {
+        try {
+          await Promise.race([
+            unregisterPushNotificationsAsync(activeUserId),
+            new Promise((resolve) => setTimeout(resolve, 1500)),
+          ]);
+        } catch (error) {
+          console.warn('[Notifications] Unable to disable this device during logout:', error);
+        }
+      }
       await signOutUser();
+      if (activeUserId) {
+        try {
+          await clearOfflineDataForUser(activeUserId);
+        } catch (error) {
+          console.warn('[Offline] Unable to clear user cache during logout:', error);
+        }
+      }
       setUser(null);
     },
   }), [authError, isReady, user]);

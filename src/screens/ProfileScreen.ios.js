@@ -10,6 +10,7 @@ import {
   Button,
   DatePicker,
   Form,
+  Grid,
   Host,
   HStack,
   Image,
@@ -74,6 +75,15 @@ const ACTIVITIES = [
   { label: 'คุยเล่น / คาเฟ่', value: 'chill', icon: 'cup.and.saucer.fill' },
   { label: 'กิจกรรมอื่น ๆ', value: 'other', icon: 'sparkles' },
 ];
+const PACE_OPTIONS = [
+  'ไม่ระบุ',
+  'เดิน / เริ่มต้น',
+  'Pace 8:00+ นาที/กม.',
+  'Pace 7:00 - 8:00 นาที/กม.',
+  'Pace 6:00 - 7:00 นาที/กม.',
+  'Pace 5:00 - 6:00 นาที/กม.',
+  'Pace ต่ำกว่า 5:00 นาที/กม.',
+];
 const AVAILABILITIES = ['ไม่ระบุ', 'ช่วงเช้า (06:00 - 12:00)', 'ช่วงบ่าย (12:00 - 18:00)', 'ช่วงเย็น (18:00 - 21:00)', 'ช่วงดึก (21:00 เป็นต้นไป)', 'สะดวกตลอดเวลา'];
 
 const darkPalette = { background: '#14171B', surface: '#20242A', surfaceRaised: '#292E35', text: '#F7F8FA', secondary: '#B6BDC8', tertiary: '#7F8896', coral: '#FF7A6B', coralSoft: 'rgba(255,122,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#62A8FF', blueSoft: 'rgba(98,168,255,0.16)', mint: '#45D1A1', mintSoft: 'rgba(69,209,161,0.16)' , purple: '#9A8CFF', card: '#20242A', white: '#FFFFFF', chip: '#292E35', circle: '#292E35'};
@@ -82,7 +92,7 @@ function usePalette() { const scheme = useColorScheme(); return scheme === 'dark
 
 const cardShape = shapes.roundedRectangle({ cornerRadius: 24, roundedCornerStyle: 'continuous' });
 
-export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave }) {
+export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave, showHeader = true }) {
   const palette = usePalette();
   const colorScheme = useColorScheme();
   const { profile, saveProfile } = useApp();
@@ -100,6 +110,8 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
     }
     return ['other'];
   });
+  const [pace, setPace] = useState(profile.pace || PACE_OPTIONS[0]);
+  const [skill, setSkill] = useState(profile.skill || '');
   const [availability, setAvailability] = useState(profile.availability || '');
   const [showAvailabilitySheet, setShowAvailabilitySheet] = useState(false);
   const [availDate, setAvailDate] = useState(new Date());
@@ -175,6 +187,8 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
         }
         return ['other'];
       });
+      setPace(profile.pace || PACE_OPTIONS[0]);
+      setSkill(profile.skill || '');
       setAvailability(profile.availability || '');
       setBio(profile.bio || '');
       setAvatarUri(profile.avatarUri || null);
@@ -217,6 +231,8 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
         activity: activities[0] || 'other',
         activities,
         activityLabel,
+        pace: pace === PACE_OPTIONS[0] ? '' : pace,
+        skill,
         availability,
         bio,
         avatarUri,
@@ -243,137 +259,175 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
 
   return (
     <Pressable onPress={Keyboard.dismiss} style={{ flex: 1, backgroundColor: palette.background }}>
-      <MaskedView
-        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 85, zIndex: 10 }}
-        maskElement={
-          <LinearGradient colors={['#FFFFFF', '#FFFFFF00']} style={{ flex: 1 }} />
-        }
-      >
-        <BlurView intensity={blurIntensity} tint={colorScheme} style={{ flex: 1 }} />
-      </MaskedView>
-      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
-        <Host colorScheme={colorScheme} seedColor={palette.coral} style={{ width: '100%', height: 85 }}>
-          <VStack modifiers={[padding({ top: 35, bottom: 15, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
-            <HStack modifiers={[frame({ maxWidth: Infinity })]}>
-              <Text modifiers={[font({ textStyle: 'title2', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>
-                โปรไฟล์และการตั้งค่า
-              </Text>
-              <Spacer />
-              {onClose && (
-                <Button
-                  label="ปิด"
-                  onPress={onClose}
-                  systemImage="xmark"
-                  modifiers={[
-                    buttonStyle('glass'),
-                    buttonBorderShape('circle'),
-                    controlSize('large'),
-                    labelStyle('iconOnly'),
-                  ]}
-                />
-              )}
-            </HStack>
-          </VStack>
-        </Host>
-      </View>
-      <Host colorScheme={colorScheme} seedColor={palette.coral} style={{ flex: 1 }}>
-        <ScrollView showsIndicators={false} modifiers={[scrollIndicators('never', 'vertical'), scrollDismissesKeyboard('immediately')]}>
-          <VStack
-            alignment="leading"
-            spacing={18}
-            modifiers={[
-              padding({ top: 60, bottom: 42, horizontal: 20 }),
-              frame({ maxWidth: Infinity, alignment: 'topLeading' }),
-            ]}
+      {showHeader && (
+        <>
+          <MaskedView
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 85, zIndex: 10 }}
+            maskElement={
+              <LinearGradient colors={['#FFFFFF', '#FFFFFF00']} style={{ flex: 1 }} />
+            }
           >
-
+            <BlurView intensity={blurIntensity} tint={colorScheme} style={{ flex: 1 }} />
+          </MaskedView>
+          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
+            <Host colorScheme={colorScheme} seedColor={palette.coral} style={{ width: '100%', height: 85 }}>
+              <VStack modifiers={[padding({ top: 35, bottom: 15, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
+                <HStack modifiers={[frame({ maxWidth: Infinity })]}>
+                  <Text modifiers={[font({ textStyle: 'title2', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>
+                    โปรไฟล์และการตั้งค่า
+                  </Text>
+                  <Spacer />
+                  {onClose && (
+                    <Button
+                      label="ปิด"
+                      onPress={onClose}
+                      systemImage="xmark"
+                      modifiers={[
+                        buttonStyle('glass'),
+                        buttonBorderShape('circle'),
+                        controlSize('large'),
+                        labelStyle('iconOnly'),
+                      ]}
+                    />
+                  )}
+                </HStack>
+              </VStack>
+            </Host>
+          </View>
+        </>
+      )}
+      <Host colorScheme={colorScheme} seedColor={palette.coral} style={{ flex: 1 }}>
+        <Form modifiers={[padding({ top: showHeader ? 88 : 0 })]}>
+          <Section>
             <ProfileIdentity
               avatarUri={avatarDisplayUri}
               email={profile.email}
               name={name || profile.nickname || 'โปรไฟล์ของคุณ'}
               onPickImage={pickImage}
             />
+          </Section>
 
-            <SettingsCard title="ข้อมูลโปรไฟล์" systemImage="person.text.rectangle.fill">
-              <NativeField label="ชื่อที่แสดง" onChange={setName} systemImage="person.fill" value={name} />
-              <SelectionRow label="คณะ" options={FACULTIES} onSelect={setFaculty} systemImage="building.columns.fill" value={faculty} />
-              <SelectionRow label="ชั้นปี" options={YEARS} onSelect={setYear} systemImage="graduationcap.fill" value={year} />
-              <SelectionRow label="อายุ" options={AGES} onSelect={setAge} systemImage="calendar" value={age || '20'} />
-              <SelectionRow label="เพศ" options={GENDERS} onSelect={setGender} systemImage="person.2.fill" value={gender} />
-              <MultiActivityPicker onToggle={toggleActivity} options={ACTIVITIES} palette={palette} selected={activities} />
-              <Button
-                onPress={() => setShowAvailabilitySheet(true)}
-                modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity })]}
+          <Section
+            header={
+              <HStack spacing={6}>
+                <Image color={palette.coral} size={14} systemName="person.text.rectangle.fill" />
+                <Text modifiers={[font({ weight: 'bold' })]}>ข้อมูลโปรไฟล์</Text>
+              </HStack>
+            }
+            footer={<Text>ข้อมูลพื้นฐานที่จะแสดงให้เพื่อนร่วมมหาวิทยาลัยเห็น</Text>}
+          >
+            <NativeField label="ชื่อที่แสดง" onChange={setName} systemImage="person.fill" value={name} />
+            <SelectionRow label="คณะ" options={FACULTIES} onSelect={setFaculty} systemImage="building.columns.fill" value={faculty} />
+            <SelectionRow label="ชั้นปี" options={YEARS} onSelect={setYear} systemImage="graduationcap.fill" value={year} />
+            <SelectionRow label="อายุ" options={AGES} onSelect={setAge} systemImage="calendar" value={age || '20'} />
+            <SelectionRow label="เพศ" options={GENDERS} onSelect={setGender} systemImage="person.2.fill" value={gender} />
+          </Section>
+
+          <Section
+            header={
+              <HStack spacing={6}>
+                <Image color={palette.coral} size={14} systemName="figure.run.circle.fill" />
+                <Text modifiers={[font({ weight: 'bold' })]}>กิจกรรมและความสนใจ</Text>
+              </HStack>
+            }
+            footer={<Text>เลือกกิจกรรมที่คุณสนใจเพื่อช่วยค้นหาเพื่อนที่มีเป้าหมายและไลฟ์สไตล์ตรงกัน</Text>}
+          >
+            <MultiActivityPicker onToggle={toggleActivity} options={ACTIVITIES} palette={palette} selected={activities} />
+            <SelectionRow label="เพซวิ่ง" options={PACE_OPTIONS} onSelect={setPace} systemImage="speedometer" value={pace || PACE_OPTIONS[0]} />
+            <NativeField label="ทักษะเพิ่มเติม" onChange={setSkill} systemImage="star.fill" value={skill} />
+            <Button
+              onPress={() => setShowAvailabilitySheet(true)}
+              modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity })]}
+            >
+              <HStack
+                spacing={10}
+                modifiers={[
+                  padding({ all: 12 }),
+                  background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' })),
+                  frame({ minHeight: 54, maxWidth: Infinity }),
+                ]}
               >
-                <HStack
-                  spacing={10}
-                  modifiers={[
-                    padding({ all: 12 }),
-                    background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 14 })),
-                    frame({ maxWidth: Infinity }),
-                  ]}
-                >
-                  <Image color={palette.coral} size={17} systemName="calendar.badge.clock" />
-                  <VStack alignment="leading" spacing={2} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-                    <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(palette.tertiary)]}>
-                      ช่วงเวลาที่สะดวก
-                    </Text>
-                    <Text modifiers={[font({ textStyle: 'subheadline', weight: 'semibold' }), foregroundStyle(palette.text), lineLimit(1)]}>
-                      {availability || 'แตะเพื่อเลือกวันและเวลาที่สะดวก'}
-                    </Text>
-                  </VStack>
-                  <Spacer />
-                  <Image color={palette.tertiary} size={13} systemName="chevron.right" />
-                </HStack>
-              </Button>
-              <NativeField label="แนะนำตัวสั้น ๆ" multiline onChange={setBio} systemImage="text.quote" value={bio} />
-            </SettingsCard>
+                <Image color={palette.coral} size={17} systemName="calendar.badge.clock" />
+                <VStack alignment="leading" spacing={2} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+                  <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(palette.tertiary)]}>
+                    ช่วงเวลาที่สะดวก
+                  </Text>
+                  <Text modifiers={[font({ textStyle: 'subheadline', weight: 'semibold' }), foregroundStyle(palette.text), lineLimit(1)]}>
+                    {availability || 'แตะเพื่อเลือกวันและเวลาที่สะดวก'}
+                  </Text>
+                </VStack>
+                <Spacer />
+                <Image color={palette.tertiary} size={13} systemName="chevron.right" />
+              </HStack>
+            </Button>
+            <NativeField label="แนะนำตัวสั้น ๆ" multiline onChange={setBio} systemImage="text.quote" value={bio} />
+          </Section>
 
-            <SettingsCard title="ความเป็นส่วนตัว" systemImage="hand.raised.fill">
-              <SettingToggle
-                isOn={discoverable}
-                label="แสดงโปรไฟล์ในการค้นหา"
-                onChange={setDiscoverable}
-                systemImage="eye.fill"
-              />
-              <SettingToggle
-                isOn={privacy.showAge ?? true}
-                label="แสดงอายุ"
-                onChange={(value) => setPrivacy((current) => ({ ...current, showAge: value }))}
-                systemImage="calendar"
-              />
-              <SettingToggle
-                isOn={privacy.showGender ?? true}
-                label="แสดงเพศ"
-                onChange={(value) => setPrivacy((current) => ({ ...current, showGender: value }))}
-                systemImage="person.2.fill"
-              />
-              <SettingToggle
-                isOn={privacy.showFaculty ?? true}
-                label="แสดงคณะและชั้นปี"
-                onChange={(value) => setPrivacy((current) => ({ ...current, showFaculty: value }))}
-                systemImage="graduationcap.fill"
-              />
-              <SettingToggle
-                isOn={privacy.showActivity ?? true}
-                label="แสดงกิจกรรมที่ชอบ"
-                onChange={(value) => setPrivacy((current) => ({ ...current, showActivity: value }))}
-                systemImage="figure.run"
-              />
-              <SettingToggle
-                isOn={privacy.showAvailability ?? true}
-                label="แสดงเวลาที่สะดวก"
-                onChange={(value) => setPrivacy((current) => ({ ...current, showAvailability: value }))}
-                systemImage="clock.fill"
-              />
-              <SettingToggle
-                isOn={notifications}
-                label="การแจ้งเตือนข้อความและแมตช์"
-                onChange={setNotifications}
-                systemImage="bell.fill"
-              />
-            </SettingsCard>
+          <Section
+            header={
+              <HStack spacing={6}>
+                <Image color={palette.coral} size={14} systemName="hand.raised.fill" />
+                <Text modifiers={[font({ weight: 'bold' })]}>ความเป็นส่วนตัวและการมองเห็น</Text>
+              </HStack>
+            }
+            footer={<Text>กำหนดการเปิดเผยข้อมูลส่วนบุคคลของคุณบนระบบค้นหาเพื่อน</Text>}
+          >
+            <SettingToggle
+              isOn={discoverable}
+              label="แสดงโปรไฟล์ในการค้นหา"
+              onChange={setDiscoverable}
+              systemImage="eye.fill"
+            />
+            <SettingToggle
+              isOn={privacy.showAge ?? true}
+              label="แสดงอายุ"
+              onChange={(value) => setPrivacy((current) => ({ ...current, showAge: value }))}
+              systemImage="calendar"
+            />
+            <SettingToggle
+              isOn={privacy.showGender ?? true}
+              label="แสดงเพศ"
+              onChange={(value) => setPrivacy((current) => ({ ...current, showGender: value }))}
+              systemImage="person.2.fill"
+            />
+            <SettingToggle
+              isOn={privacy.showFaculty ?? true}
+              label="แสดงคณะและชั้นปี"
+              onChange={(value) => setPrivacy((current) => ({ ...current, showFaculty: value }))}
+              systemImage="graduationcap.fill"
+            />
+            <SettingToggle
+              isOn={privacy.showActivity ?? true}
+              label="แสดงกิจกรรมที่ชอบ"
+              onChange={(value) => setPrivacy((current) => ({ ...current, showActivity: value }))}
+              systemImage="figure.run"
+            />
+            <SettingToggle
+              isOn={privacy.showAvailability ?? true}
+              label="แสดงเวลาที่สะดวก"
+              onChange={(value) => setPrivacy((current) => ({ ...current, showAvailability: value }))}
+              systemImage="clock.fill"
+            />
+          </Section>
 
+          <Section
+            header={
+              <HStack spacing={6}>
+                <Image color={palette.coral} size={14} systemName="bell.badge.fill" />
+                <Text modifiers={[font({ weight: 'bold' })]}>การแจ้งเตือน</Text>
+              </HStack>
+            }
+            footer={<Text>รับการแจ้งเตือนเมื่อมีเพื่อนส่งข้อความหรือตอบรับกิจกรรม</Text>}
+          >
+            <SettingToggle
+              isOn={notifications}
+              label="การแจ้งเตือนข้อความและแมตช์"
+              onChange={setNotifications}
+              systemImage="bell.fill"
+            />
+          </Section>
+
+          <Section>
             <Button
               label={saving ? 'กำลังบันทึก' : 'บันทึกการเปลี่ยนแปลง'}
               onPress={handleSave}
@@ -400,8 +454,8 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
                 frame({ maxWidth: Infinity }),
               ]}
             />
-          </VStack>
-        </ScrollView>
+          </Section>
+        </Form>
 
         <BottomSheet
           isPresented={showAvailabilitySheet}
@@ -433,7 +487,15 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
             </Text>
 
             <Form>
-              <Section header={<Text>เลือกวัน</Text>}>
+              <Section
+                header={
+                  <HStack spacing={6}>
+                    <Image color={palette.coral} size={14} systemName="calendar" />
+                    <Text modifiers={[font({ weight: 'bold' })]}>เลือกวัน</Text>
+                  </HStack>
+                }
+                footer={<Text>เลือกวันที่ต้องการนัดพบหรือทำกิจกรรม</Text>}
+              >
                 <DatePicker
                   title="วันที่"
                   selection={availDate}
@@ -442,7 +504,15 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
                   modifiers={[datePickerStyle('compact')]}
                 />
               </Section>
-              <Section header={<Text>เลือกเวลา</Text>}>
+              <Section
+                header={
+                  <HStack spacing={6}>
+                    <Image color={palette.coral} size={14} systemName="clock.fill" />
+                    <Text modifiers={[font({ weight: 'bold' })]}>เลือกเวลา</Text>
+                  </HStack>
+                }
+                footer={<Text>ระบุเวลาเริ่มต้นและเวลาสิ้นสุด</Text>}
+              >
                 <DatePicker
                   title="เวลาเริ่ม"
                   selection={availStart}
@@ -458,7 +528,15 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
                   modifiers={[datePickerStyle('compact')]}
                 />
               </Section>
-              <Section header={<Text>ตัวเลือกช่วงเวลายอดนิยม</Text>}>
+              <Section
+                header={
+                  <HStack spacing={6}>
+                    <Image color={palette.coral} size={14} systemName="sparkles" />
+                    <Text modifiers={[font({ weight: 'bold' })]}>ตัวเลือกช่วงเวลายอดนิยม</Text>
+                  </HStack>
+                }
+                footer={<Text>แตะเพื่อเลือกช่วงเวลาที่แนะนำอย่างรวดเร็ว</Text>}
+              >
                 <Button
                   label="ช่วงเช้า (06:00 - 12:00)"
                   onPress={() => applyQuickSlot(6, 12)}
@@ -595,27 +673,38 @@ function SettingsCard({ children, systemImage, title }) {
 function NativeField({ label, multiline = false, onChange, systemImage, value }) {
   const palette = usePalette();
   const nativeText = useNativeState(value || '');
+  const fieldShape = shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' });
 
   return (
-    <VStack alignment="leading" spacing={6} modifiers={[frame({ maxWidth: Infinity })]}>
-      <HStack spacing={6}>
-        <Image color={palette.tertiary} size={13} systemName={systemImage} />
-        <Text modifiers={[font({ textStyle: 'caption', weight: 'semibold' }), foregroundStyle(palette.secondary)]}>
+    <HStack
+      alignment={multiline ? 'top' : 'center'}
+      spacing={10}
+      modifiers={[
+        padding({ all: 12 }),
+        background(palette.surfaceRaised, fieldShape),
+        frame({ minHeight: multiline ? 90 : 54, maxWidth: Infinity }),
+      ]}
+    >
+      <Image color={palette.coral} size={17} systemName={systemImage} />
+      <VStack alignment="leading" spacing={2} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+        <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(palette.tertiary)]}>
           {label}
         </Text>
-      </HStack>
-      <TextField
-        axis={multiline ? 'vertical' : 'horizontal'}
-        onTextChange={onChange}
-        placeholder={label}
-        modifiers={[
-          textFieldStyle('roundedBorder'),
-          frame({ minHeight: multiline ? 86 : 46, maxWidth: Infinity }),
-          lineLimit(multiline ? 4 : 1),
-        ]}
-        text={nativeText}
-      />
-    </VStack>
+        <TextField
+          axis={multiline ? 'vertical' : 'horizontal'}
+          onTextChange={onChange}
+          placeholder={`ระบุ${label}`}
+          modifiers={[
+            textFieldStyle('plain'),
+            font({ textStyle: 'subheadline', weight: 'semibold' }),
+            foregroundStyle(palette.text),
+            frame({ maxWidth: Infinity }),
+            lineLimit(multiline ? 4 : 1),
+          ]}
+          text={nativeText}
+        />
+      </VStack>
+    </HStack>
   );
 }
 
@@ -623,12 +712,13 @@ function SelectionRow({ label, onSelect, options, systemImage, value }) {
   const palette = usePalette();
   const selectedLabel = options.find((option) => (typeof option === 'string' ? option : option.value) === value);
   const displayValue = typeof selectedLabel === 'string' ? selectedLabel : selectedLabel?.label || value;
+  const rowShape = shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' });
   return (
     <Menu
       label={(
-        <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity })]}>
+        <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity, minHeight: 30 })]}>
           <Image color={palette.coral} size={17} systemName={systemImage} />
-          <VStack alignment="leading" spacing={2}>
+          <VStack alignment="leading" spacing={2} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
             <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(palette.tertiary)]}>{label}</Text>
             <Text modifiers={[font({ textStyle: 'subheadline', weight: 'semibold' }), foregroundStyle(palette.text), lineLimit(1)]}>{displayValue}</Text>
           </VStack>
@@ -638,7 +728,8 @@ function SelectionRow({ label, onSelect, options, systemImage, value }) {
       )}
       modifiers={[
         padding({ all: 12 }),
-        background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 14 })),
+        background(palette.surfaceRaised, rowShape),
+        frame({ minHeight: 54, maxWidth: Infinity }),
       ]}
     >
       {options.map((option) => {
@@ -683,9 +774,9 @@ function MultiActivityPicker({ options, selected, onToggle, palette }) {
           กิจกรรมที่ชอบ (เลือกได้หลายข้อ)
         </Text>
       </HStack>
-      <VStack alignment="leading" spacing={8} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+      <Grid horizontalSpacing={8} verticalSpacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
         {rows.map((pair, rowIndex) => (
-          <HStack key={rowIndex} spacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
+          <Grid.Row key={rowIndex}>
             <ActivityChip
               item={pair[0]}
               isSelected={selected.includes(pair[0].value)}
@@ -700,11 +791,11 @@ function MultiActivityPicker({ options, selected, onToggle, palette }) {
                 palette={palette}
               />
             ) : (
-              <Spacer />
+              <VStack modifiers={[frame({ maxWidth: Infinity, height: 46 })]} />
             )}
-          </HStack>
+          </Grid.Row>
         ))}
-      </VStack>
+      </Grid>
     </VStack>
   );
 }
@@ -713,6 +804,7 @@ function ActivityChip({ item, isSelected, onPress, palette }) {
   const chipBg = isSelected ? palette.coral : palette.surfaceRaised;
   const textColor = isSelected ? palette.white : palette.text;
   const iconColor = isSelected ? palette.white : palette.secondary;
+  const chipShape = shapes.roundedRectangle({ cornerRadius: 16, roundedCornerStyle: 'continuous' });
 
   return (
     <Button
@@ -720,20 +812,26 @@ function ActivityChip({ item, isSelected, onPress, palette }) {
       modifiers={[
         buttonStyle('plain'),
         frame({ maxWidth: Infinity }),
-        contentShape(shapes.roundedRectangle({ cornerRadius: 14, roundedCornerStyle: 'continuous' })),
+        contentShape(chipShape),
       ]}
     >
       <HStack
         alignment="center"
-        spacing={7}
+        spacing={8}
         modifiers={[
-          frame({ maxWidth: Infinity, height: 42 }),
+          frame({ maxWidth: Infinity, height: 46, alignment: 'center' }),
           padding({ horizontal: 12 }),
-          background(chipBg, shapes.roundedRectangle({ cornerRadius: 14, roundedCornerStyle: 'continuous' })),
+          background(chipBg, chipShape),
         ]}
       >
-        <Image color={iconColor} size={14} systemName={isSelected ? 'checkmark.circle.fill' : item.icon} />
-        <Text modifiers={[font({ textStyle: 'subheadline', weight: isSelected ? 'bold' : 'medium' }), foregroundStyle(textColor), lineLimit(1)]}>
+        <Image color={iconColor} size={15} systemName={isSelected ? 'checkmark.circle.fill' : item.icon} />
+        <Text
+          modifiers={[
+            font({ textStyle: 'subheadline', weight: isSelected ? 'bold' : 'medium' }),
+            foregroundStyle(textColor),
+            lineLimit(1),
+          ]}
+        >
           {item.label}
         </Text>
       </HStack>

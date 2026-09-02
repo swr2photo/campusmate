@@ -97,7 +97,7 @@ service cloud.firestore {
       allow update: if signedIn()
         && (request.auth.uid == resource.data.fromUserId || request.auth.uid == resource.data.toUserId);
       allow delete: if signedIn()
-        && request.auth.uid == resource.data.fromUserId;
+        && (request.auth.uid == resource.data.fromUserId || request.auth.uid == resource.data.toUserId);
     }
 
     match /conversations/{conversationId} {

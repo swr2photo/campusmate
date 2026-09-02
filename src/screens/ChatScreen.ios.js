@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard, Pressable, useColorScheme, View } from 'react-native';
+import { Keyboard, Pressable, useColorScheme, View, Animated, Text as RNText } from 'react-native';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -39,7 +39,8 @@ import {
   textFieldStyle,
   tint,
 } from '@expo/ui/swift-ui/modifiers';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, Stack } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import { useApp } from '../context/AppContext';
 import { useRemoteImage } from '../utils/useRemoteImage';
 
@@ -219,28 +220,80 @@ export default function ChatScreen() {
     });
   }, [conversations, currentUserId, query, unreadOnly]);
 
+  const scrollY = useRef(new Animated.Value(0)).current;
+
+  const largeHeaderOpacity = scrollY.interpolate({
+    inputRange: [0, 40],
+    outputRange: [1, 0],
+    extrapolate: 'clamp'
+  });
+  
+  const largeHeaderTranslateY = scrollY.interpolate({
+    inputRange: [0, 40],
+    outputRange: [0, -20],
+    extrapolate: 'clamp'
+  });
+
+  const smallHeaderOpacity = scrollY.interpolate({
+    inputRange: [30, 60],
+    outputRange: [0, 1],
+    extrapolate: 'clamp'
+  });
+
   return (
-    <Pressable onPress={Keyboard.dismiss} style={{ flex: 1, backgroundColor: palette.background }}>
-      <TopBlur colorScheme={colorScheme} />
-      <View pointerEvents="box-none" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }}>
+    <View style={{ flex: 1, backgroundColor: palette.background }}>
+      <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, opacity: largeHeaderOpacity, transform: [{ translateY: largeHeaderTranslateY }] }} pointerEvents="box-none">
+        <TopBlur colorScheme={colorScheme} />
         <Host colorScheme={colorScheme} seedColor={palette.accent} style={{ width: '100%', height: 104 }}>
           <HStack modifiers={[padding({ top: 46, bottom: 14, horizontal: 20 }), frame({ maxWidth: Infinity })]}>
-            <VStack alignment="leading" spacing={2}>
+            <VStack alignment="leading" spacing={0}>
               <Text modifiers={[font({ textStyle: 'largeTitle', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>
                 ข้อความ
               </Text>
-              <Text modifiers={[font({ textStyle: 'caption', weight: 'semibold' }), foregroundStyle(palette.secondary)]}>
-                {conversations.length ? `${conversations.length} ห้องสนทนา` : 'พื้นที่คุยของคุณ'}
-              </Text>
             </VStack>
             <Spacer />
-            <Image color={palette.accent} size={22} systemName="square.and.pencil" modifiers={[frame({ width: 46, height: 46 }), background(palette.accentSoft, avatarShape)]} />
+            <Button
+              label="New Chat"
+              systemImage="square.and.pencil"
+              modifiers={[
+                buttonStyle('glass'),
+                buttonBorderShape('circle'),
+                controlSize('large'),
+                labelStyle('iconOnly'),
+                tint(palette.accent),
+              ]}
+            />
           </HStack>
         </Host>
-      </View>
+      </Animated.View>
 
-      <Host colorScheme={colorScheme} seedColor={palette.accent} style={{ flex: 1 }}>
-        <ScrollView modifiers={[scrollIndicators('never', 'vertical'), scrollDismissesKeyboard('immediately')]} showsIndicators={false}>
+      <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 95, zIndex: 21, opacity: smallHeaderOpacity, paddingTop: 45, paddingHorizontal: 20 }} pointerEvents="box-none">
+        <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: -20 }}>
+          <MaskedView style={{ flex: 1 }} maskElement={<LinearGradient colors={['#FFFFFF', '#FFFFFF00']} locations={[0.6, 1]} style={{ flex: 1 }} />}>
+            <BlurView intensity={100} tint="prominent" style={{ flex: 1 }} />
+          </MaskedView>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+          <RNText style={{ fontSize: 17, fontWeight: '600', color: colorScheme === 'dark' ? '#fff' : '#000', position: 'absolute' }}>
+            ข้อความ
+          </RNText>
+          <View style={{ flex: 1 }} />
+          <Pressable style={{ width: 34, height: 34, backgroundColor: palette.accentSoft, borderRadius: 17, alignItems: 'center', justifyContent: 'center' }}>
+            <SymbolView name="square.and.pencil" size={18} tintColor={palette.accent} />
+          </Pressable>
+        </View>
+      </Animated.View>
+
+      <Animated.ScrollView
+        style={{ flex: 1 }}
+        showsVerticalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onScroll={Animated.event(
+          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+          { useNativeDriver: true }
+        )}
+      >
+        <Host colorScheme={colorScheme} seedColor={palette.accent} matchContents={{ vertical: true }}>
           <VStack alignment="leading" spacing={16} modifiers={[padding({ top: 124, bottom: 36, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
             <HStack spacing={10} modifiers={[padding({ horizontal: 15, vertical: 11 }), frame({ maxWidth: Infinity, minHeight: 50 }), background(palette.surface, shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' }))]}>
               <Image color={palette.tertiary} size={18} systemName="magnifyingglass" />
@@ -279,16 +332,20 @@ export default function ChatScreen() {
                 unreadCount={conversation.unreadCounts?.[currentUserId] || 0}
               />
             )) : (
-              <ContentUnavailableView
-                description={query || unreadOnly ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรอง' : 'เมื่อคุณรับคำขอถูกใจ ห้องสนทนาจะปรากฏที่นี่'}
-                systemImage="bubble.left.and.bubble.right"
-                title={query || unreadOnly ? 'ไม่พบข้อความ' : 'ยังไม่มีห้องสนทนา'}
-              />
+              <VStack spacing={12} modifiers={[padding({ vertical: 60 }), frame({ maxWidth: Infinity, alignment: 'center' })]}>
+                <Image color={palette.secondary} size={54} systemName={query || unreadOnly ? "magnifyingglass" : "message.fill"} />
+                <Text modifiers={[font({ textStyle: 'title2', weight: 'bold' }), foregroundStyle(palette.text)]}>
+                  {query || unreadOnly ? 'ไม่พบข้อความ' : 'ยังไม่มีห้องสนทนา'}
+                </Text>
+                <Text modifiers={[font({ textStyle: 'subheadline', weight: 'medium' }), foregroundStyle(palette.secondary), frame({ maxWidth: 280, alignment: 'center' })]}>
+                  {query || unreadOnly ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรอง' : 'เมื่อคุณรับคำขอถูกใจ ห้องสนทนาจะปรากฏที่นี่'}
+                </Text>
+              </VStack>
             )}
           </VStack>
-        </ScrollView>
-      </Host>
-    </Pressable>
+        </Host>
+      </Animated.ScrollView>
+    </View>
   );
 }
 

@@ -1,6 +1,5 @@
 import {
   Timestamp,
-  arrayUnion,
   collection,
   deleteDoc,
   doc,
@@ -36,8 +35,9 @@ const publicProfileFields = [
   'avatarColor',
   'avatarUri',
   'compatibility',
-  'latitude',
-  'longitude',
+  // GPS coordinates are intentionally excluded from public profiles.
+  // They are stored only in the private `users/{uid}` collection
+  // to comply with PDPA data protection requirements.
   'tags',
   'interests',
   'gender',
@@ -402,14 +402,27 @@ export function subscribeToSpots(callback, onError) {
   );
 }
 
-export function subscribeToAvailableProfiles(currentUserId, preferences, callback, onError) {
+/**
+ * Shared profiles subscription — subscribe to `profiles` collection once
+ * and broadcast to multiple consumers (available profiles + incoming likes).
+ */
+export function createSharedProfilesSubscription(onProfiles, onError) {
   const { db } = requireFirebase();
-  let profiles = [];
+  return onSnapshot(
+    collection(db, 'profiles'),
+    (snapshot) => {
+      const profiles = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      onProfiles(profiles);
+    },
+    onError
+  );
+}
+
+export function subscribeToAvailableProfiles(currentUserId, preferences, allProfiles, callback, onError) {
+  const { db } = requireFirebase();
   let outgoingDecisions = [];
 
   const emit = () => {
-    // เมื่อผู้ใช้กดแมต/ถูกใจหรือกดข้ามแล้ว ให้ซ่อนทันทีจาก discover pool
-    // เพื่อไม่ให้โปรไฟล์เดียวกันกลับมาปรากฏก่อนที่คิวจะ refresh ใหม่
     const hiddenIds = new Set(
       outgoingDecisions
         .filter((d) => (
@@ -420,15 +433,14 @@ export function subscribeToAvailableProfiles(currentUserId, preferences, callbac
         ))
         .map((d) => d.toUserId)
     );
-    const currentUserProfile = profiles.find(p => p.id === currentUserId);
-    const filtered = profiles.filter((profile) => (
+    const currentUserProfile = allProfiles.find(p => p.id === currentUserId);
+    const filtered = allProfiles.filter((profile) => (
       profile.id !== currentUserId
       && profile.isDiscoverable !== false
       && !hiddenIds.has(profile.id)
       && matchesPreferences(profile, preferences, currentUserProfile)
     ));
     
-    // Attach the real distance and matched status so UI can display it
     callback(filtered.map(profile => {
       const isMatched = outgoingDecisions.some(d => d.toUserId === profile.id && d.status === 'accepted');
       return {
@@ -439,15 +451,7 @@ export function subscribeToAvailableProfiles(currentUserId, preferences, callbac
     }));
   };
 
-  const unsubscribeProfiles = onSnapshot(
-    collection(db, 'profiles'),
-    (snapshot) => {
-      profiles = snapshot.docs.map((profileDoc) => ({ id: profileDoc.id, ...profileDoc.data() }));
-      emit();
-    },
-    onError
-  );
-
+  // Only subscribe to decisions — profiles come from the shared subscription
   const outgoingQuery = query(
     collection(db, 'decisions'),
     where('fromUserId', '==', currentUserId)
@@ -461,13 +465,16 @@ export function subscribeToAvailableProfiles(currentUserId, preferences, callbac
     onError
   );
 
+  // Re-emit whenever the caller updates allProfiles (handled by the shared subscription)
+  // The caller is responsible for calling this function again with updated allProfiles
+  // or triggering re-render via state updates.
+
   return () => {
-    unsubscribeProfiles();
     unsubscribeDecisions();
   };
 }
 
-export function subscribeToIncomingLikes(currentUserId, callback, onError) {
+export function subscribeToIncomingLikes(currentUserId, allProfiles, callback, onError) {
   const { db } = requireFirebase();
   const incomingQuery = query(
     collection(db, 'decisions'),
@@ -475,9 +482,14 @@ export function subscribeToIncomingLikes(currentUserId, callback, onError) {
   );
 
   let latestDecisions = [];
-  let profilesCache = {};
 
   const hydrate = () => {
+    // Build a profiles lookup from the shared profiles array
+    const profilesCache = {};
+    allProfiles.forEach((p) => {
+      profilesCache[p.id] = p;
+    });
+
     const likeDocs = latestDecisions
       .filter((d) => d.type === 'like' && d.status !== 'removed' && d.status !== 'rejected');
 
@@ -502,7 +514,6 @@ export function subscribeToIncomingLikes(currentUserId, callback, onError) {
     );
   };
 
-  // Subscribe ทั้ง decisions และ profiles เพื่อให้ข้อมูลอัพเดทแบบ real-time
   const unsubDecisions = onSnapshot(
     incomingQuery,
     (snapshot) => {
@@ -515,21 +526,11 @@ export function subscribeToIncomingLikes(currentUserId, callback, onError) {
     onError
   );
 
-  const unsubProfiles = onSnapshot(
-    collection(db, 'profiles'),
-    (snapshot) => {
-      profilesCache = {};
-      snapshot.docs.forEach((d) => {
-        profilesCache[d.id] = d.data();
-      });
-      hydrate();
-    },
-    onError
-  );
+  // No separate profiles subscription — profiles come from the shared subscription
+  // The caller should invoke hydrate/re-subscribe when allProfiles updates
 
   return () => {
     unsubDecisions();
-    unsubProfiles();
   };
 }
 
@@ -793,9 +794,11 @@ export async function updateConversationMessage(conversationId, currentUserId, t
     const participants = Array.isArray(data.participants) ? data.participants : [];
     if (!participants.includes(currentUserId)) throw new Error('คุณไม่มีสิทธิ์ส่งข้อความในห้องนี้');
 
-    const sentAt = Timestamp.now();
+    const sentAt = Number.isFinite(options.clientSentAt)
+      ? Timestamp.fromMillis(options.clientSentAt)
+      : Timestamp.now();
     const message = {
-      id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: options.clientMessageId || `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       senderId: currentUserId,
       text,
       createdAt: sentAt,
@@ -825,6 +828,7 @@ export async function updateConversationMessage(conversationId, currentUserId, t
     });
 
     const existingMessages = Array.isArray(data.messages) ? data.messages : [];
+    if (existingMessages.some((existingMessage) => existingMessage.id === message.id)) return;
     transaction.update(convRef, {
       messages: [...existingMessages.slice(-499), message],
       lastMessage: text,
@@ -857,37 +861,54 @@ export async function markConversationAsRead(conversationId, currentUserId) {
   });
 }
 
-export async function toggleMeetupAcceptance(conversationId, currentUserId, hostUserId, spotName) {
+export async function toggleMeetupAcceptance(conversationId, currentUserId, hostUserId, spotName, options = {}) {
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
-  const snap = await getDoc(convRef);
-  if (!snap.exists()) return false;
-  const data = snap.data();
-  const currentAccepted = Array.isArray(data.meetupAcceptedUsers) ? data.meetupAcceptedUsers : [];
-  const isAccepted = currentAccepted.includes(currentUserId);
-  const nextAccepted = isAccepted
-    ? currentAccepted.filter((id) => id !== currentUserId)
-    : [...currentAccepted, currentUserId];
+  let nextState = false;
 
-  const sentAt = Timestamp.now();
-  const noticeText = isAccepted
-    ? `ยกเลิกการตอบรับนัดหมายที่ ${spotName || 'จุดนัดพบ'}`
-    : `ตอบรับนัดหมายที่ ${spotName || 'จุดนัดพบ'} แล้ว`;
+  await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(convRef);
+    if (!snap.exists()) return;
+    const data = snap.data();
+    const participants = Array.isArray(data.participants) ? data.participants : [];
+    if (!participants.includes(currentUserId)) return;
 
-  await updateDoc(convRef, {
-    meetupAcceptedUsers: nextAccepted,
-    messages: arrayUnion({
-      id: `m-${Date.now()}`,
-      senderId: currentUserId,
-      text: noticeText,
-      isSystem: true,
-      createdAt: sentAt,
-      time: sentAt,
-    }),
-    lastMessage: noticeText,
-    updatedAt: serverTimestamp(),
+    const currentAccepted = Array.isArray(data.meetupAcceptedUsers) ? data.meetupAcceptedUsers : [];
+    const isAccepted = currentAccepted.includes(currentUserId);
+    const shouldAccept = typeof options.shouldAccept === 'boolean' ? options.shouldAccept : !isAccepted;
+    nextState = shouldAccept;
+    if (isAccepted === shouldAccept) return;
+
+    const nextAccepted = shouldAccept
+      ? Array.from(new Set([...currentAccepted, currentUserId]))
+      : currentAccepted.filter((id) => id !== currentUserId);
+    const sentAt = Number.isFinite(options.clientSentAt)
+      ? Timestamp.fromMillis(options.clientSentAt)
+      : Timestamp.now();
+    const noticeText = shouldAccept
+      ? `ตอบรับนัดหมายที่ ${spotName || 'จุดนัดพบ'} แล้ว`
+      : `ยกเลิกการตอบรับนัดหมายที่ ${spotName || 'จุดนัดพบ'}`;
+    const messageId = options.clientMessageId || `m-${Date.now()}`;
+    const existingMessages = Array.isArray(data.messages) ? data.messages : [];
+    const nextMessages = existingMessages.some((message) => message.id === messageId)
+      ? existingMessages
+      : [...existingMessages.slice(-499), {
+          id: messageId,
+          senderId: currentUserId,
+          text: noticeText,
+          isSystem: true,
+          createdAt: sentAt,
+          time: sentAt,
+        }];
+
+    transaction.update(convRef, {
+      meetupAcceptedUsers: nextAccepted,
+      messages: nextMessages,
+      lastMessage: noticeText,
+      updatedAt: serverTimestamp(),
+    });
   });
-  return !isAccepted;
+  return nextState;
 }
 
 export async function updateChatSettings(conversationId, currentUserId, settings) {
@@ -924,7 +945,7 @@ export async function unsendMessage(conversationId, messageId, currentUserId) {
   return removed;
 }
 
-export async function reactToMessage(conversationId, messageId, currentUserId, emoji) {
+export async function reactToMessage(conversationId, messageId, currentUserId, emoji, desiredReaction) {
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
   let changed = false;
@@ -939,8 +960,15 @@ export async function reactToMessage(conversationId, messageId, currentUserId, e
 
     const targetMessage = { ...existingMessages[targetIndex] };
     const reactions = { ...(targetMessage.reactions || {}) };
-    if (reactions[currentUserId] === emoji) delete reactions[currentUserId];
-    else reactions[currentUserId] = emoji;
+    const nextReaction = desiredReaction !== undefined
+      ? desiredReaction
+      : (reactions[currentUserId] === emoji ? null : emoji);
+    if ((reactions[currentUserId] || null) === (nextReaction || null)) {
+      changed = true;
+      return;
+    }
+    if (nextReaction) reactions[currentUserId] = nextReaction;
+    else delete reactions[currentUserId];
     targetMessage.reactions = reactions;
 
     const updatedMessages = [...existingMessages];

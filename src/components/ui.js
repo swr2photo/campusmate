@@ -13,7 +13,7 @@ export function Avatar({ emoji = '🙂', color, size = 52, online = false }) {
   const styles = getStyles(colors);
   const bgColor = color || colors.primarySoft;
   return (
-    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: bgColor }]}>
+    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, borderCurve: 'continuous', backgroundColor: bgColor }]}>
       <Text style={{ fontSize: size * 0.48 }}>{emoji}</Text>
       {online && <View style={[styles.onlineDot, { width: size * 0.22, height: size * 0.22, borderRadius: size * 0.11 }]} />}
     </View>
@@ -118,6 +118,7 @@ export const getStyles = (colors) => StyleSheet.create({
   card: {
     backgroundColor: colors.card,
     borderRadius: radius.lg,
+    borderCurve: 'continuous',
     borderWidth: 1,
     borderColor: colors.line,
     ...shadow.card,
@@ -127,6 +128,7 @@ export const getStyles = (colors) => StyleSheet.create({
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderRadius: radius.pill,
+    borderCurve: 'continuous',
     borderWidth: 1,
     flexDirection: 'row',
     minHeight: 36,
@@ -139,6 +141,7 @@ export const getStyles = (colors) => StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.primary,
     borderRadius: radius.md,
+    borderCurve: 'continuous',
     justifyContent: 'center',
     minHeight: 50,
     paddingHorizontal: spacing.xl,
@@ -150,6 +153,7 @@ export const getStyles = (colors) => StyleSheet.create({
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderRadius: radius.md,
+    borderCurve: 'continuous',
     borderWidth: 1,
     justifyContent: 'center',
     minHeight: 50,

@@ -6,6 +6,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import FeatureIcon from './FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 
 export function Avatar({ emoji = '🙂', color, size = 52, online = false }) {
@@ -13,7 +14,7 @@ export function Avatar({ emoji = '🙂', color, size = 52, online = false }) {
   const styles = getStyles(colors);
   const bgColor = color || colors.primarySoft;
   return (
-    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: bgColor }]}>
+    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, borderCurve: 'continuous', backgroundColor: bgColor }]}>
       <Text style={{ fontSize: size * 0.48 }}>{emoji}</Text>
       {online && <View style={[styles.onlineDot, { width: size * 0.22, height: size * 0.22, borderRadius: size * 0.11 }]} />}
     </View>
@@ -26,23 +27,26 @@ export function Card({ children, style }) {
   return <View style={[styles.card, style]}>{children}</View>;
 }
 
-export function Chip({ label, icon, active = false, color, onPress, style }) {
+export function Chip({ label, icon, iconName, active = false, color, onPress, style }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
   const activeColor = color || colors.primary;
   const content = (
     <View style={[styles.chip, active && { backgroundColor: activeColor, borderColor: activeColor }, style]}>
-      {!!icon && <Text style={styles.chipIcon}>{icon}</Text>}
+      {iconName ? (
+        <FeatureIcon color={active ? colors.card : activeColor} name={iconName} size={16} style={styles.chipIcon} />
+      ) : (!!icon && <Text style={styles.chipIcon}>{icon}</Text>)}
       <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
     </View>
   );
   return onPress ? <Pressable onPress={onPress}>{content}</Pressable> : content;
 }
 
-export function PrimaryButton({ label, icon, onPress, style, disabled = false, loading = false, compact = false }) {
+export function PrimaryButton({ label, icon, iconName, onPress, style, disabled = false, loading = false, compact = false }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
   const isCompact = compact || StyleSheet.flatten(style)?.minHeight <= 40;
+  const resolvedIcon = iconName || icon;
   return (
     <Pressable
       accessibilityRole="button"
@@ -51,23 +55,28 @@ export function PrimaryButton({ label, icon, onPress, style, disabled = false, l
       style={({ pressed }) => [styles.primaryButton, isCompact && styles.compactPrimaryButton, style, pressed && styles.pressed, disabled && styles.disabled]}
     >
       {loading ? <ActivityIndicator color={colors.card} /> : (
-        <Text
-          adjustsFontSizeToFit={isCompact}
-          minimumFontScale={0.78}
-          numberOfLines={isCompact ? 1 : undefined}
-          style={[styles.primaryButtonText, isCompact && styles.compactButtonText]}
-        >
-          {icon ? `${icon}  ` : ''}{label}
-        </Text>
+        <View style={styles.buttonContent}>
+          {resolvedIcon ? <FeatureIcon color={colors.card} name={resolvedIcon} size={18} style={styles.buttonIcon} /> : null}
+          <Text
+            adjustsFontSizeToFit={isCompact}
+            minimumFontScale={0.78}
+            numberOfLines={isCompact ? 1 : undefined}
+            style={[styles.primaryButtonText, isCompact && styles.compactButtonText]}
+          >
+            {label}
+          </Text>
+        </View>
       )}
     </Pressable>
   );
 }
 
-export function OutlineButton({ label, icon, onPress, style, danger = false, disabled = false, compact = false }) {
+export function OutlineButton({ label, icon, iconName, onPress, style, danger = false, disabled = false, compact = false }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
   const isCompact = compact || StyleSheet.flatten(style)?.minHeight <= 40;
+  const resolvedIcon = iconName || icon;
+  const buttonColor = danger ? colors.danger : colors.ink;
   return (
     <Pressable
       accessibilityRole="button"
@@ -75,14 +84,17 @@ export function OutlineButton({ label, icon, onPress, style, danger = false, dis
       onPress={onPress}
       style={({ pressed }) => [styles.outlineButton, isCompact && styles.compactOutlineButton, danger && styles.outlineDanger, style, pressed && styles.pressed, disabled && styles.disabled]}
     >
-      <Text
-        adjustsFontSizeToFit={isCompact}
-        minimumFontScale={0.78}
-        numberOfLines={isCompact ? 1 : undefined}
-        style={[styles.outlineButtonText, isCompact && styles.compactButtonText, danger && styles.outlineDangerText]}
-      >
-        {icon ? `${icon}  ` : ''}{label}
-      </Text>
+      <View style={styles.buttonContent}>
+        {resolvedIcon ? <FeatureIcon color={buttonColor} name={resolvedIcon} size={18} style={styles.buttonIcon} /> : null}
+        <Text
+          adjustsFontSizeToFit={isCompact}
+          minimumFontScale={0.78}
+          numberOfLines={isCompact ? 1 : undefined}
+          style={[styles.outlineButtonText, isCompact && styles.compactButtonText, danger && styles.outlineDangerText]}
+        >
+          {label}
+        </Text>
+      </View>
     </Pressable>
   );
 }
@@ -101,7 +113,7 @@ export function SectionTitle({ title, subtitle, action, onAction }) {
   );
 }
 
-export const getStyles = (colors) => StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   avatar: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -118,6 +130,7 @@ export const getStyles = (colors) => StyleSheet.create({
   card: {
     backgroundColor: colors.card,
     borderRadius: radius.lg,
+    borderCurve: 'continuous',
     borderWidth: 1,
     borderColor: colors.line,
     ...shadow.card,
@@ -127,6 +140,7 @@ export const getStyles = (colors) => StyleSheet.create({
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderRadius: radius.pill,
+    borderCurve: 'continuous',
     borderWidth: 1,
     flexDirection: 'row',
     minHeight: 36,
@@ -139,17 +153,21 @@ export const getStyles = (colors) => StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.primary,
     borderRadius: radius.md,
+    borderCurve: 'continuous',
     justifyContent: 'center',
     minHeight: 50,
     paddingHorizontal: spacing.xl,
   },
   compactPrimaryButton: { borderRadius: 12, minHeight: 38, paddingHorizontal: 8 },
+  buttonContent: { alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', maxWidth: '100%' },
+  buttonIcon: { flexShrink: 0 },
   primaryButtonText: { color: colors.card, fontSize: type.body, fontWeight: '800' },
   outlineButton: {
     alignItems: 'center',
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderRadius: radius.md,
+    borderCurve: 'continuous',
     borderWidth: 1,
     justifyContent: 'center',
     minHeight: 50,
@@ -173,3 +191,15 @@ export const getStyles = (colors) => StyleSheet.create({
   sectionSubtitle: { color: colors.inkMuted, fontSize: type.caption, marginTop: 3 },
   sectionAction: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
 });
+
+// `colors` is one of two module-level palettes, so this caches to two entries.
+const styleCache = new WeakMap();
+
+export const getStyles = (colors) => {
+  let styles = styleCache.get(colors);
+  if (!styles) {
+    styles = createStyles(colors);
+    styleCache.set(colors, styles);
+  }
+  return styles;
+};

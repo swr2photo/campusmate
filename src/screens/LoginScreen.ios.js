@@ -21,6 +21,7 @@ import {
   aspectRatio,
   autocorrectionDisabled,
   background,
+  blur,
   buttonBorderShape,
   buttonStyle,
   clipShape,
@@ -45,14 +46,36 @@ import {
   tint,
 } from '@expo/ui/swift-ui/modifiers';
 import { getSavedAccounts, removeSavedAccount, saveAccount, enrichSavedAccountsWithFirestore } from '../services/accountStorage';
+import {
+  getFirebaseConfigurationErrorMessage,
+  sendPasswordReset,
+  signInWithEmail,
+  signUpWithEmail,
+  signInWithGoogle,
+  signInWithGoogleCredential,
+  signOutUser,
+  resendVerificationEmail,
+} from '../services/authService';
+import { showLoginAlert } from '../utils/loginAlert';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
+import { makeRedirectUri } from 'expo-auth-session';
+import Constants from 'expo-constants';
 
 WebBrowser.maybeCompleteAuthSession();
 const loginPhoto = require('../../assets/login-campus-hero.png');
 const panelShape = shapes.roundedRectangle({ cornerRadius: 28, roundedCornerStyle: 'continuous' });
 const cardShape = shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' });
+
+function scheduleWhenIdle(callback) {
+  if (typeof globalThis.requestIdleCallback === 'function') {
+    const requestId = globalThis.requestIdleCallback(callback);
+    return () => globalThis.cancelIdleCallback?.(requestId);
+  }
+  const timeoutId = setTimeout(callback, 0);
+  return () => clearTimeout(timeoutId);
+}
 
 const darkPalette = {
   background: '#101216',
@@ -87,15 +110,33 @@ function usePalette() {
 }
 
 export default function LoginScreen({ onLoginSuccess }) {
+  const isExpoGo = Constants.appOwnership === 'expo';
+  const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
+  const redirectUri = isExpoGo
+    ? 'https://auth.expo.io/@doralikon/campusmate'
+    : makeRedirectUri({
+        scheme: 'campusmate',
+        preferLocalhost: true,
+      });
+
   const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
-    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    clientId: webClientId,
+    webClientId,
+    iosClientId: isExpoGo ? undefined : process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+    androidClientId: isExpoGo ? undefined : process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    selectAccount: true,
+    redirectUri,
   });
 
   React.useEffect(() => {
-    if (request) {
-      console.log('Google Auth Request URL (iOS):', request.url);
+    if (request?.url) {
+      console.log('>>> [GOOGLE AUTH REQUEST URL]:', request.url);
+    }
+  }, [request]);
+
+  React.useEffect(() => {
+    if (response) {
+      console.log('>>> [GOOGLE AUTH RESPONSE]:', JSON.stringify(response));
     }
     if (response?.type === 'success') {
       const { id_token } = response.params;
@@ -103,23 +144,19 @@ export default function LoginScreen({ onLoginSuccess }) {
         handleGoogleCredential(id_token);
       }
     } else if (response?.type === 'error') {
-      console.error('Google Auth Error (iOS):', response.error);
-      setError('เกิดข้อผิดพลาดในการเข้าสู่ระบบด้วย Google');
-    } else if (response) {
-      console.log('Google Auth Response Type (iOS):', response.type);
+      showLoginAlert('เกิดข้อผิดพลาดในการเข้าสู่ระบบด้วย Google');
     }
-  }, [response, request]);
+  }, [response]);
 
   const handleGoogleCredential = async (id_token) => {
     if (loading) return;
     setLoading(true);
-    setError('');
     try {
       const { signInWithGoogleCredential } = require('../services/authService');
       const result = await signInWithGoogleCredential(id_token);
       finishAuthentication(result);
     } catch (err) {
-      setError(err.message || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+      showLoginAlert(getFirebaseConfigurationErrorMessage(err) || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
     } finally {
       setLoading(false);
     }
@@ -135,43 +172,41 @@ export default function LoginScreen({ onLoginSuccess }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [mode, setMode] = useState('login');
+  const [mode, setMode] = useState('google');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
   const [savedAccounts, setSavedAccounts] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState(null);
+  const [unverifiedEmail, setUnverifiedEmail] = useState(null);
   const imageUri = assets?.[0]?.localUri || assets?.[0]?.uri;
 
   React.useEffect(() => {
+    let disposed = false;
+    let cancelEnrichment = () => {};
     getSavedAccounts().then((accounts) => {
+      if (disposed) return;
       const list = accounts || [];
       setSavedAccounts(list);
       if (list.length > 0) {
-        setMode('saved');
-        enrichSavedAccountsWithFirestore(list).then((enriched) => {
-          if (enriched && enriched.length > 0) {
-            setSavedAccounts(enriched);
-          }
+        cancelEnrichment = scheduleWhenIdle(() => {
+          void enrichSavedAccountsWithFirestore(list).then((enriched) => {
+            if (!disposed && enriched && enriched.length > 0) setSavedAccounts(enriched);
+          });
         });
       }
     });
+    return () => {
+      disposed = true;
+      cancelEnrichment();
+    };
   }, []);
 
   const showMode = (nextMode) => {
-    setError('');
     setPassword('');
     nativePassword.set('');
     setConfirmPassword('');
     nativeConfirmPassword.set('');
     setMode(nextMode);
   };
-
-  React.useEffect(() => {
-    if (error) {
-      const timer = setTimeout(() => setError(''), 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [error]);
 
   const finishAuthentication = (result) => {
     saveAccount(result.user);
@@ -186,7 +221,6 @@ export default function LoginScreen({ onLoginSuccess }) {
     nativePassword.set('');
     setConfirmPassword('');
     nativeConfirmPassword.set('');
-    setError('');
     setMode('login');
   };
 
@@ -203,13 +237,11 @@ export default function LoginScreen({ onLoginSuccess }) {
     if (Platform.OS === 'web') {
       if (loading) return;
       setLoading(true);
-      setError('');
       try {
-        const { signInWithGoogle } = require('../services/authService');
         const result = await signInWithGoogle();
         finishAuthentication(result);
       } catch (loginError) {
-        setError(loginError.message || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+        showLoginAlert(getFirebaseConfigurationErrorMessage(loginError) || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
       } finally {
         setLoading(false);
       }
@@ -220,26 +252,94 @@ export default function LoginScreen({ onLoginSuccess }) {
 
   const handleForgotPassword = async () => {
     if (loading) return;
-    if (!email.trim()) {
-      setError('กรุณากรอกอีเมลที่ต้องการรีเซ็ตรหัสผ่าน');
+    const cleanEmail = String(email || '').trim();
+    if (!cleanEmail) {
+      showLoginAlert('กรุณากรอกอีเมลของคุณในช่องด้านบนก่อน แล้วกด "ลืมรหัสผ่าน?" อีกครั้งครับ', 'ระบุอีเมล');
       return;
     }
+
+    const performReset = async () => {
+      setLoading(true);
+      try {
+        await sendPasswordReset(cleanEmail);
+        const successMsg = 'ระบบได้ส่งลิงก์สำหรับตั้งรหัสผ่านใหม่ไปยัง ' + cleanEmail + ' เรียบร้อยแล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam';
+        if (Platform.OS === 'web') {
+          alert('ส่งลิงก์สำเร็จ: ' + successMsg);
+        } else {
+          Alert.alert('ส่งลิงก์สำเร็จ', successMsg);
+        }
+      } catch (err) {
+        console.error('Password reset error:', err);
+        const configurationError = getFirebaseConfigurationErrorMessage(err);
+        if (configurationError) {
+          showLoginAlert(configurationError, 'การตั้งค่าระบบ');
+          return;
+        }
+        if (err.code === 'auth/user-not-found') {
+          showLoginAlert('ไม่พบบัญชีผู้ใช้ที่ใช้อีเมล ' + cleanEmail + ' กรุณาตรวจสอบอีเมลอีกครั้ง หรือสมัครสมาชิกใหม่', 'ไม่พบบัญชี');
+        } else if (err.code === 'auth/invalid-email') {
+          showLoginAlert('รูปแบบอีเมลไม่ถูกต้อง กรุณาตรวจสอบความถูกต้อง เช่น example@gmail.com', 'อีเมลไม่ถูกต้อง');
+        } else if (err.code === 'auth/too-many-requests') {
+          showLoginAlert('คุณส่งคำขอรีเซ็ตรหัสผ่านบ่อยเกินไป เพื่อความปลอดภัยกรุณารอสักครู่แล้วลองใหม่อีกครั้ง', 'ส่งคำขอบ่อยเกินไป');
+        } else if (err.code === 'auth/network-request-failed') {
+          showLoginAlert('ไม่สามารถเชื่อมต่ออินเทอร์เน็ตได้ กรุณาตรวจสอบสัญญาณเน็ตแล้วลองใหม่อีกครั้ง', 'การเชื่อมต่อขัดข้อง');
+        } else {
+          const detail = err?.message ? ' (' + err.message + ')' : '';
+          showLoginAlert('ไม่สามารถส่งอีเมลรีเซ็ตรหัสผ่านได้: ' + (err?.code || 'เกิดข้อผิดพลาด') + detail, 'รีเซ็ตรหัสผ่าน');
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    if (Platform.OS === 'web') {
+      performReset();
+    } else {
+      Alert.alert(
+        'รีเซ็ตรหัสผ่าน',
+        'ต้องการให้ส่งลิงก์ตั้งรหัสผ่านใหม่ไปยัง ' + cleanEmail + ' ใช่หรือไม่?',
+        [
+          { text: 'ยกเลิก', style: 'cancel' },
+          { text: 'ส่งลิงก์', onPress: performReset },
+        ]
+      );
+    }
+  };
+
+  const handleResendVerification = async () => {
+    const targetEmail = unverifiedEmail || email.trim();
+    if (!targetEmail) {
+      showLoginAlert('กรุณากรอกอีเมลและรหัสผ่านเพื่อส่งอีเมลยืนยันใหม่', 'ยืนยันอีเมล');
+      return;
+    }
+    if (!password) {
+      showLoginAlert('กรุณากรอกรหัสผ่านเพื่อส่งอีเมลยืนยันใหม่', 'ยืนยันอีเมล');
+      return;
+    }
+    if (loading) return;
     setLoading(true);
-    setError('');
     try {
-      const { sendPasswordReset } = require('../services/authService');
-      await sendPasswordReset(email.trim());
-      Alert.alert('สำเร็จ', 'ส่งลิงก์รีเซ็ตรหัสผ่านไปยังอีเมลของคุณแล้ว');
-    } catch (err) {
-      console.error('Password reset error (iOS):', err);
-      if (err.code === 'auth/user-not-found') {
-        setError('ไม่พบบัญชีที่ใช้อีเมลนี้ กรุณาตรวจสอบอีกครั้ง');
-      } else if (err.code === 'auth/invalid-email') {
-        setError('รูปแบบอีเมลไม่ถูกต้อง');
-      } else if (err.code === 'auth/too-many-requests') {
-        setError('คุณส่งคำขอมากเกินไป กรุณารอสักครู่แล้วลองใหม่อีกครั้ง');
+      const { resendEmailVerification } = require('../services/authService');
+      const res = await resendEmailVerification(targetEmail, password);
+      if (res.alreadyVerified) {
+        Alert.alert('ยืนยันแล้ว', 'บัญชีนี้ได้รับการยืนยันอีเมลแล้ว คุณสามารถเข้าสู่ระบบได้ทันที');
       } else {
-        setError(err.message || 'ไม่สามารถส่งอีเมลรีเซ็ตรหัสผ่านได้');
+        const msg = 'ระบบได้ส่งลิงก์ยืนยันไปยัง ' + targetEmail + ' ให้ใหม่เรียบร้อยแล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam';
+        Alert.alert('ส่งอีเมลยืนยันแล้ว', msg);
+      }
+    } catch (err) {
+      console.error('Resend verification error (iOS):', err);
+      const configurationError = getFirebaseConfigurationErrorMessage(err);
+      if (configurationError) {
+        showLoginAlert(configurationError);
+        return;
+      }
+      if (err.code === 'auth/too-many-requests') {
+        showLoginAlert('คุณส่งคำขอมากเกินไป กรุณารอสักครู่แล้วลองใหม่อีกครั้ง', 'ยืนยันอีเมล');
+      } else if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
+        showLoginAlert('รหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบรหัสผ่านอีกครั้ง', 'ยืนยันอีเมล');
+      } else {
+        showLoginAlert('ไม่สามารถส่งอีเมลยืนยันได้ กรุณาลองใหม่อีกครั้ง', 'ยืนยันอีเมล');
       }
     } finally {
       setLoading(false);
@@ -249,37 +349,73 @@ export default function LoginScreen({ onLoginSuccess }) {
   const handleEmailAuth = async () => {
     if (mode === 'signup') {
       if (!email.trim() || !password || !confirmPassword) {
-        setError('กรุณากรอกข้อมูลให้ครบถ้วน');
+        showLoginAlert('กรุณากรอกข้อมูลให้ครบถ้วน');
         return;
       }
-      if (password.length < 6) {
-        setError('รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร');
+      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
+      if (!passwordRegex.test(password)) {
+        showLoginAlert('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร ประกอบด้วยพิมพ์เล็ก พิมพ์ใหญ่ ตัวเลข และอักขระพิเศษ');
         return;
       }
       if (password !== confirmPassword) {
-        setError('รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน');
+        showLoginAlert('รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน');
         return;
       }
     } else {
       if (!email.trim() || !password) {
-        setError('กรุณากรอกอีเมลและรหัสผ่านให้ครบถ้วน');
+        showLoginAlert('กรุณากรอกอีเมลและรหัสผ่านให้ครบถ้วน');
         return;
       }
     }
 
     if (loading) return;
     setLoading(true);
-    setError('');
     try {
-      const { signInWithEmail, signUpWithEmail } = require('../services/authService');
       const result = mode === 'signup'
         ? await signUpWithEmail(email.trim(), password)
         : await signInWithEmail(email.trim(), password);
+
+      if (result.user.providerData?.some(p => p.providerId === 'password') && !result.user.emailVerified) {
+        setUnverifiedEmail(email.trim());
+        if (mode === 'signup') {
+          const msg = 'สมัครสมาชิกสำเร็จ! ระบบได้ส่งอีเมลยืนยันไปยัง ' + email.trim() + ' แล้ว กรุณาตรวจสอบกล่องจดหมาย (Inbox) หรือโฟลเดอร์ Junk/Spam';
+          Alert.alert('ตรวจสอบอีเมลของคุณ', msg);
+        } else {
+          let msg = '';
+          if (result.verificationSent === true) {
+            msg = 'บัญชีของคุณยังไม่ได้ยืนยันอีเมล ระบบได้ส่งลิงก์ยืนยันไปยัง ' + email.trim() + ' ให้ใหม่เรียบร้อยแล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam';
+          } else if (result.verificationSent === 'throttled') {
+            msg = 'ระบบได้ส่งลิงก์ยืนยันไปก่อนหน้านี้แล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam หากไม่พบกรุณารอสักครู่แล้วลองใหม่';
+          } else {
+            msg = 'กรุณายืนยันอีเมลก่อนเข้าใช้งาน (ตรวจสอบกล่องข้อความหรือ Junk/Spam ของคุณ)';
+          }
+          Alert.alert('ส่งอีเมลยืนยันแล้ว', msg);
+        }
+        await signOutUser();
+        return;
+      }
+
       finishAuthentication(result);
     } catch (loginError) {
-      setError(mode === 'signup'
-        ? 'สมัครสมาชิกไม่สำเร็จ อีเมลนี้อาจถูกใช้งานแล้ว'
-        : 'อีเมลหรือรหัสผ่านไม่ถูกต้อง');
+      console.error('Email auth error (iOS):', loginError);
+      const configurationError = getFirebaseConfigurationErrorMessage(loginError);
+      if (configurationError) {
+        showLoginAlert(configurationError);
+        return;
+      }
+      if (loginError.code === 'auth/user-not-found') {
+        showLoginAlert('ไม่พบบัญชีที่ใช้อีเมลนี้ กรุณาสมัครสมาชิกก่อน');
+      } else if (loginError.code === 'auth/wrong-password' || loginError.code === 'auth/invalid-credential') {
+        showLoginAlert('อีเมลหรือรหัสผ่านไม่ถูกต้อง (หากบัญชีนี้สมัครด้วย Google ให้เข้าสู่ระบบด้วย Google)');
+      } else if (loginError.code === 'auth/email-already-in-use') {
+        showLoginAlert('อีเมลนี้มีผู้ใช้งานแล้ว กรุณาเข้าสู่ระบบ');
+      } else if (loginError.code === 'auth/invalid-email') {
+        showLoginAlert('รูปแบบอีเมลไม่ถูกต้อง');
+      } else if (loginError.code === 'auth/too-many-requests') {
+        showLoginAlert('มีการพยายามเข้าสู่ระบบผิดหลายครั้ง กรุณารอสักครู่แล้วลองใหม่');
+      } else {
+        showLoginAlert(mode === 'signup' ? 'สมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' : 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+      }
     } finally {
       setLoading(false);
     }
@@ -294,7 +430,7 @@ export default function LoginScreen({ onLoginSuccess }) {
         useViewportSizeMeasurement
       >
         <ZStack alignment="topLeading" modifiers={[frame({ maxWidth: Infinity, maxHeight: Infinity })]}>
-          {/* Fullscreen Background Image */}
+          {/* Fullscreen Background Image (คมชัด ไม่เบลอ) */}
           {imageUri ? (
             <Image
               uiImage={imageUri}
@@ -309,11 +445,18 @@ export default function LoginScreen({ onLoginSuccess }) {
             <ZStack modifiers={[frame({ maxWidth: Infinity, maxHeight: Infinity }), background('#141722')]} />
           )}
 
-          {/* Fullscreen Gradient Scrim */}
-          <VStack
+          {/* Fullscreen Dark Gradient Overlay (ไล่เข้ม) */}
+          <ZStack
             modifiers={[
               frame({ maxWidth: Infinity, maxHeight: Infinity }),
-              background('linear-gradient(to bottom, rgba(11,13,20,0.38) 0%, rgba(11,13,20,0.68) 42%, rgba(11,13,20,0.92) 85%)'),
+              background({
+                type: 'linearGradient',
+                colors: colorScheme === 'dark'
+                  ? ['rgba(11,13,20,0.40)', 'rgba(11,13,20,0.78)', 'rgba(11,13,20,0.96)']
+                  : ['rgba(11,13,20,0.25)', 'rgba(11,13,20,0.60)', 'rgba(11,13,20,0.88)'],
+                startPoint: { x: 0.5, y: 0 },
+                endPoint: { x: 0.5, y: 1 },
+              }),
             ]}
           />
 
@@ -321,57 +464,58 @@ export default function LoginScreen({ onLoginSuccess }) {
           <VStack
             alignment="center"
             modifiers={[
-              padding({ top: 40, bottom: 36, horizontal: 20 }),
+              padding({ top: 48, bottom: 28, horizontal: 20 }),
               frame({ maxWidth: Infinity, maxHeight: Infinity }),
             ]}
           >
-            <Spacer />
-
-            {/* Brand Header - Centered in Screen */}
-            <VStack alignment="center" spacing={8} modifiers={[frame({ maxWidth: Infinity, alignment: 'center' })]}>
+            {/* Minimalist Floating Pill (แคปซูลจิ๋ว ลอยตัว ไม่เต็มพื้นที่) */}
+            <HStack
+              spacing={8}
+              modifiers={[
+                padding({ horizontal: 14, vertical: 7 }),
+                background(
+                  colorScheme === 'dark' ? 'rgba(28, 32, 44, 0.82)' : 'rgba(255, 255, 255, 0.90)',
+                  shapes.capsule()
+                ),
+                shadow({ radius: 12, y: 3, color: 'rgba(0,0,0,0.30)' }),
+              ]}
+            >
               <VStack
                 alignment="center"
                 modifiers={[
-                  padding({ all: 16 }),
-                  background('rgba(255,255,255,0.22)', shapes.circle()),
-                  shadow({ radius: 18, y: 6, color: 'rgba(0,0,0,0.3)' }),
+                  padding({ all: 5 }),
+                  background(palette.purple, shapes.circle()),
                 ]}
               >
-                <Image color="#FFFFFF" size={36} systemName="person.2.fill" />
+                <Image color="#FFFFFF" size={13} systemName="person.2.fill" />
               </VStack>
+
               <Text
                 modifiers={[
-                  font({ textStyle: 'largeTitle', weight: 'heavy', design: 'rounded' }),
-                  foregroundStyle('#FFFFFF'),
+                  font({ textStyle: 'headline', weight: 'heavy', design: 'rounded' }),
+                  foregroundStyle(colorScheme === 'dark' ? '#FFFFFF' : '#10203A'),
                 ]}
               >
                 CampusMate
               </Text>
-              <Text
-                modifiers={[
-                  font({ textStyle: 'subheadline', weight: 'medium' }),
-                  foregroundStyle('rgba(255,255,255,0.88)'),
-                ]}
-              >
-                พื้นที่เพื่อนใหม่ในรั้วมหาวิทยาลัย
-              </Text>
-            </VStack>
+            </HStack>
 
             <Spacer />
 
-            {/* Form Card - Anchored at Bottom */}
+            {/* Form Card - Anchored at Bottom (Translucent Glass Panel) */}
             <VStack
               alignment="center"
               spacing={14}
               modifiers={[
                 padding({ top: 20, bottom: 20, horizontal: 16 }),
                 frame({ maxWidth: 340, alignment: 'center' }),
-                background(palette.surface, panelShape),
-                  shadow({ radius: 24, y: 8, color: 'rgba(0,0,0,0.32)' }),
-                ]}
-              >
-                {error ? <ErrorMessage message={error} /> : null}
-
+                background(
+                  colorScheme === 'dark' ? 'rgba(23, 26, 36, 0.82)' : 'rgba(255, 255, 255, 0.88)',
+                  panelShape
+                ),
+                shadow({ radius: 24, y: 8, color: 'rgba(0,0,0,0.35)' }),
+              ]}
+            >
                 {mode === 'saved' && savedAccounts.length > 0 ? (
                   <VStack alignment="center" spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
                     <HStack spacing={6} modifiers={[frame({ maxWidth: Infinity, alignment: 'center' })]}>
@@ -407,7 +551,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                       systemImage="person.badge.plus"
                       modifiers={[
                         buttonStyle('plain'),
-                        tint('#111318'),
+                        tint(palette.purple),
                         frame({ maxWidth: Infinity }),
                       ]}
                     />
@@ -431,7 +575,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                         buttonStyle('glass'),
                         buttonBorderShape('capsule'),
                         controlSize('large'),
-                        tint('#111318'),
+                        tint(palette.text),
                         frame({ maxWidth: Infinity }),
                         disabled(loading),
                       ]}
@@ -442,7 +586,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                       systemImage="person.badge.plus"
                       modifiers={[
                         buttonStyle('plain'),
-                        tint('#111318'),
+                        tint(palette.purple),
                         frame({ maxWidth: Infinity }),
                         disabled(loading),
                       ]}
@@ -454,7 +598,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                         systemImage="person.2.circle"
                         modifiers={[
                           buttonStyle('plain'),
-                          tint('#111318'),
+                          tint(palette.secondary),
                           frame({ maxWidth: Infinity }),
                           disabled(loading),
                         ]}
@@ -486,7 +630,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                       nativeValue={nativePassword}
                       onChange={setPassword}
                       palette={palette}
-                      placeholder="อย่างน้อย 6 ตัวอักษร"
+                      placeholder="อย่างน้อย 8 ตัวอักษร"
                       systemImage="lock.fill"
                       type={mode === 'signup' ? 'newPassword' : 'password'}
                     />
@@ -501,7 +645,20 @@ export default function LoginScreen({ onLoginSuccess }) {
                         type="newPassword"
                       />
                     ) : (
-                      <HStack modifiers={[frame({ maxWidth: Infinity, alignment: 'trailing' }), padding({ bottom: 8, top: 4, trailing: 4 })]}>
+                      <HStack modifiers={[frame({ maxWidth: Infinity }), padding({ bottom: 8, top: 4, trailing: 4 })]}>
+                        {unverifiedEmail ? (
+                          <Button
+                            label="ส่งอีเมลยืนยันใหม่"
+                            onPress={handleResendVerification}
+                            modifiers={[
+                              buttonStyle('plain'),
+                              tint(palette.coral),
+                              font({ textStyle: 'caption2', weight: 'bold' }),
+                              padding({ all: 8 }),
+                            ]}
+                          />
+                        ) : null}
+                        <Spacer />
                         <Button
                           label="ลืมรหัสผ่าน?"
                           onPress={handleForgotPassword}
@@ -509,7 +666,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                             buttonStyle('plain'),
                             tint(palette.purple),
                             font({ textStyle: 'caption2', weight: 'bold' }),
-                            padding({ all: 8 })
+                            padding({ all: 8 }),
                           ]}
                         />
                       </HStack>
@@ -527,7 +684,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                       systemImage="chevron.left"
                       modifiers={[
                         buttonStyle('plain'),
-                        tint('#111318'),
+                        tint(palette.secondary),
                         frame({ maxWidth: Infinity }),
                         disabled(loading),
                       ]}
@@ -535,7 +692,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                   </VStack>
                 )}
               </VStack>
-            </VStack>
+          </VStack>
         </ZStack>
       </Host>
     </View>
@@ -605,7 +762,7 @@ function AuthButton({ label, loading, onPress, palette, systemImage }) {
         buttonStyle('glassProminent'),
         buttonBorderShape('capsule'),
         controlSize('large'),
-        tint('#111318'),
+        tint(palette.purple),
         frame({ maxWidth: Infinity }),
         disabled(loading),
       ]}
@@ -613,34 +770,8 @@ function AuthButton({ label, loading, onPress, palette, systemImage }) {
   );
 }
 
-function ErrorMessage({ message }) {
-  const palette = usePalette();
-  return (
-    <HStack
-      alignment="top"
-      spacing={8}
-      modifiers={[
-        padding({ all: 12 }),
-        frame({ maxWidth: Infinity, alignment: 'leading' }),
-        background(palette.dangerSoft, shapes.roundedRectangle({ cornerRadius: 14 })),
-      ]}
-    >
-      <Image color={palette.danger} size={16} systemName="exclamationmark.triangle.fill" />
-      <Text
-        modifiers={[
-          font({ textStyle: 'caption', weight: 'semibold' }),
-          foregroundStyle(palette.danger),
-          lineLimit(3),
-        ]}
-      >
-        {message}
-      </Text>
-    </HStack>
-  );
-}
-
 function SavedAccountRow({ acc, cardShape, onRemove, onSelect, palette }) {
-  const remoteAvatar = useRemoteImage(acc.avatarUri || acc.photoURL);
+  const remoteAvatar = useRemoteImage(acc.avatarUri || acc.photoURL, acc.updatedAt, acc.id);
 
   return (
     <HStack
@@ -691,7 +822,7 @@ function SavedAccountRow({ acc, cardShape, onRemove, onSelect, palette }) {
           buttonStyle('glassProminent'),
           buttonBorderShape('capsule'),
           controlSize('mini'),
-          tint('#111318'),
+          tint(palette.purple),
           lineLimit(1),
         ]}
       />

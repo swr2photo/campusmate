@@ -1,4 +1,5 @@
-import { Keyboard, Modal, Pressable, SafeAreaView, Text as RNText, useColorScheme, View, Dimensions, Image as RNImage, Animated, ScrollView as RNScrollView } from 'react-native';
+import { Alert, Keyboard, Modal, Platform, Pressable, Text as RNText, useColorScheme, View, Dimensions, Image as RNImage, Animated, ScrollView as RNScrollView, useWindowDimensions } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { SymbolView } from 'expo-symbols';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
@@ -91,6 +92,11 @@ const insetShape = shapes.roundedRectangle({ cornerRadius: 16, roundedCornerStyl
 export default function MeetupScreen({ onToast }) {
   const palette = usePalette();
   const colorScheme = useColorScheme();
+  const { width: windowWidth } = useWindowDimensions();
+  // IPadAspectFrame in app/_layout.js clamps the screen layout canvas to 390pt on iPad
+  const isIPadFrame = Platform.OS === 'ios' && Platform.isPad && windowWidth > 430;
+  const layoutWidth = isIPadFrame ? 390 : windowWidth;
+  const bannerWidth = layoutWidth - 40;
   const { campusSpots, chooseMeetup, updateMeetupSchedule, clearMeetup, selectedMeetup } = useApp();
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [query, setQuery] = useState('');
@@ -137,7 +143,7 @@ export default function MeetupScreen({ onToast }) {
     setShowSchedule(true);
   };
 
-  const confirmSchedule = () => {
+  const confirmSchedule = async () => {
     if (!pendingSpot) return;
     
     const year = schedDate.getFullYear();
@@ -153,20 +159,60 @@ export default function MeetupScreen({ onToast }) {
       maxPeople: parseInt(maxPeopleState.get(), 10) || 2,
       message: messageState.get().trim()
     };
-    chooseMeetup(pendingSpot, schedule);
-    setShowSchedule(false);
-    setPendingSpot(null);
-    onToast?.(`ปักหมุด ${pendingSpot.name} แล้ว`);
+    try {
+      if (selectedMeetup?.id === pendingSpot.id && updateMeetupSchedule) {
+        await updateMeetupSchedule(schedule);
+      } else {
+        await chooseMeetup(pendingSpot, schedule);
+      }
+      const successMessage = `ปักหมุด ${pendingSpot.name} แล้ว`;
+      setShowSchedule(false);
+      setPendingSpot(null);
+      setTimeout(() => onToast?.(successMessage), 350);
+    } catch (error) {
+      console.error('confirmSchedule error:', error);
+      onToast?.('บันทึกเวลานัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    }
   };
 
-  const handleQuickChoose = (spot) => {
-    chooseMeetup(spot);
-    onToast?.(`เลือก ${spot.name} เป็นจุดนัดหมายแล้ว`);
+  const handleQuickChoose = async (spot, deferToast = false) => {
+    try {
+      await chooseMeetup(spot);
+      const successMessage = `เลือก ${spot.name} เป็นจุดนัดหมายแล้ว`;
+      if (deferToast) setTimeout(() => onToast?.(successMessage), 350);
+      else onToast?.(successMessage);
+    } catch (error) {
+      console.error('handleQuickChoose error:', error);
+      if (deferToast) setTimeout(() => onToast?.('เลือกจุดนัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info'), 350);
+      else onToast?.('เลือกจุดนัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    }
   };
 
   const handleClear = () => {
-    clearMeetup();
-    onToast?.('ยกเลิกจุดนัดหมายแล้ว', 'info');
+    const spotName = selectedMeetup?.name ? ` "${selectedMeetup.name}"` : '';
+    Alert.alert(
+      'ยืนยันยกเลิกจุดนัดหมาย',
+      `คุณต้องการยกเลิกจุดนัดหมาย${spotName} ใช่หรือไม่?`,
+      [
+        {
+          text: 'ไม่ยกเลิก',
+          style: 'cancel',
+        },
+        {
+          text: 'ยืนยันยกเลิก',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await clearMeetup();
+              onToast?.('ยกเลิกจุดนัดหมายแล้ว', 'info');
+            } catch (error) {
+              console.error('[Meetup.ios] handleClear error:', error);
+              onToast?.('ยกเลิกจุดนัดหมายไม่สำเร็จ', 'info');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -242,7 +288,7 @@ export default function MeetupScreen({ onToast }) {
       </Animated.View>
 
       <Animated.ScrollView
-        style={{ flex: 1 }}
+        style={{ flex: 1, width: '100%' }}
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
         onScroll={Animated.event(
@@ -250,7 +296,7 @@ export default function MeetupScreen({ onToast }) {
           { useNativeDriver: true }
         )}
       >
-        <Host colorScheme={colorScheme} seedColor={palette.coral} matchContents={{ vertical: true }}>
+        <Host colorScheme={colorScheme} seedColor={palette.coral} matchContents={{ vertical: true }} style={{ width: '100%' }}>
           <VStack
             alignment="leading"
             spacing={16}
@@ -260,7 +306,12 @@ export default function MeetupScreen({ onToast }) {
             ]}
           >
 
-          <CampusHero onOpenMap={() => openMapForSpot(selectedMeetup || visibleSpots[0])} selectedMeetup={selectedMeetup} />
+          <CampusHero
+            bannerHeight={180}
+            bannerWidth={bannerWidth}
+            onOpenMap={() => openMapForSpot(selectedMeetup || visibleSpots[0])}
+            selectedMeetup={selectedMeetup}
+          />
 
           <HStack spacing={8} modifiers={[
             padding({ horizontal: 13, vertical: 8 }),
@@ -365,24 +416,14 @@ export default function MeetupScreen({ onToast }) {
         presentationStyle="pageSheet"
       >
         <SafeAreaView style={{ flex: 1, backgroundColor: colorScheme === 'dark' ? '#14171B' : '#F6F8FC' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 12, paddingBottom: 10 }}>
+          <View style={{ alignItems: 'center', paddingTop: 8, paddingBottom: 2 }}>
+            <View style={{ width: 44, height: 5, borderRadius: 2.5, backgroundColor: colorScheme === 'dark' ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.18)' }} />
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, paddingTop: 6, paddingBottom: 10 }}>
             <SymbolView name="map.fill" size={20} tintColor={palette.coral} style={{ marginRight: 8 }} />
-            <RNText style={{ fontSize: 17, fontWeight: '800', flex: 1, color: colorScheme === 'dark' ? '#F7F8FA' : '#10203A', letterSpacing: -0.3 }}>
+            <RNText style={{ fontSize: 17, fontWeight: '800', color: colorScheme === 'dark' ? '#F7F8FA' : '#10203A', letterSpacing: -0.3, textAlign: 'center' }}>
               แผนที่วิทยาเขต ม.อ. หาดใหญ่
             </RNText>
-            <Host colorScheme={colorScheme} style={{ width: 32, height: 32 }}>
-              <Button
-                label="ปิด"
-                onPress={() => setShowMapModal(false)}
-                systemImage="xmark"
-                modifiers={[
-                  buttonStyle('glass'),
-                  buttonBorderShape('circle'),
-                  controlSize('large'),
-                  labelStyle('iconOnly'),
-                ]}
-              />
-            </Host>
           </View>
           <View style={{ flex: 1, paddingHorizontal: 16, paddingBottom: 16 }}>
             <View style={{ flex: 1, borderRadius: 22, overflow: 'hidden' }}>
@@ -390,7 +431,7 @@ export default function MeetupScreen({ onToast }) {
                 spots={campusSpots}
                 selectedSpot={mapTargetSpot || selectedMeetup}
                 onSelectSpot={(spot) => {
-                  handleQuickChoose(spot);
+                  handleQuickChoose(spot, true);
                   setShowMapModal(false);
                 }}
                 onScheduleSpot={(spot) => {
@@ -491,33 +532,36 @@ const CAMPUS_PHOTOS = [
   require('../assets/images/campus/DSC_8697.jpg'),
 ];
 
-function CampusHero({ onOpenMap, selectedMeetup }) {
+function CampusHero({ bannerHeight = 180, bannerWidth, onOpenMap, selectedMeetup }) {
   const palette = usePalette();
-  const screenWidth = Dimensions.get('window').width;
-  const bannerWidth = screenWidth - 40;
+  const { width: windowWidth } = useWindowDimensions();
+  const isIPadFrame = Platform.OS === 'ios' && Platform.isPad && windowWidth > 430;
+  const layoutWidth = isIPadFrame ? 390 : windowWidth;
+  const width = Math.min(bannerWidth || (layoutWidth - 40), layoutWidth - 40);
+  const height = bannerHeight || 180;
   
   return (
-    <VStack modifiers={[frame({ maxWidth: Infinity }), padding({ bottom: 10 })]}>
+    <VStack modifiers={[frame({ width: width, height: height, alignment: 'center' }), padding({ bottom: 10 })]}>
       <ZStack
         alignment="bottomLeading"
         modifiers={[
-          frame({ width: bannerWidth, height: 180 }),
+          frame({ width: width, height: height }),
           background(palette.surface, cardShape),
           shadow({ radius: 18, y: 7, color: 'rgba(0,0,0,0.18)' }),
         ]}
       >
-        <RNHostView matchContents={true}>
-          <View style={{ width: bannerWidth, height: 180, borderRadius: 24, overflow: 'hidden' }}>
-            <RNScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} style={{ width: bannerWidth, height: 180 }}>
+        <RNHostView matchContents={false} style={{ width: width, height: height }}>
+          <View style={{ width: width, height: height, borderRadius: 24, overflow: 'hidden' }}>
+            <RNScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} style={{ width: width, height: height }}>
               {CAMPUS_PHOTOS.map((photo, index) => (
-                <View key={index} style={{ width: bannerWidth, height: 180 }}>
-                  <RNImage source={photo} style={{ width: bannerWidth, height: 180 }} resizeMode="cover" />
+                <View key={index} style={{ width: width, height: height }}>
+                  <RNImage source={photo} style={{ width: width, height: height }} resizeMode="cover" />
                 </View>
               ))}
             </RNScrollView>
             
             <MaskedView
-              style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: 110 }}
+              style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: Math.min(110, height * 0.6) }}
               maskElement={
                 <LinearGradient colors={['#FFFFFF00', '#FFFFFFFF']} style={{ flex: 1 }} />
               }

@@ -1,6 +1,7 @@
 import React from 'react';
 import { router } from 'expo-router';
-import { SafeAreaView, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import LikesScreen from '../src/screens/LikesScreen';
 import { useToast } from '../src/context/ToastContext';
 import { colors, useTheme } from '../src/theme';
@@ -16,7 +17,7 @@ export default function LikesRoute() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView edges={['top', 'bottom']} style={styles.container}>
       <LikesScreen
         onClose={close}
         onOpenChat={(chatId) => {

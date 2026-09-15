@@ -1,5 +1,5 @@
 import React from 'react';
-import { DynamicColorIOS } from 'react-native';
+import { useColorScheme } from 'react-native';
 import { DefaultTheme, Redirect, ThemeProvider } from 'expo-router';
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
 import { useApp } from '../../src/context/AppContext';
@@ -13,19 +13,29 @@ const LABELS = {
   meetup: '\u0e01\u0e34\u0e08\u0e01\u0e23\u0e23\u0e21',
 };
 
-const tabTint = DynamicColorIOS({ light: colors.primary, dark: '#A9AAFF' });
-
 export default function NativeTabLayout() {
-  const { isLoggedIn, user } = useAuth();
-  const { conversations, pendingIncomingLikes, profile } = useApp();
-  const activeUserId = user?.id || profile?.id;
-  const unreadCount = (conversations || []).reduce((sum, item) => sum + (activeUserId ? (item.unreadCounts?.[activeUserId] || 0) : 0), 0);
+  const { isLoggedIn } = useAuth();
+  const { pendingIncomingLikes, profile, totalUnreadMessages = 0 } = useApp();
+  const colorScheme = useColorScheme();
+  const tabTint = colorScheme === 'dark' ? '#A9AAFF' : colors.primary;
+  const unreadCount = totalUnreadMessages;
 
   if (!isLoggedIn) return <Redirect href="/" />;
 
   return (
     <ThemeProvider value={DefaultTheme}>
-      <NativeTabs disableTransparentOnScrollEdge tintColor={tabTint}>
+      <NativeTabs
+        disableTransparentOnScrollEdge
+        tintColor={tabTint}
+        badgeBackgroundColor="#FF3B30"
+        sidebarAdaptable={false}
+        minimizeBehavior="automatic"
+        unstable_nativeProps={{
+          ios: {
+            tabBarControllerMode: 'tabBar',
+          },
+        }}
+      >
         <NativeTabs.Trigger name="home" contentStyle={{ backgroundColor: colors.canvas }}>
           <NativeTabs.Trigger.Icon sf={{ default: 'house', selected: 'house.fill' }} />
           <NativeTabs.Trigger.Label>{LABELS.home}</NativeTabs.Trigger.Label>
@@ -52,3 +62,5 @@ export default function NativeTabLayout() {
     </ThemeProvider>
   );
 }
+
+

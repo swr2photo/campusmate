@@ -3,25 +3,46 @@
     "name": "CampusMate",
     "slug": "campusmate",
     "scheme": "campusmate",
-    "version": "1.0.6",
+    "version": "2.0.18",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/login-campus-hero.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#0B0D14"
+    },
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.campusmate.app"
+      "bundleIdentifier": "com.campusmate.app",
+      "googleServicesFile": "./GoogleService-Info.plist",
+      "infoPlist": {
+        "NSCameraUsageDescription": "อนุญาตให้ CampusMate เข้าถึงกล้องเพื่อใช้วิดีโอคอล",
+        "NSMicrophoneUsageDescription": "อนุญาตให้ CampusMate เข้าถึงไมโครโฟนเพื่อบันทึกเสียงและโทรด้วยเสียง",
+        "NSPhotoLibraryUsageDescription": "อนุญาตให้ CampusMate เข้าถึงคลังรูปภาพเพื่อส่งรูปภาพในห้องแชต"
+      }
     },
     "android": {
       "package": "com.campusmate.app",
       "googleServicesFile": "./google-services.json",
+      "versionCode": 58,
       "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#5B5CE2"
       },
       "permissions": [
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.CAMERA",
+        "android.permission.VIBRATE"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_MEDIA_AUDIO"
       ]
     },
     "web": {
@@ -30,6 +51,15 @@
     "plugins": [
       "expo-font",
       "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0B0D14",
+          "image": "./assets/login-campus-hero.png",
+          "imageWidth": 360,
+          "resizeMode": "cover"
+        }
+      ],
       "expo-status-bar",
       "expo-asset",
       [
@@ -45,7 +75,26 @@
           "color": "#5B5CE2",
           "defaultChannel": "messages"
         }
-      ]
+      ],
+      "expo-task-manager",
+      "expo-secure-store",
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "อนุญาตให้ CampusMate เข้าถึงคลังรูปภาพเพื่อเลือกและส่งรูปภาพในห้องแชต",
+          "savePhotosPermission": "อนุญาตให้ CampusMate บันทึกรูปภาพลงในเครื่อง",
+          "granularPermissions": [
+            "photo",
+            "video"
+          ]
+        }
+      ],
+      "@livekit/react-native-expo-plugin",
+      "@config-plugins/react-native-webrtc",
+      "expo-camera",
+      "expo-video",
+      "react-native-notify-kit"
     ],
     "experiments": {
       "typedRoutes": true
@@ -57,9 +106,7 @@
       }
     },
     "owner": "doralikon",
-    "runtimeVersion": {
-      "policy": "appVersion"
-    },
+    "runtimeVersion": "2.0.18",
     "updates": {
       "url": "https://u.expo.dev/5ca64c3a-3182-460f-87f6-2342aaba4e2f"
     }

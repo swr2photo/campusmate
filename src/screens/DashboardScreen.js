@@ -12,15 +12,16 @@ import FeatureIcon from '../components/FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 
 const SHORTCUTS = [
-  { id: 'likes', title: 'คนที่ถูกใจคุณ', hint: 'ดูว่าใครสนใจคุณ แล้วเลือกตอบกลับ', icon: 'heart.fill', colorKey: 'coral' },
+  { id: 'likes', title: 'ถูกใจ & จับคู่', hint: 'ดูคนที่ถูกใจคุณ คำขอที่ส่งไป และคู่ที่จับคู่แล้ว', icon: 'heart.fill', colorKey: 'coral' },
   { id: 'discover', title: 'ค้นหาเพื่อน', hint: 'ค้นหาคนที่ชอบกิจกรรมเหมือนกัน', icon: 'person.2.fill', colorKey: 'violet' },
   { id: 'chat', title: 'แชตของฉัน', hint: 'กลับไปคุยกับเพื่อนที่จับคู่แล้ว', icon: 'message.fill', colorKey: 'blue' },
   { id: 'meetup', title: 'จุดนัดหมาย', hint: 'เลือกสถานที่นัดพบที่สะดวกและปลอดภัย', icon: 'mappin.and.ellipse', colorKey: 'mint' },
+  { id: 'appointments', title: 'ประวัติการนัด', hint: 'ดูวันเวลาและรายละเอียดนัดหมายกับแต่ละคน', icon: 'calendar.badge.clock', colorKey: 'coral' },
 ];
 
 export default function DashboardScreen({ onNavigate, onOpenProfile }) {
   const { colors } = useTheme();
-  const { conversations = [], matchedProfileIds = [], pendingIncomingLikes = [], profile } = useApp();
+  const { appointments = [], conversations = [], matchedProfileIds = [], pendingIncomingLikes = [], profile } = useApp();
   const activeUserId = profile?.id;
   const unreadCount = conversations.reduce(
     (sum, item) => sum + (item.unreadCounts?.[activeUserId] || item.unread || 0),
@@ -28,17 +29,19 @@ export default function DashboardScreen({ onNavigate, onOpenProfile }) {
   );
   const matchedCount = Math.max(matchedProfileIds.length, conversations.length);
   const displayName = profile?.name || profile?.nickname || 'เพื่อน';
+  const activeAppointmentCount = appointments.filter((appointment) => appointment.status === 'active').length;
 
   return (
     <IosLikeScreen>
       <View style={[styles.header, { borderBottomColor: colors.line }]}>
         <View style={styles.headerCopy}>
           <Text style={[styles.greeting, { color: colors.ink }]}>สวัสดี {displayName}</Text>
-          <Text style={[styles.headerSubtitle, { color: colors.inkMuted }]}>พื้นที่เล็ก ๆ สำหรับหาเพื่อนที่ชอบทำกิจกรรมเหมือนกัน</Text>
         </View>
-        <Pressable accessibilityLabel="เปิดโปรไฟล์" accessibilityRole="button" onPress={onOpenProfile} style={({ pressed }) => [pressed && styles.pressed]}>
-          <IosLikeAvatar color={colors.primarySoft} emoji={profile?.avatar} size={48} uri={profile?.avatarUri} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable accessibilityLabel="เปิดโปรไฟล์" accessibilityRole="button" onPress={onOpenProfile} style={({ pressed }) => [pressed && styles.pressed]}>
+            <IosLikeAvatar cacheScope={profile?.id} cacheVersion={profile?.updatedAt} color={colors.primarySoft} emoji={profile?.avatar} size={44} uri={profile?.avatarUri} />
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
@@ -54,7 +57,13 @@ export default function DashboardScreen({ onNavigate, onOpenProfile }) {
         <View style={styles.shortcutGrid}>
           {SHORTCUTS.map((shortcut) => (
             <ShortcutCard
-              badge={shortcut.id === 'likes' ? pendingIncomingLikes.length : shortcut.id === 'chat' ? unreadCount : 0}
+              badge={shortcut.id === 'likes'
+                ? pendingIncomingLikes.length
+                : shortcut.id === 'chat'
+                  ? unreadCount
+                  : shortcut.id === 'appointments'
+                    ? activeAppointmentCount
+                    : 0}
               colors={colors}
               key={shortcut.id}
               onPress={() => onNavigate(shortcut.id)}
@@ -95,7 +104,6 @@ function ShortcutCard({ badge, colors, onPress, shortcut }) {
 
 function MatchStatsCard({ conversationsCount, matchedCount, pendingCount, unreadCount }) {
   const { colors } = useTheme();
-  const max = Math.max(1, matchedCount, pendingCount, conversationsCount, unreadCount);
   const activeRate = matchedCount > 0 ? Math.min(100, Math.round((conversationsCount / matchedCount) * 100)) : 0;
   const waitingCount = Math.max(0, matchedCount - conversationsCount);
   const stats = [
@@ -115,7 +123,6 @@ function MatchStatsCard({ conversationsCount, matchedCount, pendingCount, unread
       <View style={styles.statsHeader}>
         <View style={styles.statsCopy}>
           <Text style={[styles.statsTitle, { color: colors.ink }]}>สถิติแมตช์</Text>
-          <Text style={[styles.statsSubtitle, { color: colors.inkMuted }]}>ภาพรวมการจับคู่และการเริ่มสนทนา</Text>
         </View>
         <View style={styles.totalWrap}>
           <Text style={[styles.totalValue, { color: colors.primary }]}>{matchedCount}</Text>
@@ -123,17 +130,7 @@ function MatchStatsCard({ conversationsCount, matchedCount, pendingCount, unread
         </View>
       </View>
 
-      <View style={styles.chart}>
-        {stats.map((stat) => (
-          <View key={stat.label} style={styles.chartColumn}>
-            <View style={[styles.chartTrack, { backgroundColor: colors.surfaceRaised }]}>
-              <View style={[styles.chartBar, { backgroundColor: stat.color, height: `${Math.max(8, (stat.value / max) * 100)}%` }]} />
-            </View>
-            <Text style={[styles.chartValue, { color: colors.ink }]}>{stat.value}</Text>
-            <Text numberOfLines={1} style={[styles.chartLabel, { color: colors.inkMuted }]}>{stat.label}</Text>
-          </View>
-        ))}
-      </View>
+      <HalfDonutChart activeRate={activeRate} colors={colors} />
 
       <View style={styles.legendGrid}>
         {stats.map((stat) => <StatLegend key={stat.label} {...stat} />)}
@@ -144,6 +141,47 @@ function MatchStatsCard({ conversationsCount, matchedCount, pendingCount, unread
         <Text style={[styles.insightText, { color: colors.inkMuted }]}>{insight} · อัตราเริ่มแชต {activeRate}%</Text>
       </View>
     </IosLikeCard>
+  );
+}
+
+function HalfDonutChart({ activeRate, colors }) {
+  const segmentCount = 25;
+  const activeSegments = Math.round((activeRate / 100) * segmentCount);
+  const centerX = 110;
+  const centerY = 105;
+  const radiusValue = 82;
+  const segments = Array.from({ length: segmentCount }, (_, index) => {
+    const angle = 180 - (index * 180) / (segmentCount - 1);
+    const radians = (angle * Math.PI) / 180;
+    return {
+      angle,
+      index,
+      left: centerX + radiusValue * Math.cos(radians) - 6,
+      top: centerY - radiusValue * Math.sin(radians) - 11,
+    };
+  });
+
+  return (
+    <View accessibilityLabel={`อัตราเริ่มแชต ${activeRate}%`} style={styles.donutChart}>
+      {segments.map((segment) => (
+        <View
+          key={segment.index}
+          style={[
+            styles.donutSegment,
+            {
+              backgroundColor: segment.index < activeSegments ? colors.primary : colors.surfaceRaised,
+              left: segment.left,
+              top: segment.top,
+              transform: [{ rotate: `${90 - segment.angle}deg` }],
+            },
+          ]}
+        />
+      ))}
+      <View style={styles.donutCenter}>
+        <Text style={[styles.donutValue, { color: colors.ink }]}>{activeRate}%</Text>
+        <Text style={[styles.donutLabel, { color: colors.inkMuted }]}>เริ่มแชตแล้ว</Text>
+      </View>
+    </View>
   );
 }
 
@@ -161,6 +199,7 @@ function StatLegend({ color, label, value }) {
 const styles = StyleSheet.create({
   header: { alignItems: 'center', borderBottomWidth: 1, flexDirection: 'row', minHeight: 106, paddingHorizontal: spacing.lg, paddingTop: 38, paddingBottom: spacing.md },
   headerCopy: { flex: 1, paddingRight: spacing.md },
+  headerActions: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
   greeting: { fontSize: type.title1, fontWeight: '800', letterSpacing: -0.5 },
   headerSubtitle: { fontSize: type.caption, lineHeight: 18, marginTop: 5 },
   content: { gap: spacing.xl, paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg, paddingTop: spacing.xl },
@@ -180,12 +219,11 @@ const styles = StyleSheet.create({
   totalWrap: { alignItems: 'flex-end' },
   totalValue: { fontSize: type.title, fontWeight: '800' },
   totalLabel: { fontSize: type.caption2, fontWeight: '600', marginTop: 1 },
-  chart: { alignItems: 'flex-end', flexDirection: 'row', gap: spacing.md, height: 170, justifyContent: 'space-around', marginTop: spacing.lg },
-  chartColumn: { alignItems: 'center', flex: 1, height: '100%', justifyContent: 'flex-end' },
-  chartTrack: { borderRadius: radius.sm, height: 112, justifyContent: 'flex-end', overflow: 'hidden', width: 26 },
-  chartBar: { borderRadius: radius.sm, minHeight: 8, width: '100%' },
-  chartValue: { fontSize: type.caption, fontWeight: '800', marginTop: 6 },
-  chartLabel: { fontSize: type.caption2, marginTop: 2 },
+  donutChart: { alignSelf: 'center', height: 124, marginTop: spacing.lg, position: 'relative', width: 220 },
+  donutSegment: { borderRadius: 6, height: 22, position: 'absolute', width: 12 },
+  donutCenter: { alignItems: 'center', bottom: 0, left: 45, position: 'absolute', right: 45 },
+  donutValue: { fontSize: type.title, fontWeight: '800' },
+  donutLabel: { fontSize: type.caption2, fontWeight: '600', marginTop: 1 },
   legendGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.md },
   legendItem: { alignItems: 'center', borderRadius: radius.sm, flexDirection: 'row', minHeight: 36, paddingHorizontal: spacing.sm, width: '48%' },
   legendDot: { borderRadius: 4, height: 8, marginRight: 6, width: 8 },

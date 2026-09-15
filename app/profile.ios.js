@@ -1,6 +1,6 @@
 import React from 'react';
 import { router } from 'expo-router';
-import ProfileScreen from '../src/screens/ProfileScreen';
+import ProfileScreen from '../src/screens/ProfileScreen.ios';
 import { useAuth } from '../src/context/AuthContext';
 import { useToast } from '../src/context/ToastContext';
 
@@ -21,6 +21,7 @@ export default function ProfileRoute() {
         router.replace('/');
       }}
       onToast={showToast}
+      showHeader
     />
   );
 }

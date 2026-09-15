@@ -1,11 +1,11 @@
 import React from 'react';
-import { ActivityIndicator, ImageBackground, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, ImageBackground, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import FeatureIcon from './FeatureIcon';
 
 const heroImage = require('../../assets/login-campus-hero.png');
+const appIcon = require('../../assets/icon.png');
 
-export default function AppSplashScreen({ message = 'กำลังเข้าสู่ระบบ...' }) {
+export default function AppSplashScreen({ message }) {
   return (
     <ImageBackground
       source={heroImage}
@@ -13,22 +13,27 @@ export default function AppSplashScreen({ message = 'กำลังเข้า
       imageStyle={styles.backgroundImage}
     >
       <LinearGradient
-        colors={['rgba(11,13,20,0.42)', 'rgba(11,13,20,0.72)', 'rgba(11,13,20,0.92)']}
-        locations={[0, 0.5, 0.9]}
+        colors={['rgba(11,13,20,0.38)', 'rgba(11,13,20,0.68)', 'rgba(11,13,20,0.92)']}
+        locations={[0, 0.45, 0.9]}
         style={styles.gradient}
       >
         <View style={styles.centerContent}>
-          <View style={styles.logoCircle}>
-            <FeatureIcon color="#FFFFFF" name="person.2.fill" size={40} />
+          <View style={styles.logoBadgeContainer}>
+            <Image source={appIcon} style={styles.appLogo} />
           </View>
-
           <Text style={styles.appName}>CampusMate</Text>
           <Text style={styles.appTagline}>พื้นที่เพื่อนใหม่ในรั้วมหาวิทยาลัย</Text>
 
-          <View style={styles.loadingCapsule}>
-            <ActivityIndicator size="small" color="#FFFFFF" />
-            <Text style={styles.loadingText}>{message}</Text>
-          </View>
+          {message ? (
+            <View style={styles.loadingCapsule}>
+              <ActivityIndicator size="small" color="#FFFFFF" />
+              <Text style={styles.loadingText}>{message}</Text>
+            </View>
+          ) : (
+            <View style={styles.loadingIndicatorOnly}>
+              <ActivityIndicator size="small" color="rgba(255, 255, 255, 0.7)" />
+            </View>
+          )}
         </View>
       </LinearGradient>
     </ImageBackground>
@@ -54,20 +59,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: '100%',
   },
-  logoCircle: {
+  logoBadgeContainer: {
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.22)',
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    borderRadius: 44,
-    borderWidth: 1,
-    height: 88,
     justifyContent: 'center',
-    marginBottom: 18,
-    shadowColor: '#000',
+    marginBottom: 20,
+    shadowColor: '#5B5CE2',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.35,
-    shadowRadius: 16,
-    width: 88,
+    shadowOpacity: 0.45,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  appLogo: {
+    borderRadius: 22,
+    height: 84,
+    width: 84,
+  },
+  loadingIndicatorOnly: {
+    marginTop: 36,
+    height: 24,
+    justifyContent: 'center',
   },
   appName: {
     color: '#FFFFFF',

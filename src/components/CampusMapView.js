@@ -25,6 +25,32 @@ function getSpotCoordinates(spot) {
   };
 }
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[character]));
+}
+
+function serializeForInlineScript(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+function createHtmlNonce() {
+  const randomValues = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(randomValues);
+  else randomValues.forEach((_, index) => { randomValues[index] = Math.floor(Math.random() * 256); });
+  return Array.from(randomValues, (value) => value.toString(16).padStart(2, '0')).join('');
+}
+
 const CATEGORY_COLORS = {
   sports: '#FF7A6B',
   gym: '#FF9500',
@@ -64,7 +90,7 @@ export function openInExternalMaps(spot) {
 }
 
 function generateMapHtml(spots, selectedSpot, isDark) {
-  const spotsJson = JSON.stringify(
+  const spotsJson = serializeForInlineScript(
     spots.map((s) => {
       const { latitude, longitude } = getSpotCoordinates(s);
       return {
@@ -76,7 +102,7 @@ function generateMapHtml(spots, selectedSpot, isDark) {
         color: CATEGORY_COLORS[s.category] || CATEGORY_COLORS.default,
         lat: latitude,
         lng: longitude,
-        distance: s.distance || '',
+        distance: escapeHtml(s.distance || ''),
       };
     })
   );
@@ -89,9 +115,12 @@ function generateMapHtml(spots, selectedSpot, isDark) {
     : selectedSpot;
   const { latitude: initialLat, longitude: initialLng } = getSpotCoordinates(currentSelectedSpot);
   const selectedId = currentSelectedSpot?.id || '';
+  const selectedIdJson = serializeForInlineScript(String(selectedId));
+  const htmlNonce = createHtmlNonce();
 
   const bg = isDark ? '#14171B' : '#EFE9E1'; // Adjust background for normal map
-  const cardBg = isDark ? 'rgba(30,34,40,0.97)' : 'rgba(255,255,255,0.97)';
+  const cardBgOpacity = Platform.OS === 'ios' ? '0.97' : '1';
+  const cardBg = isDark ? `rgba(30,34,40,${cardBgOpacity})` : `rgba(255,255,255,${cardBgOpacity})`;
   const textColor = isDark ? '#F7F8FA' : '#10203A';
   const subColor = isDark ? '#A0AEC0' : '#64748B';
   const borderColor = isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
@@ -105,6 +134,7 @@ function generateMapHtml(spots, selectedSpot, isDark) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${htmlNonce}' https://unpkg.com; style-src 'unsafe-inline' https://unpkg.com; img-src data: https://unpkg.com https://mt1.google.com; connect-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none';" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
@@ -182,7 +212,7 @@ function generateMapHtml(spots, selectedSpot, isDark) {
       border-radius: 16px;
       box-shadow: 0 10px 40px rgba(0,0,0,0.22);
       padding: 0; border: 1px solid ${borderColor};
-      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      ${Platform.OS === 'ios' ? 'backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);' : ''}
     }
     .leaflet-popup-tip { background: ${cardBg}; }
     .leaflet-popup-content { margin: 0 !important; }
@@ -221,7 +251,7 @@ function generateMapHtml(spots, selectedSpot, isDark) {
       display: flex; align-items: center; justify-content: center;
       box-shadow: 0 2px 12px rgba(0,0,0,0.15);
       cursor: pointer; transition: transform 0.15s;
-      backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      ${Platform.OS === 'ios' ? 'backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);' : ''}
     }
     .recenter-btn:active { transform: scale(0.9); }
     .recenter-btn svg { width: 18px; height: 18px; color: #007AFF; }
@@ -229,21 +259,30 @@ function generateMapHtml(spots, selectedSpot, isDark) {
 </head>
 <body>
   <div id="map"></div>
-  <div class="recenter-btn" onclick="recenterToMe()" title="ตำแหน่งของฉัน">
+  <div class="recenter-btn" title="ตำแหน่งของฉัน">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
       <circle cx="12" cy="12" r="3"/>
       <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
     </svg>
   </div>
-  <script>
+  <script nonce="${htmlNonce}">
     var spots = ${spotsJson};
-    var selectedId = "${selectedId}";
+    var selectedId = ${selectedIdJson};
     var myLocationMarker = null;
     var myLat = null, myLng = null;
 
+    function escapeHtml(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, function(character) {
+        return {
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[character];
+      });
+    }
+
+    var isTablet = window.innerWidth >= 700;
     var map = L.map('map', {
       center: [${initialLat}, ${initialLng}],
-      zoom: 16,
+      zoom: isTablet ? 15 : 16,
       zoomControl: true,
       attributionControl: false
     });
@@ -267,8 +306,8 @@ function generateMapHtml(spots, selectedSpot, isDark) {
             '<svg viewBox="0 0 24 24">' + spot.icon + '</svg>' +
           '</div>' +
           '<div>' +
-            '<div class="popup-name">' + spot.name + '</div>' +
-            '<div class="popup-cat" style="color:' + spot.color + ';">' + spot.categoryLabel + '</div>' +
+          '<div class="popup-name">' + escapeHtml(spot.name) + '</div>' +
+          '<div class="popup-cat" style="color:' + spot.color + ';">' + escapeHtml(spot.categoryLabel) + '</div>' +
           '</div>' +
         '</div>' +
         (spot.distance ? '<div class="popup-distance"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/></svg>' + spot.distance + '</div>' : '') +
@@ -312,6 +351,13 @@ function generateMapHtml(spots, selectedSpot, isDark) {
       if (isActive) { marker.openPopup(); }
     });
 
+    if (!selectedId && spots && spots.length > 1) {
+      try {
+        var group = L.featureGroup(Object.values(markersMap));
+        map.fitBounds(group.getBounds().pad(0.12));
+      } catch (e) {}
+    }
+
     // --- My Location (blue dot) ---
     function showMyLocation(lat, lng) {
       myLat = lat; myLng = lng;
@@ -345,6 +391,8 @@ function generateMapHtml(spots, selectedSpot, isDark) {
         map.flyTo([${initialLat}, ${initialLng}], 16, { duration: 0.6 });
       }
     }
+
+    document.querySelector('.recenter-btn').addEventListener('click', recenterToMe);
 
     // --- Messages from RN ---
     window.addEventListener('message', function(event) {
@@ -417,7 +465,7 @@ export default function CampusMapView({
   const handleMessage = (event) => {
     try {
       const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'SELECT_SPOT') {
+      if (data.type === 'SELECT_SPOT' && typeof data.id === 'string' && spots.some((spot) => String(spot.id) === data.id)) {
         setActiveSpotId(data.id);
       }
     } catch (e) {
@@ -434,6 +482,7 @@ export default function CampusMapView({
       {Platform.OS === 'web' ? (
         <iframe
           srcDoc={htmlContent}
+          sandbox="allow-scripts"
           style={{ width: '100%', height: '100%', border: 'none' }}
           title="Campus Map"
         />
@@ -447,9 +496,16 @@ export default function CampusMapView({
           javaScriptEnabled
           domStorageEnabled
           startInLoadingState
-          originWhitelist={['*']}
+          originWhitelist={['about:blank']}
           geolocationEnabled
           allowsInlineMediaPlayback
+          allowFileAccess={false}
+          allowFileAccessFromFileURLs={false}
+          allowUniversalAccessFromFileURLs={false}
+          javaScriptCanOpenWindowsAutomatically={false}
+          setSupportMultipleWindows={false}
+          mixedContentMode="never"
+          thirdPartyCookiesEnabled={false}
         />
       )}
 

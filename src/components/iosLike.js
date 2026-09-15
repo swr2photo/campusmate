@@ -7,6 +7,7 @@ import {
   View,
 } from 'react-native';
 import { BlurView } from 'expo-blur';
+import { Image as ExpoImage } from 'expo-image';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import FeatureIcon from './FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
@@ -90,13 +91,27 @@ export function IosLikePill({ children, active = false, color, onPress, style, i
   return onPress ? <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [pressed && styles.pressed]}>{content}</Pressable> : content;
 }
 
-export function IosLikeAvatar({ uri, emoji, color, size = 56, online = false }) {
+export function IosLikeAvatar({ uri, emoji, color, size = 56, online = false, cacheScope, cacheVersion }) {
   const { colors } = useTheme();
-  const remoteUri = useRemoteImage(uri);
+  const isUrl = typeof uri === 'string' && (uri.startsWith('http') || uri.startsWith('file://') || uri.startsWith('data:'));
+  const remoteUri = useRemoteImage(isUrl ? uri : null, cacheVersion, cacheScope);
+  const displayUri = remoteUri || (isUrl ? uri : null);
   const backgroundColor = color || colors.primarySoft;
   return (
     <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor }]}>
-      {remoteUri ? <Image source={{ uri: remoteUri }} style={{ width: size, height: size, borderRadius: size / 2 }} /> : emoji ? <Text style={{ fontSize: size * 0.48 }}>{emoji}</Text> : <FeatureIcon color={colors.inkSoft} name="person.fill" size={size * 0.46} />}
+      {displayUri ? (
+        <ExpoImage
+          source={{ uri: displayUri }}
+          style={{ width: size, height: size, borderRadius: size / 2 }}
+          contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={0}
+        />
+      ) : emoji ? (
+        <Text style={{ fontSize: size * 0.48 }}>{emoji}</Text>
+      ) : (
+        <FeatureIcon color={colors.inkSoft} name="person.fill" size={size * 0.46} />
+      )}
       {online ? <View style={[styles.onlineDot, { backgroundColor: colors.green, borderColor: colors.card }]} /> : null}
     </View>
   );

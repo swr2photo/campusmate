@@ -1,48 +1,41 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard, Pressable, useColorScheme, View, Animated, Text as RNText } from 'react-native';
+import { compareConversationsByActivity } from '../utils/conversationOrder';
+import { chatPreviewText } from '../utils/chatPreviewText';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, PanResponder, Pressable, useColorScheme, View, Text as RNText } from 'react-native';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   Button,
-  ContentUnavailableView,
   Host,
   HStack,
   Image,
-  ScrollView,
   Spacer,
   Text,
   TextField,
   useNativeState,
   VStack,
-  ZStack,
 } from '@expo/ui/swift-ui';
 import {
   accessibilityLabel,
-  aspectRatio,
   background,
   buttonBorderShape,
   buttonStyle,
-  clipShape,
-  clipped,
   controlSize,
   font,
   foregroundStyle,
   frame,
   labelStyle,
-  lineLimit,
   padding,
-  resizable,
-  scrollDismissesKeyboard,
-  scrollIndicators,
   shapes,
   textFieldStyle,
   tint,
 } from '@expo/ui/swift-ui/modifiers';
-import { router, useLocalSearchParams, Stack } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import { useApp } from '../context/AppContext';
-import { useRemoteImage } from '../utils/useRemoteImage';
+import ChatPreviewModal from '../components/ChatPreviewModal';
+import { IosLikeAvatar } from '../components/iosLike';
 
 const darkPalette = {
   background: '#0D0F12',
@@ -72,7 +65,8 @@ const lightPalette = {
   white: '#FFFFFF',
 };
 
-const avatarShape = shapes.circle();
+const DELETE_CONFIRM_DELAY_MS = 280;
+const SWIPE_DELETE_WIDTH = 88;
 
 function usePalette() {
   return useColorScheme() === 'dark' ? darkPalette : lightPalette;
@@ -141,11 +135,12 @@ function formatRelativeLabel(date) {
 function formatConversationTime(conversation, currentUserId, unreadCount = 0) {
   const messages = conversation.messages || [];
   const lastMsg = messages[messages.length - 1];
-  const iSentLast = lastMsg && (lastMsg.senderId === currentUserId || lastMsg.sender === 'me');
+  const iSentLast = conversation.lastMessageSenderId === currentUserId
+    || (lastMsg && (lastMsg.senderId === currentUserId || lastMsg.sender === 'me'));
 
   // If there are multiple unread messages from the other person
   if (unreadCount > 1) {
-    const date = toDate(lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
+    const date = toDate(conversation.lastMessageAt || lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
     const label = formatRelativeLabel(date);
     const timeText = label === 'สักครู่' ? 'เมื่อสักครู่' : label;
     return `${unreadCount} ข้อความใหม่ · ${timeText || 'เมื่อสักครู่'}`;
@@ -153,16 +148,16 @@ function formatConversationTime(conversation, currentUserId, unreadCount = 0) {
 
   // If there is exactly 1 unread message from the other person
   if (unreadCount === 1 && !iSentLast) {
-    const date = toDate(lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
+    const date = toDate(conversation.lastMessageAt || lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
     const label = formatRelativeLabel(date);
     const timeText = label === 'สักครู่' ? 'เมื่อสักครู่' : (label.startsWith('เมื่อ') ? label : `เมื่อ ${label}`);
-    const textSnippet = (lastMsg?.text || conversation.lastMessage || '').trim();
+    const textSnippet = chatPreviewText(lastMsg, conversation.lastMessage);
     return textSnippet ? `${textSnippet} · ${timeText}` : timeText;
   }
 
   // If the other person sent the last message (and already read)
   if (!iSentLast) {
-    const date = toDate(lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
+    const date = toDate(conversation.lastMessageAt || lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
     const label = formatRelativeLabel(date);
     if (label === 'สักครู่') return 'เมื่อสักครู่';
     return label ? `เมื่อ ${label}` : '';
@@ -182,7 +177,7 @@ function formatConversationTime(conversation, currentUserId, unreadCount = 0) {
   }
 
   // Sent but not read yet
-  const sentDate = toDate(lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
+  const sentDate = toDate(conversation.lastMessageAt || lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
   const label = formatRelativeLabel(sentDate);
   if (label === 'สักครู่') return 'ส่งเมื่อสักครู่';
   return label ? `ส่งเมื่อ ${label}` : 'ส่งแล้ว';
@@ -191,17 +186,25 @@ function formatConversationTime(conversation, currentUserId, unreadCount = 0) {
 export default function ChatScreen() {
   const palette = usePalette();
   const colorScheme = useColorScheme();
-  const { conversations, profile } = useApp();
+  const { conversations, profile, removeConversation } = useApp();
   const params = useLocalSearchParams();
   const [query, setQuery] = useState('');
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [previewConversationId, setPreviewConversationId] = useState(null);
   const searchState = useNativeState('');
   const searchInputRef = useRef(null);
+  const deletePromptTimerRef = useRef(null);
   const [, setTick] = useState(0);
 
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => t + 1), 30000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => () => {
+    if (deletePromptTimerRef.current) {
+      clearTimeout(deletePromptTimerRef.current);
+    }
   }, []);
   
   useEffect(() => {
@@ -211,14 +214,132 @@ export default function ChatScreen() {
   }, [params?.chatId]);
 
   const currentUserId = profile?.id;
+  const previewConversation = useMemo(
+    () => conversations.find((conversation) => conversation.id === previewConversationId) || null,
+    [conversations, previewConversationId]
+  );
   const visibleConversations = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return conversations.filter((conversation) => {
       if (unreadOnly && !(conversation.unreadCounts?.[currentUserId] > 0)) return false;
       if (!normalized) return true;
       return `${conversation.name || ''} ${conversation.lastMessage || ''}`.toLowerCase().includes(normalized);
-    });
+    }).sort(compareConversationsByActivity);
   }, [conversations, currentUserId, query, unreadOnly]);
+
+  const handleDeleteConversation = useCallback((conversation) => {
+    if (!conversation?.id) return;
+
+    const otherUserId = conversation.profileId
+      || conversation.participants?.find((participantId) => participantId !== currentUserId);
+
+    if (deletePromptTimerRef.current) {
+      clearTimeout(deletePromptTimerRef.current);
+    }
+
+    // Let the native swipe action finish closing before presenting Alert.
+    // Otherwise SwiftUI can animate the List row away underneath the popup.
+    deletePromptTimerRef.current = setTimeout(() => {
+      deletePromptTimerRef.current = null;
+      Alert.alert(
+        'ลบห้องสนทนา?',
+        `การจับคู่และห้องสนทนากับ ${conversation.name || 'เพื่อน'} จะถูกนำออกจากรายการ`,
+        [
+          { text: 'ยกเลิก', style: 'cancel' },
+          {
+            text: 'ลบห้องสนทนา',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await removeConversation(conversation.id, otherUserId);
+              } catch (err) {
+                console.error('Failed to remove conversation:', err);
+              }
+            },
+          },
+        ]
+      );
+    }, DELETE_CONFIRM_DELAY_MS);
+  }, [currentUserId, removeConversation]);
+
+  const handlePreviewConversation = useCallback((conversation) => {
+    if (conversation?.id) setPreviewConversationId(conversation.id);
+  }, []);
+
+  const handleOpenConversation = useCallback((conversation) => {
+    if (conversation?.id) {
+      router.push({ pathname: '/chat-room', params: { chatId: conversation.id } });
+    }
+  }, []);
+
+  const handleOpenPreviewChat = () => {
+    const chatId = previewConversation?.id;
+    setPreviewConversationId(null);
+    if (chatId) router.push({ pathname: '/chat-room', params: { chatId, entryAnimation: 'popup' } });
+  };
+
+  const renderConversation = useCallback(({ item }) => (
+    <ConversationRow
+      colorScheme={colorScheme}
+      conversation={item}
+      currentUserId={currentUserId}
+      onDelete={handleDeleteConversation}
+      onPreview={handlePreviewConversation}
+      onPress={handleOpenConversation}
+    />
+  ), [colorScheme, currentUserId, handleDeleteConversation, handleOpenConversation, handlePreviewConversation]);
+
+  const renderListHeader = useCallback(() => (
+    <View style={{ width: '100%', height: 124 }}>
+      <Host colorScheme={colorScheme} seedColor={palette.accent} style={{ width: '100%', height: 124 }}>
+        <VStack
+          alignment="leading"
+          spacing={16}
+          modifiers={[padding({ bottom: 16 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}
+        >
+          <HStack spacing={10} modifiers={[padding({ horizontal: 15, vertical: 11 }), frame({ maxWidth: Infinity, minHeight: 50 }), background(palette.surface, shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' }))]}>
+            <Image color={palette.tertiary} size={18} systemName="magnifyingglass" />
+            <TextField
+              onTextChange={setQuery}
+              placeholder="ค้นหาชื่อหรือข้อความ"
+              ref={searchInputRef}
+              text={searchState}
+              modifiers={[textFieldStyle('plain'), frame({ maxWidth: Infinity })]}
+            />
+            {query ? (
+              <Button
+                onPress={() => {
+                  setQuery('');
+                  searchState.set('');
+                  searchInputRef.current?.clear?.();
+                }}
+                modifiers={[buttonStyle('plain'), frame({ width: 28, height: 28 }), accessibilityLabel('ล้างการค้นหา')]}
+              >
+                <Image color={palette.tertiary} size={18} systemName="xmark.circle.fill" />
+              </Button>
+            ) : null}
+          </HStack>
+
+          <HStack spacing={10}>
+            <FilterButton active={!unreadOnly} label="กล่องข้อความ" onPress={() => setUnreadOnly(false)} systemImage="tray.full.fill" />
+            <FilterButton active={unreadOnly} label="ยังไม่ได้อ่าน" onPress={() => setUnreadOnly(true)} systemImage="circle.fill" />
+          </HStack>
+        </VStack>
+      </Host>
+    </View>
+  ), [colorScheme, palette, query, searchState, unreadOnly]);
+
+  const renderListEmpty = useCallback(() => (
+    <View style={{ width: '100%', height: 250, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 }}>
+      <SymbolView name={query || unreadOnly ? 'magnifyingglass' : 'message.fill'} size={54} tintColor={palette.secondary} />
+      <RNText style={{ color: palette.text, fontSize: 22, fontWeight: '700', marginTop: 12, textAlign: 'center' }}>
+        {query || unreadOnly ? 'ไม่พบข้อความ' : 'ยังไม่มีห้องสนทนา'}
+      </RNText>
+      <RNText style={{ color: palette.secondary, fontSize: 15, fontWeight: '500', marginTop: 8, textAlign: 'center' }}>
+        {query || unreadOnly ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรอง' : 'เมื่อคุณรับคำขอถูกใจ ห้องสนทนาจะปรากฏที่นี่'}
+      </RNText>
+    </View>
+  ), [palette, query, unreadOnly]);
 
   const scrollY = useRef(new Animated.Value(0)).current;
 
@@ -284,67 +405,34 @@ export default function ChatScreen() {
         </View>
       </Animated.View>
 
-      <Animated.ScrollView
-        style={{ flex: 1 }}
-        showsVerticalScrollIndicator={false}
-        scrollEventThrottle={16}
+      <Animated.FlatList
+        contentContainerStyle={{ paddingBottom: 36, paddingHorizontal: 20, paddingTop: 124 }}
+        initialNumToRender={8}
+        maxToRenderPerBatch={5}
+        data={visibleConversations}
+        keyExtractor={(item) => item.id}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        ListEmptyComponent={renderListEmpty}
+        ListHeaderComponent={renderListHeader}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
           { useNativeDriver: true }
         )}
-      >
-        <Host colorScheme={colorScheme} seedColor={palette.accent} matchContents={{ vertical: true }}>
-          <VStack alignment="leading" spacing={16} modifiers={[padding({ top: 124, bottom: 36, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
-            <HStack spacing={10} modifiers={[padding({ horizontal: 15, vertical: 11 }), frame({ maxWidth: Infinity, minHeight: 50 }), background(palette.surface, shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' }))]}>
-              <Image color={palette.tertiary} size={18} systemName="magnifyingglass" />
-              <TextField
-                onTextChange={setQuery}
-                placeholder="ค้นหาชื่อหรือข้อความ"
-                ref={searchInputRef}
-                text={searchState}
-                modifiers={[textFieldStyle('plain'), frame({ maxWidth: Infinity })]}
-              />
-              {query ? (
-                <Button
-                  onPress={() => {
-                    setQuery('');
-                    searchState.set('');
-                    searchInputRef.current?.clear?.();
-                  }}
-                  modifiers={[buttonStyle('plain'), frame({ width: 28, height: 28 }), accessibilityLabel('ลบการค้นหา')]}
-                >
-                  <Image color={palette.tertiary} size={18} systemName="xmark.circle.fill" />
-                </Button>
-              ) : null}
-            </HStack>
+        renderItem={renderConversation}
+        scrollEventThrottle={16}
+        showsVerticalScrollIndicator={false}
+        style={{ flex: 1 }}
+      />
 
-            <HStack spacing={10}>
-              <FilterButton active={!unreadOnly} label="กล่องข้อความ" onPress={() => setUnreadOnly(false)} systemImage="tray.full.fill" />
-              <FilterButton active={unreadOnly} label="ยังไม่ได้อ่าน" onPress={() => setUnreadOnly(true)} systemImage="circle.fill" />
-            </HStack>
-
-            {visibleConversations.length ? visibleConversations.map((conversation) => (
-              <ConversationRow
-                conversation={conversation}
-                currentUserId={currentUserId}
-                key={conversation.id}
-                onPress={() => router.push({ pathname: '/chat-room', params: { chatId: conversation.id } })}
-                unreadCount={conversation.unreadCounts?.[currentUserId] || 0}
-              />
-            )) : (
-              <VStack spacing={12} modifiers={[padding({ vertical: 60 }), frame({ maxWidth: Infinity, alignment: 'center' })]}>
-                <Image color={palette.secondary} size={54} systemName={query || unreadOnly ? "magnifyingglass" : "message.fill"} />
-                <Text modifiers={[font({ textStyle: 'title2', weight: 'bold' }), foregroundStyle(palette.text)]}>
-                  {query || unreadOnly ? 'ไม่พบข้อความ' : 'ยังไม่มีห้องสนทนา'}
-                </Text>
-                <Text modifiers={[font({ textStyle: 'subheadline', weight: 'medium' }), foregroundStyle(palette.secondary), frame({ maxWidth: 280, alignment: 'center' })]}>
-                  {query || unreadOnly ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรอง' : 'เมื่อคุณรับคำขอถูกใจ ห้องสนทนาจะปรากฏที่นี่'}
-                </Text>
-              </VStack>
-            )}
-          </VStack>
-        </Host>
-      </Animated.ScrollView>
+      <ChatPreviewModal
+        accentColor={palette.accent}
+        conversation={previewConversation}
+        currentUserId={currentUserId}
+        onClose={() => setPreviewConversationId(null)}
+        onOpenChat={handleOpenPreviewChat}
+        visible={Boolean(previewConversation)}
+      />
     </View>
   );
 }
@@ -361,72 +449,150 @@ function FilterButton({ active, label, onPress, systemImage }) {
   );
 }
 
-function ConversationRow({ conversation, currentUserId, onPress, unreadCount }) {
-  const palette = usePalette();
-  const timeLabel = formatConversationTime(conversation, currentUserId, unreadCount);
-  const isHighlight = unreadCount > 0 || timeLabel.startsWith('ส่ง') || timeLabel.startsWith('อ่าน');
+function SwipeableConversationRow({ children, contentBackgroundColor, onDelete }) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const offsetRef = useRef(0);
+  const gestureStartOffsetRef = useRef(0);
+  const gestureOffsetRef = useRef(0);
+
+  const settle = (open) => {
+    const nextOffset = open ? -SWIPE_DELETE_WIDTH : 0;
+    offsetRef.current = nextOffset;
+    gestureOffsetRef.current = nextOffset;
+    Animated.spring(translateX, {
+      toValue: nextOffset,
+      damping: 22,
+      mass: 0.8,
+      overshootClamping: true,
+      stiffness: 220,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const panResponder = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponderCapture: (_, gestureState) => (
+      Math.abs(gestureState.dx) > 8
+        && Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
+    ),
+    onMoveShouldSetPanResponder: (_, gestureState) => (
+      Math.abs(gestureState.dx) > 8
+        && Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
+    ),
+    onPanResponderGrant: () => {
+      gestureStartOffsetRef.current = offsetRef.current;
+      gestureOffsetRef.current = offsetRef.current;
+      translateX.stopAnimation();
+    },
+    onPanResponderMove: (_, gestureState) => {
+      const nextOffset = Math.max(
+        -SWIPE_DELETE_WIDTH,
+        Math.min(0, gestureStartOffsetRef.current + gestureState.dx)
+      );
+      gestureOffsetRef.current = nextOffset;
+      translateX.setValue(nextOffset);
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      const nextOffset = Math.max(
+        -SWIPE_DELETE_WIDTH,
+        Math.min(0, gestureStartOffsetRef.current + gestureState.dx)
+      );
+      gestureOffsetRef.current = nextOffset;
+      settle(nextOffset <= -(SWIPE_DELETE_WIDTH * 0.45) || gestureState.vx < -0.45);
+    },
+    onPanResponderTerminate: () => settle(gestureOffsetRef.current <= -(SWIPE_DELETE_WIDTH * 0.45)),
+    onPanResponderTerminationRequest: () => false,
+  }), [translateX]);
+
+  const deleteActionOpacity = translateX.interpolate({
+    inputRange: [-SWIPE_DELETE_WIDTH, -16, 0],
+    outputRange: [1, 0.5, 0],
+    extrapolate: 'clamp',
+  });
+
   return (
-    <Button onPress={onPress} modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-      <HStack spacing={13} modifiers={[padding({ vertical: 10 }), frame({ maxWidth: Infinity, alignment: 'leading' }), accessibilityLabel(`คุยกับ ${conversation.name}`)]}>
-        <ProfileAvatar avatarColor={conversation.avatarColor} emoji={conversation.avatar} size={62} uri={conversation.avatarUri} />
-        <VStack alignment="leading" spacing={4} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-          <Text modifiers={[font({ textStyle: 'headline', weight: unreadCount ? 'bold' : 'semibold' }), foregroundStyle(palette.text), lineLimit(1), frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-            {conversation.name}
-          </Text>
-          {timeLabel ? (
-            <Text modifiers={[font({ textStyle: 'subheadline', weight: unreadCount ? 'bold' : (isHighlight ? 'semibold' : 'regular') }), foregroundStyle(unreadCount ? palette.text : (isHighlight ? palette.accent : palette.secondary)), lineLimit(1), frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-              {timeLabel}
-            </Text>
-          ) : null}
-        </VStack>
-      </HStack>
-    </Button>
+    <View style={{ overflow: 'hidden', position: 'relative', width: '100%' }}>
+      <Animated.View style={{ alignItems: 'stretch', backgroundColor: '#D92D3F', bottom: 0, justifyContent: 'center', opacity: deleteActionOpacity, position: 'absolute', right: 0, top: 0, width: SWIPE_DELETE_WIDTH }}>
+        <Pressable
+          accessibilityLabel="ลบห้องสนทนา"
+          accessibilityRole="button"
+          onPress={() => {
+            settle(false);
+            onDelete?.();
+          }}
+          style={({ pressed }) => [{ alignItems: 'center', flex: 1, justifyContent: 'center', width: SWIPE_DELETE_WIDTH }, pressed && { opacity: 0.75 }]}
+        >
+          <SymbolView name="trash.fill" size={20} tintColor="#FFFFFF" />
+          <RNText style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '800', marginTop: 3 }}>ลบ</RNText>
+        </Pressable>
+      </Animated.View>
+      <Animated.View style={{ backgroundColor: contentBackgroundColor, transform: [{ translateX }], width: '100%' }} {...panResponder.panHandlers}>
+        {children}
+      </Animated.View>
+    </View>
   );
 }
 
-function ProfileAvatar({ avatarColor, emoji, size, uri }) {
-  const isUrl = typeof uri === 'string' && (uri.startsWith('http') || uri.startsWith('file://') || uri.startsWith('data:'));
-  const remoteUri = useRemoteImage(isUrl ? uri : null);
-  const resolvedEmoji = emoji || (!isUrl && typeof uri === 'string' && uri.length <= 6 ? uri : null);
-  return <ResolvedProfileAvatar avatarColor={avatarColor} emoji={resolvedEmoji} size={size} uri={remoteUri} />;
-}
-
-function ResolvedProfileAvatar({ avatarColor, emoji, size, uri }) {
+function ConversationRow({ conversation, currentUserId, onDelete, onPreview, onPress }) {
   const palette = usePalette();
-  const bgColor = avatarColor || palette.raised;
-  if (uri) {
-    return (
-      <Image
-        uiImage={uri}
-        modifiers={[
-          resizable(),
-          aspectRatio({ contentMode: 'fill' }),
-          frame({ width: size, height: size }),
-          clipped(),
-          clipShape('circle'),
-        ]}
-      />
-    );
-  }
-  if (emoji) {
-    return (
-      <ZStack modifiers={[frame({ width: size, height: size }), background(bgColor, shapes.circle()), clipShape('circle')]}>
-        <Text modifiers={[font({ size: size * 0.52 })]}>{emoji}</Text>
-      </ZStack>
-    );
-  }
+  const unreadCount = conversation.unreadCounts?.[currentUserId] || 0;
+  const timeLabel = formatConversationTime(conversation, currentUserId, unreadCount);
+  const isHighlight = unreadCount > 0 || timeLabel.startsWith('ส่ง') || timeLabel.startsWith('อ่าน');
+  const longPressAtRef = useRef(0);
+
+  const handlePress = () => {
+    const now = Date.now();
+    if (now - longPressAtRef.current < 500) {
+      longPressAtRef.current = 0;
+      return;
+    }
+    onPress?.(conversation);
+  };
+
+  const handleLongPress = () => {
+    longPressAtRef.current = Date.now();
+    onPreview?.(conversation);
+  };
+
   return (
-    <Image
-      color={avatarColor || palette.secondary}
-      size={size * 0.48}
-      systemName="person.fill"
-      modifiers={[
-        frame({ width: size, height: size }),
-        background(bgColor, shapes.circle()),
-        clipped(),
-        clipShape('circle'),
-      ]}
-    />
+    <SwipeableConversationRow contentBackgroundColor={palette.background} onDelete={() => onDelete?.(conversation)}>
+      <Pressable
+        accessibilityLabel={`คุยกับ ${conversation.name}`}
+        accessibilityRole="button"
+        delayLongPress={220}
+        onLongPress={handleLongPress}
+        onPress={handlePress}
+        style={({ pressed }) => [{
+          alignItems: 'center',
+          backgroundColor: pressed
+            ? (palette.background === '#000000' || palette.background === '#14171B' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)')
+            : palette.background,
+          flexDirection: 'row',
+          gap: 13,
+          minHeight: 84,
+          paddingVertical: 10,
+          width: '100%',
+        }]}
+      >
+        <IosLikeAvatar
+          cacheScope={conversation.profileId}
+          cacheVersion={conversation.participantProfiles?.[conversation.profileId]?.updatedAt}
+          color={conversation.avatarColor}
+          emoji={conversation.avatar}
+          size={62}
+          uri={conversation.avatarUri}
+        />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <RNText numberOfLines={1} style={{ color: palette.text, fontSize: 17, fontWeight: unreadCount ? '700' : '600' }}>
+            {conversation.name}
+          </RNText>
+          {timeLabel ? (
+            <RNText numberOfLines={1} style={{ color: unreadCount ? palette.text : (isHighlight ? palette.accent : palette.secondary), fontSize: 15, fontWeight: unreadCount ? '700' : (isHighlight ? '600' : '400'), marginTop: 4 }}>
+              {timeLabel}
+            </RNText>
+          ) : null}
+        </View>
+      </Pressable>
+    </SwipeableConversationRow>
   );
 }
 

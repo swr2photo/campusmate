@@ -16,14 +16,14 @@ export default function OfflineBanner() {
     syncNow,
   } = useApp();
 
-  if (isOnline && !isSyncing && pendingSyncCount === 0 && !lastSyncError) return null;
+  if (isOnline && (!isSyncing || pendingSyncCount === 0) && pendingSyncCount === 0 && !lastSyncError) return null;
 
   let icon = 'wifi.slash';
   let label = 'ออฟไลน์ · กำลังแสดงข้อมูลล่าสุดในเครื่อง';
   let backgroundColor = colors.amber;
   let canRetry = false;
 
-  if (isOnline && isSyncing) {
+  if (isOnline && isSyncing && pendingSyncCount > 0) {
     icon = 'arrow.triangle.2.circlepath';
     label = `กำลังซิงก์ ${pendingSyncCount} รายการ`;
     backgroundColor = colors.blue;

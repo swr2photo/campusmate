@@ -7,6 +7,7 @@ const ROUTES = {
   discover: '/discover',
   chat: '/chat',
   meetup: '/meetup',
+  appointments: '/appointments',
   likes: '/likes',
 };
 

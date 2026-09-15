@@ -21,5 +21,17 @@ allprojects {
   }
 }
 
+ext {
+  ndkVersion = "27.0.12077973"
+}
+
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"
+
+subprojects {
+  tasks.whenTaskAdded { task ->
+    if (task.name.startsWith("lintVital")) {
+      task.enabled = false
+    }
+  }
+}

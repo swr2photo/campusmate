@@ -1,39 +1,82 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { signOutUser, subscribeToAuthChanges } from '../services/authService';
 import { saveAccount } from '../services/accountStorage';
-import AppSplashScreen from '../components/AppSplashScreen';
 import { clearOfflineDataForUser } from '../services/offlineStorage';
 import { unregisterPushNotificationsAsync } from '../services/notificationService';
+import {
+  getFastBootData,
+  getFastBootMemory,
+  saveFastBootData,
+  clearFastBootData,
+} from '../services/fastBootService';
 
 const AuthContext = createContext(null);
+const AUTH_READY_TIMEOUT_MS = 6000;
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [isReady, setIsReady] = useState(false);
+  const [user, setUser] = useState(() => {
+    const cached = getFastBootMemory();
+    return cached?.user || null;
+  });
+  const [isReady, setIsReady] = useState(() => {
+    const cached = getFastBootMemory();
+    return Boolean(cached?.user);
+  });
   const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
-    try {
-      return subscribeToAuthChanges(
-        (authData) => {
-          const authUser = authData?.user || null;
-          setUser(authUser);
-          if (authUser) {
-            saveAccount(authUser);
-          }
-          setAuthError(null);
-          setIsReady(true);
-        },
-        (error) => {
-          setAuthError(error);
-          setIsReady(true);
-        }
-      );
-    } catch (error) {
+    let active = true;
+    let unsubscribe;
+
+    // Fast-boot: hydrate user session instantly from local cache if returning user
+    getFastBootData().then((fastBoot) => {
+      if (!active) return;
+      if (fastBoot?.user) {
+        setUser(fastBoot.user);
+        setIsReady(true);
+      }
+    }).catch(() => {});
+
+    const timeoutId = setTimeout(() => {
+      if (!active) return;
+      console.warn('[AuthContext] Firebase Auth initialization timed out; continuing to the sign-in screen.');
+      setAuthError(new Error('Firebase Authentication initialization timed out'));
+      setIsReady(true);
+    }, AUTH_READY_TIMEOUT_MS);
+
+    const resolveAuth = (authData) => {
+      if (!active) return;
+      clearTimeout(timeoutId);
+      const authUser = authData?.user || null;
+      setUser(authUser);
+      if (authUser) {
+        saveAccount(authUser);
+        saveFastBootData({ user: authUser });
+      } else {
+        clearFastBootData();
+      }
+      setAuthError(null);
+      setIsReady(true);
+    };
+
+    const rejectAuth = (error) => {
+      if (!active) return;
+      clearTimeout(timeoutId);
       setAuthError(error);
       setIsReady(true);
-      return undefined;
+    };
+
+    try {
+      unsubscribe = subscribeToAuthChanges(resolveAuth, rejectAuth);
+    } catch (error) {
+      rejectAuth(error);
     }
+
+    return () => {
+      active = false;
+      clearTimeout(timeoutId);
+      unsubscribe?.();
+    };
   }, []);
 
   const value = useMemo(() => ({
@@ -46,14 +89,20 @@ export function AuthProvider({ children }) {
       setUser(u);
       if (u) {
         saveAccount(u);
+        saveFastBootData({ user: u });
       }
     },
     logout: async () => {
       const activeUserId = user?.id;
+      await clearFastBootData();
       if (activeUserId) {
         try {
+          const unregisterPromise = unregisterPushNotificationsAsync(activeUserId).catch((error) => {
+            console.warn('[Notifications] Unable to disable this device during logout:', error);
+            return false;
+          });
           await Promise.race([
-            unregisterPushNotificationsAsync(activeUserId),
+            unregisterPromise,
             new Promise((resolve) => setTimeout(resolve, 1500)),
           ]);
         } catch (error) {
@@ -71,10 +120,6 @@ export function AuthProvider({ children }) {
       setUser(null);
     },
   }), [authError, isReady, user]);
-
-  if (!isReady) {
-    return <AppSplashScreen message="กำลังเข้าสู่ระบบ..." />;
-  }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

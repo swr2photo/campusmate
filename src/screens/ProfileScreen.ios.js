@@ -1,14 +1,16 @@
+import { useToast } from '../context/ToastContext';
 import React, { useState } from 'react';
+import Constants from 'expo-constants';
+import { router } from 'expo-router';
 import { useRemoteImage } from '../utils/useRemoteImage';
-import { Keyboard, Pressable, View, useColorScheme } from 'react-native';
+import { Alert, Keyboard, Pressable, View, useColorScheme } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import {
-  BottomSheet,
   Button,
-  DatePicker,
   Form,
   Grid,
   Host,
@@ -25,6 +27,8 @@ import {
   VStack,
   ZStack,
 } from '@expo/ui/swift-ui';
+import AvailabilityModal from '../components/AvailabilityModal';
+import { compressProfileImage, validateImageSize, MAX_PROFILE_IMAGE_SIZE_MB } from '../utils/compressImage';
 import {
   aspectRatio,
   background,
@@ -34,15 +38,12 @@ import {
   clipped,
   contentShape,
   controlSize,
-  datePickerStyle,
   font,
   foregroundStyle,
   frame,
   labelStyle,
   lineLimit,
   padding,
-  presentationDetents,
-  presentationDragIndicator,
   resizable,
   scrollDismissesKeyboard,
   scrollIndicators,
@@ -53,7 +54,6 @@ import {
   toggleStyle,
 } from '@expo/ui/swift-ui/modifiers';
 import { useApp } from '../context/AppContext';
-import { formatReadableDate } from '../utils/formatters';
 
 import { FACULTIES } from '../data/faculties';
 const YEARS = ['ชั้นปีที่ 1', 'ชั้นปีที่ 2', 'ชั้นปีที่ 3', 'ชั้นปีที่ 4', 'ปริญญาโท', 'ปริญญาเอก'];
@@ -64,8 +64,15 @@ const AGES = Array.from({ length: 17 }, (_, i) => ({
 const GENDERS = [
   { label: 'ชาย', value: 'male' },
   { label: 'หญิง', value: 'female' },
+  { label: 'ชายข้ามเพศ', value: 'trans_male' },
+  { label: 'หญิงข้ามเพศ', value: 'trans_female' },
   { label: 'นอนไบนารี', value: 'nonbinary' },
-  { label: 'ไม่ระบุ', value: 'unspecified' },
+  { label: 'เจนเดอร์ฟลูอิด', value: 'genderfluid' },
+  { label: 'ไบเจนเดอร์', value: 'bigender' },
+  { label: 'อะเจนเดอร์', value: 'agender' },
+  { label: 'เควียร์', value: 'queer' },
+  { label: 'เพศอื่น ๆ', value: 'other' },
+  { label: 'ไม่ประสงค์ระบุ', value: 'unspecified' },
 ];
 const ACTIVITIES = [
   { label: 'วิ่ง', value: 'running', icon: 'figure.run' },
@@ -93,44 +100,41 @@ function usePalette() { const scheme = useColorScheme(); return scheme === 'dark
 const cardShape = shapes.roundedRectangle({ cornerRadius: 24, roundedCornerStyle: 'continuous' });
 
 export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave, showHeader = true }) {
+  const { showImageModeration } = useToast();
   const palette = usePalette();
   const colorScheme = useColorScheme();
-  const { profile, saveProfile } = useApp();
-  const [name, setName] = useState(profile.name || '');
-  const [faculty, setFaculty] = useState(profile.faculty || FACULTIES[0]);
-  const [year, setYear] = useState(profile.year || YEARS[0]);
-  const [age, setAge] = useState(profile.age ? String(profile.age) : '');
-  const [gender, setGender] = useState(profile.gender || 'unspecified');
+  const insets = useSafeAreaInsets();
+  const { deleteAccount, profile, saveProfile } = useApp();
+  const safeProfile = profile || {};
+  const isFirstSetup = Boolean(overrideSave);
+  const [name, setName] = useState(safeProfile.name || '');
+  const [faculty, setFaculty] = useState(safeProfile.faculty || FACULTIES[0]);
+  const [year, setYear] = useState(safeProfile.year || YEARS[0]);
+  const [age, setAge] = useState(safeProfile.age ? String(safeProfile.age) : '');
+  const [gender, setGender] = useState(safeProfile.gender || '');
   const [activities, setActivities] = useState(() => {
-    if (Array.isArray(profile.activities) && profile.activities.length > 0) {
-      return profile.activities;
+    if (Array.isArray(safeProfile.activities) && safeProfile.activities.length > 0) {
+      return safeProfile.activities;
     }
-    if (profile.activity) {
-      return [profile.activity];
+    if (safeProfile.activity) {
+      return [safeProfile.activity];
     }
     return ['other'];
   });
-  const [pace, setPace] = useState(profile.pace || PACE_OPTIONS[0]);
-  const [skill, setSkill] = useState(profile.skill || '');
-  const [availability, setAvailability] = useState(profile.availability || '');
-  const [showAvailabilitySheet, setShowAvailabilitySheet] = useState(false);
-  const [availDate, setAvailDate] = useState(new Date());
-  const [availStart, setAvailStart] = useState(() => {
-    const d = new Date();
-    d.setHours(17, 0, 0, 0);
-    return d;
-  });
-  const [availEnd, setAvailEnd] = useState(() => {
-    const d = new Date();
-    d.setHours(19, 0, 0, 0);
-    return d;
-  });
-  const [bio, setBio] = useState(profile.bio || '');
-  const [avatarUri, setAvatarUri] = useState(profile.avatarUri || null);
-  const avatarDisplayUri = useRemoteImage(avatarUri);
-  const [notifications, setNotifications] = useState(profile.notificationsEnabled ?? true);
-  const [discoverable, setDiscoverable] = useState(profile.isDiscoverable ?? false);
-  const [privacy, setPrivacy] = useState(profile.privacy || {});
+  const [pace, setPace] = useState(safeProfile.pace || PACE_OPTIONS[0]);
+  const [skill, setSkill] = useState(safeProfile.skill || '');
+  const [availability, setAvailability] = useState(safeProfile.availability || '');
+  const [availabilitySlots, setAvailabilitySlots] = useState(() => (
+    Array.isArray(safeProfile.availabilitySlots) ? safeProfile.availabilitySlots : []
+  ));
+  const [showAvailabilityModal, setShowAvailabilityModal] = useState(false);
+  const [bio, setBio] = useState(safeProfile.bio || '');
+  const [avatarUri, setAvatarUri] = useState(safeProfile.avatarUri || null);
+  const [isProcessingImage, setIsProcessingImage] = useState(false);
+  const avatarDisplayUri = useRemoteImage(avatarUri, profile?.updatedAt, profile?.id);
+  const [notifications, setNotifications] = useState(safeProfile.notificationsEnabled ?? true);
+  const [discoverable, setDiscoverable] = useState(safeProfile.isDiscoverable ?? true);
+  const [privacy, setPrivacy] = useState(safeProfile.privacy || {});
   
   const [saving, setSaving] = useState(false);
 
@@ -144,40 +148,13 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
     });
   };
 
-  const confirmAvailability = () => {
-    const year = availDate.getFullYear();
-    const month = String(availDate.getMonth() + 1).padStart(2, '0');
-    const day = String(availDate.getDate()).padStart(2, '0');
-    const isoDate = `${year}-${month}-${day}`;
-    const formatTime = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-    const readable = `${formatReadableDate(isoDate)} · ${formatTime(availStart)}–${formatTime(availEnd)}`;
-    setAvailability(readable);
-    setShowAvailabilitySheet(false);
-  };
-
-  const applyQuickSlot = (startH, endH) => {
-    const s = new Date(availDate);
-    s.setHours(startH, 0, 0, 0);
-    const e = new Date(availDate);
-    e.setHours(endH, 0, 0, 0);
-    setAvailStart(s);
-    setAvailEnd(e);
-    const year = availDate.getFullYear();
-    const month = String(availDate.getMonth() + 1).padStart(2, '0');
-    const day = String(availDate.getDate()).padStart(2, '0');
-    const isoDate = `${year}-${month}-${day}`;
-    const readable = `${formatReadableDate(isoDate)} · ${String(startH).padStart(2, '0')}:00–${String(endH).padStart(2, '0')}:00`;
-    setAvailability(readable);
-    setShowAvailabilitySheet(false);
-  };
-
   React.useEffect(() => {
     if (profile) {
       setName(profile.name || '');
       setFaculty(profile.faculty || FACULTIES[0]);
       setYear(profile.year || YEARS[0]);
       setAge(profile.age ? String(profile.age) : '');
-      setGender(profile.gender || 'unspecified');
+      setGender(profile.gender || '');
       setActivities(() => {
         if (Array.isArray(profile.activities) && profile.activities.length > 0) {
           return profile.activities;
@@ -190,35 +167,99 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
       setPace(profile.pace || PACE_OPTIONS[0]);
       setSkill(profile.skill || '');
       setAvailability(profile.availability || '');
+      setAvailabilitySlots(Array.isArray(profile.availabilitySlots) ? profile.availabilitySlots : []);
       setBio(profile.bio || '');
       setAvatarUri(profile.avatarUri || null);
       setNotifications(profile.notificationsEnabled ?? true);
-      setDiscoverable(profile.isDiscoverable ?? false);
+      setDiscoverable(profile.isDiscoverable ?? true);
       setPrivacy(profile.privacy || {});
     }
-  }, [profile?.id]);
+  }, [profile]);
 
   const pickImage = async () => {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.6,
-      base64: true,
-    });
+    if (isProcessingImage) return;
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+        base64: false,
+      });
 
-    if (!result.canceled) {
-      setAvatarUri(result.assets[0].uri);
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        return;
+      }
+
+      const asset = result.assets[0];
+      setIsProcessingImage(true);
+
+      // Validate image size (must not exceed 30 MB)
+      const sizeValidation = await validateImageSize(asset.uri, asset.fileSize, MAX_PROFILE_IMAGE_SIZE_MB);
+      if (!sizeValidation.valid) {
+        Alert.alert('รูปภาพมีขนาดใหญ่เกินไป', sizeValidation.error);
+        return;
+      }
+
+      try {
+        const compressedUri = await compressProfileImage(asset.uri);
+        setAvatarUri(compressedUri);
+      } catch (compressionError) {
+        console.warn('[Profile.ios] Image compression failed:', compressionError);
+        Alert.alert(
+          'ไม่สามารถประมวลผลรูปภาพได้',
+          compressionError.message || 'เกิดข้อผิดพลาดในการปรับขนาดรูปภาพ กรุณาลองเลือกรูปภาพใหม่อีกครั้ง'
+        );
+      }
+    } catch (error) {
+      console.error('[Profile.ios] Image picking error:', error);
+      Alert.alert('เกิดข้อผิดพลาด', 'ไม่สามารถเปิดเลือกรูปภาพได้ กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsProcessingImage(false);
     }
   };
 
   const handleSave = async () => {
     if (saving) return;
+    if (isProcessingImage) {
+      Alert.alert('กำลังประมวลผลรูปภาพ', 'กรุณารอสักครู่ก่อนบันทึกโปรไฟล์');
+      return;
+    }
     setSaving(true);
     try {
+      if (!name || name.trim().length < 2) {
+        throw new Error('กรุณากรอกชื่อของคุณ (อย่างน้อย 2 ตัวอักษร)');
+      }
+      if (!faculty || faculty === 'all') {
+        throw new Error('กรุณาเลือกคณะของคุณ');
+      }
+      if (!gender) {
+        throw new Error('กรุณาเลือกเพศของคุณ');
+      }
+      if (!year) {
+        throw new Error('กรุณาเลือกชั้นปี');
+      }
+      if (!avatarUri) {
+         throw new Error('กรุณาเพิ่มรูปโปรไฟล์ของคุณ');
+      }
       const parsedAge = Number(age);
-      if (age && (!Number.isInteger(parsedAge) || parsedAge < 18 || parsedAge > 100)) {
+      if (!age || !Number.isInteger(parsedAge) || parsedAge < 18 || parsedAge > 100) {
         throw new Error('กรุณาระบุอายุระหว่าง 18–100 ปี');
+      }
+      if (isFirstSetup && !activities.length) {
+        throw new Error('กรุณาเลือกกิจกรรมหรือความสนใจอย่างน้อย 1 รายการ');
+      }
+      if (isFirstSetup && (!pace || pace === PACE_OPTIONS[0])) {
+        throw new Error('กรุณาเลือกเพซหรือระดับกิจกรรมของคุณ');
+      }
+      if (isFirstSetup && !skill.trim()) {
+        throw new Error('กรุณากรอกทักษะเพิ่มเติมของคุณ');
+      }
+      if (isFirstSetup && !availabilitySlots.length && !availability?.trim()) {
+        throw new Error('กรุณาเลือกช่วงเวลาที่สะดวกอย่างน้อย 1 ช่วง');
+      }
+      if (isFirstSetup && !bio.trim()) {
+        throw new Error('กรุณาเขียนแนะนำตัวสั้น ๆ');
       }
       const activityLabels = activities.map((act) => ACTIVITIES.find((option) => option.value === act)?.label || act);
       const activityLabel = activityLabels.join(', ');
@@ -234,21 +275,33 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
         pace: pace === PACE_OPTIONS[0] ? '' : pace,
         skill,
         availability,
+        availabilitySlots,
         bio,
         avatarUri,
         notificationsEnabled: notifications,
         isDiscoverable: discoverable,
         privacy,
         matchingPreferences: {
-          ...(profile.matchingPreferences || {}),
+          ...(safeProfile.matchingPreferences || {}),
         },
       };
       if (overrideSave) await overrideSave(profileData);
       else await saveProfile(profileData);
+      if (onClose) {
+        // iOS presents this screen as a native formSheet. Wait until it is
+        // dismissed before showing the global toast so the sheet transition
+        // cannot swallow the notification.
+        onClose();
+        setTimeout(() => onToast?.('บันทึกโปรไฟล์เรียบร้อยแล้ว'), 350);
+        return;
+      }
       onToast?.('บันทึกโปรไฟล์เรียบร้อยแล้ว');
-      if (onClose) onClose();
     } catch (error) {
-      onToast?.(error.message || 'ยังบันทึกโปรไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+      if (error.isModerationViolation || error.isModerationUnavailable) {
+        showImageModeration(error);
+      } else {
+        onToast?.(error.message || 'ยังบันทึกโปรไฟล์ไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+      }
     } finally {
       setSaving(false);
     }
@@ -256,6 +309,27 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
 
 
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'ยืนยันการลบบัญชี',
+      'ข้อมูลโปรไฟล์ ข้อความแชท และการจับคู่จะถูกลบอย่างถาวรและไม่สามารถกู้คืนได้',
+      [
+        { text: 'ยกเลิก', style: 'cancel' },
+        {
+          text: 'ลบบัญชี',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteAccount();
+            } catch (error) {
+              onToast?.(error.message || 'ลบบัญชีไม่สำเร็จ', 'info');
+            }
+          },
+        },
+      ]
+    );
+  };
 
   return (
     <Pressable onPress={Keyboard.dismiss} style={{ flex: 1, backgroundColor: palette.background }}>
@@ -272,16 +346,12 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
           <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
             <Host colorScheme={colorScheme} seedColor={palette.coral} style={{ width: '100%', height: 85 }}>
               <VStack modifiers={[padding({ top: 35, bottom: 15, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
-                <HStack modifiers={[frame({ maxWidth: Infinity })]}>
-                  <Text modifiers={[font({ textStyle: 'title2', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>
-                    โปรไฟล์และการตั้งค่า
-                  </Text>
-                  <Spacer />
+                <HStack spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
                   {onClose && (
                     <Button
-                      label="ปิด"
+                      label="ย้อนกลับ"
                       onPress={onClose}
-                      systemImage="xmark"
+                      systemImage="chevron.left"
                       modifiers={[
                         buttonStyle('glass'),
                         buttonBorderShape('circle'),
@@ -290,6 +360,10 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
                       ]}
                     />
                   )}
+                  <Text modifiers={[font({ textStyle: 'title2', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>
+                    โปรไฟล์และการตั้งค่า
+                  </Text>
+                  <Spacer />
                 </HStack>
               </VStack>
             </Host>
@@ -297,12 +371,14 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
         </>
       )}
       <Host colorScheme={colorScheme} seedColor={palette.coral} style={{ flex: 1 }}>
-        <Form modifiers={[padding({ top: showHeader ? 88 : 0 })]}>
+        <VStack style={{ flex: 1 }}>
+          <Form modifiers={[padding({ top: showHeader ? 88 : 0 })]}>
           <Section>
             <ProfileIdentity
               avatarUri={avatarDisplayUri}
-              email={profile.email}
-              name={name || profile.nickname || 'โปรไฟล์ของคุณ'}
+              email={safeProfile.email || ''}
+              isProcessingImage={isProcessingImage}
+              name={name || safeProfile.nickname || 'โปรไฟล์ของคุณ'}
               onPickImage={pickImage}
             />
           </Section>
@@ -336,7 +412,7 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
             <SelectionRow label="เพซวิ่ง" options={PACE_OPTIONS} onSelect={setPace} systemImage="speedometer" value={pace || PACE_OPTIONS[0]} />
             <NativeField label="ทักษะเพิ่มเติม" onChange={setSkill} systemImage="star.fill" value={skill} />
             <Button
-              onPress={() => setShowAvailabilitySheet(true)}
+              onPress={() => setShowAvailabilityModal(true)}
               modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity })]}
             >
               <HStack
@@ -353,61 +429,15 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
                     ช่วงเวลาที่สะดวก
                   </Text>
                   <Text modifiers={[font({ textStyle: 'subheadline', weight: 'semibold' }), foregroundStyle(palette.text), lineLimit(1)]}>
-                    {availability || 'แตะเพื่อเลือกวันและเวลาที่สะดวก'}
+                    {availabilitySlots.length > 0 ? `เลือกไว้ ${availabilitySlots.length} ช่วงเวลา` : 'แตะเพื่อเลือกหลายวันและเวลาที่สะดวก'}
                   </Text>
                 </VStack>
                 <Spacer />
                 <Image color={palette.tertiary} size={13} systemName="chevron.right" />
               </HStack>
             </Button>
-            <NativeField label="แนะนำตัวสั้น ๆ" multiline onChange={setBio} systemImage="text.quote" value={bio} />
-          </Section>
 
-          <Section
-            header={
-              <HStack spacing={6}>
-                <Image color={palette.coral} size={14} systemName="hand.raised.fill" />
-                <Text modifiers={[font({ weight: 'bold' })]}>ความเป็นส่วนตัวและการมองเห็น</Text>
-              </HStack>
-            }
-            footer={<Text>กำหนดการเปิดเผยข้อมูลส่วนบุคคลของคุณบนระบบค้นหาเพื่อน</Text>}
-          >
-            <SettingToggle
-              isOn={discoverable}
-              label="แสดงโปรไฟล์ในการค้นหา"
-              onChange={setDiscoverable}
-              systemImage="eye.fill"
-            />
-            <SettingToggle
-              isOn={privacy.showAge ?? true}
-              label="แสดงอายุ"
-              onChange={(value) => setPrivacy((current) => ({ ...current, showAge: value }))}
-              systemImage="calendar"
-            />
-            <SettingToggle
-              isOn={privacy.showGender ?? true}
-              label="แสดงเพศ"
-              onChange={(value) => setPrivacy((current) => ({ ...current, showGender: value }))}
-              systemImage="person.2.fill"
-            />
-            <SettingToggle
-              isOn={privacy.showFaculty ?? true}
-              label="แสดงคณะและชั้นปี"
-              onChange={(value) => setPrivacy((current) => ({ ...current, showFaculty: value }))}
-              systemImage="graduationcap.fill"
-            />
-            <SettingToggle
-              isOn={privacy.showActivity ?? true}
-              label="แสดงกิจกรรมที่ชอบ"
-              onChange={(value) => setPrivacy((current) => ({ ...current, showActivity: value }))}
-              systemImage="figure.run"
-            />
-            <SettingToggle
-              isOn={privacy.showAvailability ?? true}
-              label="แสดงเวลาที่สะดวก"
-              onChange={(value) => setPrivacy((current) => ({ ...current, showAvailability: value }))}
-              systemImage="clock.fill"
-            />
+            <NativeField label="แนะนำตัวสั้น ๆ" multiline onChange={setBio} systemImage="text.quote" value={bio} />
           </Section>
 
           <Section
@@ -427,163 +457,81 @@ export default function ProfileScreen({ onClose, onLogout, onToast, overrideSave
             />
           </Section>
 
-          <Section>
-            <Button
-              label={saving ? 'กำลังบันทึก' : 'บันทึกการเปลี่ยนแปลง'}
-              onPress={handleSave}
-              systemImage={saving ? 'hourglass' : 'checkmark.circle.fill'}
-              modifiers={[
-                buttonStyle('glassProminent'),
-                buttonBorderShape('capsule'),
-                controlSize('large'),
-                tint(palette.coral),
-                frame({ maxWidth: Infinity }),
-              ]}
-            />
-
-            <Button
-              label="ออกจากระบบ"
-              onPress={onLogout}
-              role="destructive"
-              systemImage="rectangle.portrait.and.arrow.right"
-              modifiers={[
-                buttonStyle('glass'),
-                buttonBorderShape('capsule'),
-                controlSize('large'),
-                tint(palette.coral),
-                frame({ maxWidth: Infinity }),
-              ]}
-            />
+          <Section
+            header={
+              <HStack spacing={6}>
+                <Image color={palette.coral} size={14} systemName="eye.fill" />
+                <Text modifiers={[font({ weight: 'bold' })]}>การแสดงโปรไฟล์</Text>
+              </HStack>
+            }
+            footer={<Text>กำหนดข้อมูลที่ผู้ใช้อื่นจะเห็นบนโปรไฟล์ของคุณ</Text>}
+          >
+            <LegalRow label="เปิดหน้าตั้งค่าการแสดงโปรไฟล์" systemImage="eye.fill" onPress={() => router.push('/profile-visibility')} />
           </Section>
-        </Form>
 
-        <BottomSheet
-          isPresented={showAvailabilitySheet}
-          onIsPresentedChange={setShowAvailabilitySheet}
-          modifiers={[
-            presentationDetents(['large']),
-            presentationDragIndicator('visible'),
-          ]}
-        >
-          <VStack style={{ flex: 1 }}>
-            <Text
-              modifiers={[
-                font({ textStyle: 'headline', weight: 'bold', design: 'rounded' }),
-                padding({ top: 16, bottom: 2, horizontal: 20 }),
-                frame({ maxWidth: Infinity, alignment: 'center' }),
-              ]}
-            >
-              ตั้งค่าช่วงเวลาที่สะดวก
+          <Section>
+            <AccountActionRow label="เกี่ยวกับ CampusMate" onPress={() => router.push('/about')} systemImage="info.circle.fill" />
+          </Section>
+
+          <Section>
+            <Text modifiers={[font({ textStyle: 'headline', weight: 'bold' }), foregroundStyle(palette.text), padding({ top: 8, bottom: 6 })]}>
+              ตั้งค่าบัญชี
             </Text>
-            <Text
-              modifiers={[
-                font({ textStyle: 'caption', weight: 'medium' }),
-                foregroundStyle(palette.secondary),
-                padding({ bottom: 8, horizontal: 20 }),
-                frame({ maxWidth: Infinity, alignment: 'center' }),
-              ]}
-            >
-              เลือกวันและช่วงเวลาที่พร้อมทำกิจกรรมร่วมกับเพื่อน
-            </Text>
+            <AccountActionRow label="ลบบัญชีอย่างถาวร" onPress={handleDeleteAccount} systemImage="trash.fill" />
+            <AccountActionRow label="ออกจากระบบ" onPress={onLogout} systemImage="rectangle.portrait.and.arrow.right" />
+          </Section>
 
-            <Form>
-              <Section
-                header={
-                  <HStack spacing={6}>
-                    <Image color={palette.coral} size={14} systemName="calendar" />
-                    <Text modifiers={[font({ weight: 'bold' })]}>เลือกวัน</Text>
-                  </HStack>
-                }
-                footer={<Text>เลือกวันที่ต้องการนัดพบหรือทำกิจกรรม</Text>}
-              >
-                <DatePicker
-                  title="วันที่"
-                  selection={availDate}
-                  onDateChange={setAvailDate}
-                  displayedComponents={['date']}
-                  modifiers={[datePickerStyle('compact')]}
-                />
-              </Section>
-              <Section
-                header={
-                  <HStack spacing={6}>
-                    <Image color={palette.coral} size={14} systemName="clock.fill" />
-                    <Text modifiers={[font({ weight: 'bold' })]}>เลือกเวลา</Text>
-                  </HStack>
-                }
-                footer={<Text>ระบุเวลาเริ่มต้นและเวลาสิ้นสุด</Text>}
-              >
-                <DatePicker
-                  title="เวลาเริ่ม"
-                  selection={availStart}
-                  onDateChange={setAvailStart}
-                  displayedComponents={['hourAndMinute']}
-                  modifiers={[datePickerStyle('compact')]}
-                />
-                <DatePicker
-                  title="เวลาสิ้นสุด"
-                  selection={availEnd}
-                  onDateChange={setAvailEnd}
-                  displayedComponents={['hourAndMinute']}
-                  modifiers={[datePickerStyle('compact')]}
-                />
-              </Section>
-              <Section
-                header={
-                  <HStack spacing={6}>
-                    <Image color={palette.coral} size={14} systemName="sparkles" />
-                    <Text modifiers={[font({ weight: 'bold' })]}>ตัวเลือกช่วงเวลายอดนิยม</Text>
-                  </HStack>
-                }
-                footer={<Text>แตะเพื่อเลือกช่วงเวลาที่แนะนำอย่างรวดเร็ว</Text>}
-              >
-                <Button
-                  label="ช่วงเช้า (06:00 - 12:00)"
-                  onPress={() => applyQuickSlot(6, 12)}
-                  systemImage="sunrise.fill"
-                />
-                <Button
-                  label="ช่วงบ่าย (12:00 - 18:00)"
-                  onPress={() => applyQuickSlot(12, 18)}
-                  systemImage="sun.max.fill"
-                />
-                <Button
-                  label="ช่วงเย็น (18:00 - 21:00)"
-                  onPress={() => applyQuickSlot(18, 21)}
-                  systemImage="sunset.fill"
-                />
-                <Button
-                  label="สะดวกตลอดเวลา"
-                  onPress={() => {
-                    setAvailability('สะดวกตลอดเวลา');
-                    setShowAvailabilitySheet(false);
-                  }}
-                  systemImage="sparkles"
-                />
-              </Section>
-            </Form>
+          </Form>
+          <Button
+            onPress={handleSave}
+            modifiers={[
+              buttonStyle('glassProminent'),
+              buttonBorderShape('capsule'),
+              controlSize('large'),
+              tint(palette.coral),
+              padding({ top: 8, horizontal: 20, bottom: Math.max(insets.bottom, 12) }),
+              frame({ maxWidth: Infinity }),
+            ]}
+          >
+            <HStack alignment="center" spacing={8}>
+              <Image color={palette.white} size={17} systemName={saving ? 'hourglass' : 'checkmark.circle.fill'} />
+              <Text modifiers={[font({ weight: 'bold' }), foregroundStyle(palette.white)]}>
+                {saving ? 'กำลังบันทึก' : 'บันทึกการเปลี่ยนแปลง'}
+              </Text>
+            </HStack>
+          </Button>
+        </VStack>
 
-            <Button
-              label="บันทึกช่วงเวลาที่สะดวก"
-              onPress={confirmAvailability}
-              systemImage="checkmark.circle.fill"
-              modifiers={[
-                buttonStyle('glassProminent'),
-                buttonBorderShape('capsule'),
-                controlSize('regular'),
-                tint(palette.coral),
-                padding({ horizontal: 20, bottom: 24, top: 8 }),
-                frame({ maxWidth: Infinity }),
-              ]}
-            />
-          </VStack>
-        </BottomSheet>
       </Host>
+      <AvailabilityModal
+        visible={showAvailabilityModal}
+        onClose={() => setShowAvailabilityModal(false)}
+        availabilitySlots={availabilitySlots}
+        onSave={(slots) => {
+          setAvailabilitySlots(slots);
+          setAvailability(slots.length > 0 ? `ระบุ ${slots.length} ช่วงเวลา` : '');
+        }}
+      />
     </Pressable>
   );
 }
 
-function ProfileIdentity({ avatarUri, email, name, onPickImage }) {
+function AccountActionRow({ label, onPress, systemImage }) {
+  const palette = usePalette();
+  return (
+    <Button onPress={onPress} modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity })]}>
+      <HStack spacing={10} modifiers={[padding({ vertical: 12, horizontal: 4 }), frame({ maxWidth: Infinity })]}>
+        <Image color={palette.coral} size={17} systemName={systemImage} />
+        <Text modifiers={[font({ textStyle: 'subheadline', weight: 'semibold' }), foregroundStyle(palette.coral), frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+          {label}
+        </Text>
+        <Image color={palette.coral} size={13} systemName="chevron.right" />
+      </HStack>
+    </Button>
+  );
+}
+
+function ProfileIdentity({ avatarUri, email, isProcessingImage = false, name, onPickImage }) {
   const palette = usePalette();
   return (
     <VStack
@@ -619,6 +567,7 @@ function ProfileIdentity({ avatarUri, email, name, onPickImage }) {
           />
         )}
         <Button
+          disabled={isProcessingImage}
           label="เปลี่ยนรูปโปรไฟล์"
           onPress={onPickImage}
           systemImage="camera.fill"
@@ -757,6 +706,34 @@ function SettingToggle({ isOn, label, onChange, systemImage }) {
         frame({ maxWidth: Infinity }),
       ]}
     />
+  );
+}
+
+function LegalRow({ label, onPress, systemImage, value }) {
+  const palette = usePalette();
+  return (
+    <Button
+      onPress={onPress}
+      modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity })]}
+    >
+      <HStack spacing={10} modifiers={[padding({ vertical: 12, horizontal: 4 }), frame({ maxWidth: Infinity })]}>
+        <Image color={palette.coral} size={17} systemName={systemImage} />
+        <Text modifiers={[font({ textStyle: 'subheadline', weight: 'semibold' }), foregroundStyle(palette.text), frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+          {label}
+        </Text>
+        {value ? <Text modifiers={[font({ textStyle: 'caption', weight: 'medium' }), foregroundStyle(palette.secondary)]}>{value}</Text> : null}
+        {onPress ? <Image color={palette.tertiary} size={13} systemName="chevron.right" /> : null}
+      </HStack>
+    </Button>
+  );
+}
+
+function LegalSubsectionTitle() {
+  const palette = usePalette();
+  return (
+    <Text modifiers={[font({ textStyle: 'caption', weight: 'bold' }), foregroundStyle(palette.secondary), padding({ top: 8, bottom: 4 })]}>
+      ข้อกำหนดทางกฎหมาย
+    </Text>
   );
 }
 

@@ -1,5 +1,6 @@
 import React from 'react';
-import { SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import ProfileScreen from '../src/screens/ProfileScreen';
 import { useAuth } from '../src/context/AuthContext';
@@ -24,15 +25,15 @@ export default function SetupRoute() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView edges={['top']} style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>ตั้งค่าโปรไฟล์ครั้งแรก</Text>
         <Text style={styles.subtitle}>กรุณากรอกข้อมูลของคุณเพื่อให้เพื่อนๆ รู้จักคุณมากขึ้น</Text>
       </View>
       <View style={styles.content}>
         <ProfileScreen
-          onLogout={() => {
-            logout();
+          onLogout={async () => {
+            await logout();
             router.replace('/');
           }}
           onToast={showToast}

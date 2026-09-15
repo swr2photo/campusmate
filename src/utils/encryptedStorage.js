@@ -1,12 +1,9 @@
 /**
- * Encrypted Storage Utility
+ * AES-GCM storage for offline snapshots and queued operations.
  *
- * Encrypts large payloads before storing them in AsyncStorage.
- * The encryption key is generated once and kept in expo-secure-store
- * (iOS Keychain / Android EncryptedSharedPreferences).
- *
- * On web, data is stored as-is because localStorage is already
- * sandboxed per origin.
+ * This is separate from chat E2EE: it protects the local cache while the
+ * device is offline. Native keys stay in iOS Keychain/Android Keystore via
+ * SecureStore. Web uses a per-origin key because SecureStore is unavailable.
  */
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -14,131 +11,170 @@ import * as SecureStore from 'expo-secure-store';
 import * as Crypto from 'expo-crypto';
 
 const ENCRYPTION_KEY_ALIAS = 'campusmate_enc_key_v1';
+const WEB_ENCRYPTION_KEY_ALIAS = `${ENCRYPTION_KEY_ALIAS}_web`;
+const AES_PREFIX = 'ENC:AESGCM:1:';
+const LEGACY_XOR_PREFIX = 'ENC:1:';
+let cachedKey = null;
 
-// ---------- helpers ----------
+function bytesToBase64(bytes) {
+  const input = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let output = '';
+  for (let index = 0; index < input.length; index += 3) {
+    const first = input[index];
+    const second = index + 1 < input.length ? input[index + 1] : 0;
+    const third = index + 2 < input.length ? input[index + 2] : 0;
+    output += alphabet[first >> 2];
+    output += alphabet[((first & 3) << 4) | (second >> 4)];
+    output += index + 1 < input.length ? alphabet[((second & 15) << 2) | (third >> 6)] : '=';
+    output += index + 2 < input.length ? alphabet[third & 63] : '=';
+  }
+  return output;
+}
 
-let _cachedKey = null;
+function base64Value(code) {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code === 43) return 62;
+  if (code === 47) return 63;
+  return -1;
+}
+
+function base64ToBytes(value) {
+  const normalized = String(value || '').replace(/\s/g, '').replace(/=+$/, '');
+  if (!normalized || normalized.length % 4 === 1) throw new Error('Invalid base64');
+  const bytes = [];
+  for (let index = 0; index < normalized.length; index += 4) {
+    const a = base64Value(normalized.charCodeAt(index));
+    const b = base64Value(normalized.charCodeAt(index + 1));
+    const c = index + 2 < normalized.length ? base64Value(normalized.charCodeAt(index + 2)) : 0;
+    const d = index + 3 < normalized.length ? base64Value(normalized.charCodeAt(index + 3)) : 0;
+    if (a < 0 || b < 0 || c < 0 || d < 0) throw new Error('Invalid base64');
+    bytes.push((a << 2) | (b >> 4));
+    if (index + 2 < normalized.length) bytes.push(((b & 15) << 4) | (c >> 2));
+    if (index + 3 < normalized.length) bytes.push(((c & 3) << 6) | d);
+  }
+  return new Uint8Array(bytes);
+}
+
+function utf8ToBase64(value) {
+  const bytes = typeof TextEncoder !== 'undefined'
+    ? new TextEncoder().encode(String(value))
+    : Uint8Array.from(unescape(encodeURIComponent(String(value))), (character) => character.charCodeAt(0));
+  return bytesToBase64(bytes);
+}
+
+function base64ToUtf8(value) {
+  const bytes = base64ToBytes(value);
+  if (typeof TextDecoder !== 'undefined') return new TextDecoder().decode(bytes);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return decodeURIComponent(escape(binary));
+}
+
+function makeKey() {
+  return Array.from(Crypto.getRandomBytes(32))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function readKey() {
+  if (Platform.OS === 'web') return AsyncStorage.getItem(WEB_ENCRYPTION_KEY_ALIAS);
+  return SecureStore.getItemAsync(ENCRYPTION_KEY_ALIAS);
+}
+
+async function writeKey(key) {
+  if (Platform.OS === 'web') return AsyncStorage.setItem(WEB_ENCRYPTION_KEY_ALIAS, key);
+  return SecureStore.setItemAsync(ENCRYPTION_KEY_ALIAS, key);
+}
 
 async function getOrCreateEncryptionKey() {
-  if (_cachedKey) return _cachedKey;
-
-  const existing = await SecureStore.getItemAsync(ENCRYPTION_KEY_ALIAS);
-  if (existing) {
-    _cachedKey = existing;
-    return existing;
+  if (cachedKey) return cachedKey;
+  const existing = await readKey();
+  if (/^[0-9a-f]{64}$/i.test(existing || '')) {
+    cachedKey = existing;
+    return cachedKey;
   }
-
-  // Generate a 256-bit key encoded as hex (64 chars)
-  const key = Crypto.getRandomBytes(32)
-    .reduce((hex, byte) => hex + byte.toString(16).padStart(2, '0'), '');
-  await SecureStore.setItemAsync(ENCRYPTION_KEY_ALIAS, key);
-  _cachedKey = key;
-  return key;
+  cachedKey = makeKey();
+  await writeKey(cachedKey);
+  return cachedKey;
 }
 
-/**
- * Simple XOR-based stream cipher using a key-derived pad.
- * This is NOT AES, but provides meaningful confidentiality for
- * data-at-rest against casual inspection on rooted devices.
- *
- * For truly sensitive payloads (e.g. medical / financial), swap this
- * out for SubtleCrypto AES-GCM when Expo adds native support.
- */
-function xorEncrypt(plaintext, keyHex) {
-  const data = new TextEncoder().encode(plaintext);
+async function encryptAesGcm(value, keyHex) {
+  const encryptionKey = await Crypto.AESEncryptionKey.import(keyHex, 'hex');
+  const sealed = await Crypto.aesEncryptAsync(utf8ToBase64(value), encryptionKey);
+  return `${AES_PREFIX}${await sealed.combined('base64')}`;
+}
+
+async function decryptAesGcm(value, keyHex) {
+  const encryptionKey = await Crypto.AESEncryptionKey.import(keyHex, 'hex');
+  // Expo Crypto's Android bridge currently exposes fromCombined as ByteArray
+  // even though its JavaScript type also accepts a base64 string.
+  const sealed = Crypto.AESSealedData.fromCombined(base64ToBytes(value), { ivLength: 12, tagLength: 16 });
+  const plaintextBase64 = await Crypto.aesDecryptAsync(sealed, encryptionKey, { output: 'base64' });
+  return base64ToUtf8(plaintextBase64);
+}
+
+// Read-only compatibility for data written by the old XOR implementation.
+function legacyXorDecrypt(cipherBase64, keyHex) {
+  const data = base64ToBytes(cipherBase64);
   const keyBytes = [];
-  for (let i = 0; i < keyHex.length; i += 2) {
-    keyBytes.push(parseInt(keyHex.substring(i, i + 2), 16));
-  }
-
-  const output = new Uint8Array(data.length);
-  for (let i = 0; i < data.length; i++) {
-    output[i] = data[i] ^ keyBytes[i % keyBytes.length];
-  }
-
-  // Encode as base64 via binary string
-  let binaryStr = '';
-  for (let i = 0; i < output.length; i++) {
-    binaryStr += String.fromCharCode(output[i]);
-  }
-  return btoa(binaryStr);
+  for (let index = 0; index < keyHex.length; index += 2) keyBytes.push(parseInt(keyHex.slice(index, index + 2), 16));
+  const output = Uint8Array.from(data, (byte, index) => byte ^ keyBytes[index % keyBytes.length]);
+  if (typeof TextDecoder !== 'undefined') return new TextDecoder().decode(output);
+  let binary = '';
+  for (const byte of output) binary += String.fromCharCode(byte);
+  return decodeURIComponent(escape(binary));
 }
 
-function xorDecrypt(cipherBase64, keyHex) {
-  const binaryStr = atob(cipherBase64);
-  const data = new Uint8Array(binaryStr.length);
-  for (let i = 0; i < binaryStr.length; i++) {
-    data[i] = binaryStr.charCodeAt(i);
-  }
-
-  const keyBytes = [];
-  for (let i = 0; i < keyHex.length; i += 2) {
-    keyBytes.push(parseInt(keyHex.substring(i, i + 2), 16));
-  }
-
-  const output = new Uint8Array(data.length);
-  for (let i = 0; i < data.length; i++) {
-    output[i] = data[i] ^ keyBytes[i % keyBytes.length];
-  }
-
-  return new TextDecoder().decode(output);
-}
-
-// ---------- Public API ----------
-
-const ENCRYPTED_PREFIX = 'ENC:1:';
-
-/**
- * Store a value with encryption (native) or plaintext (web).
- */
 export async function setEncryptedItem(key, value) {
-  if (Platform.OS === 'web') {
-    return AsyncStorage.setItem(key, value);
-  }
-  try {
-    const encKey = await getOrCreateEncryptionKey();
-    const encrypted = xorEncrypt(value, encKey);
-    return AsyncStorage.setItem(key, ENCRYPTED_PREFIX + encrypted);
-  } catch (error) {
-    // Fallback to plaintext if encryption fails
-    console.warn('[EncryptedStorage] Encryption failed, storing plaintext:', error);
-    return AsyncStorage.setItem(key, value);
-  }
+  const encryptionKey = await getOrCreateEncryptionKey();
+  const encrypted = await encryptAesGcm(String(value), encryptionKey);
+  return AsyncStorage.setItem(key, encrypted);
 }
 
-/**
- * Retrieve and decrypt a value.  Handles both encrypted and legacy
- * plaintext values transparently so the migration is seamless.
- */
 export async function getEncryptedItem(key) {
   const raw = await AsyncStorage.getItem(key);
   if (raw === null) return null;
 
-  if (Platform.OS === 'web' || !raw.startsWith(ENCRYPTED_PREFIX)) {
-    // Plaintext (web or legacy data written before encryption was added)
-    return raw;
-  }
-
+  const encryptionKey = await getOrCreateEncryptionKey();
   try {
-    const encKey = await getOrCreateEncryptionKey();
-    const ciphertext = raw.slice(ENCRYPTED_PREFIX.length);
-    return xorDecrypt(ciphertext, encKey);
-  } catch (error) {
-    console.warn('[EncryptedStorage] Decryption failed, returning raw:', error);
+    if (raw.startsWith(AES_PREFIX)) {
+      return await decryptAesGcm(raw.slice(AES_PREFIX.length), encryptionKey);
+    }
+
+    if (raw.startsWith(LEGACY_XOR_PREFIX)) {
+      const legacyValue = legacyXorDecrypt(raw.slice(LEGACY_XOR_PREFIX.length), encryptionKey);
+      // Upgrade old local data on first read. A failed upgrade does not make
+      // the new write path fall back to plaintext.
+      try {
+        await setEncryptedItem(key, legacyValue);
+      } catch (migrationError) {
+        console.warn('[EncryptedStorage] Legacy cache migration failed:', migrationError);
+        return null;
+      }
+      return legacyValue;
+    }
+
+    // One-time migration for snapshots written before encryption existed.
+    try {
+      await setEncryptedItem(key, raw);
+    } catch (migrationError) {
+      console.warn('[EncryptedStorage] Plaintext cache migration failed:', migrationError);
+      return null;
+    }
     return raw;
+  } catch (error) {
+    console.warn('[EncryptedStorage] AES-GCM decryption failed:', error);
+    return null;
   }
 }
 
-/**
- * Remove an encrypted item.
- */
 export async function removeEncryptedItem(key) {
   return AsyncStorage.removeItem(key);
 }
 
-/**
- * Remove multiple encrypted items.
- */
 export async function multiRemoveEncryptedItems(keys) {
   return AsyncStorage.multiRemove(keys);
 }

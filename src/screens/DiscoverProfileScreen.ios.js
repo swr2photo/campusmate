@@ -5,10 +5,16 @@ import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useAssets } from 'expo-asset';
 import { router } from 'expo-router';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
+import {
+  getPublicProfile,
+  isProfileReadyForDiscovery,
+  mergeProfileRecords,
+  normalizeProfileRecord,
+  toSafePublicProfile,
+} from '../services/firestoreService';
 import {
   Button,
   HStack,
@@ -48,12 +54,20 @@ import {
 } from '@expo/ui/swift-ui/modifiers';
 import { useApp } from '../context/AppContext';
 
-import { formatDistance, formatReadableDate, genderLabel, getActivityLabel } from '../utils/formatters';
+import { formatAvailabilitySlots, formatDistance, formatReadableDate, genderLabel, getActivityLabel } from '../utils/formatters';
 
-const profilePhoto = require('../../assets/friend-profile-card.png');
 const { height: screenHeight, width: screenWidth } = Dimensions.get('window');
 const actionButtonWidth = 96;
 const actionSideInset = 32;
+
+function mergeCandidateProfiles(...lists) {
+  const byId = new Map();
+  lists.flat().forEach((item) => {
+    if (!item?.id) return;
+    byId.set(item.id, mergeProfileRecords(byId.get(item.id), item));
+  });
+  return Array.from(byId.values());
+}
 
 const darkPalette = {
   background: '#14171B',
@@ -89,13 +103,10 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const palette = usePalette();
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
-  const [assets] = useAssets([profilePhoto]);
-  const { availableProfiles, conversations, dismissProfile, getMeetupStats, matchProfile, pendingIncomingLikes, sendActivityInvite } = useApp();
+  const { availableProfiles, conversations, dismissProfile, getMeetupStats, matchProfile, pendingIncomingLikes, acceptedIncomingLikes, profile: currentProfile, sendActivityInvite, hasMoreProfiles, isLoadingMoreProfiles, loadMoreProfiles } = useApp();
   const [processing, setProcessing] = useState(false);
   const [sessionExcludedIds, setSessionExcludedIds] = useState([]);
   const [directProfile, setDirectProfile] = useState(null);
-  const [swipeBgColor, setSwipeBgColor] = useState('transparent');
-  const [swipeContentOpacity, setSwipeContentOpacity] = useState(1);
   const translateX = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
   const cardScale = useRef(new Animated.Value(1)).current;
@@ -110,14 +121,32 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
       setDirectProfile(null);
       return;
     }
+    let active = true;
+    let serverReadComplete = false;
     try {
       const { db } = requireFirebase();
-      const unsub = onSnapshot(doc(db, 'profiles', profileId), (snap) => {
-        if (snap.exists()) {
-          setDirectProfile({ id: snap.id, ...snap.data() });
-        }
+      const profileRef = doc(db, 'profiles', profileId);
+      void getPublicProfile(profileId).then((freshProfile) => {
+        if (!active) return;
+        serverReadComplete = true;
+        if (freshProfile) setDirectProfile(freshProfile);
+      }).catch((error) => {
+        if (active) console.warn('Fresh profile lookup error:', error);
       });
-      return () => unsub();
+      const unsub = onSnapshot(profileRef, (snap) => {
+        if (!active || (serverReadComplete && snap.metadata?.fromCache)) return;
+        if (snap.exists()) {
+          setDirectProfile(toSafePublicProfile(snap.id, snap.data()));
+        } else {
+          setDirectProfile(null);
+        }
+      }, (error) => {
+        if (active) console.warn('Realtime profile lookup error:', error?.message || error);
+      });
+      return () => {
+        active = false;
+        unsub();
+      };
     } catch (e) {
       console.warn('Realtime profile lookup error:', e);
     }
@@ -128,9 +157,9 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const candidatePool = useMemo(() => {
     const seenIds = new Set();
     const excludedIds = new Set(sessionExcludedIds);
-    return [...(availableProfiles || []), ...(pendingIncomingLikes || [])].filter((item) => {
+    return mergeCandidateProfiles(availableProfiles || [], pendingIncomingLikes || []).filter((item) => {
       const id = item?.id;
-      if (!id || excludedIds.has(id) || seenIds.has(id)) return false;
+      if (!id || excludedIds.has(id) || seenIds.has(id) || !isProfileReadyForDiscovery(item)) return false;
       seenIds.add(id);
       return true;
     });
@@ -145,15 +174,12 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
 
   const candidate = useMemo(() => {
     if (isViewOnly) {
-      if (directProfile && directProfile.id === profileId) return directProfile;
       const matchedConvo = conversations?.find((c) => c.profileId === profileId || c.participants?.includes(profileId));
-      if (matchedConvo?.participantProfiles?.[profileId]) {
-        return { id: profileId, ...matchedConvo.participantProfiles[profileId] };
-      }
       const fromAvailable = candidatePool.find((item) => item.id === profileId);
-      if (fromAvailable) return fromAvailable;
-      if (directProfile) return directProfile;
-      return null;
+      const fromConversation = matchedConvo?.participantProfiles?.[profileId]
+        ? normalizeProfileRecord(profileId, matchedConvo.participantProfiles[profileId])
+        : null;
+      return mergeCandidateProfiles(fromAvailable, fromConversation, directProfile?.id === profileId ? directProfile : null)[0] || null;
     }
 
     // Keep the profile opened from Home as the first card when it is present.
@@ -164,7 +190,9 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     const requestedProfile = profileId && candidatePool.find((item) => (
       item.id === profileId && !isDecisionExcluded(item.id)
     ));
-    if (requestedProfile) return requestedProfile;
+    if (requestedProfile || (directProfile?.id === profileId && !isDecisionExcluded(profileId))) {
+      return mergeCandidateProfiles(requestedProfile, directProfile?.id === profileId ? directProfile : null)[0] || null;
+    }
 
     const nextProfile = candidatePool.find((item) => !isDecisionExcluded(item.id));
     if (nextProfile) return nextProfile;
@@ -185,15 +213,23 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     return null;
   }, [candidatePool, conversations, directProfile, isViewOnly, processing, profileId, sessionExcludedIds]);
 
+  useEffect(() => {
+    if (isViewOnly || candidate || !hasMoreProfiles || isLoadingMoreProfiles) return undefined;
+    void loadMoreProfiles();
+    return undefined;
+  }, [candidate, hasMoreProfiles, isLoadingMoreProfiles, isViewOnly, loadMoreProfiles]);
+
   const candidateId = candidate?.id || null;
 
   const isCandidateMatched = useMemo(() => {
     if (!candidate) return false;
-    return Boolean(
-      candidate.isMatched ||
-      conversations?.some((c) => c.profileId === candidate.id || c.participants?.includes(candidate.id))
+    const isMutualAccepted = acceptedIncomingLikes?.some((like) => like.id === candidate.id);
+    const isOutgoingAccepted = Boolean(candidate.isMatched);
+    const hasLiveConvo = conversations?.some(
+      (c) => (c.profileId === candidate.id || c.participants?.includes(candidate.id)) && !c.isHidden
     );
-  }, [candidate, conversations]);
+    return Boolean((isMutualAccepted || isOutgoingAccepted) && hasLiveConvo);
+  }, [candidate, conversations, acceptedIncomingLikes]);
 
   const meetupStats = useMemo(
     () => (candidate ? getMeetupStats(candidate) : null),
@@ -222,23 +258,23 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     translateY.setValue(0);
     cardScale.setValue(1);
     cardOpacity.setValue(1);
-    // Animated listeners are asynchronous on iOS. Reset these values
-    // explicitly so the next profile cannot inherit an invisible card.
-    setSwipeBgColor('transparent');
-    setSwipeContentOpacity(1);
     try {
       if (decision === 'like') {
         if (isCandidateMatched) {
-          const conversationId = await sendActivityInvite(candidate);
-          onToast?.(`ส่งคำขอร่วมกิจกรรมถึง ${candidate.name} แล้ว! กำลังเปิดห้องแชต...`, 'success');
-          router.replace({ pathname: '/chat-room', params: { chatId: conversationId } });
+          const inviteResult = await sendActivityInvite(candidate);
+          if (inviteResult?.matched && inviteResult?.conversationId) {
+            onToast?.(`ส่งคำขอร่วมกิจกรรมถึง ${candidate.name} แล้ว! กำลังเปิดห้องแชต...`, 'success');
+            router.replace({ pathname: '/chat-room', params: { chatId: inviteResult.conversationId } });
+          } else {
+            onToast?.(`ส่งถูกใจให้ ${candidate.name} แล้ว รออีกฝ่ายกดถูกใจกลับเพื่อเริ่มคุยกัน`, 'info');
+          }
         } else {
           const result = await matchProfile(candidate);
           if (result.matched && result.conversationId) {
             onToast?.(`คุณและ ${candidate.name} แมตช์กันแล้ว! กำลังเปิดห้องแชต...`, 'success');
             router.replace({ pathname: '/chat-room', params: { chatId: result.conversationId } });
           } else {
-            onToast?.(`ส่งถูกใจให้ ${candidate.name} แล้ว รออีกฝ่ายกดถูกใจกลับ`, 'info');
+            onToast?.(`ส่งถูกใจให้ ${candidate.name} แล้ว รออีกฝ่ายกดถูกใจกลับเพื่อเริ่มคุยกัน`, 'info');
           }
         }
       } else {
@@ -291,8 +327,6 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
 
   const resetSwipe = useCallback(() => {
     decisionStarted.current = false;
-    setSwipeBgColor('transparent');
-    setSwipeContentOpacity(1);
     Animated.parallel([
       Animated.spring(translateX, {
         friction: 7,
@@ -378,33 +412,17 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     extrapolate: 'clamp',
   });
 
-  const remoteAvatar = useRemoteImage(candidate?.avatarUri);
-  const imageUri = remoteAvatar || assets?.[0]?.localUri || assets?.[0]?.uri;
+  const remoteAvatar = useRemoteImage(candidate?.avatarUri, candidate?.updatedAt, candidate?.id);
+  const imageUri = remoteAvatar;
   const nextCandidate = useMemo(
     () => candidatePool.find((item) => item.id !== candidateId) || null,
     [candidateId, candidatePool]
   );
   // Start downloading the next profile's image while the current card is on
   // screen. useRemoteImage writes to the same local cache used by the card.
-  useRemoteImage(nextCandidate?.avatarUri);
+  useRemoteImage(nextCandidate?.avatarUri, nextCandidate?.updatedAt, nextCandidate?.id);
 
-  useEffect(() => {
-    if (isViewOnly) return;
-    const listenerId = translateX.addListener(({ value }) => {
-      let newBgColor = 'transparent';
-      if (value > 20) newBgColor = palette.purple;
-      else if (value < -20) newBgColor = palette.coral;
-      setSwipeBgColor((prev) => prev !== newBgColor ? newBgColor : prev);
 
-      let newOpacity = 1;
-      const absValue = Math.abs(value);
-      if (absValue > 20) {
-        newOpacity = Math.max(0, 1 - ((absValue - 20) / 80));
-      }
-      setSwipeContentOpacity((prev) => Math.abs(prev - newOpacity) > 0.05 ? newOpacity : prev);
-    });
-    return () => translateX.removeListener(listenerId);
-  }, [translateX, isViewOnly, palette]);
 
   // A new candidate must always start from a fully visible, neutral card.
   // This also handles a short Firestore refresh where the old card is removed
@@ -422,8 +440,6 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     translateY.setValue(0);
     cardScale.setValue(1);
     cardOpacity.setValue(1);
-    setSwipeBgColor('transparent');
-    setSwipeContentOpacity(1);
   }, [candidateId, cardOpacity, cardScale, translateX, translateY]);
 
   if (!candidate) {
@@ -488,12 +504,11 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
             >
               <ZStack modifiers={[
                 frame({ maxWidth: Infinity, alignment: 'topLeading' }),
-                background(swipeBgColor),
+                background(palette.card),
                 clipShape('roundedRectangle', 24, { style: 'continuous' }),
               ]}>
                 <VStack alignment="leading" spacing={0} modifiers={[
                   frame({ maxWidth: Infinity }),
-                  opacity(swipeContentOpacity)
                 ]}>
                   <ProfileHero
                     candidate={candidate}
@@ -563,6 +578,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
 }
 
 function Header({ candidate, isViewOnly, onClose, palette }) {
+  const displayName = candidate?.nickname || candidate?.name || 'ผู้ใช้ CampusMate';
   return (
     <HStack alignment="center" spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
       <Button
@@ -579,10 +595,10 @@ function Header({ candidate, isViewOnly, onClose, palette }) {
       />
       <VStack alignment="leading" spacing={2}>
         <Text modifiers={[font({ textStyle: 'headline', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>
-          {isViewOnly ? (candidate?.name ? `โปรไฟล์ ${candidate.name}` : 'ข้อมูลโปรไฟล์') : 'ค้นหาเพื่อน'}
+          {isViewOnly ? `โปรไฟล์ ${displayName}` : 'ค้นหาเพื่อน'}
         </Text>
         <Text modifiers={[font({ textStyle: 'caption2', weight: 'medium' }), foregroundStyle(palette.secondary)]}>
-          {isViewOnly ? (candidate?.faculty || candidate?.activityLabel || 'เพื่อนใน CampusMate') : 'ปัดเพื่อดูคนถัดไป'}
+          {isViewOnly ? ((candidate?.faculty && !candidate.faculty.includes('???') ? candidate.faculty : null) || (candidate?.activityLabel && !candidate.activityLabel.includes('???') ? candidate.activityLabel : null) || 'เพื่อนใน CampusMate') : 'ปัดเพื่อดูคนถัดไป'}
         </Text>
       </VStack>
       <Spacer />
@@ -592,6 +608,8 @@ function Header({ candidate, isViewOnly, onClose, palette }) {
 
 function ProfileHero({ candidate, imageUri, palette, translateX }) {
   const [blurRadius, setBlurRadius] = useState(0);
+  const displayName = candidate?.nickname || candidate?.name || 'ผู้ใช้ CampusMate';
+  const activityDisplay = getActivityLabel(candidate?.activity, candidate?.activityLabel, candidate?.activities);
 
   useEffect(() => {
     if (!translateX) return;
@@ -618,30 +636,36 @@ function ProfileHero({ candidate, imageUri, palette, translateX }) {
           modifiers={[resizable(), aspectRatio({ contentMode: 'fill' }), frame({ height: 430, maxWidth: Infinity }), clipped(), blurRadius > 0 ? blur(blurRadius) : null].filter(Boolean)}
         />
       ) : (
-        <Image
-          color={palette.secondary}
-          size={100}
-          systemName="person.crop.square.fill"
-          modifiers={[frame({ height: 430, maxWidth: Infinity }), background(candidate.avatarColor || palette.surfaceRaised)]}
-        />
+        <VStack
+          alignment="center"
+          spacing={10}
+          modifiers={[frame({ height: 430, maxWidth: Infinity })]}
+        >
+          <Image color={palette.secondary} size={86} systemName="person.crop.square.fill" />
+          <Text modifiers={[font({ textStyle: 'body', weight: 'semibold' }), foregroundStyle(palette.secondary)]}>
+            ยังไม่มีรูปโปรไฟล์
+          </Text>
+        </VStack>
       )}
-      <RNHostView matchContents={false}>
-        <View style={{ width: '100%', height: 430, justifyContent: 'flex-end' }} pointerEvents="none">
-          <MaskedView
-            style={{ position: 'absolute', bottom: 0, width: '100%', height: 180 }}
-            maskElement={
-              <LinearGradient colors={['transparent', 'black', 'black']} locations={[0, 0.4, 1]} style={{ flex: 1 }} />
-            }
-          >
-            <RNImage
-              source={{ uri: imageUri }}
-              style={{ position: 'absolute', bottom: 0, width: '100%', height: 430 }}
-              blurRadius={30}
-            />
-            <View style={{ position: 'absolute', bottom: 0, width: '100%', height: 180, backgroundColor: 'rgba(0,0,0,0.3)' }} />
-          </MaskedView>
-        </View>
-      </RNHostView>
+      {imageUri ? (
+        <RNHostView matchContents={false}>
+          <View style={{ width: '100%', height: 430, justifyContent: 'flex-end' }} pointerEvents="none">
+            <MaskedView
+              style={{ position: 'absolute', bottom: 0, width: '100%', height: 180 }}
+              maskElement={
+                <LinearGradient colors={['transparent', 'black', 'black']} locations={[0, 0.4, 1]} style={{ flex: 1 }} />
+              }
+            >
+              <RNImage
+                source={{ uri: imageUri }}
+                style={{ position: 'absolute', bottom: 0, width: '100%', height: 430 }}
+                blurRadius={30}
+              />
+              <View style={{ position: 'absolute', bottom: 0, width: '100%', height: 180, backgroundColor: 'rgba(0,0,0,0.3)' }} />
+            </MaskedView>
+          </View>
+        </RNHostView>
+      ) : null}
       <VStack spacing={0} modifiers={[frame({ maxWidth: Infinity, maxHeight: Infinity })]}>
         <Spacer />
         <VStack
@@ -653,11 +677,11 @@ function ProfileHero({ candidate, imageUri, palette, translateX }) {
           ]}
         >
           <Text modifiers={[font({ textStyle: 'largeTitle', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.white), lineLimit(1)]}>
-            {candidate.name}{candidate.age ? `, ${candidate.age}` : ''}
+            {displayName}{candidate.age ? `, ${candidate.age}` : ''}
           </Text>
-          {candidate.activityLabel ? (
+          {(activityDisplay || (candidate?.activityLabel && !candidate.activityLabel.includes('???'))) ? (
             <Text modifiers={[font({ textStyle: 'subheadline', weight: 'semibold' }), foregroundStyle(palette.white), lineLimit(1)]}>
-              {candidate.activityLabel}
+              {activityDisplay || candidate.activityLabel}
             </Text>
           ) : null}
         </VStack>
@@ -669,6 +693,20 @@ function ProfileHero({ candidate, imageUri, palette, translateX }) {
 function ProfileDetails({ candidate, meetupStats, palette }) {
   const allTags = Array.from(new Set([...(candidate.tags || []), ...(candidate.interests || [])]));
   const activityDisplay = getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities);
+  const displayName = candidate.nickname || candidate.name || 'ผู้ใช้ CampusMate';
+  const hasVisibleDetails = Boolean(
+    candidate.age != null
+    || candidate.gender
+    || candidate.faculty
+    || candidate.year
+    || activityDisplay
+    || candidate.skill
+    || candidate.pace
+    || candidate.availability
+    || candidate.availabilitySlots?.length
+    || candidate.distance != null
+    || candidate.meetup
+  );
 
   return (
     <VStack
@@ -685,7 +723,7 @@ function ProfileDetails({ candidate, meetupStats, palette }) {
       <HStack alignment="center" spacing={10} modifiers={[frame({ maxWidth: Infinity })]}>
         <VStack alignment="leading" spacing={3}>
           <Text modifiers={[font({ textStyle: 'title3', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>
-            เกี่ยวกับ {candidate.nickname || candidate.name}
+            เกี่ยวกับ {displayName}
           </Text>
           <Text modifiers={[font({ textStyle: 'subheadline', weight: 'medium' }), foregroundStyle(palette.secondary)]}>
             ข้อมูลที่เจ้าของโปรไฟล์เลือกแสดง
@@ -711,14 +749,40 @@ function ProfileDetails({ candidate, meetupStats, palette }) {
       <VStack alignment="leading" spacing={9} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
         {candidate.age ? <ProfileInfoRow icon="calendar" label="อายุ" value={`${candidate.age} ปี`} palette={palette} /> : null}
         {candidate.gender ? <ProfileInfoRow icon="person.2.fill" label="เพศ" value={genderLabel(candidate.gender)} palette={palette} /> : null}
-        {candidate.faculty ? <ProfileInfoRow icon="building.columns.fill" label="คณะ" value={candidate.faculty} palette={palette} /> : null}
-        {candidate.year ? <ProfileInfoRow icon="graduationcap.fill" label="ชั้นปี" value={candidate.year} palette={palette} /> : null}
+        {(candidate.faculty && !candidate.faculty.includes('???')) ? <ProfileInfoRow icon="building.columns.fill" label="คณะ" value={candidate.faculty} palette={palette} /> : null}
+        {(candidate.year && !candidate.year.includes('???')) ? <ProfileInfoRow icon="graduationcap.fill" label="ชั้นปี" value={candidate.year} palette={palette} /> : null}
         {activityDisplay ? <ProfileInfoRow icon="figure.run" label="กิจกรรมที่ชอบ" value={activityDisplay} palette={palette} /> : null}
         {candidate.skill ? <ProfileInfoRow icon="star.fill" label="ระดับ / ทักษะ" value={candidate.skill} palette={palette} /> : null}
         {candidate.pace ? <ProfileInfoRow icon="speedometer" label="สไตล์ / เพซ" value={candidate.pace} palette={palette} /> : null}
-        {candidate.availability ? <ProfileInfoRow icon="clock.fill" label="เวลาที่สะดวก" value={candidate.availability} palette={palette} /> : null}
+        {(candidate.availabilitySlots && candidate.availabilitySlots.length > 0) ? (
+          <ProfileInfoRow
+            icon="clock.fill"
+            label="เวลาที่สะดวก"
+            value={formatAvailabilitySlots(candidate.availabilitySlots)}
+            palette={palette}
+          />
+        ) : (candidate.availability && !candidate.availability.includes('???')) ? (
+          <ProfileInfoRow icon="clock.fill" label="เวลาที่สะดวก" value={candidate.availability} palette={palette} />
+        ) : null}
         {candidate.distance != null ? <ProfileInfoRow icon="location.circle.fill" label="ระยะห่างจากคุณ" value={formatDistance(candidate.distance)} palette={palette} /> : null}
       </VStack>
+
+      {!hasVisibleDetails ? (
+        <HStack
+          alignment="center"
+          spacing={8}
+          modifiers={[
+            padding({ all: 12 }),
+            frame({ maxWidth: Infinity, alignment: 'leading' }),
+            background(palette.purpleSoft, shapes.roundedRectangle({ cornerRadius: 16 })),
+          ]}
+        >
+          <Image color={palette.purple} size={16} systemName="eye.slash.fill" />
+          <Text modifiers={[font({ textStyle: 'caption' }), foregroundStyle(palette.secondary)]}>
+            ข้อมูลรายละเอียดอื่นถูกซ่อนไว้ตามการตั้งค่าความเป็นส่วนตัว
+          </Text>
+        </HStack>
+      ) : null}
 
       {candidate.meetup && (
         <VStack
@@ -837,14 +901,15 @@ function ProfileDetails({ candidate, meetupStats, palette }) {
 }
 
 function ProfileInfoRow({ icon, label, value, palette }) {
+  const isMulti = typeof value === 'string' && value.includes('\n');
   return (
     <HStack
-      alignment="center"
+      alignment={isMulti ? 'top' : 'center'}
       spacing={12}
       modifiers={[
         padding({ all: 12 }),
         frame({ maxWidth: Infinity, alignment: 'leading' }),
-          background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 16 })),
+        background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 16 })),
       ]}
     >
       <ZStack modifiers={[frame({ width: 38, height: 38 }), background(palette.purpleSoft, shapes.circle())]}>
@@ -854,7 +919,7 @@ function ProfileInfoRow({ icon, label, value, palette }) {
         <Text modifiers={[font({ textStyle: 'caption', weight: 'semibold' }), foregroundStyle(palette.tertiary)]}>
           {label}
         </Text>
-        <Text modifiers={[font({ textStyle: 'body', weight: 'semibold' }), foregroundStyle(palette.text), lineLimit(2)]}>
+        <Text modifiers={[font({ textStyle: 'body', weight: 'semibold' }), foregroundStyle(palette.text), ...(isMulti ? [] : [lineLimit(2)])]}>
           {value || 'ไม่ระบุ'}
         </Text>
       </VStack>

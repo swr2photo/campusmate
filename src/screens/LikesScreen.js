@@ -15,6 +15,7 @@ import { IosLikeAvatar, IosLikeScreen } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import { radius, spacing, type, useTheme } from '../theme';
+import { formatAvailabilitySlots } from '../utils/formatters';
 
 const TABS = [
   { id: 'pending', label: 'ถูกใจคุณ' },
@@ -34,22 +35,27 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
   const [activeTab, setActiveTab] = useState('pending');
   const [processingId, setProcessingId] = useState(null);
 
-  const visibleLikes = activeTab === 'pending' ? pendingIncomingLikes : acceptedIncomingLikes;
+  const visibleLikes = activeTab === 'pending'
+    ? pendingIncomingLikes
+    : acceptedIncomingLikes;
 
   const handleResponse = async (like, response) => {
     if (processingId) return;
 
     setProcessingId(like.id);
     try {
-      await respondToLike(like, response);
+      const conversationId = await respondToLike(like, response);
       if (response === 'accept') {
-        const conversationId = await ensureConversation(like);
+        const targetConversationId = typeof conversationId === 'string'
+          ? conversationId
+          : await ensureConversation(like);
         onToast?.(`จับคู่กับ ${like.name} แล้ว เริ่มแชตได้เลย`, 'success');
-        onOpenChat?.(conversationId);
+        onOpenChat?.(targetConversationId);
       } else {
         onToast?.('นำคำขอนี้ออกจากรายการแล้ว', 'info');
       }
     } catch (error) {
+      console.error('[LikesScreen] handleResponse error:', error);
       onToast?.('ยังดำเนินการไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     } finally {
       setProcessingId(null);
@@ -63,6 +69,7 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
       const conversationId = await ensureConversation(like);
       onOpenChat?.(conversationId);
     } catch (error) {
+      console.error('[LikesScreen] handleOpenChat error:', error);
       onToast?.('ยังเปิดห้องแชตไม่ได้ กรุณาลองใหม่อีกครั้ง', 'info');
     } finally {
       setProcessingId(null);
@@ -74,9 +81,10 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
     setProcessingId(like.id);
     try {
       await respondToLike(like, 'reject');
-      onToast?.(`ลบ ${like.name} ออกจากรายการจับคู่แล้ว`, 'info');
+      onToast?.(`ยกเลิกการจับคู่กับ ${like.name} แล้ว`, 'info');
     } catch (error) {
-      onToast?.('ยังดำเนินการไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+      console.error('[LikesScreen] handleRemoveMatch error:', error);
+      onToast?.('ยังยกเลิกไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     } finally {
       setProcessingId(null);
     }
@@ -92,30 +100,38 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
           onPress={onClose}
           style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
         >
-          <Text style={styles.backIcon}>‹</Text>
+          <FeatureIcon color={colors.ink} name="arrow.left" size={24} />
         </Pressable>
         <View style={styles.headerCopy}>
-          <Text style={styles.title}>คนที่สนใจคุณ</Text>
+          <Text style={styles.title}>ถูกใจ & จับคู่</Text>
         </View>
         <View style={styles.headerHeart}><FeatureIcon color={colors.coral} name="heart.fill" size={22} /></View>
       </View>
 
-      <Text style={styles.subtitle}>เลือกคนที่อยากรู้จัก แล้วเริ่มเป็นเพื่อนกันได้เลย</Text>
+      <Text style={styles.subtitle}>จัดการคนที่สนใจคุณ และคนที่คุณจับคู่ด้วย</Text>
 
       <View style={styles.summaryCard}>
         <View style={styles.summaryIcon}><FeatureIcon color={colors.coral} name="heart.circle.fill" size={26} /></View>
         <View style={styles.summaryCopy}>
           <Text style={styles.summaryTitle}>
-            {pendingIncomingLikes.length ? `มี ${pendingIncomingLikes.length} คนรอคำตอบจากคุณ` : 'ไม่มีคำขอใหม่ในตอนนี้'}
+            {activeTab === 'pending'
+              ? (pendingIncomingLikes.length ? `มี ${pendingIncomingLikes.length} คนรอคำตอบจากคุณ` : 'ไม่มีคำขอใหม่ในตอนนี้')
+              : (acceptedIncomingLikes.length ? `จับคู่สำเร็จแล้ว ${acceptedIncomingLikes.length} คน` : 'ยังไม่มีคู่ที่จับคู่แล้ว')}
           </Text>
-          <Text style={styles.summaryText}>คุณเลือกได้อย่างสบายใจ การปฏิเสธจะไม่แจ้งเตือนอีกฝ่าย</Text>
+          <Text style={styles.summaryText}>
+            {activeTab === 'pending'
+              ? 'คุณเลือกได้อย่างสบายใจ การปฏิเสธจะไม่แจ้งเตือนอีกฝ่าย'
+              : 'เริ่มส่งข้อความหรือชวนไปทำกิจกรรมร่วมกันได้เลย'}
+          </Text>
         </View>
       </View>
 
       <View style={styles.tabs}>
         {TABS.map((tab) => {
           const isActive = activeTab === tab.id;
-          const count = tab.id === 'pending' ? pendingIncomingLikes.length : acceptedIncomingLikes.length;
+          const count = tab.id === 'pending'
+            ? pendingIncomingLikes.length
+            : acceptedIncomingLikes.length;
           return (
             <Pressable
               accessibilityRole="tab"
@@ -142,10 +158,20 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
         ListHeaderComponent={header}
         ListEmptyComponent={(
           <Card style={styles.emptyCard}>
-            <FeatureIcon color={colors.coral} name={activeTab === 'pending' ? 'heart.slash' : 'person.2.fill'} size={42} />
-            <Text style={styles.emptyTitle}>{activeTab === 'pending' ? 'ยังไม่มีคนกดใจใหม่' : 'ยังไม่มีคู่ที่จับคู่แล้ว'}</Text>
+            <FeatureIcon
+              color={colors.coral}
+              name={activeTab === 'pending' ? 'heart.slash' : 'person.2.fill'}
+              size={42}
+            />
+            <Text style={styles.emptyTitle}>
+              {activeTab === 'pending'
+                ? 'ยังไม่มีคนกดใจใหม่'
+                : 'ยังไม่มีคู่ที่จับคู่แล้ว'}
+            </Text>
             <Text style={styles.emptyText}>
-              {activeTab === 'pending' ? 'เมื่อมีคนสนใจกิจกรรมเดียวกับคุณ รายการจะแสดงที่นี่' : 'คนที่คุณรับเป็นเพื่อนแล้วจะแสดงในรายการนี้'}
+              {activeTab === 'pending'
+                ? 'เมื่อมีคนสนใจกิจกรรมเดียวกับคุณ รายการจะแสดงที่นี่'
+                : 'คนที่คุณรับเป็นเพื่อนแล้วจะแสดงในรายการนี้'}
             </Text>
           </Card>
         )}
@@ -171,7 +197,7 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
 function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, processing, styles }) {
   const { colors } = useTheme();
   const cardStyles = styles || getStyles(colors);
-  const imageUri = useRemoteImage(like.avatarUri);
+  const imageUri = useRemoteImage(like.avatarUri, like.updatedAt, like.id);
   return (
     <Card style={cardStyles.likeCard}>
       <View style={[cardStyles.likeHero, { backgroundColor: like.avatarColor || colors.primarySoft }]}>
@@ -194,19 +220,23 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, pr
             {like.year ? <MetaChip icon="graduationcap.fill" label={like.year} styles={cardStyles} /> : null}
             {like.activityLabel ? <MetaChip icon="figure.run" label={like.activityLabel} styles={cardStyles} /> : null}
             {like.location ? <MetaChip icon="mappin.and.ellipse" label={like.location} styles={cardStyles} /> : null}
-            {like.availability ? <MetaChip icon="clock.fill" label={like.availability} styles={cardStyles} /> : null}
+            {(like.availabilitySlots && like.availabilitySlots.length > 0) ? (
+              <MetaChip icon="clock.fill" label={formatAvailabilitySlots(like.availabilitySlots, { compact: true })} styles={cardStyles} />
+            ) : like.availability ? (
+              <MetaChip icon="clock.fill" label={like.availability} styles={cardStyles} />
+            ) : null}
           </View>
         </ScrollView>
 
         {accepted ? (
           <View style={cardStyles.actionRow}>
-            <OutlineButton disabled={processing} danger icon="×" label="ลบ" onPress={onRemove} style={cardStyles.rejectButton} />
-            <PrimaryButton disabled={processing} icon="→" label="เปิดห้องแชต" onPress={onOpenChat} style={cardStyles.acceptButton} />
+            <OutlineButton disabled={processing} danger iconName="trash.fill" label="ลบ" onPress={onRemove} style={cardStyles.rejectButton} />
+            <PrimaryButton disabled={processing} iconName="message.fill" label="เปิดห้องแชต" onPress={onOpenChat} style={cardStyles.acceptButton} />
           </View>
         ) : (
           <View style={cardStyles.actionRow}>
-            <OutlineButton disabled={processing} danger icon="×" label="ไม่รับตอนนี้" onPress={onReject} style={cardStyles.rejectButton} />
-            <PrimaryButton disabled={processing} icon="♥" label="รับเป็นเพื่อน" loading={processing} onPress={onAccept} style={cardStyles.acceptButton} />
+            <OutlineButton disabled={processing} danger iconName="xmark.circle.fill" label="ไม่รับตอนนี้" onPress={onReject} style={cardStyles.rejectButton} />
+            <PrimaryButton disabled={processing} iconName="person.badge.plus" label="รับเป็นเพื่อน" loading={processing} onPress={onAccept} style={cardStyles.acceptButton} />
           </View>
         )}
       </View>
@@ -229,7 +259,6 @@ const getStyles = (colors) => StyleSheet.create({
   listContent: { padding: spacing.lg, paddingBottom: spacing.xxxl },
   header: { alignItems: 'center', flexDirection: 'row', marginBottom: spacing.sm },
   backButton: { alignItems: 'center', height: 44, justifyContent: 'center', marginRight: spacing.sm, width: 34 },
-  backIcon: { color: colors.ink, fontSize: 38, fontWeight: '300', lineHeight: 38 },
   headerCopy: { flex: 1 },
   eyebrow: { color: colors.primary, fontSize: type.micro, fontWeight: '900', letterSpacing: 1.3, marginBottom: 3 },
   title: { color: colors.ink, fontSize: type.title, fontWeight: '900' },
@@ -273,7 +302,8 @@ const getStyles = (colors) => StyleSheet.create({
   metaRow: { alignItems: 'center', flexDirection: 'row', marginTop: spacing.md },
   activityChip: { backgroundColor: colors.primarySoft, borderColor: colors.primarySoft, flexShrink: 1, minHeight: 32, paddingHorizontal: 9 },
   likedAt: { color: colors.inkSoft, flexShrink: 0, fontSize: 10, marginLeft: spacing.sm },
-  message: { color: colors.inkMuted, flex: 1, fontSize: type.caption, lineHeight: 18 },
+  outgoingBadge: { alignItems: 'center', borderRadius: radius.md, borderWidth: 1, flexDirection: 'row', gap: 6, marginTop: spacing.sm, paddingHorizontal: 10, paddingVertical: 6 },
+  outgoingBadgeText: { fontSize: type.caption2, fontWeight: '700' },
   actionRow: { flexDirection: 'row', marginTop: spacing.md },
   rejectButton: { flex: 0.95, minHeight: 46, paddingHorizontal: spacing.sm },
   acceptButton: { flex: 1.2, marginLeft: spacing.sm, minHeight: 46, paddingHorizontal: spacing.sm },

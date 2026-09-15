@@ -1,9 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import { formatReadableDate, getActivityLabel } from '../utils/formatters';
-import { ACTIVITY_CATEGORIES } from '../data/activityCategories';
 import { FACULTIES } from '../data/faculties';
-import { useAssets } from 'expo-asset';
+import {
+  MATCHING_ACTIVITY_OPTIONS,
+  MATCHING_AGE_MAX,
+  MATCHING_AGE_MIN,
+  MATCHING_AVAILABILITY_OPTIONS,
+  MATCHING_DEFAULT_AGE_MAX,
+  MATCHING_GENDER_OPTIONS,
+  MATCHING_PACE_OPTIONS,
+  MATCHING_YEAR_OPTIONS,
+  createMatchingOptionState,
+  getSelectedMatchingValues,
+  matchesAvailabilityPeriods,
+  normalizeMatchingAge,
+} from '../data/matchingFilters';
 import { router, useFocusEffect } from 'expo-router';
 import {
   Button,
@@ -16,8 +28,6 @@ import {
   Section,
   Slider,
   Picker,
-  DisclosureGroup,
-  Label,
   Menu,
   Toggle,
   ScrollView,
@@ -62,7 +72,6 @@ import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
 import { View, Pressable, useColorScheme, Animated, Text as RNText } from 'react-native';
 
-const profilePhoto = require('../../assets/friend-profile-card.png');
 const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const darkPalette = { background: '#14171B', surface: '#20242A', surfaceRaised: '#292E35', text: '#F7F8FA', secondary: '#B6BDC8', tertiary: '#7F8896', coral: '#FF7A6B', coralSoft: 'rgba(255,122,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#62A8FF', blueSoft: 'rgba(98,168,255,0.16)', mint: '#45D1A1', mintSoft: 'rgba(69,209,161,0.16)' , purple: '#9A8CFF', card: '#20242A', white: '#FFFFFF', chip: '#292E35', circle: '#292E35'};
@@ -114,14 +123,10 @@ function pseudoRandom(seedStr) {
   };
 }
 
-function dailyShuffle(array, seedStr) {
+function dailyPick(array, seedStr) {
+  if (array.length <= 1) return array;
   const rng = pseudoRandom(seedStr);
-  const result = [...array];
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
+  return [array[Math.floor(rng() * array.length)]];
 }
 
 export default function HomeScreen({ onOpenLikes }) {
@@ -138,39 +143,21 @@ export default function HomeScreen({ onOpenLikes }) {
     saveMatchingPreferences,
     selectedMeetup,
   } = useApp();
-  const { getPendingIncomingLikes } = useApp();
   const scrollY = useRef(new Animated.Value(0)).current;
-  const [assets] = useAssets([profilePhoto]);
   const myMeetupStats = useMemo(() => (profile ? getMeetupStats(profile) : null), [profile, getMeetupStats]);
   const matchedCount = Math.max(matchedProfileIds?.length || 0, conversations?.length || 0);
-  const [timeLeft, setTimeLeft] = useState(getRemainingTimeUntilMidnight());
-  const resetDeadlineRef = useRef(Date.now() + RESET_INTERVAL_MS);
-  const resetCountdown = React.useCallback(() => {
-    resetDeadlineRef.current = Date.now() + RESET_INTERVAL_MS;
-    setTimeLeft(formatRemainingTime(RESET_INTERVAL_MS));
-  }, []);
-
-  useEffect(() => {
-    const updateCountdown = () => {
-      const remaining = resetDeadlineRef.current - Date.now();
-      if (remaining <= 0) {
-        resetCountdown();
-        return;
-      }
-      setTimeLeft(formatRemainingTime(remaining));
-    };
-    updateCountdown();
-    const timer = setInterval(updateCountdown, 1000);
-    return () => clearInterval(timer);
-  }, [resetCountdown]);
 
   // Settings BottomSheet State
   const [showSettings, setShowSettings] = useState(false);
-  const [distance, setDistance] = useState(15);
-  const [years, setYears] = useState({ 1: true, 2: true, 3: true, 4: true });
-  const [genders, setGenders] = useState({ male: true, female: true, other: true });
-  const [activities, setActivities] = useState({ exerciseExpanded: false, running: true, gym: true, sports: true, study: true, chill: true });
-  const [eveningOnly, setEveningOnly] = useState(false);
+  const [distance, setDistance] = useState(25);
+  const [ageMin, setAgeMin] = useState(MATCHING_AGE_MIN);
+  const [ageMax, setAgeMax] = useState(MATCHING_DEFAULT_AGE_MAX);
+  const [years, setYears] = useState(() => createMatchingOptionState(MATCHING_YEAR_OPTIONS));
+  const [genders, setGenders] = useState(() => createMatchingOptionState(MATCHING_GENDER_OPTIONS));
+  const [activities, setActivities] = useState(() => createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
+  const [paces, setPaces] = useState(() => createMatchingOptionState(MATCHING_PACE_OPTIONS));
+  const [availabilityPeriods, setAvailabilityPeriods] = useState(() => createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
+  const [availabilityFilterActive, setAvailabilityFilterActive] = useState(false);
   const [sameFacultyOnly, setSameFacultyOnly] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [faculty, setFaculty] = useState('all');
@@ -184,34 +171,37 @@ export default function HomeScreen({ onOpenLikes }) {
     const selectedActivities = preferences.activities || [];
     const selectedYears = preferences.years || [];
     const selectedGenders = preferences.genders || [];
-    setActivities({
-      exerciseExpanded: false,
-      running: selectedActivities.length === 0 || selectedActivities.includes('running'),
-      gym: selectedActivities.length === 0 || selectedActivities.includes('gym'),
-      sports: selectedActivities.length === 0 || selectedActivities.includes('sports'),
-      study: selectedActivities.length === 0 || selectedActivities.includes('study'),
-      chill: selectedActivities.length === 0 || selectedActivities.includes('chill'),
-    });
+    const selectedPaces = preferences.paces || [];
+    const selectedAvailabilityPeriods = preferences.availabilityPeriods || [];
+    const normalizedAgeMin = normalizeMatchingAge(preferences.ageMin, MATCHING_AGE_MIN);
+    const normalizedAgeMax = Math.max(
+      normalizedAgeMin,
+      normalizeMatchingAge(preferences.ageMax, MATCHING_DEFAULT_AGE_MAX)
+    );
+    setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS, selectedActivities));
     setFaculty(preferences.faculty || 'all');
-    setYears({
-      1: selectedYears.length === 0 || selectedYears.includes('ชั้นปีที่ 1'),
-      2: selectedYears.length === 0 || selectedYears.includes('ชั้นปีที่ 2'),
-      3: selectedYears.length === 0 || selectedYears.includes('ชั้นปีที่ 3'),
-      4: selectedYears.length === 0 || selectedYears.includes('ชั้นปีที่ 4'),
-    });
-    setGenders({
-      male: selectedGenders.length === 0 || selectedGenders.includes('male'),
-      female: selectedGenders.length === 0 || selectedGenders.includes('female'),
-      other: selectedGenders.length === 0 || selectedGenders.includes('nonbinary'),
-    });
+    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS, selectedYears));
+    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS, selectedGenders));
+    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS, selectedPaces));
+    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS, selectedAvailabilityPeriods));
     setDistance(preferences.maxDistance ?? 25);
+    setAgeMin(normalizedAgeMin);
+    setAgeMax(normalizedAgeMax);
     setSameFacultyOnly(preferences.sameFacultyOnly ?? false);
+    setAvailabilityFilterActive(
+      selectedAvailabilityPeriods.length > 0
+      && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
+    );
   }, [
     profile?.id,
     profile?.matchingPreferences?.activities,
+    profile?.matchingPreferences?.ageMax,
+    profile?.matchingPreferences?.ageMin,
+    profile?.matchingPreferences?.availabilityPeriods,
     profile?.matchingPreferences?.faculty,
     profile?.matchingPreferences?.genders,
     profile?.matchingPreferences?.maxDistance,
+    profile?.matchingPreferences?.paces,
     profile?.matchingPreferences?.sameFacultyOnly,
     profile?.matchingPreferences?.years,
   ]);
@@ -227,22 +217,38 @@ export default function HomeScreen({ onOpenLikes }) {
   };
 
   const saveSearchSettings = async () => {
-    const selectedActivities = ['running', 'gym', 'sports', 'study', 'chill'].filter((key) => activities[key]);
-    const selectedYears = [1, 2, 3, 4].filter((key) => years[key]).map((key) => `ชั้นปีที่ ${key}`);
-    const selectedGenders = [
-      genders.male && 'male',
-      genders.female && 'female',
-      genders.other && 'nonbinary',
-    ].filter(Boolean);
+    const selectedActivities = getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities);
+    const selectedYears = getSelectedMatchingValues(MATCHING_YEAR_OPTIONS, years);
+    const selectedGenders = getSelectedMatchingValues(MATCHING_GENDER_OPTIONS, genders);
+    const selectedPaces = getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces);
+    const selectedAvailabilityPeriods = getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods);
+    const normalizedAgeMin = Math.min(
+      MATCHING_AGE_MAX,
+      Math.max(MATCHING_AGE_MIN, Math.round(ageMin))
+    );
+    const normalizedAgeMax = Math.max(
+      normalizedAgeMin,
+      Math.min(MATCHING_AGE_MAX, Math.max(MATCHING_AGE_MIN, Math.round(ageMax)))
+    );
     await saveMatchingPreferences({
       ...(profile.matchingPreferences || {}),
-      activities: selectedActivities.length === 5 ? [] : selectedActivities,
+      activities: selectedActivities,
+      ageMin: normalizedAgeMin,
+      ageMax: normalizedAgeMax,
+      availabilityPeriods: selectedAvailabilityPeriods,
       faculty: sameFacultyOnly ? 'all' : faculty,
-      genders: selectedGenders.length === 3 ? [] : selectedGenders,
+      genders: selectedGenders,
       maxDistance: Math.round(distance),
+      paces: selectedPaces,
       sameFacultyOnly,
-      years: selectedYears.length === 4 ? [] : selectedYears,
+      years: selectedYears,
     });
+    setAgeMin(normalizedAgeMin);
+    setAgeMax(normalizedAgeMax);
+    setAvailabilityFilterActive(
+      selectedAvailabilityPeriods.length > 0
+      && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
+    );
     setShowSettings(false);
   };
 
@@ -255,19 +261,26 @@ export default function HomeScreen({ onOpenLikes }) {
       if (selectedCategory !== 'all' && candidate.activity !== selectedCategory && !candidate.activities?.includes(selectedCategory)) return false;
       if (activeFacultyFilter !== 'all' && candidate.faculty !== activeFacultyFilter) return false;
       if (sameFacultyOnly && candidate.faculty !== profile?.faculty) return false;
-      if (eveningOnly && !candidate.availability?.includes('17:') && !candidate.availability?.includes('18:')) return false;
+      if (availabilityFilterActive) {
+        const selectedAvailabilityPeriods = getSelectedMatchingValues(
+          MATCHING_AVAILABILITY_OPTIONS,
+          availabilityPeriods
+        );
+        if (
+          selectedAvailabilityPeriods.length > 0
+          && !matchesAvailabilityPeriods(candidate, selectedAvailabilityPeriods)
+        ) {
+          return false;
+        }
+      }
       return true;
     });
-    return dailyShuffle(filtered, getDailySeed() + (profile?.id || ''));
-  }, [activeFacultyFilter, availableProfiles, eveningOnly, profile?.faculty, profile?.id, sameFacultyOnly, selectedCategory]);
+    return dailyPick(filtered, getDailySeed() + (profile?.id || ''));
+  }, [activeFacultyFilter, availabilityFilterActive, availabilityPeriods, availableProfiles, profile?.faculty, profile?.id, sameFacultyOnly, selectedCategory]);
 
   const currentProfile = filteredProfiles[0] || null;
-  const remoteAvatar = useRemoteImage(currentProfile?.avatarUri);
-  const imageUri = remoteAvatar || assets?.[0]?.localUri || assets?.[0]?.uri;
-
-  useEffect(() => {
-    if (currentProfile?.id) resetCountdown();
-  }, [currentProfile?.id, resetCountdown]);
+  const remoteAvatar = useRemoteImage(currentProfile?.avatarUri, currentProfile?.updatedAt, currentProfile?.id);
+  const imageUri = remoteAvatar;
 
   const hasRecycledForThisEmptyState = useRef(false);
 
@@ -279,7 +292,9 @@ export default function HomeScreen({ onOpenLikes }) {
 
     if (!hasRecycledForThisEmptyState.current) {
       hasRecycledForThisEmptyState.current = true;
-      recycleSkippedProfiles();
+      void recycleSkippedProfiles()?.catch?.((error) => {
+        console.warn('[HomeScreen.ios] recycleSkippedProfiles error:', error?.message || error);
+      });
     }
   }, [filteredProfiles.length, recycleSkippedProfiles]);
 
@@ -311,16 +326,94 @@ export default function HomeScreen({ onOpenLikes }) {
     }
   };
 
+  const persistAvailabilityPeriods = async (nextAvailabilityPeriods, nextActive) => {
+    const previousAvailabilityPeriods = availabilityPeriods;
+    const previousActive = availabilityFilterActive;
+    setAvailabilityPeriods(nextAvailabilityPeriods);
+    setAvailabilityFilterActive(nextActive);
+    try {
+      await saveMatchingPreferences({
+        ...(profile?.matchingPreferences || {}),
+        availabilityPeriods: getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, nextAvailabilityPeriods),
+      });
+    } catch (error) {
+      setAvailabilityPeriods(previousAvailabilityPeriods);
+      setAvailabilityFilterActive(previousActive);
+      console.error('[HomeScreen] Failed to save availability filter:', error);
+    }
+  };
+
+  const toggleEveningFilter = () => {
+    const nextAvailabilityPeriods = availabilityFilterActive
+      ? { ...availabilityPeriods, evening: !availabilityPeriods.evening }
+      : Object.fromEntries(MATCHING_AVAILABILITY_OPTIONS.map(({ value }) => [value, value === 'evening']));
+    const selectedPeriods = MATCHING_AVAILABILITY_OPTIONS
+      .filter(({ value }) => nextAvailabilityPeriods[value])
+      .map(({ value }) => value);
+    const normalizedAvailabilityPeriods = selectedPeriods.length === 0
+      || selectedPeriods.length === MATCHING_AVAILABILITY_OPTIONS.length
+      ? createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS)
+      : nextAvailabilityPeriods;
+    const nextActive = selectedPeriods.length > 0 && selectedPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length;
+    void persistAvailabilityPeriods(normalizedAvailabilityPeriods, nextActive);
+  };
+
+  const toggleAvailabilityPeriod = (value) => {
+    const nextAvailabilityPeriods = {
+      ...availabilityPeriods,
+      [value]: !availabilityPeriods[value],
+    };
+    const selectedPeriods = MATCHING_AVAILABILITY_OPTIONS
+      .filter(({ value: optionValue }) => nextAvailabilityPeriods[optionValue])
+      .map(({ value: optionValue }) => optionValue);
+    setAvailabilityPeriods(
+      selectedPeriods.length === 0
+      || selectedPeriods.length === MATCHING_AVAILABILITY_OPTIONS.length
+        ? createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS)
+        : nextAvailabilityPeriods
+    );
+    setAvailabilityFilterActive(
+      selectedPeriods.length > 0
+      && selectedPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
+    );
+  };
+
   const handleReset = () => {
-    recycleSkippedProfiles();
+    void recycleSkippedProfiles()?.catch?.((error) => {
+      console.warn('[HomeScreen.ios] handleReset recycle error:', error?.message || error);
+    });
     setSelectedCategory('all');
-    setEveningOnly(false);
-    void persistFacultyMatching('all', false);
+    setDistance(25);
+    setAgeMin(MATCHING_AGE_MIN);
+    setAgeMax(MATCHING_DEFAULT_AGE_MAX);
+    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS));
+    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS));
+    setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
+    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS));
+    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
+    setAvailabilityFilterActive(false);
+    setFaculty('all');
+    setSameFacultyOnly(false);
+    void saveMatchingPreferences({
+      ...(profile?.matchingPreferences || {}),
+      activities: [],
+      ageMin: MATCHING_AGE_MIN,
+      ageMax: MATCHING_DEFAULT_AGE_MAX,
+      availabilityPeriods: [],
+      faculty: 'all',
+      genders: [],
+      maxDistance: 25,
+      paces: [],
+      sameFacultyOnly: false,
+      years: [],
+    }).catch((error) => console.error('[HomeScreen] Failed to reset filters:', error));
   };
 
 
 
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
+  const meetupAccent = colorScheme === 'dark' ? '#7966FF' : '#4546B8';
+  const meetupSoft = colorScheme === 'dark' ? 'rgba(154,140,255,0.16)' : '#EEF0FF';
 
   const smallHeaderOpacity = scrollY.interpolate({
     inputRange: [30, 60],
@@ -351,7 +444,329 @@ export default function HomeScreen({ onOpenLikes }) {
       >
         <BlurView intensity={blurIntensity} tint={colorScheme} style={{ flex: 1 }} />
       </MaskedView>
+      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
+        <Host colorScheme={colorScheme} seedColor={palette.purple} style={{ width: '100%', height: 85 }}>
+          <VStack modifiers={[padding({ top: 35, bottom: 15, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
+            <Header onSettings={() => setShowSettings(true)} />
+          </VStack>
+        </Host>
+      </View>
+      <Host
+        colorScheme={colorScheme}
+        seedColor={palette.purple}
+        style={{ flex: 1 }}
+      >
+        <ScrollView
+          showsIndicators={false}
+          modifiers={[scrollIndicators('never', 'vertical')]}
+        >
+          <VStack
+            alignment="leading"
+            spacing={22}
+            modifiers={[
+              padding({ top: 60, bottom: 36, horizontal: 20 }),
+              frame({ maxWidth: Infinity, alignment: 'topLeading' }),
+            ]}
+          >
+            {selectedMeetup && (
+              <HStack
+                alignment="center"
+                spacing={10}
+                modifiers={[
+                  padding({ horizontal: 12, vertical: 9 }),
+                  frame({ maxWidth: Infinity }),
+                  background(meetupSoft, shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' })),
+                  shadow({ color: meetupAccent, opacity: 0.12, radius: 8, x: 0, y: 2 }),
+                ]}
+              >
+                <Button
+                  onPress={() => router.push('/meetup')}
+                  modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity })]}
+                >
+                  <HStack alignment="center" spacing={10} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+                    <VStack
+                      alignment="center"
+                      modifiers={[
+                        frame({ width: 32, height: 32 }),
+                        background(meetupAccent, shapes.circle()),
+                        shadow({ color: meetupAccent, opacity: 0.24, radius: 6, x: 0, y: 2 }),
+                      ]}
+                    >
+                      <Image color="#FFFFFF" size={13} systemName="mappin.and.ellipse" />
+                    </VStack>
+                    <VStack alignment="leading" spacing={1} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+                      <HStack spacing={6} alignment="center">
+                        <Text modifiers={[font({ weight: 'bold', size: 11 }), foregroundStyle(palette.text), lineLimit(1)]}>
+                          จุดนัดพบ
+                        </Text>
+                        <Text modifiers={[font({ weight: 'bold', size: 10 }), foregroundStyle(myMeetupStats?.isFull ? '#FF453A' : meetupAccent)]}>
+                          {myMeetupStats ? `${myMeetupStats.isFull ? 'เต็มแล้ว' : `ร่วม ${myMeetupStats.acceptedCount}/${myMeetupStats.maxPeople}`}` : 'พร้อม'}
+                        </Text>
+                      </HStack>
+                      <Text modifiers={[font({ size: 13.5, weight: 'bold' }), foregroundStyle(palette.text), lineLimit(1)]}>
+                        {selectedMeetup.name}
+                      </Text>
+                      {selectedMeetup.schedule?.date ? (
+                        <Text modifiers={[font({ size: 10.5, weight: 'medium' }), foregroundStyle(palette.secondary), lineLimit(1)]}>
+                          {formatReadableDate(selectedMeetup.schedule.date)}
+                          {selectedMeetup.schedule?.startTime && selectedMeetup.schedule?.endTime ? ` · ${selectedMeetup.schedule.startTime}–${selectedMeetup.schedule.endTime}` : ''}
+                        </Text>
+                      ) : (
+                        <Text modifiers={[font({ size: 10.5, weight: 'medium' }), foregroundStyle(palette.secondary)]}>
+                          แตะเพื่อจัดการจุดนัดพบ
+                        </Text>
+                      )}
+                    </VStack>
+                  </HStack>
+                </Button>
+                <Button
+                  label="จัดการ"
+                  onPress={() => router.push('/meetup')}
+                  modifiers={[
+                    buttonStyle('glassProminent'),
+                    buttonBorderShape('capsule'),
+                    controlSize('small'),
+                    tint(meetupAccent),
+                  ]}
+                />
+              </HStack>
+            )}
+            <FilterChips
+              likesCount={pendingIncomingLikes.length}
+              onAll={handleReset}
+              onLikes={onOpenLikes}
+            />
 
+            {showFilters && (
+              <SmartFilters
+                eveningOnly={availabilityFilterActive && availabilityPeriods.evening}
+                onEvening={toggleEveningFilter}
+                onSameFaculty={() => persistFacultyMatching('all', !sameFacultyOnly)}
+                sameFacultyOnly={sameFacultyOnly}
+              />
+            )}
+
+            {currentProfile ? (
+              <>
+                <ProfileCard
+                  candidate={currentProfile}
+                  imageUri={imageUri}
+                  onPress={() => router.push({
+                    pathname: '/discover-profile',
+                    params: { profileId: currentProfile.id },
+                  })}
+                />
+                <DiscoveryShortcuts
+                  matchedCount={matchedCount}
+                  resetKey={currentProfile.id}
+                />
+              </>
+            ) : (
+              <VStack
+                spacing={18}
+                modifiers={[
+                  padding({ vertical: 36, horizontal: 22 }),
+                  frame({ maxWidth: Infinity }),
+                  background(palette.card, cardShape),
+                ]}
+              >
+                <ContentUnavailableView
+                  description="ระบบจะค้นหาโปรไฟล์ใหม่โดยอัตโนมัติ หากตัวกรองไม่มีคนที่ตรงกัน"
+                  systemImage="person.2.slash"
+                  title="ยังไม่มีโปรไฟล์ที่ตรงกัน"
+                />
+                <Button
+                  label="เริ่มใหม่"
+                  onPress={handleReset}
+                  systemImage="arrow.triangle.2.circlepath"
+                  modifiers={[
+                    buttonStyle('glassProminent'),
+                    buttonBorderShape('capsule'),
+                    controlSize('large'),
+                    tint(palette.purple),
+                    frame({ maxWidth: Infinity }),
+                  ]}
+                />
+              </VStack>
+            )}
+          </VStack>
+        </ScrollView>
+
+        <BottomSheet
+          isPresented={showSettings}
+          onIsPresentedChange={setShowSettings}
+          modifiers={[
+            presentationDetents(['large']),
+            presentationDragIndicator('visible')
+          ]}
+        >
+          <VStack style={{ flex: 1 }}>
+            <Text
+              modifiers={[
+                font({ textStyle: 'headline', weight: 'bold' }),
+                padding({ top: 20, bottom: 5 }),
+                frame({ maxWidth: Infinity, alignment: 'center' })
+              ]}
+            >
+              ตั้งค่าการจับคู่
+            </Text>
+            <Form>
+              <Section header={<Text>ช่วงอายุ</Text>} footer={<Text>แสดงคนอายุ {Math.round(ageMin)}–{Math.round(ageMax)} ปี</Text>}>
+                <Text>อายุต่ำสุด: {Math.round(ageMin)} ปี</Text>
+                <Slider
+                  value={ageMin}
+                  onValueChange={(value) => setAgeMin(Math.min(Math.round(value), ageMax))}
+                  min={MATCHING_AGE_MIN}
+                  max={MATCHING_AGE_MAX}
+                  step={1}
+                />
+                <Text>อายุสูงสุด: {Math.round(ageMax)} ปี</Text>
+                <Slider
+                  value={ageMax}
+                  onValueChange={(value) => setAgeMax(Math.max(Math.round(value), ageMin))}
+                  min={MATCHING_AGE_MIN}
+                  max={MATCHING_AGE_MAX}
+                  step={1}
+                />
+              </Section>
+              <Section header={<Text>ระยะห่างจากคุณ</Text>} footer={<Text>ค้นหาเพื่อนในรัศมี {Math.round(distance)} กิโลเมตร</Text>}>
+                <Slider
+                  value={distance}
+                  onValueChange={setDistance}
+                  min={1}
+                  max={50}
+                  step={1}
+                />
+              </Section>
+              <Section header={<Text>กิจกรรมที่สนใจ</Text>}>
+                {MATCHING_ACTIVITY_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={activities[value]}
+                    key={value}
+                    onIsOnChange={(enabled) => setActivities((current) => ({ ...current, [value]: enabled }))}
+                    label={label}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>ช่วงชั้นปี (เลือกได้หลายข้อ)</Text>}>
+                {MATCHING_YEAR_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={years[value]}
+                    key={value}
+                    onIsOnChange={(enabled) => setYears((current) => ({ ...current, [value]: enabled }))}
+                    label={label}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>คณะ</Text>}>
+                <Picker label="เลือกคณะ" selection={faculty} onSelectionChange={handleFacultySelection} modifiers={[pickerStyle('menu')]}>
+                  <Text modifiers={[tag('all')]}>ทุกคณะ</Text>
+                  {FACULTIES.map((fac) => (
+                    <Text key={fac} modifiers={[tag(fac)]}>{fac}</Text>
+                  ))}
+                </Picker>
+                <Toggle isOn={sameFacultyOnly} onIsOnChange={handleSameFacultySelection} label="เฉพาะคณะเดียวกับฉัน" systemImage="building.columns.fill" />
+              </Section>
+              <Section header={<Text>เพซ / ระดับกิจกรรม</Text>} footer={<Text>เลือกได้หลายข้อ ระบบจะจับคู่คนที่มีระดับตรงกัน</Text>}>
+                {MATCHING_PACE_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={paces[value]}
+                    key={value}
+                    onIsOnChange={(enabled) => setPaces((current) => ({ ...current, [value]: enabled }))}
+                    label={label}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>ช่วงเวลาที่สะดวก</Text>} footer={<Text>จับคู่จากช่วงเวลาที่อีกฝ่ายระบุไว้ในโปรไฟล์</Text>}>
+                {MATCHING_AVAILABILITY_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={availabilityPeriods[value]}
+                    key={value}
+                    onIsOnChange={() => toggleAvailabilityPeriod(value)}
+                    label={label}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>เพศ (เลือกได้หลายข้อ)</Text>}>
+                {MATCHING_GENDER_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={genders[value]}
+                    key={value}
+                    onIsOnChange={(enabled) => setGenders((current) => ({ ...current, [value]: enabled }))}
+                    label={label}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+            </Form>
+            <Button
+              label="บันทึกตัวกรอง"
+              onPress={saveSearchSettings}
+              systemImage="checkmark.circle.fill"
+              modifiers={[
+                buttonStyle('glassProminent'),
+                buttonBorderShape('capsule'),
+                controlSize('large'),
+                tint(palette.purple),
+                padding({ horizontal: 20, bottom: 24 }),
+                frame({ maxWidth: Infinity }),
+              ]}
+            />
+          </VStack>
+        </BottomSheet>
+      </Host>
+    </View>
+  );
+}
+
+function Header({ onSettings }) {
+  const palette = usePalette();
+  return (
+    <HStack alignment="center" spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
+      <Text
+        modifiers={[
+          font({ textStyle: 'title1', weight: 'bold', design: 'rounded' }),
+          foregroundStyle(palette.text),
+        ]}
+      >
+        หาเพื่อน
+      </Text>
+      <Spacer />
+      <Button
+        label="ตั้งค่า"
+        onPress={onSettings}
+        systemImage="gearshape.fill"
+        modifiers={[
+          buttonStyle('glass'),
+          buttonBorderShape('circle'),
+          controlSize('regular'),
+          labelStyle('iconOnly'),
+          tint(palette.text),
+        ]}
+      />
+    </HStack>
+  );
+}
+
+function FilterChips({ likesCount, onAll, onLikes }) {
+  const palette = usePalette();
+  return (
+    <ScrollView
+      axes="horizontal"
+      showsIndicators={false}
+      modifiers={[scrollIndicators('never', 'horizontal')]}
+    >
+      <HStack spacing={8}>
+        <FilterChip dot={likesCount > 0} label="ถูกใจ & จับคู่" onPress={onLikes} />
+        <FilterChip label="เริ่มใหม่" onPress={onAll} />
+      </HStack>
+    </ScrollView>
+  );
+}
 
 function FilterChip({ dot = false, label, onPress }) {
   const palette = usePalette();
@@ -543,8 +958,31 @@ function ProfileCard({ candidate, imageUri, onPress }) {
   );
 }
 
-function DiscoveryShortcuts({ matchedCount = 0, timeLeft = '24:00:00' }) {
+function DiscoveryShortcuts({ matchedCount = 0, resetKey }) {
   const palette = usePalette();
+  const [timeLeft, setTimeLeft] = useState(getRemainingTimeUntilMidnight());
+  const resetDeadlineRef = useRef(Date.now() + RESET_INTERVAL_MS);
+
+  useEffect(() => {
+    resetDeadlineRef.current = Date.now() + RESET_INTERVAL_MS;
+    setTimeLeft(formatRemainingTime(RESET_INTERVAL_MS));
+  }, [resetKey]);
+
+  useEffect(() => {
+    const updateCountdown = () => {
+      const remaining = resetDeadlineRef.current - Date.now();
+      if (remaining <= 0) {
+        resetDeadlineRef.current = Date.now() + RESET_INTERVAL_MS;
+        setTimeLeft(formatRemainingTime(RESET_INTERVAL_MS));
+        return;
+      }
+      setTimeLeft(formatRemainingTime(remaining));
+    };
+    updateCountdown();
+    const timer = setInterval(updateCountdown, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   return (
     <HStack spacing={10} alignment="center" modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
       <HStack

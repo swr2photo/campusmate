@@ -112,7 +112,7 @@ async function removeQueuedOperation(userId, operationIdToRemove) {
     const key = userKey(QUEUE_PREFIX, userId);
     const queue = await getOfflineQueue(userId);
     const nextQueue = queue.filter((operation) => operation.id !== operationIdToRemove);
-    await AsyncStorage.setItem(key, JSON.stringify(nextQueue));
+    await setEncryptedItem(key, JSON.stringify(nextQueue));
     return nextQueue.length;
   });
 }
@@ -131,7 +131,7 @@ async function markQueuedOperationAttempt(userId, operationIdToUpdate, error) {
           }
         : operation
     ));
-    await AsyncStorage.setItem(key, JSON.stringify(nextQueue));
+    await setEncryptedItem(key, JSON.stringify(nextQueue));
     return nextQueue.length;
   });
 }

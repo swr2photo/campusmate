@@ -1,0 +1,5 @@
+node_modules/
+npm-cache/
+.runtimeconfig.json
+*.log
+.env.local

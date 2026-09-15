@@ -1,26 +1,41 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
   Image,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
+import { Picker as NativePicker } from '@react-native-picker/picker';
+import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
+import MaskedView from '@react-native-masked-view/masked-view';
 import { router } from 'expo-router';
-import { ACTIVITY_CATEGORIES } from '../data/activityCategories';
 import { FACULTIES } from '../data/faculties';
+import {
+  MATCHING_ACTIVITY_OPTIONS,
+  MATCHING_AGE_MAX,
+  MATCHING_AGE_MIN,
+  MATCHING_AGE_VALUES,
+  MATCHING_AVAILABILITY_OPTIONS,
+  MATCHING_DEFAULT_AGE_MAX,
+  MATCHING_GENDER_OPTIONS,
+  MATCHING_PACE_OPTIONS,
+  MATCHING_YEAR_OPTIONS,
+  createMatchingOptionState,
+  getSelectedMatchingValues,
+  matchesAvailabilityPeriods,
+  normalizeMatchingAge,
+} from '../data/matchingFilters';
 import { useApp } from '../context/AppContext';
 import {
-  IosLikeAvatar,
   IosLikeCard,
-  IosLikeHeader,
   IosLikePill,
   IosLikeScreen,
-  IosLikeSectionTitle,
   IconButton,
 } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';
@@ -29,8 +44,6 @@ import { formatReadableDate, getActivityLabel } from '../utils/formatters';
 import { radius, spacing, type, useTheme } from '../theme';
 
 const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const FILTER_ACTIVITY_IDS = ['running', 'gym', 'sports', 'study', 'chill'];
-const FILTER_YEAR_KEYS = [1, 2, 3, 4];
 
 function getRemainingTime() {
   const now = new Date();
@@ -51,24 +64,16 @@ function getDailySeed() {
   return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
 }
 
-function dailyShuffle(items, seed) {
+function dailyPick(items, seed) {
+  if (items.length <= 1) return items;
   let hash = 0;
   for (let index = 0; index < seed.length; index += 1) {
     hash = (Math.imul(31, hash) + seed.charCodeAt(index)) | 0;
   }
-  const result = [...items];
-  for (let index = result.length - 1; index > 0; index -= 1) {
-    hash ^= hash << 13;
-    hash ^= hash >>> 17;
-    hash ^= hash << 5;
-    const swapIndex = Math.floor((Math.abs(hash) % 10000) / 10000 * (index + 1));
-    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
-  }
-  return result;
-}
-
-function allEnabled(values) {
-  return Object.values(values).every(Boolean);
+  hash ^= hash << 13;
+  hash ^= hash >>> 17;
+  hash ^= hash << 5;
+  return [items[(hash >>> 0) % items.length]];
 }
 
 export default function HomeScreen({ onOpenLikes }) {
@@ -85,18 +90,20 @@ export default function HomeScreen({ onOpenLikes }) {
     selectedMeetup,
   } = useApp();
   const [showSettings, setShowSettings] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [faculty, setFaculty] = useState('all');
   const [sameFacultyOnly, setSameFacultyOnly] = useState(false);
-  const [eveningOnly, setEveningOnly] = useState(false);
   const [distance, setDistance] = useState(25);
-  const [years, setYears] = useState({ 1: true, 2: true, 3: true, 4: true });
-  const [genders, setGenders] = useState({ male: true, female: true, other: true });
-  const [activities, setActivities] = useState({ running: true, gym: true, sports: true, study: true, chill: true });
+  const [ageMin, setAgeMin] = useState(MATCHING_AGE_MIN);
+  const [ageMax, setAgeMax] = useState(MATCHING_DEFAULT_AGE_MAX);
+  const [years, setYears] = useState(() => createMatchingOptionState(MATCHING_YEAR_OPTIONS));
+  const [genders, setGenders] = useState(() => createMatchingOptionState(MATCHING_GENDER_OPTIONS));
+  const [activities, setActivities] = useState(() => createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
+  const [paces, setPaces] = useState(() => createMatchingOptionState(MATCHING_PACE_OPTIONS));
+  const [availabilityPeriods, setAvailabilityPeriods] = useState(() => createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
+  const [availabilityFilterActive, setAvailabilityFilterActive] = useState(false);
   const [facultySaving, setFacultySaving] = useState(false);
   const [settingsSaving, setSettingsSaving] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(getRemainingTime());
   const recycleLock = useRef(false);
   const openLikes = onOpenLikes || (() => router.push('/likes'));
 
@@ -105,38 +112,40 @@ export default function HomeScreen({ onOpenLikes }) {
     const selectedActivities = preferences.activities || [];
     const selectedYears = preferences.years || [];
     const selectedGenders = preferences.genders || [];
+    const selectedPaces = preferences.paces || [];
+    const selectedAvailabilityPeriods = preferences.availabilityPeriods || [];
+    const normalizedAgeMin = normalizeMatchingAge(preferences.ageMin, MATCHING_AGE_MIN);
+    const normalizedAgeMax = Math.max(
+      normalizedAgeMin,
+      normalizeMatchingAge(preferences.ageMax, MATCHING_DEFAULT_AGE_MAX)
+    );
     setFaculty(preferences.faculty || 'all');
     setSameFacultyOnly(preferences.sameFacultyOnly === true);
     setDistance(Number(preferences.maxDistance) || 25);
-    setActivities(Object.fromEntries(FILTER_ACTIVITY_IDS.map((id) => [
-      id,
-      selectedActivities.length === 0 || selectedActivities.includes(id),
-    ])));
-    setYears(Object.fromEntries(FILTER_YEAR_KEYS.map((key) => [
-      key,
-      selectedYears.length === 0 || selectedYears.includes(`ชั้นปีที่ ${key}`),
-    ])));
-    setGenders({
-      male: selectedGenders.length === 0 || selectedGenders.includes('male'),
-      female: selectedGenders.length === 0 || selectedGenders.includes('female'),
-      other: selectedGenders.length === 0 || selectedGenders.includes('nonbinary'),
-    });
+    setAgeMin(normalizedAgeMin);
+    setAgeMax(normalizedAgeMax);
+    setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS, selectedActivities));
+    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS, selectedYears));
+    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS, selectedGenders));
+    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS, selectedPaces));
+    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS, selectedAvailabilityPeriods));
+    setAvailabilityFilterActive(
+      selectedAvailabilityPeriods.length > 0
+      && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
+    );
   }, [
     profile?.id,
     profile?.matchingPreferences?.activities,
+    profile?.matchingPreferences?.ageMax,
+    profile?.matchingPreferences?.ageMin,
+    profile?.matchingPreferences?.availabilityPeriods,
     profile?.matchingPreferences?.faculty,
     profile?.matchingPreferences?.genders,
     profile?.matchingPreferences?.maxDistance,
+    profile?.matchingPreferences?.paces,
     profile?.matchingPreferences?.sameFacultyOnly,
     profile?.matchingPreferences?.years,
   ]);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTimeLeft((current) => (current <= 1000 ? RESET_INTERVAL_MS : current - 1000));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
 
   const persistFacultyMatching = async (nextFaculty, nextSameFaculty) => {
     if (facultySaving) return;
@@ -162,27 +171,61 @@ export default function HomeScreen({ onOpenLikes }) {
     }
   };
 
+  const toggleAvailabilityPeriod = (value) => {
+    const nextAvailabilityPeriods = {
+      ...availabilityPeriods,
+      [value]: !availabilityPeriods[value],
+    };
+    const selectedPeriods = MATCHING_AVAILABILITY_OPTIONS
+      .filter(({ value: optionValue }) => nextAvailabilityPeriods[optionValue])
+      .map(({ value: optionValue }) => optionValue);
+    setAvailabilityPeriods(
+      selectedPeriods.length === 0
+      || selectedPeriods.length === MATCHING_AVAILABILITY_OPTIONS.length
+        ? createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS)
+        : nextAvailabilityPeriods
+    );
+    setAvailabilityFilterActive(
+      selectedPeriods.length > 0
+      && selectedPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
+    );
+  };
+
   const saveSearchSettings = async () => {
     setSettingsSaving(true);
     try {
-      const selectedActivities = FILTER_ACTIVITY_IDS.filter((key) => activities[key]);
-      const selectedYears = FILTER_YEAR_KEYS
-        .filter((key) => years[key])
-        .map((key) => `ชั้นปีที่ ${key}`);
-      const selectedGenders = [
-        genders.male && 'male',
-        genders.female && 'female',
-        genders.other && 'nonbinary',
-      ].filter(Boolean);
+      const selectedActivities = getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities);
+      const selectedYears = getSelectedMatchingValues(MATCHING_YEAR_OPTIONS, years);
+      const selectedGenders = getSelectedMatchingValues(MATCHING_GENDER_OPTIONS, genders);
+      const selectedPaces = getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces);
+      const selectedAvailabilityPeriods = getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods);
+      const normalizedAgeMin = Math.min(
+        MATCHING_AGE_MAX,
+        Math.max(MATCHING_AGE_MIN, Math.round(ageMin))
+      );
+      const normalizedAgeMax = Math.max(
+        normalizedAgeMin,
+        Math.min(MATCHING_AGE_MAX, Math.max(MATCHING_AGE_MIN, Math.round(ageMax)))
+      );
       await saveMatchingPreferences({
         ...(profile?.matchingPreferences || {}),
-        activities: selectedActivities.length === FILTER_ACTIVITY_IDS.length ? [] : selectedActivities,
+        activities: selectedActivities,
+        ageMin: normalizedAgeMin,
+        ageMax: normalizedAgeMax,
+        availabilityPeriods: selectedAvailabilityPeriods,
         faculty: sameFacultyOnly ? 'all' : faculty,
-        genders: selectedGenders.length === 3 ? [] : selectedGenders,
+        genders: selectedGenders,
         maxDistance: Math.round(distance),
+        paces: selectedPaces,
         sameFacultyOnly,
-        years: selectedYears.length === FILTER_YEAR_KEYS.length ? [] : selectedYears,
+        years: selectedYears,
       });
+      setAgeMin(normalizedAgeMin);
+      setAgeMax(normalizedAgeMax);
+      setAvailabilityFilterActive(
+        selectedAvailabilityPeriods.length > 0
+        && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
+      );
       setShowSettings(false);
     } catch (error) {
       console.error('[HomeScreen] Failed to save search settings:', error);
@@ -195,19 +238,44 @@ export default function HomeScreen({ onOpenLikes }) {
     ? (profile?.faculty || 'all')
     : (faculty || 'all');
 
+  const selectedAvailabilityPeriods = useMemo(
+    () => (availabilityFilterActive
+      ? getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods)
+      : []),
+    [availabilityFilterActive, availabilityPeriods]
+  );
+
   const filteredProfiles = useMemo(() => {
     const filtered = availableProfiles.filter((candidate) => {
       if (selectedCategory !== 'all' && candidate.activity !== selectedCategory && !candidate.activities?.includes(selectedCategory)) return false;
       if (activeFacultyFilter !== 'all' && candidate.faculty !== activeFacultyFilter) return false;
       if (sameFacultyOnly && candidate.faculty !== profile?.faculty) return false;
-      if (eveningOnly && !candidate.availability?.includes('17:') && !candidate.availability?.includes('18:')) return false;
+      if (availabilityFilterActive) {
+        if (
+          selectedAvailabilityPeriods.length > 0
+          && !matchesAvailabilityPeriods(candidate, selectedAvailabilityPeriods)
+        ) {
+          return false;
+        }
+      }
       return true;
     });
-    return dailyShuffle(filtered, getDailySeed() + (profile?.id || ''));
-  }, [activeFacultyFilter, availableProfiles, eveningOnly, profile?.faculty, profile?.id, sameFacultyOnly, selectedCategory]);
+    return dailyPick(filtered, getDailySeed() + (profile?.id || ''));
+  }, [activeFacultyFilter, availabilityFilterActive, availableProfiles, profile?.faculty, profile?.id, sameFacultyOnly, selectedAvailabilityPeriods, selectedCategory]);
 
   const currentProfile = filteredProfiles[0] || null;
   const meetupStats = profile && getMeetupStats ? getMeetupStats(profile) : null;
+
+  useEffect(() => {
+    if (!availableProfiles || !availableProfiles.length) return;
+    const upcoming = availableProfiles.slice(0, 6);
+    upcoming.forEach((item) => {
+      const uri = item?.avatarUri || item?.photoURL;
+      if (uri && typeof uri === 'string' && uri.startsWith('http')) {
+        Image.prefetch(uri).catch(() => {});
+      }
+    });
+  }, [availableProfiles]);
 
   useEffect(() => {
     if (currentProfile || !availableProfiles.length || filteredProfiles.length) {
@@ -216,97 +284,72 @@ export default function HomeScreen({ onOpenLikes }) {
     }
     if (recycleLock.current) return undefined;
     recycleLock.current = true;
-    const timer = setTimeout(() => recycleSkippedProfiles(), 900);
+    const timer = setTimeout(() => {
+      void recycleSkippedProfiles()?.catch?.((error) => {
+        console.warn('[HomeScreen] recycleSkippedProfiles error:', error?.message || error);
+      });
+    }, 900);
     return () => clearTimeout(timer);
   }, [availableProfiles.length, currentProfile, filteredProfiles.length, recycleSkippedProfiles]);
 
   const resetFilters = () => {
-    recycleSkippedProfiles();
+    void recycleSkippedProfiles()?.catch?.((error) => {
+      console.warn('[HomeScreen] resetFilters recycle error:', error?.message || error);
+    });
     setSelectedCategory('all');
-    setEveningOnly(false);
     setDistance(25);
-    setYears({ 1: true, 2: true, 3: true, 4: true });
-    setGenders({ male: true, female: true, other: true });
-    setActivities({ running: true, gym: true, sports: true, study: true, chill: true });
-    void persistFacultyMatching('all', false);
+    setAgeMin(MATCHING_AGE_MIN);
+    setAgeMax(MATCHING_DEFAULT_AGE_MAX);
+    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS));
+    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS));
+    setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
+    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS));
+    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
+    setAvailabilityFilterActive(false);
+    void saveMatchingPreferences({
+      ...(profile?.matchingPreferences || {}),
+      activities: [],
+      ageMin: MATCHING_AGE_MIN,
+      ageMax: MATCHING_DEFAULT_AGE_MAX,
+      availabilityPeriods: [],
+      faculty: 'all',
+      genders: [],
+      maxDistance: 25,
+      paces: [],
+      sameFacultyOnly: false,
+      years: [],
+    }).catch((error) => console.error('[HomeScreen] Failed to reset filters:', error));
+    setFaculty('all');
+    setSameFacultyOnly(false);
   };
 
   return (
     <IosLikeScreen>
-      <IosLikeHeader
-        onRightPress={() => setShowSettings(true)}
-        rightIcon="gearshape.fill"
-        subtitle="ค้นหาเพื่อนที่ชอบกิจกรรมเหมือนกัน"
-        title="หาเพื่อน"
-      />
+      <MatchingHeader onSettings={() => setShowSettings(true)} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {selectedMeetup ? <MeetupBanner meetup={selectedMeetup} stats={meetupStats} /> : null}
-
-        <IosLikeSectionTitle
-          subtitle="ปรับรายการให้เหมาะกับคุณ"
-          title="ค้นหาเพื่อนที่ใช่"
-        />
 
         <View style={styles.quickFilterRow}>
           <QuickFilterButton
             badge={pendingIncomingLikes.length}
-            icon="heart.fill"
-            label="ถูกใจคุณ"
+            label="ถูกใจ & จับคู่"
             onPress={openLikes}
           />
           <QuickFilterButton
-            icon="clock.arrow.2.circlepath"
             label="เริ่มใหม่"
             onPress={resetFilters}
           />
-          <QuickFilterButton
-            active={showFilters}
-            icon="tune"
-            label="ตัวกรอง"
-            onPress={() => setShowFilters((current) => !current)}
-          />
         </View>
-
-        {showFilters ? (
-          <View style={[styles.smartFilterBar, { backgroundColor: colors.card, borderColor: colors.line }]}>
-            <FilterButton active={sameFacultyOnly} icon="building.columns.fill" label="คณะเดียวกัน" onPress={() => void persistFacultyMatching('all', !sameFacultyOnly)} />
-            <FilterButton active={eveningOnly} icon="sunset.fill" label="ว่างช่วงเย็น" onPress={() => setEveningOnly((current) => !current)} />
-            <IconButton accessibilityLabel="เปิดตัวกรองเพิ่มเติม" icon="slider.horizontal.3" onPress={() => setShowSettings(true)} size={18} style={styles.filterIconButton} tintColor={colors.primary} />
-          </View>
-        ) : null}
-
-        <View style={styles.categoryHeader}>
-          <IosLikeSectionTitle subtitle="เลือกหมวดกิจกรรมที่อยากเจอ" title="กิจกรรมที่สนใจ" />
-        </View>
-        <ScrollView contentContainerStyle={styles.pillRow} horizontal showsHorizontalScrollIndicator={false}>
-          {ACTIVITY_CATEGORIES.map((category) => (
-            <IosLikePill
-              active={selectedCategory === category.id}
-              color={category.id === 'all' ? colors.primary : category.color}
-              icon={category.id === 'all' ? 'person.2.fill' : category.icon}
-              key={category.id}
-              onPress={() => setSelectedCategory(category.id)}
-            >
-              {category.label}
-            </IosLikePill>
-          ))}
-        </ScrollView>
 
         {currentProfile ? (
           <>
-            <IosLikeSectionTitle
-              action="รีเซ็ต"
-              onAction={resetFilters}
-              subtitle={`รีเซ็ตใน ${formatRemainingTime(timeLeft)}`}
-              title="แนะนำสำหรับคุณ"
-            />
             <DiscoverProfileCard
               candidate={currentProfile}
               onPress={() => router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } })}
             />
             <View style={styles.shortcutRow}>
-              <ShortcutPill icon="clock.arrow.2.circlepath" label="รีเซ็ตโปรไฟล์" value={formatRemainingTime(timeLeft)} />
-              <ShortcutPill icon="flame.fill" label="แมตช์" value={String(Math.max(matchedProfileIds.length, conversations.length))} />
+              <ResetCountdownPill />
+              <ShortcutPill accent icon="flame.fill" label="สถิติแมตช์" value={String(Math.max(matchedProfileIds.length, conversations.length))} />
             </View>
           </>
         ) : (
@@ -316,27 +359,45 @@ export default function HomeScreen({ onOpenLikes }) {
 
       <SettingsModal
         activities={activities}
+        ageMax={ageMax}
+        ageMin={ageMin}
+        availabilityPeriods={availabilityPeriods}
         distance={distance}
-        eveningOnly={eveningOnly}
         faculty={faculty}
         facultySaving={facultySaving}
         genders={genders}
+        onAgeMax={(value) => {
+          const nextMax = normalizeMatchingAge(value, ageMax);
+          setAgeMax(nextMax);
+          if (nextMax < ageMin) {
+            setAgeMin(nextMax);
+          }
+        }}
+        onAgeMin={(value) => {
+          const nextMin = normalizeMatchingAge(value, ageMin);
+          setAgeMin(nextMin);
+          if (nextMin > ageMax) {
+            setAgeMax(nextMin);
+          }
+        }}
         onActivities={(id) => setActivities((current) => ({ ...current, [id]: !current[id] }))}
+        onAvailability={toggleAvailabilityPeriod}
         onClose={() => setShowSettings(false)}
         onDistance={setDistance}
-        onEvening={() => setEveningOnly((current) => !current)}
         onFaculty={(nextFaculty) => {
           setFaculty(nextFaculty);
           setSameFacultyOnly(false);
         }}
         onSave={saveSearchSettings}
-        onGenders={(key) => setGenders((current) => ({ ...current, [key]: !current[key] }))}
-        onSameFaculty={() => {
-          setSameFacultyOnly((current) => !current);
-          setFaculty('all');
-        }}
-        onYears={(key) => setYears((current) => ({ ...current, [key]: !current[key] }))}
-        saving={settingsSaving}
+         onGenders={(key) => setGenders((current) => ({ ...current, [key]: !current[key] }))}
+         onPaces={(value) => setPaces((current) => ({ ...current, [value]: !current[value] }))}
+         onSameFaculty={() => {
+           setSameFacultyOnly((current) => !current);
+           setFaculty('all');
+         }}
+         onYears={(key) => setYears((current) => ({ ...current, [key]: !current[key] }))}
+         paces={paces}
+         saving={settingsSaving}
         sameFacultyOnly={sameFacultyOnly}
         visible={showSettings}
         years={years}
@@ -345,141 +406,356 @@ export default function HomeScreen({ onOpenLikes }) {
   );
 }
 
-function QuickFilterButton({ active = false, badge = 0, icon, label, onPress }) {
-  const { colors } = useTheme();
+function MatchingHeader({ onSettings }) {
+  const { colors, isDark } = useTheme();
   return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.quickFilter, { backgroundColor: active ? colors.primarySoft : colors.surfaceRaised, borderColor: active ? colors.primary : colors.line }, pressed && styles.pressed]}>
-      <FeatureIcon color={active ? colors.primary : colors.inkMuted} name={icon} size={15} />
-      <Text style={[styles.quickFilterText, { color: active ? colors.primary : colors.ink }]}>{label}</Text>
-      {badge > 0 ? <View style={[styles.quickBadge, { backgroundColor: colors.coral }]}><Text style={styles.quickBadgeText}>{badge > 99 ? '99+' : badge}</Text></View> : null}
+    <View pointerEvents="box-none" style={[styles.matchingHeader, { backgroundColor: colors.canvas }]}>
+      <BlurView intensity={isDark ? 30 : 40} pointerEvents="none" tint={isDark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
+      <View
+        pointerEvents="none"
+        style={[styles.matchingHeaderSurface, { backgroundColor: isDark ? 'rgba(20,23,27,0.96)' : 'rgba(246,248,252,0.98)' }]}
+      />
+      <View style={styles.matchingHeaderContent}>
+        <Text style={[styles.matchingHeaderTitle, { color: colors.ink }]}>หาเพื่อน</Text>
+        <View style={styles.matchingHeaderActions}>
+          <IconButton accessibilityLabel="เปิดการตั้งค่าการจับคู่" icon="gearshape.fill" onPress={onSettings} size={20} style={[styles.matchingHeaderButton, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]} tintColor={colors.ink} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function QuickFilterButton({ badge = 0, label, onPress }) {
+  const { colors, isDark } = useTheme();
+  return (
+    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.quickFilter, { backgroundColor: isDark ? colors.surfaceRaised : colors.primarySoft, borderColor: 'transparent' }, pressed && styles.pressed]}>
+      <Text style={[styles.quickFilterText, { color: colors.ink }]}>{label}</Text>
+      {badge > 0 ? <View style={[styles.quickBadgeDot, { backgroundColor: colors.primary }]} /> : null}
     </Pressable>
   );
 }
 
 function MeetupBanner({ meetup, stats }) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
+  const meetupColor = colors.primaryDark;
+  const fullColor = colors.danger;
+  const meetupSoft = colors.primarySoft;
+  const meetupBorder = isDark ? 'rgba(154,140,255,0.28)' : 'rgba(91,92,226,0.16)';
   return (
-    <Pressable accessibilityRole="button" onPress={() => router.push('/meetup')} style={({ pressed }) => [styles.meetupBanner, { backgroundColor: colors.mintSoft, borderColor: colors.mintSoft }, pressed && styles.pressed]}>
-      <View style={[styles.meetupIcon, { backgroundColor: colors.mint }]}><FeatureIcon color="#FFFFFF" name="mappin.and.ellipse" size={17} /></View>
-      <View style={styles.meetupCopy}>
-        <View style={styles.meetupTitleRow}>
-          <Text style={[styles.meetupEyebrow, { color: colors.mint }]}>จุดนัดพบ</Text>
-          <Text style={[styles.meetupStatus, { color: stats?.isFull ? colors.coral : colors.mint }]}>{stats ? (stats.isFull ? 'เต็มแล้ว' : `ร่วม ${stats.acceptedCount}/${stats.maxPeople}`) : 'พร้อม'}</Text>
+    <View style={[styles.meetupBanner, { backgroundColor: meetupSoft, borderColor: meetupBorder, shadowColor: meetupColor }]}>
+      <Pressable accessibilityRole="button" onPress={() => router.push('/meetup')} style={({ pressed }) => [styles.meetupBannerMain, pressed && styles.pressed]}>
+        <View style={[styles.meetupIcon, { backgroundColor: meetupColor }]}><FeatureIcon color="#FFFFFF" name="mappin.and.ellipse" size={13} /></View>
+        <View style={styles.meetupCopy}>
+          <View style={styles.meetupTitleRow}>
+            <Text numberOfLines={1} style={[styles.meetupEyebrow, { color: colors.ink }]}>{'จุดนัดพบ'}</Text>
+            <Text style={[styles.meetupStatus, { color: stats?.isFull ? fullColor : meetupColor }]}>{stats ? (stats.isFull ? 'เต็มแล้ว' : `ร่วม ${stats.acceptedCount}/${stats.maxPeople}`) : 'พร้อม'}</Text>
+          </View>
+          <Text numberOfLines={1} style={[styles.meetupName, { color: colors.ink }]}>{meetup.name}</Text>
+          <Text numberOfLines={1} style={[styles.meetupMeta, { color: colors.inkMuted }]}>{meetup.schedule?.date ? formatReadableDate(meetup.schedule.date) : 'แตะเพื่อจัดการจุดนัดพบ'}</Text>
         </View>
-        <Text numberOfLines={1} style={[styles.meetupName, { color: colors.ink }]}>{meetup.name}</Text>
-        <Text numberOfLines={1} style={[styles.meetupMeta, { color: colors.inkMuted }]}>{meetup.schedule?.date ? formatReadableDate(meetup.schedule.date) : 'แตะเพื่อจัดการจุดนัดพบ'}</Text>
-      </View>
-      <FeatureIcon color={colors.mint} name="chevron.right" size={18} />
-    </Pressable>
-  );
-}
-
-function FilterButton({ active, icon, label, onPress }) {
-  const { colors } = useTheme();
-  return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.filterButton, { backgroundColor: active ? colors.primarySoft : colors.surfaceRaised, borderColor: active ? colors.primary : colors.line }, pressed && styles.pressed]}>
-      <FeatureIcon color={active ? colors.primary : colors.inkMuted} name={icon} size={15} />
-      <Text style={[styles.filterButtonText, { color: active ? colors.primary : colors.inkMuted }]}>{label}</Text>
-    </Pressable>
+      </Pressable>
+      <Pressable accessibilityRole="button" accessibilityLabel="จัดการจุดนัดพบ" onPress={() => router.push('/meetup')} style={({ pressed }) => [styles.meetupManage, { backgroundColor: meetupColor }, pressed && styles.pressed]}>
+        <Text style={styles.meetupManageText}>จัดการ</Text>
+      </Pressable>
+    </View>
   );
 }
 
 function DiscoverProfileCard({ candidate, onPress }) {
   const { colors, isDark } = useTheme();
-  const imageUri = useRemoteImage(candidate.avatarUri);
-  const gradientColors = isDark ? ['transparent', 'rgba(20,23,27,0.92)'] : ['transparent', 'rgba(16,32,58,0.88)'];
+  const imageUri = useRemoteImage(candidate.avatarUri, candidate.updatedAt, candidate.id);
+  const gradientColors = isDark
+    ? ['rgba(20,23,27,0)', 'rgba(20,23,27,0.42)', 'rgba(20,23,27,0.9)']
+    : ['rgba(16,32,58,0)', 'rgba(16,32,58,0.28)', 'rgba(16,32,58,0.82)'];
   return (
     <Pressable accessibilityLabel={`เปิดโปรไฟล์ ${candidate.name}`} accessibilityRole="button" onPress={onPress} style={({ pressed }) => [pressed && styles.pressed]}>
       <IosLikeCard style={styles.profileCard}>
         <View style={[styles.profileHero, { backgroundColor: candidate.avatarColor || colors.primarySoft }]}>
-          {imageUri ? <Image source={{ uri: imageUri }} style={StyleSheet.absoluteFill} /> : <IosLikeAvatar color={candidate.avatarColor || colors.primarySoft} emoji={candidate.avatar} size={112} />}
-          <LinearGradient colors={gradientColors} style={styles.profileGradient} />
+          {imageUri ? <Image resizeMode="cover" source={{ uri: imageUri }} style={[StyleSheet.absoluteFill, { borderRadius: 24 }]} /> : <View style={styles.profilePlaceholder}><FeatureIcon color={colors.inkMuted} name="person.crop.square.fill" size={84} /></View>}
+          <MaskedView
+            pointerEvents="none"
+            style={styles.profileBlur}
+            maskElement={<LinearGradient colors={['transparent', '#FFFFFF', '#FFFFFF']} locations={[0, 0.48, 1]} style={StyleSheet.absoluteFill} />}
+          >
+            <BlurView intensity={isDark ? 38 : 48} tint={isDark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
+            <LinearGradient colors={gradientColors} locations={[0, 0.45, 1]} style={StyleSheet.absoluteFill} />
+          </MaskedView>
           <View style={styles.profileHeroCopy}>
             {candidate.isMatched ? <View style={styles.matchedBadge}><FeatureIcon color="#FFFFFF" name="person.2.fill" size={12} /><Text style={styles.matchedBadgeText}>เพื่อนที่คุณแมตช์แล้ว 💬</Text></View> : null}
             <Text numberOfLines={1} style={styles.profileHeroName}>{candidate.name}{candidate.age ? `, ${candidate.age}` : ''}</Text>
             <Text numberOfLines={1} style={styles.profileHeroMeta}>{[getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities), candidate.faculty].filter(Boolean).join(' · ') || 'แตะเพื่อดูโปรไฟล์'}</Text>
           </View>
-          <View style={[styles.compatibility, { backgroundColor: colors.card }]}><Text style={[styles.compatibilityValue, { color: colors.primary }]}>{candidate.compatibility || 0}%</Text><Text style={[styles.compatibilityLabel, { color: colors.inkMuted }]}>เข้ากันได้</Text></View>
+
         </View>
       </IosLikeCard>
     </Pressable>
   );
 }
 
-function ShortcutPill({ icon, label, value }) {
-  const { colors } = useTheme();
+function ShortcutPill({ accent = false, icon, label, value }) {
+  const { colors, isDark } = useTheme();
+  const backgroundColor = accent && !isDark ? '#E7EBF2' : colors.surfaceRaised;
   return (
-    <View style={[styles.shortcutPill, { backgroundColor: colors.surfaceRaised }]}>
-      <FeatureIcon color={colors.primary} name={icon} size={15} />
-      <Text style={[styles.shortcutLabel, { color: colors.inkMuted }]}>{label}</Text>
-      <Text numberOfLines={1} style={[styles.shortcutValue, { color: colors.ink }]}>{value}</Text>
+    <View style={[styles.shortcutPill, { backgroundColor }]}>
+      <FeatureIcon color={accent ? colors.coral : colors.primary} name={icon} size={12} />
+      <Text adjustsFontSizeToFit minimumFontScale={0.78} numberOfLines={1} style={[styles.shortcutLabel, { color: colors.ink }]}>{label}</Text>
+      {value ? <Text numberOfLines={1} style={[styles.shortcutValue, { color: colors.ink }]}>{value}</Text> : null}
     </View>
   );
+}
+
+function ResetCountdownPill() {
+  const [timeLeft, setTimeLeft] = useState(getRemainingTime());
+
+  useEffect(() => {
+    const updateCountdown = () => setTimeLeft(getRemainingTime());
+    updateCountdown();
+    const timer = setInterval(updateCountdown, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return <ShortcutPill icon="clock.arrow.2.circlepath" label={`รีเซ็ตใน ${formatRemainingTime(timeLeft)}`} />;
 }
 
 function EmptyState({ onReset }) {
   const { colors } = useTheme();
   return (
     <IosLikeCard style={styles.emptyState}>
-      <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}><FeatureIcon color={colors.primary} name="person.fill.xmark" size={28} /></View>
+      <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}><FeatureIcon color={colors.primary} name="person.2.slash" size={28} /></View>
       <Text style={[styles.emptyTitle, { color: colors.ink }]}>ยังไม่มีโปรไฟล์ที่ตรงกัน</Text>
       <Text style={[styles.emptyText, { color: colors.inkMuted }]}>ระบบจะค้นหาโปรไฟล์ใหม่โดยอัตโนมัติ หากตัวกรองไม่มีคนที่ตรงกัน</Text>
-      <Pressable accessibilityRole="button" onPress={onReset} style={({ pressed }) => [styles.resetButton, { backgroundColor: colors.primary }, pressed && styles.pressed]}><Text style={styles.resetButtonText}>รีเซ็ตตัวกรอง</Text></Pressable>
+      <Pressable accessibilityRole="button" onPress={onReset} style={({ pressed }) => [styles.resetButton, { backgroundColor: colors.primary }, pressed && styles.pressed]}>
+        <FeatureIcon color="#FFFFFF" name="arrow.triangle.2.circlepath" size={17} />
+        <Text style={styles.resetButtonText}>เริ่มใหม่</Text>
+      </Pressable>
     </IosLikeCard>
   );
 }
 
-function SettingsModal({ activities, distance, eveningOnly, faculty, facultySaving, genders, onActivities, onClose, onDistance, onEvening, onFaculty, onGenders, onSave, onSameFaculty, onYears, saving, sameFacultyOnly, visible, years }) {
+function SettingsModal({ activities, ageMax, ageMin, availabilityPeriods, distance, faculty, facultySaving, genders, onActivities, onAgeMax, onAgeMin, onAvailability, onClose, onDistance, onFaculty, onGenders, onPaces, onSave, onSameFaculty, onYears, paces, saving, sameFacultyOnly, visible, years }) {
   const { colors } = useTheme();
+  const sheetOffset = useRef(new Animated.Value(600)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const isClosingRef = useRef(false);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  const closeWithAnimation = useCallback(() => {
+    if (isClosingRef.current) return;
+    isClosingRef.current = true;
+    Animated.parallel([
+      Animated.timing(sheetOffset, {
+        toValue: 700,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+      Animated.timing(fadeAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      closeRef.current?.();
+      isClosingRef.current = false;
+    });
+  }, [sheetOffset, fadeAnim]);
+
+  useEffect(() => {
+    if (visible) {
+      isClosingRef.current = false;
+      sheetOffset.setValue(600);
+      fadeAnim.setValue(0);
+      Animated.parallel([
+        Animated.spring(sheetOffset, {
+          toValue: 0,
+          damping: 22,
+          mass: 0.8,
+          stiffness: 280,
+          useNativeDriver: true,
+        }),
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    }
+  }, [visible, sheetOffset, fadeAnim]);
+
+  const sheetPan = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: (evt) => {
+      // Immediate response when pressing anywhere on the top handle / header area (top 85px)
+      return evt.nativeEvent.locationY <= 85;
+    },
+    onStartShouldSetPanResponderCapture: (evt) => {
+      return evt.nativeEvent.locationY <= 85;
+    },
+    onMoveShouldSetPanResponder: (_, gestureState) => (
+      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
+    ),
+    onMoveShouldSetPanResponderCapture: (_, gestureState) => (
+      // Intercept downward drag from anywhere on the header area so children don't block dragging
+      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
+    ),
+    onPanResponderGrant: () => {
+      sheetOffset.stopAnimation();
+    },
+    onPanResponderMove: (_, gestureState) => {
+      if (gestureState.dy > 0) {
+        sheetOffset.setValue(gestureState.dy);
+      } else {
+        sheetOffset.setValue(gestureState.dy * 0.15);
+      }
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      if (gestureState.dy > 70 || gestureState.vy > 0.5) {
+        closeWithAnimation();
+      } else {
+        Animated.spring(sheetOffset, {
+          toValue: 0,
+          damping: 22,
+          mass: 0.8,
+          stiffness: 280,
+          useNativeDriver: true,
+        }).start();
+      }
+    },
+    onPanResponderTerminationRequest: () => false,
+    onPanResponderTerminate: () => {
+      Animated.spring(sheetOffset, {
+        toValue: 0,
+        damping: 22,
+        mass: 0.8,
+        stiffness: 280,
+        useNativeDriver: true,
+      }).start();
+    },
+  }), [closeWithAnimation, sheetOffset]);
+
   return (
-    <Modal animationType="slide" transparent visible={visible} onRequestClose={onClose}>
+    <Modal animationType="none" transparent visible={visible} onRequestClose={closeWithAnimation}>
       <View style={styles.modalBackdrop}>
-        <Pressable accessibilityLabel="ปิดการตั้งค่าตัวกรอง" onPress={onClose} style={StyleSheet.absoluteFill} />
-        <View style={[styles.settingsSheet, { backgroundColor: colors.card }]}>
-          <View style={[styles.sheetHandle, { backgroundColor: colors.inkSoft }]} />
-          <View style={styles.sheetHeader}><View><Text style={[styles.sheetTitle, { color: colors.ink }]}>ตั้งค่าการจับคู่</Text><Text style={[styles.sheetSubtitle, { color: colors.inkMuted }]}>ตัวกรองจะใช้กับการค้นหาเพื่อนของคุณ</Text></View><IconButton accessibilityLabel="ปิดตัวกรอง" icon="xmark" onPress={onClose} size={18} tintColor={colors.ink} /></View>
-          <ScrollView contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
-            <FilterSectionLabel label="ระยะห่างจากคุณ" />
-            <View style={[styles.distanceCard, { backgroundColor: colors.surfaceRaised }]}>
-              <View style={styles.distanceHeader}><Text style={[styles.distanceValue, { color: colors.primary }]}>{Math.round(distance)} กม.</Text><Text style={[styles.distanceHint, { color: colors.inkMuted }]}>ค้นหาเพื่อนในรัศมี</Text></View>
-              <View style={styles.distanceControls}>
-                {[5, 15, 25, 50].map((value) => <IosLikePill active={Math.round(distance) === value} key={value} onPress={() => onDistance(value)}>{`${value} กม.`}</IosLikePill>)}
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.45)', opacity: fadeAnim }]}>
+          <Pressable accessibilityLabel="ปิดการตั้งค่าตัวกรอง" onPress={closeWithAnimation} style={{ flex: 1 }} />
+        </Animated.View>
+        <Animated.View
+          style={[
+            styles.settingsSheet,
+            {
+              backgroundColor: colors.card,
+              zIndex: 10,
+              elevation: 20,
+              transform: [{ translateY: sheetOffset }],
+            },
+          ]}
+        >
+          {/* Header Draggable Area */}
+          <View
+            {...sheetPan.panHandlers}
+            accessibilityHint="ลากลงเพื่อปิดตัวกรอง"
+            onAccessibilityEscape={closeWithAnimation}
+            style={{ width: '100%', paddingTop: 4, paddingBottom: 6 }}
+          >
+            <View style={{ alignItems: 'center', justifyContent: 'center', width: '100%', paddingTop: 4, paddingBottom: 12 }}>
+              <View style={[styles.sheetHandle, { backgroundColor: colors.inkSoft, opacity: 0.45 }]} />
+            </View>
+            <View style={styles.sheetHeader}>
+              <View>
+                <Text style={[styles.sheetTitle, { color: colors.ink }]}>ตั้งค่าการจับคู่</Text>
+                <Text style={[styles.sheetSubtitle, { color: colors.inkMuted }]}>ตัวกรองจะใช้กับการค้นหาเพื่อนของคุณ</Text>
               </View>
             </View>
+          </View>
+           <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
+             <FilterSectionLabel label="ช่วงอายุ" />
+             <View style={styles.agePickerRow}>
+               <AgePicker label="อายุต่ำสุด" onValueChange={onAgeMin} value={ageMin} />
+               <AgePicker label="อายุสูงสุด" onValueChange={onAgeMax} value={ageMax} />
+             </View>
+             <Text style={[styles.filterHelper, { color: colors.inkMuted }]}>ระบบจะแสดงคนอายุ {ageMin}–{ageMax} ปี</Text>
 
-            <FilterSectionLabel label="กิจกรรมที่สนใจ" />
-            <View style={styles.optionGrid}>
-              {ACTIVITY_CATEGORIES.filter((category) => FILTER_ACTIVITY_IDS.includes(category.id)).map((category) => (
-                <OptionToggle active={activities[category.id]} icon={category.icon} key={category.id} label={category.label} onPress={() => onActivities(category.id)} />
+             <FilterSectionLabel label="ระยะห่างจากคุณ" />
+             <View style={[styles.distanceCard, { backgroundColor: colors.surfaceRaised }]}>
+               <View style={styles.distanceHeader}><Text style={[styles.distanceValue, { color: colors.primary }]}>{Math.round(distance)} กม.</Text><Text style={[styles.distanceHint, { color: colors.inkMuted }]}>ค้นหาเพื่อนในรัศมี</Text></View>
+               <View style={styles.distanceControls}>
+                 {[5, 15, 25, 50].map((value) => <IosLikePill active={Math.round(distance) === value} key={value} onPress={() => onDistance(value)}>{`${value} กม.`}</IosLikePill>)}
+               </View>
+             </View>
+
+             <FilterSectionLabel label="กิจกรรมที่สนใจ" />
+             <View style={styles.optionGrid}>
+               {MATCHING_ACTIVITY_OPTIONS.map(({ icon, label, value }) => (
+                 <OptionToggle active={activities[value]} icon={icon} key={value} label={label} onPress={() => onActivities(value)} />
+               ))}
+             </View>
+             <Text style={[styles.filterHelper, { color: colors.inkMuted }]}>เลือกได้หลายกิจกรรม ระบบจะแสดงคนที่ตรงกับอย่างน้อยหนึ่งข้อ</Text>
+
+             <FilterSectionLabel label="ช่วงชั้นปี" />
+             <View style={styles.optionGrid}>
+              {MATCHING_YEAR_OPTIONS.map(({ icon, label, value }) => (
+                <OptionToggle active={years[value]} icon={icon} key={value} label={label} onPress={() => onYears(value)} />
               ))}
-            </View>
-
-            <FilterSectionLabel label="ช่วงชั้นปี" />
-            <View style={styles.optionGrid}>
-              {FILTER_YEAR_KEYS.map((key) => <OptionToggle active={years[key]} icon="graduationcap.fill" key={key} label={key === 4 ? 'ปี 4 ขึ้นไป' : `ปี ${key}`} onPress={() => onYears(key)} />)}
-            </View>
+             </View>
 
             <FilterSectionLabel label="คณะ" />
             <ScrollView contentContainerStyle={styles.settingPills} horizontal showsHorizontalScrollIndicator={false}>
               {['all', ...FACULTIES].map((item) => <IosLikePill active={!sameFacultyOnly && faculty === item} key={item} onPress={() => onFaculty(item)}>{item === 'all' ? 'ทุกคณะ' : item}</IosLikePill>)}
-            </ScrollView>
-            <SettingRow icon="building.columns.fill" label="เฉพาะคณะเดียวกับฉัน" onPress={onSameFaculty} value={sameFacultyOnly} />
-            <SettingRow icon="sunset.fill" label="ว่างช่วงเย็น" onPress={onEvening} value={eveningOnly} />
+             </ScrollView>
+             <SettingRow icon="building.columns.fill" label="เฉพาะคณะเดียวกับฉัน" onPress={onSameFaculty} value={sameFacultyOnly} />
 
-            <FilterSectionLabel label="เพศ" />
-            <View style={styles.optionGrid}>
-              <OptionToggle active={genders.male} icon="person.fill" label="ชาย" onPress={() => onGenders('male')} />
-              <OptionToggle active={genders.female} icon="person.fill" label="หญิง" onPress={() => onGenders('female')} />
-              <OptionToggle active={genders.other} icon="person.2.fill" label="อื่น ๆ" onPress={() => onGenders('other')} />
-            </View>
+             <FilterSectionLabel label="เพซ / ระดับกิจกรรม" />
+             <View style={styles.optionGrid}>
+               {MATCHING_PACE_OPTIONS.map(({ icon, label, value }) => (
+                 <OptionToggle active={paces[value]} icon={icon} key={value} label={label} onPress={() => onPaces(value)} />
+               ))}
+             </View>
+
+             <FilterSectionLabel label="ช่วงเวลาที่สะดวก" />
+             <View style={styles.optionGrid}>
+               {MATCHING_AVAILABILITY_OPTIONS.map(({ icon, label, value }) => (
+                 <OptionToggle active={availabilityPeriods[value]} icon={icon} key={value} label={label} onPress={() => onAvailability(value)} />
+               ))}
+             </View>
+             <Text style={[styles.filterHelper, { color: colors.inkMuted }]}>จับคู่จากช่วงเวลาที่โปรไฟล์อีกฝ่ายระบุไว้</Text>
+
+             <FilterSectionLabel label="เพศ" />
+             <View style={styles.optionGrid}>
+              {MATCHING_GENDER_OPTIONS.map(({ icon, label, value }) => (
+                <OptionToggle active={genders[value]} icon={icon} key={value} label={label} onPress={() => onGenders(value)} />
+              ))}
+             </View>
             <Text style={[styles.genderHelper, { color: colors.inkMuted }]}>เลือกเพศที่อยากพบได้มากกว่าหนึ่งข้อ</Text>
 
+          </ScrollView>
+          <View style={[styles.settingsFooter, { borderTopColor: colors.line }]}>
             {facultySaving || saving ? <Text style={[styles.savingText, { color: colors.primary }]}>กำลังบันทึกการตั้งค่า…</Text> : null}
             <Pressable accessibilityRole="button" disabled={saving} onPress={onSave} style={({ pressed }) => [styles.doneButton, { backgroundColor: colors.primary }, pressed && styles.pressed, saving && styles.disabled]}><Text style={styles.doneButtonText}>{saving ? 'กำลังบันทึก…' : 'บันทึกตัวกรอง'}</Text></Pressable>
-          </ScrollView>
-        </View>
+          </View>
+        </Animated.View>
       </View>
     </Modal>
+  );
+}
+
+function AgePicker({ label, onValueChange, value }) {
+  const { colors } = useTheme();
+  return (
+    <View style={styles.agePickerColumn}>
+      <Text style={[styles.agePickerLabel, { color: colors.inkMuted }]}>{label}</Text>
+      <View style={[styles.agePicker, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
+        <NativePicker
+          dropdownIconColor={colors.inkMuted}
+          mode="dropdown"
+          onValueChange={onValueChange}
+          selectedValue={value}
+          style={[styles.agePickerInput, { color: colors.ink }]}
+        >
+          {MATCHING_AGE_VALUES.map((age) => (
+            <NativePicker.Item key={age} label={`${age} ปี`} value={age} />
+          ))}
+        </NativePicker>
+      </View>
+    </View>
   );
 }
 
@@ -511,55 +787,66 @@ function SettingRow({ icon, label, onPress, value }) {
 }
 
 const styles = StyleSheet.create({
-  content: { gap: spacing.xl, paddingBottom: 40, paddingHorizontal: spacing.lg, paddingTop: 110 },
+  content: { gap: 22, paddingBottom: spacing.xxxl, paddingHorizontal: spacing.xl, paddingTop: 92 },
+  matchingHeader: { height: 85, left: 0, position: 'absolute', right: 0, top: 0, zIndex: 20 },
+  matchingHeaderSurface: { ...StyleSheet.absoluteFillObject },
+  matchingHeaderContent: { alignItems: 'center', flex: 1, flexDirection: 'row', justifyContent: 'space-between', paddingBottom: 15, paddingHorizontal: spacing.xl, paddingTop: 35 },
+  matchingHeaderTitle: { fontSize: type.title1, fontWeight: '800', letterSpacing: -0.4 },
+  matchingHeaderActions: { alignItems: 'center', flexDirection: 'row', gap: 10 },
+  matchingHeaderButton: { height: 36, width: 36 },
   quickFilterRow: { flexDirection: 'row', gap: spacing.sm },
-  quickFilter: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 5, justifyContent: 'center', minHeight: 40, paddingHorizontal: spacing.sm },
-  quickFilterText: { fontSize: type.caption2, fontWeight: '800' },
-  quickBadge: { alignItems: 'center', borderRadius: radius.pill, minWidth: 19, paddingHorizontal: 5, paddingVertical: 2 },
-  quickBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '900' },
-  categoryHeader: { marginBottom: -spacing.sm },
-  pillRow: { gap: spacing.sm, paddingRight: spacing.lg },
-  smartFilterBar: { alignItems: 'center', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, padding: spacing.sm },
-  filterButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 5, justifyContent: 'center', minHeight: 38, paddingHorizontal: spacing.sm },
-  filterButtonText: { fontSize: type.caption2, fontWeight: '700' },
-  filterIconButton: { height: 38, width: 38 },
-  meetupBanner: { alignItems: 'center', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, padding: spacing.md },
-  meetupIcon: { alignItems: 'center', borderRadius: radius.pill, height: 34, justifyContent: 'center', width: 34 },
+  quickFilter: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flexDirection: 'row', gap: 5, justifyContent: 'center', paddingHorizontal: spacing.md, paddingVertical: 7 },
+  quickFilterText: { fontSize: type.body, fontWeight: '700' },
+  quickBadgeDot: { borderRadius: radius.pill, height: 6, marginLeft: 1, width: 6 },
+  meetupBanner: { alignItems: 'center', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: 9, shadowColor: '#17805A', shadowOffset: { height: 2, width: 0 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 2 },
+  meetupBannerMain: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 10, minWidth: 0 },
+  meetupIcon: { alignItems: 'center', borderRadius: radius.pill, height: 32, justifyContent: 'center', width: 32 },
   meetupCopy: { flex: 1 },
-  meetupTitleRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
-  meetupEyebrow: { fontSize: type.caption2, fontWeight: '800' },
-  meetupStatus: { fontSize: type.caption2, fontWeight: '800' },
-  meetupName: { fontSize: type.body, fontWeight: '800', marginTop: 2 },
-  meetupMeta: { fontSize: type.caption2, marginTop: 2 },
-  profileCard: { padding: 0 },
-  profileHero: { height: 360, justifyContent: 'flex-end', overflow: 'hidden', position: 'relative' },
-  profileGradient: { bottom: 0, height: 190, left: 0, position: 'absolute', right: 0 },
-  profileHeroCopy: { bottom: spacing.lg, left: spacing.lg, position: 'absolute', right: 80 },
-  profileHeroName: { color: '#FFFFFF', fontSize: 26, fontWeight: '800', letterSpacing: -0.4 },
-  profileHeroMeta: { color: 'rgba(255,255,255,0.86)', fontSize: type.caption, fontWeight: '600', marginTop: 5 },
-  matchedBadge: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: radius.pill, flexDirection: 'row', gap: 5, marginBottom: spacing.sm, paddingHorizontal: 9, paddingVertical: 5 },
+  meetupTitleRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
+  meetupEyebrow: { fontSize: type.caption2, fontWeight: '700' },
+  meetupStatus: { fontSize: 10, fontWeight: '700' },
+  meetupName: { fontSize: 13.5, fontWeight: '800', marginTop: 1 },
+  meetupMeta: { fontSize: 10.5, marginTop: 1 },
+  meetupManage: { alignItems: 'center', borderRadius: radius.pill, justifyContent: 'center', minHeight: 32, paddingHorizontal: 10 },
+  meetupManageText: { color: '#FFFFFF', fontSize: type.caption2, fontWeight: '800' },
+  profileCard: { borderColor: 'transparent', borderRadius: 24, borderWidth: 0, elevation: 6, overflow: 'hidden', padding: 0, shadowColor: '#000000', shadowOffset: { height: 10, width: 0 }, shadowOpacity: 0.28, shadowRadius: 22 },
+  profileHero: { borderRadius: 24, height: 340, justifyContent: 'flex-end', overflow: 'hidden', position: 'relative' },
+  profileBlur: { bottom: 0, height: 158, left: 0, position: 'absolute', right: 0 },
+  profilePlaceholder: { alignItems: 'center', flex: 1, justifyContent: 'center', width: '100%' },
+  profileHeroCopy: { bottom: 22, left: 18, position: 'absolute', right: 18 },
+  profileHeroName: { color: '#FFFFFF', fontSize: type.title, fontWeight: '800', letterSpacing: -0.4 },
+  profileHeroMeta: { color: 'rgba(255,255,255,0.88)', fontSize: type.subheadline, fontWeight: '600', marginTop: 5 },
+  matchedBadge: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: radius.pill, flexDirection: 'row', gap: 4, marginBottom: 6, paddingHorizontal: 8, paddingVertical: 4 },
   matchedBadgeText: { color: '#FFFFFF', fontSize: type.caption2, fontWeight: '700' },
   compatibility: { alignItems: 'center', borderRadius: radius.pill, bottom: spacing.lg, elevation: 4, paddingHorizontal: 10, paddingVertical: 7, position: 'absolute', right: spacing.lg, shadowColor: '#000000', shadowOpacity: 0.16, shadowRadius: 8 },
   compatibilityValue: { fontSize: type.headline, fontWeight: '800' },
   compatibilityLabel: { fontSize: 9, fontWeight: '700', marginTop: 1 },
-  shortcutRow: { flexDirection: 'row', gap: spacing.sm },
-  shortcutPill: { alignItems: 'center', borderRadius: radius.pill, flex: 1, flexDirection: 'row', gap: 5, minHeight: 38, paddingHorizontal: spacing.md },
-  shortcutLabel: { fontSize: type.caption2, fontWeight: '600' },
-  shortcutValue: { flex: 1, fontSize: type.caption2, fontWeight: '800', textAlign: 'right' },
-  emptyState: { alignItems: 'center', padding: spacing.xxl },
+  shortcutRow: { alignItems: 'center', flexDirection: 'row', gap: 10 },
+  shortcutPill: { alignItems: 'center', borderRadius: radius.pill, flex: 1, flexDirection: 'row', gap: 6, minHeight: 0, minWidth: 0, paddingHorizontal: 11, paddingVertical: 7 },
+  shortcutLabel: { flexShrink: 1, fontSize: type.caption2, fontWeight: '700' },
+  shortcutValue: { fontSize: type.caption2, fontWeight: '600' },
+  emptyState: { alignItems: 'center', paddingHorizontal: 22, paddingVertical: 36 },
   emptyIcon: { alignItems: 'center', borderRadius: radius.pill, height: 58, justifyContent: 'center', width: 58 },
   emptyTitle: { fontSize: type.headline, fontWeight: '800', marginTop: spacing.md },
   emptyText: { fontSize: type.caption, lineHeight: 18, marginTop: spacing.sm, textAlign: 'center' },
-  resetButton: { borderRadius: radius.pill, marginTop: spacing.lg, paddingHorizontal: spacing.xl, paddingVertical: spacing.md },
+  resetButton: { alignItems: 'center', borderRadius: radius.pill, flexDirection: 'row', gap: 7, justifyContent: 'center', marginTop: spacing.lg, minHeight: 48, paddingHorizontal: spacing.xl, width: '100%' },
   resetButtonText: { color: '#FFFFFF', fontSize: type.caption, fontWeight: '800' },
-  modalBackdrop: { backgroundColor: 'rgba(0,0,0,0.38)', flex: 1, justifyContent: 'flex-end' },
-  settingsSheet: { borderTopLeftRadius: 28, borderTopRightRadius: 28, maxHeight: '90%', paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
-  sheetHandle: { alignSelf: 'center', borderRadius: radius.pill, height: 5, marginBottom: spacing.md, opacity: 0.4, width: 38 },
+  modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
+  settingsSheet: { borderTopLeftRadius: 28, borderTopRightRadius: 28, height: '90%', overflow: 'hidden', paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
+  settingsScroll: { flex: 1, minHeight: 0 },
+  settingsFooter: { flexShrink: 0, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: spacing.sm, paddingBottom: spacing.lg },
+  sheetHandle: { alignSelf: 'center', borderRadius: radius.pill, height: 5, opacity: 0.45, width: 44 },
   sheetHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', paddingBottom: spacing.md },
   sheetTitle: { fontSize: type.headline, fontWeight: '800' },
   sheetSubtitle: { fontSize: type.caption2, marginTop: 3 },
   settingsContent: { gap: spacing.md, paddingBottom: spacing.xl },
   settingLabel: { fontSize: type.caption, fontWeight: '800', marginTop: spacing.sm },
+  filterHelper: { fontSize: type.caption2, lineHeight: 16, marginTop: -spacing.sm },
+  agePickerRow: { flexDirection: 'row', gap: spacing.sm },
+  agePickerColumn: { flex: 1, gap: spacing.xs },
+  agePickerLabel: { fontSize: type.caption2, fontWeight: '700' },
+  agePicker: { borderRadius: radius.md, borderWidth: 1, minHeight: 52, justifyContent: 'center' },
+  agePickerInput: { height: 52, width: '100%' },
   distanceCard: { borderRadius: radius.lg, padding: spacing.md },
   distanceHeader: { alignItems: 'baseline', flexDirection: 'row', gap: spacing.sm },
   distanceValue: { fontSize: type.title, fontWeight: '900' },

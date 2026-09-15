@@ -88,6 +88,8 @@ import {
 
 const loginHeroPhoto = require('../../assets/login-campus-hero.png');
 
+const OFFLINE_SNAPSHOT_DEBOUNCE_MS = 2500;
+
 const AppContext = createContext(null);
 
 // Narrow slices of the app state. Consumers that only need one of these should
@@ -1295,6 +1297,9 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (!user?.id || cacheHydratedUserId !== user.id) return undefined;
     let interactionTask = null;
+    // Building the signature stringifies every conversation and message, so the
+    // window is wide enough for a burst of incoming messages to collapse into
+    // one pass. The snapshot is an offline cache; staleness here is harmless.
     const timer = setTimeout(() => {
       interactionTask = runAfterInteractionsHelper(() => {
         const snapshotData = {
@@ -1315,7 +1320,7 @@ export function AppProvider({ children }) {
         offlineSnapshotSignatureRef.current = snapshotKey;
         void saveOfflineSnapshot(user.id, snapshotData);
       });
-    }, 1000);
+    }, OFFLINE_SNAPSHOT_DEBOUNCE_MS);
     return () => {
       clearTimeout(timer);
       interactionTask?.cancel?.();

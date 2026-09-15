@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
   Dimensions,
-  Image,
   PanResponder,
   Pressable,
   ScrollView,
@@ -11,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -186,7 +186,13 @@ function ProfileCardView({
       <View style={styles.swipeCard}>
         <View style={styles.hero}>
           {remoteHeroImage ? (
-            <Image resizeMode="cover" source={{ uri: remoteHeroImage }} style={styles.heroImage} />
+            <Image
+              cachePolicy="memory-disk"
+              contentFit="cover"
+              recyclingKey={candidate?.id}
+              source={{ uri: remoteHeroImage }}
+              style={styles.heroImage}
+            />
           ) : (
             <View
               accessibilityLabel="ยังไม่มีรูปโปรไฟล์"
@@ -197,20 +203,29 @@ function ProfileCardView({
             </View>
           )}
           <View style={styles.heroOverlay} />
-          <MaskedView
-            pointerEvents="none"
-            style={styles.heroBlur}
-            maskElement={(
-              <LinearGradient
-                colors={['transparent', '#FFFFFF', '#FFFFFF']}
-                locations={[0, 0.42, 1]}
-                style={StyleSheet.absoluteFill}
-              />
-            )}
-          >
-            <BlurView intensity={isDark ? 28 : 34} tint="dark" style={StyleSheet.absoluteFill} />
-            <View pointerEvents="none" style={styles.heroBlurScrim} />
-          </MaskedView>
+          {isUnderCard ? (
+            <LinearGradient
+              colors={['transparent', 'rgba(0,0,0,0.14)', 'rgba(0,0,0,0.14)']}
+              locations={[0, 0.42, 1]}
+              pointerEvents="none"
+              style={styles.heroBlur}
+            />
+          ) : (
+            <MaskedView
+              pointerEvents="none"
+              style={styles.heroBlur}
+              maskElement={(
+                <LinearGradient
+                  colors={['transparent', '#FFFFFF', '#FFFFFF']}
+                  locations={[0, 0.42, 1]}
+                  style={StyleSheet.absoluteFill}
+                />
+              )}
+            >
+              <BlurView intensity={isDark ? 28 : 34} tint="dark" style={StyleSheet.absoluteFill} />
+              <View pointerEvents="none" style={styles.heroBlurScrim} />
+            </MaskedView>
+          )}
           <LinearGradient
             colors={['transparent', 'rgba(0,0,0,0.16)', 'rgba(0,0,0,0.48)']}
             locations={[0, 0.46, 1]}
@@ -223,7 +238,7 @@ function ProfileCardView({
           </View>
         </View>
 
-        <View style={styles.body}>
+        {isUnderCard ? null : <View style={styles.body}>
           <View style={styles.identityRow}>
             <View style={styles.identityCopy}>
               <Text style={styles.title}>เกี่ยวกับ {safeDisplayName}</Text>
@@ -335,9 +350,9 @@ function ProfileCardView({
               </View>
             </View>
           ) : null}
-        </View>
+        </View>}
 
-        {!isViewOnly && likeBorderOpacity && skipBorderOpacity ? (
+        {!isUnderCard && !isViewOnly && likeBorderOpacity && skipBorderOpacity ? (
           <>
             <Animated.View
               pointerEvents="none"
@@ -375,11 +390,6 @@ function ProfileCardView({
               },
             ]}
           >
-            <BlurView
-              intensity={isDark ? 28 : 22}
-              style={StyleSheet.absoluteFill}
-              tint={isDark ? 'dark' : 'light'}
-            />
             <View
               style={[
                 StyleSheet.absoluteFill,
@@ -535,7 +545,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     upcoming.forEach((item) => {
       const uri = item?.avatarUri || item?.photoURL;
       if (uri && typeof uri === 'string' && uri.startsWith('http')) {
-        Image.prefetch(uri).catch(() => {});
+        Image.prefetch(uri, 'memory-disk').catch(() => {});
       }
     });
   }, [candidatePool]);

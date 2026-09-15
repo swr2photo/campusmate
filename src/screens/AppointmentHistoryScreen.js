@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  FlatList,
+  Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -181,14 +182,24 @@ export default function AppointmentHistoryScreen() {
       .sort((first, second) => compareAppointments(first, second, currentDateKey));
   }, [appointments, currentDateKey, currentUserId, peopleById]);
 
-  const appointmentsByDate = useMemo(() => {
+  const { appointmentsByDate, dayStatusByDate } = useMemo(() => {
     const grouped = new Map();
+    const statuses = new Map();
     history.forEach((appointment) => {
       const current = grouped.get(appointment.dateKey) || [];
       current.push(appointment);
       grouped.set(appointment.dateKey, current);
+      let status = statuses.get(appointment.dateKey);
+      if (!status) {
+        status = { count: 0, hasActive: false, hasCancelled: false, hasPending: false };
+        statuses.set(appointment.dateKey, status);
+      }
+      status.count += 1;
+      if (appointment.status === 'active') status.hasActive = true;
+      else if (appointment.status === 'pending') status.hasPending = true;
+      else if (appointment.status === 'cancelled') status.hasCancelled = true;
     });
-    return grouped;
+    return { appointmentsByDate: grouped, dayStatusByDate: statuses };
   }, [history]);
 
   useEffect(() => {
@@ -202,8 +213,14 @@ export default function AppointmentHistoryScreen() {
     setMonthDate(new Date(date.getFullYear(), date.getMonth(), 1));
   }, [currentDateKey, history]);
 
-  const selectedAppointments = appointmentsByDate.get(selectedDateKey) || [];
-  const otherAppointments = history.filter((appointment) => appointment.dateKey !== selectedDateKey);
+  const selectedAppointments = useMemo(
+    () => appointmentsByDate.get(selectedDateKey) || [],
+    [appointmentsByDate, selectedDateKey]
+  );
+  const otherAppointments = useMemo(
+    () => history.filter((appointment) => appointment.dateKey !== selectedDateKey),
+    [history, selectedDateKey]
+  );
   const activeCount = history.filter((appointment) => (appointment.status === 'active' || appointment.status === 'pending') && appointment.dateKey >= currentDateKey).length;
   const cells = useMemo(() => monthCells(monthDate), [monthDate]);
 
@@ -218,13 +235,13 @@ export default function AppointmentHistoryScreen() {
     setMonthDate((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
   };
 
-  const handleOpenChat = (appointment) => {
+  const handleOpenChat = useCallback((appointment) => {
     if (appointment?.conversationId) {
       router.push({ pathname: '/chat-room', params: { chatId: appointment.conversationId } });
     }
-  };
+  }, []);
 
-  const handleAccept = async (appointment) => {
+  const handleAccept = useCallback(async (appointment) => {
     if (!appointment?.conversationId || !appointment?.hostId) return;
     if (appointment.isExpired || isMeetupExpired(appointment.meetup || appointment)) {
       Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้');
@@ -243,9 +260,9 @@ export default function AppointmentHistoryScreen() {
     } catch (error) {
       showToast(error?.message || 'ตอบรับการนัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     }
-  };
+  }, [showToast, toggleMeetupAcceptanceInChat]);
 
-  const handleCancel = (appointment) => {
+  const handleCancel = useCallback((appointment) => {
     const cancelCheck = canCancelMeetup(appointment.meetup || appointment);
     if (!cancelCheck.allowed) {
       Alert.alert('ไม่สามารถยกเลิกได้', cancelCheck.reason || 'ไม่อนุญาตให้ยกเลิกก่อนวันนัดจริง 1 วัน (ต้องยกเลิกล่วงหน้าอย่างน้อย 24 ชั่วโมง)');
@@ -275,12 +292,111 @@ export default function AppointmentHistoryScreen() {
         },
       ],
     );
-  };
+  }, [cancelAppointment, showToast]);
 
   const onBack = () => {
     if (router.canGoBack()) router.back();
     else router.replace('/home');
   };
+
+  const listData = useMemo(() => {
+    const rows = [];
+    if (selectedAppointments.length) {
+      selectedAppointments.forEach((appointment) => rows.push({ appointment, type: 'appointment' }));
+    } else {
+      rows.push({ type: 'emptyDay' });
+    }
+    if (otherAppointments.length) {
+      rows.push({ type: 'otherTitle' });
+      otherAppointments.forEach((appointment) => rows.push({ appointment, type: 'appointment' }));
+    }
+    return rows;
+  }, [otherAppointments, selectedAppointments]);
+
+  const keyExtractor = useCallback((item) => (
+    item.type === 'appointment' ? item.appointment.id : item.type
+  ), []);
+
+  const renderItem = useCallback(({ item }) => {
+    if (item.type === 'emptyDay') return <EmptyDay colors={colors} hasHistory={history.length > 0} />;
+    if (item.type === 'otherTitle') {
+      return (
+        <IosLikeSectionTitle
+          subtitle={`${history.length} รายการทั้งหมด`}
+          title="ประวัติทั้งหมด"
+        />
+      );
+    }
+    return (
+      <AppointmentCard
+        appointment={item.appointment}
+        colors={colors}
+        onAccept={handleAccept}
+        onCancel={handleCancel}
+        onOpenChat={handleOpenChat}
+      />
+    );
+  }, [colors, handleAccept, handleCancel, handleOpenChat, history.length]);
+
+  const listHeader = (
+    <View style={styles.listHeader}>
+      <IosLikeSectionTitle
+        subtitle="แตะวันที่มีจุดสีเพื่อดูรายละเอียดการนัดหมาย"
+        title="ปฏิทินนัดหมาย"
+      />
+      <IosLikeCard style={styles.calendarCard}>
+        <View style={styles.monthToolbar}>
+          <Pressable
+            accessibilityLabel="เดือนก่อนหน้า"
+            accessibilityRole="button"
+            onPress={() => changeMonth(-1)}
+            style={({ pressed }) => [styles.monthButton, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }, pressed && styles.pressed]}
+          >
+            <FeatureIcon color={colors.ink} name="chevron.left" size={18} />
+          </Pressable>
+          <Text style={[styles.monthTitle, { color: colors.ink }]}>{monthTitle(monthDate)}</Text>
+          <Pressable
+            accessibilityLabel="เดือนถัดไป"
+            accessibilityRole="button"
+            onPress={() => changeMonth(1)}
+            style={({ pressed }) => [styles.monthButton, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }, pressed && styles.pressed]}
+          >
+            <FeatureIcon color={colors.ink} name="chevron.right" size={18} />
+          </Pressable>
+        </View>
+        <View style={styles.weekRow}>
+          {WEEKDAYS.map((day) => <Text key={day} style={[styles.weekday, { color: colors.inkMuted }]}>{day}</Text>)}
+        </View>
+        <View style={styles.calendarGrid}>
+          {cells.map((date, index) => {
+            if (!date) return <View key={`empty-${index}`} style={styles.dayCell} />;
+            const dateKey = dateKeyFromDate(date);
+            return (
+              <CalendarDay
+                colors={colors}
+                date={date}
+                dayStatus={dayStatusByDate.get(dateKey)}
+                isSelected={dateKey === selectedDateKey}
+                isToday={dateKey === currentDateKey}
+                key={dateKey}
+                onPress={() => selectDate(date)}
+              />
+            );
+          })}
+        </View>
+        <View style={styles.calendarLegend}>
+          <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: colors.primary }]} /><Text style={[styles.legendText, { color: colors.inkMuted }]}>ยืนยันแล้ว</Text></View>
+          <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: '#FF9500' }]} /><Text style={[styles.legendText, { color: colors.inkMuted }]}>รอตอบรับ</Text></View>
+          <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: colors.danger }]} /><Text style={[styles.legendText, { color: colors.inkMuted }]}>ยกเลิกแล้ว</Text></View>
+        </View>
+      </IosLikeCard>
+
+      <IosLikeSectionTitle
+        subtitle={selectedAppointments.length ? `${selectedAppointments.length} รายการในวันนี้` : 'ยังไม่มีรายการในวันที่เลือก'}
+        title={dateFromKey(selectedDateKey) ? formatReadableDate(selectedDateKey) : 'รายละเอียดการนัดหมาย'}
+      />
+    </View>
+  );
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.canvas }]}>
@@ -290,106 +406,29 @@ export default function AppointmentHistoryScreen() {
         subtitle={activeCount ? `${activeCount} นัดหมายที่กำลังจะมาถึง` : 'ดูวันนัดและรายละเอียดของคุณ'}
         title="ประวัติการนัดหมาย"
       />
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <IosLikeSectionTitle
-          subtitle="แตะวันที่มีจุดสีเพื่อดูรายละเอียดการนัดหมาย"
-          title="ปฏิทินนัดหมาย"
-        />
-        <IosLikeCard style={styles.calendarCard}>
-          <View style={styles.monthToolbar}>
-            <Pressable
-              accessibilityLabel="เดือนก่อนหน้า"
-              accessibilityRole="button"
-              onPress={() => changeMonth(-1)}
-              style={({ pressed }) => [styles.monthButton, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }, pressed && styles.pressed]}
-            >
-              <FeatureIcon color={colors.ink} name="chevron.left" size={18} />
-            </Pressable>
-            <Text style={[styles.monthTitle, { color: colors.ink }]}>{monthTitle(monthDate)}</Text>
-            <Pressable
-              accessibilityLabel="เดือนถัดไป"
-              accessibilityRole="button"
-              onPress={() => changeMonth(1)}
-              style={({ pressed }) => [styles.monthButton, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }, pressed && styles.pressed]}
-            >
-              <FeatureIcon color={colors.ink} name="chevron.right" size={18} />
-            </Pressable>
-          </View>
-          <View style={styles.weekRow}>
-            {WEEKDAYS.map((day) => <Text key={day} style={[styles.weekday, { color: colors.inkMuted }]}>{day}</Text>)}
-          </View>
-          <View style={styles.calendarGrid}>
-            {cells.map((date, index) => {
-              if (!date) return <View key={`empty-${index}`} style={styles.dayCell} />;
-              const dateKey = dateKeyFromDate(date);
-              const dayAppointments = appointmentsByDate.get(dateKey) || [];
-              return (
-                <CalendarDay
-                  appointments={dayAppointments}
-                  colors={colors}
-                  date={date}
-                  isSelected={dateKey === selectedDateKey}
-                  isToday={dateKey === currentDateKey}
-                  key={dateKey}
-                  onPress={() => selectDate(date)}
-                />
-              );
-            })}
-          </View>
-          <View style={styles.calendarLegend}>
-            <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: colors.primary }]} /><Text style={[styles.legendText, { color: colors.inkMuted }]}>ยืนยันแล้ว</Text></View>
-            <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: '#FF9500' }]} /><Text style={[styles.legendText, { color: colors.inkMuted }]}>รอตอบรับ</Text></View>
-            <View style={styles.legendItem}><View style={[styles.legendDot, { backgroundColor: colors.danger }]} /><Text style={[styles.legendText, { color: colors.inkMuted }]}>ยกเลิกแล้ว</Text></View>
-          </View>
-        </IosLikeCard>
-
-        <IosLikeSectionTitle
-          subtitle={selectedAppointments.length ? `${selectedAppointments.length} รายการในวันนี้` : 'ยังไม่มีรายการในวันที่เลือก'}
-          title={dateFromKey(selectedDateKey) ? formatReadableDate(selectedDateKey) : 'รายละเอียดการนัดหมาย'}
-        />
-        {selectedAppointments.length ? selectedAppointments.map((appointment) => (
-          <AppointmentCard
-            appointment={appointment}
-            colors={colors}
-            key={appointment.id}
-            onAccept={() => handleAccept(appointment)}
-            onCancel={() => handleCancel(appointment)}
-            onOpenChat={() => handleOpenChat(appointment)}
-          />
-        )) : (
-          <EmptyDay colors={colors} hasHistory={history.length > 0} />
-        )}
-
-        {otherAppointments.length ? (
-          <>
-            <IosLikeSectionTitle
-              subtitle={`${history.length} รายการทั้งหมด`}
-              title="ประวัติทั้งหมด"
-            />
-            {otherAppointments.map((appointment) => (
-              <AppointmentCard
-                appointment={appointment}
-                colors={colors}
-                key={appointment.id}
-                onAccept={() => handleAccept(appointment)}
-                onCancel={() => handleCancel(appointment)}
-                onOpenChat={() => handleOpenChat(appointment)}
-              />
-            ))}
-          </>
-        ) : null}
-      </ScrollView>
+      <FlatList
+        contentContainerStyle={styles.content}
+        data={listData}
+        initialNumToRender={6}
+        keyExtractor={keyExtractor}
+        ListHeaderComponent={listHeader}
+        removeClippedSubviews={Platform.OS === 'android'}
+        renderItem={renderItem}
+        showsVerticalScrollIndicator={false}
+        windowSize={7}
+      />
     </View>
   );
 }
 
-function CalendarDay({ appointments, colors, date, isSelected, isToday, onPress }) {
-  const hasActive = appointments.some((appointment) => appointment.status === 'active');
-  const hasPending = appointments.some((appointment) => appointment.status === 'pending');
-  const hasCancelled = appointments.some((appointment) => appointment.status === 'cancelled');
+function CalendarDay({ colors, date, dayStatus, isSelected, isToday, onPress }) {
+  const hasActive = Boolean(dayStatus?.hasActive);
+  const hasPending = Boolean(dayStatus?.hasPending);
+  const hasCancelled = Boolean(dayStatus?.hasCancelled);
+  const appointmentCount = dayStatus?.count || 0;
   return (
     <Pressable
-      accessibilityLabel={`${date.getDate()} ${THAI_MONTHS[date.getMonth()]} ${appointments.length ? `มีนัดหมาย ${appointments.length} รายการ` : ''}`}
+      accessibilityLabel={`${date.getDate()} ${THAI_MONTHS[date.getMonth()]} ${appointmentCount ? `มีนัดหมาย ${appointmentCount} รายการ` : ''}`}
       accessibilityRole="button"
       onPress={onPress}
       style={({ pressed }) => [
@@ -409,7 +448,7 @@ function CalendarDay({ appointments, colors, date, isSelected, isToday, onPress 
   );
 }
 
-function AppointmentCard({ appointment, colors, onAccept, onCancel, onOpenChat }) {
+const AppointmentCard = React.memo(function AppointmentCard({ appointment, colors, onAccept, onCancel, onOpenChat }) {
   const person = appointment.person || {};
   const personName = person.name || person.nickname || 'เพื่อนใน CampusMate';
   const isCancelled = appointment.status === 'cancelled';
@@ -445,6 +484,10 @@ function AppointmentCard({ appointment, colors, onAccept, onCancel, onOpenChat }
     : isPending
       ? '#FF9500'
       : colors.primary;
+
+  const handleAcceptPress = () => onAccept?.(appointment);
+  const handleCancelPress = () => onCancel?.(appointment);
+  const handleOpenChatPress = () => onOpenChat?.(appointment);
 
   return (
     <IosLikeCard style={[styles.appointmentCard, isCancelled && styles.cancelledCard]}>
@@ -493,7 +536,7 @@ function AppointmentCard({ appointment, colors, onAccept, onCancel, onOpenChat }
             accessibilityLabel={`ตอบรับนัดหมายของ ${personName}`}
             accessibilityRole="button"
             disabled={appointment.isExpired}
-            onPress={appointment.isExpired ? () => Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้') : onAccept}
+            onPress={appointment.isExpired ? () => Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้') : handleAcceptPress}
             style={({ pressed }) => [
               styles.actionButton,
               styles.acceptButton,
@@ -512,7 +555,7 @@ function AppointmentCard({ appointment, colors, onAccept, onCancel, onOpenChat }
           <Pressable
             accessibilityLabel={`คุยกับ ${personName} ในห้องแชท`}
             accessibilityRole="button"
-            onPress={onOpenChat}
+            onPress={handleOpenChatPress}
             style={({ pressed }) => [
               styles.actionButton,
               styles.chatButton,
@@ -529,7 +572,7 @@ function AppointmentCard({ appointment, colors, onAccept, onCancel, onOpenChat }
           <Pressable
             accessibilityLabel={`ยกเลิกการนัดหมายกับ ${personName}`}
             accessibilityRole="button"
-            onPress={onCancel}
+            onPress={handleCancelPress}
             style={({ pressed }) => [
               styles.actionButton,
               styles.cancelButton,
@@ -553,7 +596,7 @@ function AppointmentCard({ appointment, colors, onAccept, onCancel, onOpenChat }
       </View>
     </IosLikeCard>
   );
-}
+});
 
 function DetailRow({ colors, icon, label, value }) {
   return (
@@ -580,6 +623,7 @@ function EmptyDay({ colors, hasHistory }) {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   content: { gap: spacing.lg, paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg },
+  listHeader: { gap: spacing.lg },
   calendarCard: { padding: spacing.md },
   monthToolbar: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.md },
   monthButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, height: 38, justifyContent: 'center', width: 38 },

@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   FlatList,
-  Image,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useApp } from '../context/AppContext';
 import { Avatar, Card, Chip, OutlineButton, PrimaryButton } from '../components/ui';
@@ -24,7 +25,7 @@ const TABS = [
 
 export default function LikesScreen({ onClose, onOpenChat, onToast }) {
   const { colors } = useTheme();
-  const styles = getStyles(colors);
+  const styles = useMemo(() => getStyles(colors), [colors]);
 
   const {
     acceptedIncomingLikes,
@@ -39,7 +40,7 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
     ? pendingIncomingLikes
     : acceptedIncomingLikes;
 
-  const handleResponse = async (like, response) => {
+  const handleResponse = useCallback(async (like, response) => {
     if (processingId) return;
 
     setProcessingId(like.id);
@@ -60,9 +61,12 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
     } finally {
       setProcessingId(null);
     }
-  };
+  }, [ensureConversation, onOpenChat, onToast, processingId, respondToLike]);
 
-  const handleOpenChat = async (like) => {
+  const handleAccept = useCallback((like) => handleResponse(like, 'accept'), [handleResponse]);
+  const handleReject = useCallback((like) => handleResponse(like, 'reject'), [handleResponse]);
+
+  const handleOpenChat = useCallback(async (like) => {
     if (processingId) return;
     setProcessingId(like.id);
     try {
@@ -74,9 +78,9 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
     } finally {
       setProcessingId(null);
     }
-  };
+  }, [ensureConversation, onOpenChat, onToast, processingId]);
 
-  const handleRemoveMatch = async (like) => {
+  const handleRemoveMatch = useCallback(async (like) => {
     if (processingId) return;
     setProcessingId(like.id);
     try {
@@ -88,7 +92,7 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
     } finally {
       setProcessingId(null);
     }
-  };
+  }, [onToast, processingId, respondToLike]);
 
   const header = (
     <View>
@@ -149,6 +153,19 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
     </View>
   );
 
+  const renderItem = useCallback(({ item }) => (
+    <LikeCard
+      accepted={activeTab === 'accepted'}
+      like={item}
+      onAccept={handleAccept}
+      onOpenChat={handleOpenChat}
+      onRemove={handleRemoveMatch}
+      onReject={handleReject}
+      processing={processingId === item.id}
+      styles={styles}
+    />
+  ), [activeTab, handleAccept, handleOpenChat, handleReject, handleRemoveMatch, processingId, styles]);
+
   return (
     <IosLikeScreen>
       <FlatList
@@ -176,32 +193,28 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
           </Card>
         )}
         ListFooterComponent={<View style={styles.privacyRow}><FeatureIcon color={colors.inkSoft} name="lock.shield.fill" size={14} /><Text style={styles.privacyNote}>ข้อมูลของคุณได้รับการเข้ารหัสความปลอดภัย</Text></View>}
-        renderItem={({ item }) => (
-          <LikeCard
-            accepted={activeTab === 'accepted'}
-            like={item}
-            onAccept={() => handleResponse(item, 'accept')}
-            onOpenChat={() => handleOpenChat(item)}
-            onRemove={() => handleRemoveMatch(item)}
-            onReject={() => handleResponse(item, 'reject')}
-            processing={processingId === item.id}
-            styles={styles}
-          />
-        )}
+        initialNumToRender={6}
+        removeClippedSubviews={Platform.OS === 'android'}
+        renderItem={renderItem}
         showsVerticalScrollIndicator={false}
+        windowSize={7}
       />
     </IosLikeScreen>
   );
 }
 
-function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, processing, styles }) {
+const LikeCard = React.memo(function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, processing, styles }) {
   const { colors } = useTheme();
   const cardStyles = styles || getStyles(colors);
   const imageUri = useRemoteImage(like.avatarUri, like.updatedAt, like.id);
+  const handleAcceptPress = () => onAccept?.(like);
+  const handleRejectPress = () => onReject?.(like);
+  const handleRemovePress = () => onRemove?.(like);
+  const handleOpenChatPress = () => onOpenChat?.(like);
   return (
     <Card style={cardStyles.likeCard}>
       <View style={[cardStyles.likeHero, { backgroundColor: like.avatarColor || colors.primarySoft }]}>
-        {imageUri ? <Image source={{ uri: imageUri }} style={StyleSheet.absoluteFill} /> : <IosLikeAvatar color={like.avatarColor} emoji={like.avatar} size={92} />}
+        {imageUri ? <Image cachePolicy="memory-disk" contentFit="cover" recyclingKey={like.id} source={{ uri: imageUri }} style={StyleSheet.absoluteFill} /> : <IosLikeAvatar color={like.avatarColor} emoji={like.avatar} size={92} />}
         <LinearGradient colors={['transparent', 'rgba(8,16,30,0.9)']} style={cardStyles.likeHeroGradient} />
         <View style={cardStyles.likeHeroCopy}>
           <Text numberOfLines={1} style={cardStyles.heroName}>{like.name}{like.age ? `, ${like.age}` : ''}</Text>
@@ -230,19 +243,19 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, pr
 
         {accepted ? (
           <View style={cardStyles.actionRow}>
-            <OutlineButton disabled={processing} danger iconName="trash.fill" label="ลบ" onPress={onRemove} style={cardStyles.rejectButton} />
-            <PrimaryButton disabled={processing} iconName="message.fill" label="เปิดห้องแชต" onPress={onOpenChat} style={cardStyles.acceptButton} />
+            <OutlineButton disabled={processing} danger iconName="trash.fill" label="ลบ" onPress={handleRemovePress} style={cardStyles.rejectButton} />
+            <PrimaryButton disabled={processing} iconName="message.fill" label="เปิดห้องแชต" onPress={handleOpenChatPress} style={cardStyles.acceptButton} />
           </View>
         ) : (
           <View style={cardStyles.actionRow}>
-            <OutlineButton disabled={processing} danger iconName="xmark.circle.fill" label="ไม่รับตอนนี้" onPress={onReject} style={cardStyles.rejectButton} />
-            <PrimaryButton disabled={processing} iconName="person.badge.plus" label="รับเป็นเพื่อน" loading={processing} onPress={onAccept} style={cardStyles.acceptButton} />
+            <OutlineButton disabled={processing} danger iconName="xmark.circle.fill" label="ไม่รับตอนนี้" onPress={handleRejectPress} style={cardStyles.rejectButton} />
+            <PrimaryButton disabled={processing} iconName="person.badge.plus" label="รับเป็นเพื่อน" loading={processing} onPress={handleAcceptPress} style={cardStyles.acceptButton} />
           </View>
         )}
       </View>
     </Card>
   );
-}
+});
 
 function MetaChip({ icon, label, styles: cardStyles }) {
   const { colors } = useTheme();

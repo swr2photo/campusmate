@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
-  Image,
   Modal,
   PanResponder,
   Pressable,
@@ -12,6 +11,7 @@ import {
 } from 'react-native';
 import { Picker as NativePicker } from '@react-native-picker/picker';
 import { BlurView } from 'expo-blur';
+import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { router } from 'expo-router';
@@ -272,7 +272,7 @@ export default function HomeScreen({ onOpenLikes }) {
     upcoming.forEach((item) => {
       const uri = item?.avatarUri || item?.photoURL;
       if (uri && typeof uri === 'string' && uri.startsWith('http')) {
-        Image.prefetch(uri).catch(() => {});
+        Image.prefetch(uri, 'memory-disk').catch(() => {});
       }
     });
   }, [availableProfiles]);
@@ -471,7 +471,7 @@ function DiscoverProfileCard({ candidate, onPress }) {
     <Pressable accessibilityLabel={`เปิดโปรไฟล์ ${candidate.name}`} accessibilityRole="button" onPress={onPress} style={({ pressed }) => [pressed && styles.pressed]}>
       <IosLikeCard style={styles.profileCard}>
         <View style={[styles.profileHero, { backgroundColor: candidate.avatarColor || colors.primarySoft }]}>
-          {imageUri ? <Image resizeMode="cover" source={{ uri: imageUri }} style={[StyleSheet.absoluteFill, { borderRadius: 24 }]} /> : <View style={styles.profilePlaceholder}><FeatureIcon color={colors.inkMuted} name="person.crop.square.fill" size={84} /></View>}
+          {imageUri ? <Image cachePolicy="memory-disk" contentFit="cover" recyclingKey={candidate.id} source={{ uri: imageUri }} style={[StyleSheet.absoluteFill, { borderRadius: 24 }]} /> : <View style={styles.profilePlaceholder}><FeatureIcon color={colors.inkMuted} name="person.crop.square.fill" size={84} /></View>}
           <MaskedView
             pointerEvents="none"
             style={styles.profileBlur}

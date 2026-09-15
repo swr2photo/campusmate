@@ -13,6 +13,9 @@ try {
   LiveKitRN = require('@livekit/react-native');
 } catch (_) {}
 
+// Deferred track-sync timers per room, so they can be cancelled on disconnect
+const roomSyncTimeouts = new WeakMap();
+
 /**
  * Check if LiveKit SDK is available in the current environment
  */
@@ -282,9 +285,11 @@ export async function connectToLiveKitRoom({
   };
 
   syncExistingTracks();
-  setTimeout(syncExistingTracks, 400);
-  setTimeout(syncExistingTracks, 1200);
-  setTimeout(syncExistingTracks, 2500);
+  roomSyncTimeouts.set(room, [
+    setTimeout(syncExistingTracks, 400),
+    setTimeout(syncExistingTracks, 1200),
+    setTimeout(syncExistingTracks, 2500),
+  ]);
 
   return room;
 }
@@ -407,6 +412,11 @@ export async function disconnectLiveKitRoom(room) {
     }
   }
   if (!room) return;
+  const syncTimeouts = roomSyncTimeouts.get(room);
+  if (syncTimeouts) {
+    syncTimeouts.forEach((timeoutId) => clearTimeout(timeoutId));
+    roomSyncTimeouts.delete(room);
+  }
   try {
     await room.disconnect();
   } catch (err) {

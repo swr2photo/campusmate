@@ -151,12 +151,12 @@ export default function MeetupScreen({ onToast }) {
     ));
   }, [campusSpots, searchQuery, selectedCategory]);
 
-  const openMapForSpot = (spot) => {
+  const openMapForSpot = useCallback((spot) => {
     setMapTargetSpot(spot || selectedMeetup || visibleSpots[0] || null);
     setMapModal(true);
-  };
+  }, [selectedMeetup, visibleSpots]);
 
-  const openScheduleFor = (spot) => {
+  const openScheduleFor = useCallback((spot) => {
     const savedDate = spot?.schedule?.date || selectedMeetup?.schedule?.date;
     setPendingSpot(spot);
     setSchedDate(nextDays.some((day) => day.value === savedDate) ? savedDate : nextDays[0].value);
@@ -165,7 +165,7 @@ export default function MeetupScreen({ onToast }) {
     setMaxPeople(String(spot?.schedule?.maxPeople || selectedMeetup?.schedule?.maxPeople || 2));
     setMessage(spot?.schedule?.message || selectedMeetup?.schedule?.message || '');
     setScheduleModal(true);
-  };
+  }, [nextDays, selectedMeetup]);
 
   const confirmSchedule = async () => {
     if (!pendingSpot || !schedDate) return;
@@ -195,14 +195,14 @@ export default function MeetupScreen({ onToast }) {
     }
   };
 
-  const handleQuickChoose = async (spot) => {
+  const handleQuickChoose = useCallback(async (spot) => {
     try {
       await chooseMeetup(spot);
       onToast?.(`เลือก ${spot.name} เป็นจุดนัดหมายแล้ว`);
     } catch (error) {
       onToast?.('เลือกจุดนัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     }
-  };
+  }, [chooseMeetup, onToast]);
 
   const handleClear = () => {
     const spotName = selectedMeetup?.name ? ` "${selectedMeetup.name}"` : '';
@@ -230,6 +230,16 @@ export default function MeetupScreen({ onToast }) {
       ]
     );
   };
+
+  const renderSpot = useCallback(({ item }) => (
+    <SpotCard
+      onChoose={handleQuickChoose}
+      onOpenMap={openMapForSpot}
+      onSchedule={openScheduleFor}
+      selected={selectedMeetup?.id === item.id}
+      spot={item}
+    />
+  ), [handleQuickChoose, openMapForSpot, openScheduleFor, selectedMeetup?.id]);
 
   const header = (
     <View>
@@ -287,16 +297,11 @@ export default function MeetupScreen({ onToast }) {
         keyExtractor={(item) => item.id}
         ListEmptyComponent={<EmptySpots query={searchQuery} />}
         ListHeaderComponent={header}
-        renderItem={({ item }) => (
-          <SpotCard
-            onChoose={() => void handleQuickChoose(item)}
-            onOpenMap={() => openMapForSpot(item)}
-            onSchedule={() => openScheduleFor(item)}
-            selected={selectedMeetup?.id === item.id}
-            spot={item}
-          />
-        )}
+        initialNumToRender={6}
+        removeClippedSubviews={Platform.OS === 'android'}
+        renderItem={renderSpot}
         showsVerticalScrollIndicator={false}
+        windowSize={7}
       />
 
       <MapModal
@@ -400,9 +405,12 @@ function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
   );
 }
 
-function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
+const SpotCard = React.memo(function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
   const { colors } = useTheme();
   const accent = activityColor(spot.category, colors);
+  const handleChoose = () => { void onChoose?.(spot); };
+  const handleOpenMap = () => onOpenMap?.(spot);
+  const handleSchedule = () => onSchedule?.(spot);
   return (
     <IosLikeCard style={styles.spotCard}>
       <View style={styles.spotTopRow}>
@@ -419,13 +427,13 @@ function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
         <Meta accent icon="location.fill" text={spot.distance} />
       </View>
       <View style={styles.spotButtonRow}>
-        <ActionButton emphasized icon="calendar.badge.clock" label="นัดหมาย" onPress={onSchedule} tintColor={colors.coral} />
-        <ActionButton icon={selected ? 'checkmark.circle.fill' : 'mappin.circle.fill'} label={selected ? 'เลือกแล้ว' : 'ปักหมุด'} onPress={onChoose} tintColor={selected ? colors.mint : colors.inkMuted} />
-        <ActionButton icon="map.fill" label="แผนที่" onPress={onOpenMap} tintColor={colors.blue} />
+        <ActionButton emphasized icon="calendar.badge.clock" label="นัดหมาย" onPress={handleSchedule} tintColor={colors.coral} />
+        <ActionButton icon={selected ? 'checkmark.circle.fill' : 'mappin.circle.fill'} label={selected ? 'เลือกแล้ว' : 'ปักหมุด'} onPress={handleChoose} tintColor={selected ? colors.mint : colors.inkMuted} />
+        <ActionButton icon="map.fill" label="แผนที่" onPress={handleOpenMap} tintColor={colors.blue} />
       </View>
     </IosLikeCard>
   );
-}
+});
 
 function Meta({ accent = false, icon, text }) {
   const { colors } = useTheme();
@@ -556,6 +564,10 @@ function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedM
       }).start();
     },
   }), [closeWithAnimation, translateY]);
+
+  // RN Modal keeps its children mounted while hidden, which would leave the
+  // map WebView running in the background.
+  if (!visible) return null;
 
   return (
     <Modal animationType="none" transparent visible={visible} onRequestClose={closeWithAnimation}>

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Platform, StyleSheet, Text, View, Pressable, Linking, useColorScheme, TouchableOpacity } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { BlurView } from 'expo-blur';
@@ -316,6 +316,32 @@ function generateMapHtml(spots, selectedSpot, isDark) {
 
     var markersMap = {};
 
+    function setActiveMarker(activeId) {
+      selectedId = activeId;
+      spots.forEach(function(s) {
+        if (markersMap[s.id]) {
+          markersMap[s.id].setIcon(L.divIcon({
+            className: '',
+            html: pinHtml(s, s.id === activeId),
+            iconSize: [36, 46],
+            iconAnchor: [18, 46],
+            popupAnchor: [0, -42]
+          }));
+        }
+      });
+    }
+
+    function panToSpot(id) {
+      if (!markersMap[id]) return;
+      var target = spots.find(function(s) { return s.id === id; });
+      if (!target) return;
+      map.flyTo([target.lat, target.lng], 17, { duration: 0.8 });
+      markersMap[id].openPopup();
+      setActiveMarker(id);
+    }
+
+    window.panToSpot = panToSpot;
+
     spots.forEach(function(spot) {
       var isActive = spot.id === selectedId;
       var icon = L.divIcon({
@@ -331,17 +357,7 @@ function generateMapHtml(spots, selectedSpot, isDark) {
 
       marker.on('click', function() {
         // Deactivate all, activate this one
-        spots.forEach(function(s) {
-          if (markersMap[s.id]) {
-            markersMap[s.id].setIcon(L.divIcon({
-              className: '',
-              html: pinHtml(s, s.id === spot.id),
-              iconSize: [36, 46],
-              iconAnchor: [18, 46],
-              popupAnchor: [0, -42]
-            }));
-          }
-        });
+        setActiveMarker(spot.id);
         if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
           window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'SELECT_SPOT', id: spot.id }));
         }
@@ -371,13 +387,26 @@ function generateMapHtml(spots, selectedSpot, isDark) {
       myLocationMarker = L.marker([lat, lng], { icon: locIcon, interactive: false, zIndexOffset: -100 }).addTo(map);
     }
 
+    var locationWatchId = null;
+
+    function stopWatchingLocation() {
+      if (locationWatchId !== null && navigator.geolocation) {
+        navigator.geolocation.clearWatch(locationWatchId);
+        locationWatchId = null;
+      }
+    }
+
+    window.teardownMap = stopWatchingLocation;
+    window.addEventListener('pagehide', stopWatchingLocation);
+    window.addEventListener('beforeunload', stopWatchingLocation);
+
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         function(pos) { showMyLocation(pos.coords.latitude, pos.coords.longitude); },
         function() {},
         { enableHighAccuracy: true, timeout: 8000 }
       );
-      navigator.geolocation.watchPosition(
+      locationWatchId = navigator.geolocation.watchPosition(
         function(pos) { showMyLocation(pos.coords.latitude, pos.coords.longitude); },
         function() {},
         { enableHighAccuracy: true }
@@ -398,24 +427,10 @@ function generateMapHtml(spots, selectedSpot, isDark) {
     window.addEventListener('message', function(event) {
       try {
         var data = JSON.parse(event.data);
-        if (data.type === 'PAN_TO' && markersMap[data.id]) {
-          var target = spots.find(function(s) { return s.id === data.id; });
-          if (target) {
-            map.flyTo([target.lat, target.lng], 17, { duration: 0.8 });
-            markersMap[data.id].openPopup();
-            // Update active state
-            spots.forEach(function(s) {
-              if (markersMap[s.id]) {
-                markersMap[s.id].setIcon(L.divIcon({
-                  className: '',
-                  html: pinHtml(s, s.id === data.id),
-                  iconSize: [36, 46],
-                  iconAnchor: [18, 46],
-                  popupAnchor: [0, -42]
-                }));
-              }
-            });
-          }
+        if (data.type === 'PAN_TO') {
+          panToSpot(data.id);
+        } else if (data.type === 'TEARDOWN') {
+          stopWatchingLocation();
         }
       } catch(e) {}
     });
@@ -447,20 +462,59 @@ export default function CampusMapView({
     return null;
   }, [activeSpotId, spots]);
 
+  // Changing the selection must not regenerate the HTML: a new `source.html`
+  // reloads Leaflet and every marker. Selection is pushed into the live page
+  // instead, so the initial spot is only read when the page is first built.
+  const initialSelectedSpotRef = useRef(selectedSpot);
+  const isMapReadyRef = useRef(false);
+  const pendingPanIdRef = useRef('');
+  const renderedSelectedIdRef = useRef(String(selectedSpot?.id || ''));
+
+  const spotsSignature = spots.map((spot) => `${spot?.id || ''}:${spot?.updatedAt || spot?.name || ''}`).join('|');
   const htmlContent = useMemo(() => {
-    return generateMapHtml(spots, selectedSpot, isDark);
-  }, [spots, isDark, selectedSpot]);
+    return generateMapHtml(spots, initialSelectedSpotRef.current, isDark);
+  }, [isDark, spotsSignature]);
+
+  const webViewSource = useMemo(() => ({ html: htmlContent }), [htmlContent]);
+
+  const panToSpotInWebView = useCallback((spotId) => {
+    if (!spotId) return;
+    if (!isMapReadyRef.current) {
+      pendingPanIdRef.current = String(spotId);
+      return;
+    }
+    webViewRef.current?.injectJavaScript(
+      `window.panToSpot && window.panToSpot(${serializeForInlineScript(String(spotId))}); true;`
+    );
+  }, []);
 
   useEffect(() => {
-    if (activeSpot && webViewRef.current) {
-      webViewRef.current.postMessage(
-        JSON.stringify({
-          type: 'PAN_TO',
-          id: activeSpot.id,
-        })
-      );
+    if (activeSpot) {
+      panToSpotInWebView(activeSpot.id);
     }
-  }, [activeSpot?.id]);
+  }, [activeSpot?.id, panToSpotInWebView]);
+
+  useEffect(() => {
+    const spotId = String(selectedSpot?.id || '');
+    if (spotId === renderedSelectedIdRef.current) return;
+    renderedSelectedIdRef.current = spotId;
+    panToSpotInWebView(spotId);
+  }, [selectedSpot?.id, panToSpotInWebView]);
+
+  useEffect(() => () => {
+    try {
+      webViewRef.current?.injectJavaScript('window.teardownMap && window.teardownMap(); true;');
+    } catch (e) {}
+  }, []);
+
+  const handleLoadEnd = () => {
+    isMapReadyRef.current = true;
+    const pendingId = pendingPanIdRef.current;
+    if (pendingId) {
+      pendingPanIdRef.current = '';
+      panToSpotInWebView(pendingId);
+    }
+  };
 
   const handleMessage = (event) => {
     try {
@@ -489,8 +543,9 @@ export default function CampusMapView({
       ) : (
         <WebView
           ref={webViewRef}
-          source={{ html: htmlContent }}
+          source={webViewSource}
           style={styles.webView}
+          onLoadEnd={handleLoadEnd}
           onMessage={handleMessage}
           scrollEnabled={false}
           javaScriptEnabled

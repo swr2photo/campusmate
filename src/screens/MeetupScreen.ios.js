@@ -4,7 +4,7 @@ import { SymbolView } from 'expo-symbols';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useMemo, useState, useRef } from 'react';
+import React, { useCallback, useMemo, useState, useRef } from 'react';
 import CampusMapView from '../components/CampusMapView';
 import { Stack } from 'expo-router';
 import {
@@ -104,6 +104,7 @@ export default function MeetupScreen({ onToast }) {
   // Schedule BottomSheet state
   const [showSchedule, setShowSchedule] = useState(false);
   const [showMapModal, setShowMapModal] = useState(false);
+  const [isMapMounted, setIsMapMounted] = useState(false);
   const [pendingSpot, setPendingSpot] = useState(null);
   const [mapTargetSpot, setMapTargetSpot] = useState(null);
   const [schedDate, setSchedDate] = useState(new Date());
@@ -126,12 +127,13 @@ export default function MeetupScreen({ onToast }) {
     });
   }, [campusSpots, query, selectedCategory]);
 
-  const openMapForSpot = (spot) => {
+  const openMapForSpot = useCallback((spot) => {
     setMapTargetSpot(spot || selectedMeetup || visibleSpots[0]);
+    setIsMapMounted(true);
     setShowMapModal(true);
-  };
+  }, [selectedMeetup, visibleSpots]);
 
-  const openScheduleFor = (spot) => {
+  const openScheduleFor = useCallback((spot) => {
     setPendingSpot(spot);
     setSchedDate(new Date());
     const start = new Date(); start.setHours(14, 0, 0, 0);
@@ -141,7 +143,7 @@ export default function MeetupScreen({ onToast }) {
     maxPeopleState.set('2');
     messageState.set('');
     setShowSchedule(true);
-  };
+  }, [maxPeopleState, messageState]);
 
   const confirmSchedule = async () => {
     if (!pendingSpot) return;
@@ -175,7 +177,7 @@ export default function MeetupScreen({ onToast }) {
     }
   };
 
-  const handleQuickChoose = async (spot, deferToast = false) => {
+  const handleQuickChoose = useCallback(async (spot, deferToast = false) => {
     try {
       await chooseMeetup(spot);
       const successMessage = `เลือก ${spot.name} เป็นจุดนัดหมายแล้ว`;
@@ -186,7 +188,7 @@ export default function MeetupScreen({ onToast }) {
       if (deferToast) setTimeout(() => onToast?.('เลือกจุดนัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info'), 350);
       else onToast?.('เลือกจุดนัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     }
-  };
+  }, [chooseMeetup, onToast]);
 
   const handleClear = () => {
     const spotName = selectedMeetup?.name ? ` "${selectedMeetup.name}"` : '';
@@ -385,9 +387,9 @@ export default function MeetupScreen({ onToast }) {
           {visibleSpots.length ? visibleSpots.map((spot) => (
             <SpotCard
               key={spot.id}
-              onChoose={() => handleQuickChoose(spot)}
-              onOpenMap={() => openMapForSpot(spot)}
-              onSchedule={() => openScheduleFor(spot)}
+              onChoose={handleQuickChoose}
+              onOpenMap={openMapForSpot}
+              onSchedule={openScheduleFor}
               selected={selectedMeetup?.id === spot.id}
               spot={spot}
             />
@@ -412,6 +414,7 @@ export default function MeetupScreen({ onToast }) {
       <Modal
         animationType="slide"
         visible={showMapModal}
+        onDismiss={() => setIsMapMounted(false)}
         onRequestClose={() => setShowMapModal(false)}
         presentationStyle="pageSheet"
       >
@@ -427,19 +430,21 @@ export default function MeetupScreen({ onToast }) {
           </View>
           <View style={{ flex: 1, paddingHorizontal: 16, paddingBottom: 16 }}>
             <View style={{ flex: 1, borderRadius: 22, overflow: 'hidden' }}>
-              <CampusMapView
-                spots={campusSpots}
-                selectedSpot={mapTargetSpot || selectedMeetup}
-                onSelectSpot={(spot) => {
-                  handleQuickChoose(spot, true);
-                  setShowMapModal(false);
-                }}
-                onScheduleSpot={(spot) => {
-                  setShowMapModal(false);
-                  openScheduleFor(spot);
-                }}
-                height="100%"
-              />
+              {isMapMounted ? (
+                <CampusMapView
+                  spots={campusSpots}
+                  selectedSpot={mapTargetSpot || selectedMeetup}
+                  onSelectSpot={(spot) => {
+                    handleQuickChoose(spot, true);
+                    setShowMapModal(false);
+                  }}
+                  onScheduleSpot={(spot) => {
+                    setShowMapModal(false);
+                    openScheduleFor(spot);
+                  }}
+                  height="100%"
+                />
+              ) : null}
             </View>
           </View>
         </SafeAreaView>
@@ -691,9 +696,12 @@ function CategoryChip({ active, category, onPress }) {
   );
 }
 
-function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
+const SpotCard = React.memo(function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
   const palette = usePalette();
   const accent = activityColor(spot.category);
+  const handleChoose = useCallback(() => onChoose?.(spot), [onChoose, spot]);
+  const handleOpenMap = useCallback(() => onOpenMap?.(spot), [onOpenMap, spot]);
+  const handleSchedule = useCallback(() => onSchedule?.(spot), [onSchedule, spot]);
   return (
     <VStack
       alignment="leading"
@@ -736,7 +744,7 @@ function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
       <HStack alignment="center" spacing={10} modifiers={[frame({ maxWidth: Infinity, alignment: 'center' })]}>
         <Button
           label="นัดหมาย"
-          onPress={onSchedule}
+          onPress={handleSchedule}
           systemImage="calendar.badge.clock"
           modifiers={[
             buttonStyle('glassProminent'),
@@ -749,7 +757,7 @@ function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
         />
         <Button
           label={selected ? 'เลือกแล้ว' : 'ปักหมุด'}
-          onPress={onChoose}
+          onPress={handleChoose}
           systemImage={selected ? 'checkmark.circle.fill' : 'mappin.circle.fill'}
           modifiers={[
             buttonStyle('glass'),
@@ -763,7 +771,7 @@ function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
         {onOpenMap && (
           <Button
             label="แผนที่"
-            onPress={onOpenMap}
+            onPress={handleOpenMap}
             systemImage="map.fill"
             modifiers={[
               buttonStyle('glass'),
@@ -778,7 +786,7 @@ function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
       </HStack>
     </VStack>
   );
-}
+});
 
 function Meta({ accent = false, icon, text }) {
   const palette = usePalette();

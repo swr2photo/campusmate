@@ -2,7 +2,7 @@ import { useColorScheme , View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import {
   Button,
@@ -56,15 +56,27 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
   } = useApp();
   const [activeTab, setActiveTab] = useState('pending');
   const [processingId, setProcessingId] = useState(null);
+  const processingIdRef = useRef(null);
+
+  const beginProcessing = useCallback((id) => {
+    if (processingIdRef.current) return false;
+    processingIdRef.current = id;
+    setProcessingId(id);
+    return true;
+  }, []);
+
+  const endProcessing = useCallback(() => {
+    processingIdRef.current = null;
+    setProcessingId(null);
+  }, []);
 
   const visibleLikes = activeTab === 'pending'
     ? pendingIncomingLikes
     : acceptedIncomingLikes;
 
-  const handleResponse = async (like, response) => {
-    if (processingId) return;
+  const handleResponse = useCallback(async (like, response) => {
+    if (!beginProcessing(like.id)) return;
 
-    setProcessingId(like.id);
     try {
       const conversationId = await respondToLike(like, response);
       if (response === 'accept') {
@@ -80,14 +92,16 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
       console.error('[LikesScreen.ios] handleResponse error:', error);
       onToast?.('ยังดำเนินการไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     } finally {
-      setProcessingId(null);
+      endProcessing();
     }
-  };
+  }, [beginProcessing, endProcessing, ensureConversation, onOpenChat, onToast, respondToLike]);
 
-  const handleRemoveMatch = async (like) => {
-    if (processingId) return;
+  const handleAccept = useCallback((like) => handleResponse(like, 'accept'), [handleResponse]);
+  const handleReject = useCallback((like) => handleResponse(like, 'reject'), [handleResponse]);
 
-    setProcessingId(like.id);
+  const handleRemoveMatch = useCallback(async (like) => {
+    if (!beginProcessing(like.id)) return;
+
     try {
       await respondToLike(like, 'reject');
       onToast?.(`ลบ ${like.name} ออกจากรายการจับคู่แล้ว`, 'info');
@@ -95,13 +109,12 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
       console.error('[LikesScreen.ios] handleRemoveMatch error:', error);
       onToast?.('ยังดำเนินการไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     } finally {
-      setProcessingId(null);
+      endProcessing();
     }
-  };
+  }, [beginProcessing, endProcessing, onToast, respondToLike]);
 
-  const handleOpenChat = async (like) => {
-    if (processingId) return;
-    setProcessingId(like.id);
+  const handleOpenChat = useCallback(async (like) => {
+    if (!beginProcessing(like.id)) return;
     try {
       const conversationId = await ensureConversation(like);
       onOpenChat?.(conversationId);
@@ -109,9 +122,9 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
       console.error('[LikesScreen.ios] handleOpenChat error:', error);
       onToast?.('ยังเปิดห้องแชตไม่ได้ กรุณาลองใหม่อีกครั้ง', 'info');
     } finally {
-      setProcessingId(null);
+      endProcessing();
     }
-  };
+  }, [beginProcessing, endProcessing, ensureConversation, onOpenChat, onToast]);
 
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
 
@@ -183,10 +196,10 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
                 accepted={activeTab === 'accepted'}
                 key={like.id}
                 like={like}
-                onAccept={() => handleResponse(like, 'accept')}
-                onOpenChat={() => handleOpenChat(like)}
-                onRemove={() => handleRemoveMatch(like)}
-                onReject={() => handleResponse(like, 'reject')}
+                onAccept={handleAccept}
+                onOpenChat={handleOpenChat}
+                onRemove={handleRemoveMatch}
+                onReject={handleReject}
                 processing={processingId === like.id}
               />
             ))
@@ -310,9 +323,13 @@ function TabButton({ active, count, label, onPress, systemImage }) {
 }
 
 
-function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, processing }) {
+const LikeCard = React.memo(function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, processing }) {
   const palette = usePalette();
   const imageUri = useRemoteImage(like.avatarUri, like.updatedAt, like.id);
+  const handleAccept = useCallback(() => onAccept?.(like), [onAccept, like]);
+  const handleOpenChat = useCallback(() => onOpenChat?.(like), [onOpenChat, like]);
+  const handleReject = useCallback(() => onReject?.(like), [onReject, like]);
+  const handleRemove = useCallback(() => onRemove?.(like), [onRemove, like]);
   return (
     <VStack
       alignment="leading"
@@ -428,7 +445,7 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, pr
           <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity })]}>
             <Button
               label="ลบ"
-              onPress={onRemove}
+              onPress={handleRemove}
               role="cancel"
               systemImage="trash.fill"
               modifiers={[
@@ -442,7 +459,7 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, pr
             <Button
               disabled={processing}
               label="เปิดห้องแชต"
-              onPress={onOpenChat}
+              onPress={handleOpenChat}
               systemImage="message.fill"
               modifiers={[
                 buttonStyle('glassProminent'),
@@ -457,7 +474,7 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, pr
           <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity })]}>
             <Button
               label="ไม่รับตอนนี้"
-              onPress={onReject}
+              onPress={handleReject}
               role="cancel"
               systemImage="xmark"
               modifiers={[
@@ -471,7 +488,7 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, pr
             />
             <Button
               label={processing ? 'กำลังจับคู่...' : 'รับเป็นเพื่อน'}
-              onPress={onAccept}
+              onPress={handleAccept}
               systemImage="heart.fill"
               modifiers={[
                 buttonStyle('glassProminent'),
@@ -487,4 +504,4 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, pr
       </VStack>
     </VStack>
   );
-}
+});

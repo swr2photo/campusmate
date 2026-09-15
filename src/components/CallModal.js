@@ -100,17 +100,22 @@ function AppVideoView({
     checkStream();
 
     if (!getStreamUrl(videoTrack)) {
+      // The LiveKit track exposes no "stream attached" event, so poll with a
+      // widening backoff instead of a tight interval.
       let attempts = 0;
-      timer = setInterval(() => {
-        attempts++;
+      let delay = 250;
+      const poll = () => {
+        attempts += 1;
         const url = getStreamUrl(videoTrack);
         if (url) {
           setStreamUrl(url);
-          clearInterval(timer);
-        } else if (attempts > 30) {
-          clearInterval(timer);
+          return;
         }
-      }, 100);
+        if (attempts >= 10) return;
+        delay = Math.min(Math.round(delay * 1.5), 2000);
+        timer = setTimeout(poll, delay);
+      };
+      timer = setTimeout(poll, delay);
     }
 
     const onUpdate = () => checkStream();
@@ -123,7 +128,7 @@ function AppVideoView({
     }
 
     return () => {
-      if (timer) clearInterval(timer);
+      if (timer) clearTimeout(timer);
       if (videoTrack?.off) {
         try {
           videoTrack.off('unmuted', onUpdate);
@@ -148,6 +153,24 @@ function AppVideoView({
   }
 
   return null;
+}
+
+function elapsedSecondsSince(startedAt) {
+  if (!startedAt) return 0;
+  return Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+}
+
+function CallDurationText({ startedAtRef, style }) {
+  const [seconds, setSeconds] = useState(() => elapsedSecondsSince(startedAtRef.current));
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSeconds(elapsedSecondsSince(startedAtRef.current));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [startedAtRef]);
+
+  return <Text style={style}>{formatCallDuration(seconds)}</Text>;
 }
 
 export default function CallModal({
@@ -244,7 +267,7 @@ export default function CallModal({
   const otherAvatarUri = cachedAvatarUri || rawAvatarUri;
 
   // In-call states
-  const [duration, setDuration] = useState(0);
+  const callStartedAtRef = useRef(0);
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeaker, setIsSpeaker] = useState(callType === CALL_TYPES.VIDEO);
   const [isVideoOff, setIsVideoOff] = useState(false);
@@ -366,7 +389,6 @@ export default function CallModal({
     setIsVideoOff(false);
     setFacingMode('user');
     setIsSpeaker(callType === CALL_TYPES.VIDEO);
-    setDuration(0);
     const resetPos = isVideoCall
       ? { x: Math.max(12, windowWidth - FLOATING_VIDEO_WIDTH - 12), y: topInset + 48 }
       : { x: 0, y: topInset + 48 };
@@ -467,16 +489,10 @@ export default function CallModal({
     }
   }, [isOpen, status, isIncoming, onClose]);
 
-  // Call duration counter when connected
+  // Call duration origin; the ticking itself lives in <CallDurationText />
   useEffect(() => {
-    if (status === CALL_STATUS.CONNECTED) {
-      setDuration(0);
-      const timer = setInterval(() => {
-        setDuration((prev) => prev + 1);
-      }, 1000);
-      return () => clearInterval(timer);
-    }
-  }, [status]);
+    callStartedAtRef.current = status === CALL_STATUS.CONNECTED ? Date.now() : 0;
+  }, [status, callData?.id]);
 
   // Connect to LiveKit Room when call is connected
   useEffect(() => {
@@ -609,7 +625,7 @@ export default function CallModal({
       disconnectLiveKitRoom(liveKitRoomRef.current);
       liveKitRoomRef.current = null;
     }
-    onEnd?.(duration);
+    onEnd?.(elapsedSecondsSince(callStartedAtRef.current));
   };
 
   if (!isOpen) return null;
@@ -654,7 +670,7 @@ export default function CallModal({
             )}
             <View style={styles.systemPipOverlay}>
               <Text numberOfLines={1} style={styles.systemPipNameText}>{otherName}</Text>
-              <Text style={styles.systemPipTimerText}>{formatCallDuration(duration)}</Text>
+              <CallDurationText startedAtRef={callStartedAtRef} style={styles.systemPipTimerText} />
             </View>
           </View>
         ) : (
@@ -672,7 +688,7 @@ export default function CallModal({
               </View>
             )}
             <Text numberOfLines={1} style={styles.systemPipNameText}>{otherName}</Text>
-            <Text style={styles.systemPipTimerText}>{formatCallDuration(duration)}</Text>
+            <CallDurationText startedAtRef={callStartedAtRef} style={styles.systemPipTimerText} />
           </View>
         )}
       </View>
@@ -780,7 +796,7 @@ export default function CallModal({
 
             {/* Bottom Bar with Timer and Action Buttons */}
             <View style={styles.floatingVideoBottomBar}>
-              <Text style={styles.floatingVideoTimerText}>{formatCallDuration(duration)}</Text>
+              <CallDurationText startedAtRef={callStartedAtRef} style={styles.floatingVideoTimerText} />
               <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
                 <Pressable
                   accessibilityLabel="สลับกล้อง"
@@ -829,7 +845,7 @@ export default function CallModal({
             </View>
             <View style={styles.floatingPillInfo}>
               <Text numberOfLines={1} style={styles.floatingPillName}>{otherName}</Text>
-              <Text style={styles.floatingPillTimer}>{formatCallDuration(duration)}</Text>
+              <CallDurationText startedAtRef={callStartedAtRef} style={styles.floatingPillTimer} />
             </View>
             {isPipSupported && (
               <Pressable
@@ -1016,7 +1032,7 @@ export default function CallModal({
               {status === CALL_STATUS.CONNECTED ? (
                 <View style={styles.timerRow}>
                   <View style={styles.greenPulseDot} />
-                  <Text style={styles.callTimerText}>{formatCallDuration(duration)}</Text>
+                  <CallDurationText startedAtRef={callStartedAtRef} style={styles.callTimerText} />
                   {callType === CALL_TYPES.VIDEO && !hasRemoteVideo && (
                     <Text style={[styles.statusSubtitle, { marginLeft: 8, fontSize: 13 }]}>
                       ({isRemoteVideoMuted ? 'อีกฝ่ายปิดกล้อง' : 'รอภาพคู่สนทนา...'})

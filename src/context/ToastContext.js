@@ -3,21 +3,25 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, spacing, type } from '../theme';
+import ImageModerationNotice from '../components/ImageModerationNotice';
 
 const ToastContext = createContext(null);
 
 export function ToastProvider({ children }) {
   const [toast, setToast] = useState(null);
+  const [imageNotice, setImageNotice] = useState(null);
+  const showImageModeration = useCallback((error) => setImageNotice(error), []);
   const timerRef = useRef(null);
 
   const showToast = useCallback((message, tone = 'success') => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    setToast({ message, tone });
+    setToast({ message: String(message ?? ''), tone });
     timerRef.current = setTimeout(() => setToast(null), 2600);
   }, []);
 
@@ -25,14 +29,22 @@ export function ToastProvider({ children }) {
     if (timerRef.current) clearTimeout(timerRef.current);
   }, []);
 
+  const value = useMemo(
+    () => ({ showToast, showImageModeration }),
+    [showToast, showImageModeration],
+  );
+
   return (
-    <ToastContext.Provider value={{ showToast }}>
+    <ToastContext.Provider value={value}>
       <View style={styles.root}>
         {children}
+        <ImageModerationNotice notice={imageNotice} onClose={() => setImageNotice(null)} />
         {toast && (
-          <View pointerEvents="none" style={[styles.toast, toast.tone === 'info' && styles.toastInfo]}>
-            <Text style={styles.icon}>{toast.tone === 'info' ? 'i' : '\u2713'}</Text>
-            <Text style={styles.text}>{toast.message}</Text>
+          <View pointerEvents="none" style={styles.toastLayer}>
+            <View pointerEvents="none" style={[styles.toast, toast.tone === 'info' && styles.toastInfo]}>
+              <Text style={styles.icon}>{toast.tone === 'info' ? 'i' : '\u2713'}</Text>
+              <Text style={styles.text}>{toast.message}</Text>
+            </View>
           </View>
         )}
       </View>
@@ -47,19 +59,29 @@ export function useToast() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
+  root: { flex: 1, position: 'relative' },
+  toastLayer: {
+    alignItems: 'center',
+    bottom: 0,
+    flex: 1,
+    left: 0,
+    paddingHorizontal: spacing.lg,
+    paddingTop: Platform.OS === 'ios' ? 58 : 42,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+    zIndex: 1000,
+    elevation: 1000,
+  },
   toast: {
     alignItems: 'center',
     alignSelf: 'center',
     backgroundColor: colors.green,
     borderRadius: radius.pill,
-    bottom: 106,
     flexDirection: 'row',
     maxWidth: '92%',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
-    position: 'absolute',
-    zIndex: 100,
   },
   toastInfo: { backgroundColor: colors.primary },
   icon: {
@@ -76,4 +98,3 @@ const styles = StyleSheet.create({
   },
   text: { color: colors.card, flexShrink: 1, fontSize: type.caption, fontWeight: '800' },
 });
-

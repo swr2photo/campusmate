@@ -142,6 +142,15 @@ function normalizeCoordinate(value, min, max) {
   return Number.isFinite(coordinate) && coordinate >= min && coordinate <= max ? coordinate : null;
 }
 
+function getFastBootFeedProfiles() {
+  const cached = getFastBootMemory();
+  if (!cached?.user?.id || cached.profile?.id !== cached.user.id) return [];
+  if (!Array.isArray(cached.availableProfiles)) return [];
+  return cached.availableProfiles
+    .map((item) => normalizeProfileRecord(item?.id, item))
+    .filter(isProfileReadyForDiscovery);
+}
+
 function withProfileDefaults(profile) {
   return {
     ...profile,
@@ -341,6 +350,7 @@ function getOfflineSnapshotSignature(snapshot) {
     ]),
     selectedMeetup: snapshot.selectedMeetup,
     optimisticHiddenIds: snapshot.optimisticHiddenIds,
+    blockedUserIds: snapshot.blockedUserIds,
   });
 }
 
@@ -620,7 +630,7 @@ export function AppProvider({ children }) {
   }, [user?.id]);
 
   const [hiddenConversationIds, setHiddenConversationIds] = useState([]);
-  const [availableProfiles, setAvailableProfiles] = useState([]);
+  const [availableProfiles, setAvailableProfiles] = useState(() => getFastBootFeedProfiles());
   const [campusSpots, setCampusSpots] = useState([]);
   const [incomingLikes, setIncomingLikes] = useState([]);
   const [outgoingLikes, setOutgoingLikes] = useState([]);
@@ -652,6 +662,8 @@ export function AppProvider({ children }) {
   const discoverySubscriptionRef = useRef(null);
   const discoveryProfileFetchesRef = useRef(new Set());
   const discoveryAutoLoadRef = useRef(0);
+  const liveDiscoveryReadyRef = useRef(false);
+  const fastBootFeedSigRef = useRef('');
   const previousUserIdRef = useRef(null);
 
   const updateHiddenConversations = useCallback((nextIdsOrUpdater) => {
@@ -693,6 +705,8 @@ export function AppProvider({ children }) {
     let active = true;
     if (!user?.id) {
       previousUserIdRef.current = null;
+      liveDiscoveryReadyRef.current = false;
+      fastBootFeedSigRef.current = '';
       setCacheHydratedUserId(null);
       setPendingSyncCount(0);
       setProfile(null);
@@ -718,10 +732,12 @@ export function AppProvider({ children }) {
     matchedConversationSyncRef.current.clear();
     discoveryProfileFetchesRef.current.clear();
     discoveryAutoLoadRef.current = 0;
+    liveDiscoveryReadyRef.current = false;
     setCacheHydratedUserId(null);
 
     const fastBoot = getFastBootMemory();
     const fastProfile = fastBoot?.profile?.id === userId ? withProfileDefaults(fastBoot.profile) : null;
+    const fastFeed = fastBoot?.profile?.id === userId ? getFastBootFeedProfiles() : [];
 
     setProfile((current) => {
       if (current?.id === userId) return current;
@@ -733,7 +749,7 @@ export function AppProvider({ children }) {
       setConversations([]);
       setHiddenConversationIds([]);
       setRemovedUserIds(new Set());
-      setAvailableProfiles([]);
+      setAvailableProfiles(fastFeed);
       setIncomingLikes([]);
       setOutgoingLikes([]);
       setDecisionSnapshots(null);
@@ -743,17 +759,23 @@ export function AppProvider({ children }) {
       setSelectedMeetup(null);
       setOptimisticHiddenIds([]);
       setBlockedUserIds([]);
+    } else if (fastFeed.length) {
+      setAvailableProfiles((current) => (current.length ? current : fastFeed));
     }
+
+    void getBlockedUserIds(userId)
+      .then((blockedIds) => {
+        if (active && Array.isArray(blockedIds)) setBlockedUserIds(blockedIds);
+      })
+      .catch(() => {});
 
     Promise.all([
       loadOfflineSnapshot(userId),
       getOfflineQueueCount(userId),
       AsyncStorage.getItem(`@campusmate:hidden_conversations:${userId}`).catch(() => null),
-      getBlockedUserIds(userId).catch(() => []),
     ])
-      .then(([snapshot, queueCount, rawHidden, blockedIds]) => {
+      .then(([snapshot, queueCount, rawHidden]) => {
         if (!active) return;
-        if (Array.isArray(blockedIds)) setBlockedUserIds(blockedIds);
         let storedHidden = [];
         if (rawHidden) {
           try {
@@ -775,13 +797,13 @@ export function AppProvider({ children }) {
           const snapshotHidden = Array.isArray(snapshot.hiddenConversationIds) ? snapshot.hiddenConversationIds : [];
           const combinedHidden = Array.from(new Set([...storedHidden, ...snapshotHidden]));
           setHiddenConversationIds(combinedHidden);
-          setAvailableProfiles(
-            Array.isArray(snapshot.availableProfiles)
-              ? snapshot.availableProfiles
+          if (!liveDiscoveryReadyRef.current && Array.isArray(snapshot.availableProfiles)) {
+            setAvailableProfiles(
+              snapshot.availableProfiles
                 .map((item) => normalizeProfileRecord(item?.id, item))
                 .filter(isProfileReadyForDiscovery)
-              : []
-          );
+            );
+          }
           setIncomingLikes(
             Array.isArray(snapshot.incomingLikes)
               ? snapshot.incomingLikes
@@ -793,6 +815,9 @@ export function AppProvider({ children }) {
           setCampusSpots(Array.isArray(snapshot.campusSpots) ? snapshot.campusSpots : []);
           setSelectedMeetup(snapshot.selectedMeetup || cachedProfile?.meetup || null);
           setOptimisticHiddenIds(Array.isArray(snapshot.optimisticHiddenIds) ? snapshot.optimisticHiddenIds : []);
+          if (Array.isArray(snapshot.blockedUserIds) && snapshot.blockedUserIds.length) {
+            setBlockedUserIds((current) => (current.length ? current : snapshot.blockedUserIds));
+          }
           setLastSyncedAt(snapshot.cachedAt || null);
         } else {
           setHiddenConversationIds(storedHidden);
@@ -1052,11 +1077,13 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     // Public discovery is read-only and must remain available while another
-    // operation is waiting in the offline queue. Blocking this subscription
-    // made a fresh device show an empty screen even though Firestore had
-    // profiles ready to display.
-    if (!user?.id || !isOnline || cacheHydratedUserId !== user.id) return undefined;
+    // operation is waiting in the offline queue. Do not wait for encrypted
+    // snapshot hydration: decrypting chat history was blocking the first
+    // Home card. Cached cards can render immediately and this listener
+    // replaces them as soon as the first page arrives.
+    if (!user?.id || !isOnline) return undefined;
     let active = true;
+    liveDiscoveryReadyRef.current = false;
     const handleSubscriptionError = (source) => (error) => {
       console.error(`[AppContext] ${source} subscription error:`, {
         code: error?.code || 'unknown',
@@ -1067,6 +1094,7 @@ export function AppProvider({ children }) {
     discoveryAutoLoadRef.current = 0;
     const subscription = createSharedProfilesSubscription(
       (nextProfiles) => {
+        liveDiscoveryReadyRef.current = true;
         setSharedProfiles((currentProfiles) => (
           areDiscoveryProfileListsEqual(currentProfiles, nextProfiles) ? currentProfiles : nextProfiles
         ));
@@ -1076,7 +1104,9 @@ export function AppProvider({ children }) {
         pageSize: 40,
         onPageInfo: ({ source, hasMore, loading }) => {
           if (!active) return;
-          setHasMoreDiscoveryProfiles(['discovery', 'profiles'].includes(source) && hasMore);
+          setHasMoreDiscoveryProfiles(
+            ['discovery', 'discoveryProfiles', 'profiles'].includes(source) && hasMore
+          );
           setIsLoadingMoreDiscoveryProfiles(Boolean(loading));
         },
       }
@@ -1092,7 +1122,7 @@ export function AppProvider({ children }) {
       setHasMoreDiscoveryProfiles(false);
       setIsLoadingMoreDiscoveryProfiles(false);
     };
-  }, [cacheHydratedUserId, isOnline, retryKey, user?.id]);
+  }, [isOnline, retryKey, user?.id]);
 
   // Spots and appointments are secondary to discovery. Start them after the
   // first render and keep them independent from conversation retries.
@@ -1295,6 +1325,15 @@ export function AppProvider({ children }) {
   }, [remoteAvailableResult]);
 
   useEffect(() => {
+    if (!user?.id || !availableProfiles.length) return undefined;
+    const signature = availableProfiles.slice(0, 8).map((item) => item?.id).join(',');
+    if (fastBootFeedSigRef.current === signature) return undefined;
+    fastBootFeedSigRef.current = signature;
+    saveFastBootData({ availableProfiles });
+    return undefined;
+  }, [availableProfiles, user?.id]);
+
+  useEffect(() => {
     if (!user?.id || cacheHydratedUserId !== user.id) return undefined;
     let interactionTask = null;
     // Building the signature stringifies every conversation and message, so the
@@ -1313,6 +1352,7 @@ export function AppProvider({ children }) {
           campusSpots,
           selectedMeetup,
           optimisticHiddenIds,
+          blockedUserIds,
         };
         const signature = getOfflineSnapshotSignature(snapshotData);
         const snapshotKey = `${user.id}:${signature}`;
@@ -1325,7 +1365,7 @@ export function AppProvider({ children }) {
       clearTimeout(timer);
       interactionTask?.cancel?.();
     };
-  }, [appointments, availableProfiles, cacheHydratedUserId, campusSpots, conversations, hiddenConversationIds, incomingLikes, outgoingLikes, optimisticHiddenIds, profile, selectedMeetup, user?.id]);
+  }, [appointments, availableProfiles, blockedUserIds, cacheHydratedUserId, campusSpots, conversations, hiddenConversationIds, incomingLikes, outgoingLikes, optimisticHiddenIds, profile, selectedMeetup, user?.id]);
 
   const refreshQueueCount = useCallback(async () => {
     if (!user?.id) return 0;

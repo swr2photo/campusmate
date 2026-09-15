@@ -105,8 +105,10 @@ export default function DecryptedChatImage({
         </View>
       ) : (
         <ExpoImage
+          cachePolicy="memory-disk"
           contentFit={resizeMode === 'contain' ? 'contain' : 'cover'}
           onError={() => setLoadError(true)}
+          recyclingKey={displayUri}
           source={{ uri: displayUri }}
           style={styles.image}
           transition={150}

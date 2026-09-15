@@ -3,35 +3,106 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, Modal, Platform, Pressable, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { useVideoPlayer, VideoView } from 'expo-video';
+import { createVideoPlayer, useVideoPlayer, VideoView } from 'expo-video';
 import * as ScreenCapture from 'expo-screen-capture';
-import { getDecryptedMediaUri, purgeDecryptedVideo } from '../services/chatMediaService';
+import { getDecryptedMediaUri, getSyncCachedMediaUri, purgeDecryptedVideo } from '../services/chatMediaService';
 import { getOrFetchConversationKey } from '../services/chatEncryptionService';
 import { claimOnceVideo, watchOnceVideo } from '../services/chatVideoService';
 import { VIDEO_MODES } from '../utils/chatVideoPolicy';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useDecryptedMedia } from '../hooks/useDecryptedMedia';
 
 // Serialise native capture acquisition/release, including rapid close/reopen.
 let activeSession = null;
 
-function VideoThumbnail({ uri, blurred }) {
-  const player = useVideoPlayer(uri, instance => { instance.muted = true; });
-  const [thumbnail, setThumbnail] = useState(null);
+const POSTER_CACHE_LIMIT = 40;
+// mediaUrl -> VideoThumbnail (a native image ref) or null when unavailable.
+const posterCache = new Map();
+const posterPending = new Map();
+let posterQueue = Promise.resolve();
+
+function readPoster(mediaUrl) {
+  if (!posterCache.has(mediaUrl)) return undefined;
+  const poster = posterCache.get(mediaUrl);
+  posterCache.delete(mediaUrl);
+  posterCache.set(mediaUrl, poster);
+  return poster;
+}
+
+function writePoster(mediaUrl, poster) {
+  posterCache.set(mediaUrl, poster);
+  while (posterCache.size > POSTER_CACHE_LIMIT) {
+    posterCache.delete(posterCache.keys().next().value);
+  }
+}
+
+function isLocalMedia(mediaUrl) {
+  return Boolean(
+    mediaUrl
+    && (mediaUrl.startsWith('file://') || mediaUrl.startsWith('content://') || mediaUrl.startsWith('data:'))
+  );
+}
+
+// A frame needs the decrypted file and a native player, so requests run one at
+// a time: a screenful of video bubbles must not open a player each.
+function requestPoster(mediaUrl, conversationId, currentUserId) {
+  const pending = posterPending.get(mediaUrl);
+  if (pending) return pending;
+
+  const job = posterQueue.then(async () => {
+    const cached = readPoster(mediaUrl);
+    if (cached !== undefined) return cached;
+    let player = null;
+    try {
+      let uri = isLocalMedia(mediaUrl) ? mediaUrl : getSyncCachedMediaUri(mediaUrl, 'video');
+      if (!uri) {
+        let key = null;
+        if (conversationId && currentUserId) {
+          key = await getOrFetchConversationKey(conversationId, currentUserId);
+        }
+        uri = await getDecryptedMediaUri(mediaUrl, { conversationKey: key, mediaType: 'video' });
+      }
+      if (!uri) {
+        writePoster(mediaUrl, null);
+        return null;
+      }
+      player = createVideoPlayer(uri);
+      player.muted = true;
+      const frames = await player.generateThumbnailsAsync(0, { maxWidth: 480 });
+      const poster = frames?.[0] || null;
+      writePoster(mediaUrl, poster);
+      return poster;
+    } catch (_) {
+      writePoster(mediaUrl, null);
+      return null;
+    } finally {
+      try { player?.release?.(); } catch (_) {}
+      posterPending.delete(mediaUrl);
+    }
+  });
+
+  posterPending.set(mediaUrl, job);
+  posterQueue = job.catch(() => {});
+  return job;
+}
+
+function useVideoPoster(mediaUrl, conversationId, currentUserId, enabled) {
+  const [poster, setPoster] = useState(() => (mediaUrl ? readPoster(mediaUrl) ?? null : null));
+
   useEffect(() => {
+    if (!mediaUrl || !enabled) return undefined;
+    const cached = readPoster(mediaUrl);
+    if (cached !== undefined) {
+      setPoster(cached);
+      return undefined;
+    }
     let active = true;
-    const generate = async () => {
-      try {
-        const frames = await player.generateThumbnailsAsync(0);
-        if (active) setThumbnail(frames[0] || null);
-      } catch { /* Keep the neutral placeholder if a preview cannot be decoded. */ }
-    };
-    const sub = player.addListener('statusChange', ({ status }) => { if (status === 'readyToPlay') generate(); });
-    if (player.status === 'readyToPlay') generate();
-    return () => { active = false; sub.remove(); };
-  }, [player]);
-  return thumbnail ? <Image source={thumbnail} blurRadius={blurred ? 32 : 0} contentFit="cover"
-    style={{ position: 'absolute', width: '100%', height: '100%' }} /> : null;
+    requestPoster(mediaUrl, conversationId, currentUserId).then((next) => {
+      if (active) setPoster(next);
+    });
+    return () => { active = false; };
+  }, [mediaUrl, conversationId, currentUserId, enabled]);
+
+  return poster;
 }
 
 function VideoTimeline({ duration, progress = 0, startMs = 0, endMs = duration }) {
@@ -49,16 +120,19 @@ function VideoTimeline({ duration, progress = 0, startMs = 0, endMs = duration }
   </View>;
 }
 
-// A passive cover never starts playback or claims a view-once receipt.
+// A passive cover never starts playback or claims a view-once receipt. Its
+// preview frame is generated once per video and then served from cache, so a
+// list of covers holds no native players.
 export function ChatVideoCover({ item, conversationId, currentUserId, mine = false, consumed = false }) {
-  const { uri, loading } = useDecryptedMedia(item.mediaUrl, { conversationId, currentUserId, mediaType: 'video' });
   const protectedMode = item.videoMode === 'once' || item.videoMode === 'replay';
+  const poster = useVideoPoster(item.mediaUrl, conversationId, currentUserId, !consumed);
   return <View style={{ width: 230, height: 220, paddingTop: 10 }}>
     <VideoTimeline duration={item.videoDuration} startMs={item.videoStartMs} endMs={item.videoEndMs || item.videoDuration} />
     <View style={{ flex: 1, borderRadius: 16, overflow: 'hidden', backgroundColor: '#111' }}>
-      {uri ? <VideoThumbnail uri={uri} blurred={protectedMode} /> : null}
+      {poster ? <Image source={poster} blurRadius={protectedMode ? 32 : 0} contentFit="cover"
+        style={{ position: 'absolute', width: '100%', height: '100%' }} /> : null}
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#05070d55' }}>
-      {loading ? <ActivityIndicator color="#fff" /> : <Ionicons name={consumed ? 'checkmark-circle-outline' : 'play-circle-outline'} size={42} color="#fff" />}
+      <Ionicons name={consumed ? 'checkmark-circle-outline' : 'play-circle-outline'} size={42} color="#fff" />
       <Text style={{ color: '#fff', fontWeight: '700', marginTop: 9 }}>{consumed ? 'เปิดดูแล้ว' : mine ? 'วิดีโอที่ส่ง' : 'วิดีโอ'}</Text>
       <Text style={{ color: '#fff', marginTop: 5 }}>{Math.ceil((item.videoDuration || 0) / 1000)} วินาที</Text>
       <Text style={{ color: '#e2e8f0', marginTop: 5 }}>{VIDEO_MODES[item.videoMode] || VIDEO_MODES.chat}</Text>

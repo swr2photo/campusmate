@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   FlatList,
@@ -63,7 +63,7 @@ function formatMessageTime(message) {
   return `${hours}:${minutes}`;
 }
 
-function PreviewMessage({ accentColor, colors, conversation, currentUserId, item }) {
+const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors, conversation, currentUserId, item }) {
   const mine = item?.senderId === currentUserId || item?.sender === 'me';
   const text = typeof item?.text === 'string' && item.text.trim()
     ? item.text
@@ -177,7 +177,7 @@ function PreviewMessage({ accentColor, colors, conversation, currentUserId, item
       </View>
     </View>
   );
-}
+});
 
 export default function ChatPreviewModal({ accentColor, blurTarget, conversation, currentUserId, onClose, onOpenChat, visible }) {
   const { colors, isDark } = useTheme();
@@ -311,6 +311,16 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
     };
   }, [activeConversation?.id, messages.length, visible]);
 
+  const renderPreviewMessage = useCallback(({ item }) => (
+    <PreviewMessage
+      accentColor={chatAccent}
+      colors={colors}
+      conversation={activeConversation}
+      currentUserId={currentUserId}
+      item={item}
+    />
+  ), [activeConversation, chatAccent, colors, currentUserId]);
+
   const shouldRender = Boolean(activeConversation && (visible || isRendered));
   if (!shouldRender) return null;
 
@@ -370,18 +380,12 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
                     </Text>
                   </View>
                 )}
+                initialNumToRender={10}
                 ref={listRef}
-                renderItem={({ item }) => (
-                  <PreviewMessage
-                    accentColor={chatAccent}
-                    colors={colors}
-                    conversation={activeConversation}
-                    currentUserId={currentUserId}
-                    item={item}
-                  />
-                )}
+                renderItem={renderPreviewMessage}
                 showsVerticalScrollIndicator={false}
                 style={styles.messageListViewport}
+                windowSize={5}
               />
 
             </SafeAreaView>

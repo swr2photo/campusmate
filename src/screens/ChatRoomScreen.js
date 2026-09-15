@@ -767,11 +767,6 @@ export default function ChatRoomScreen() {
     setInputText(text);
   }, []);
 
-  useEffect(() => {
-    const timer = setInterval(() => setTick((t) => t + 1), 15000);
-    return () => clearInterval(timer);
-  }, []);
-
   const revealAllMessageTimes = useCallback(() => {
     if (allMessageTimesTimerRef.current) {
       clearTimeout(allMessageTimesTimerRef.current);
@@ -1038,6 +1033,29 @@ export default function ChatRoomScreen() {
       scrollToLatest(false, true);
     }
   }, [scrollToLatest]);
+
+  const handleScrollToIndexFailed = useCallback((info) => {
+    const wait = new Promise((resolve) => setTimeout(resolve, 80));
+    wait.then(() => {
+      try {
+        listRef.current?.scrollToIndex({
+          index: info.index,
+          animated: true,
+          viewPosition: 0.5,
+        });
+      } catch (_) {
+        listRef.current?.scrollToOffset({
+          offset: Math.max(0, info.index * 70),
+          animated: true,
+        });
+      }
+    });
+  }, []);
+
+  const handleListTouchStart = useCallback(() => {
+    setIsMediaPickerOpen((open) => (open ? false : open));
+    setIsGiphyPickerOpen((open) => (open ? false : open));
+  }, []);
 
   useEffect(() => {
     Animated.timing(scrollAnim, {
@@ -1796,23 +1814,7 @@ export default function ChatRoomScreen() {
             onLayout={handleListLayout}
             onScroll={handleScroll}
             onContentSizeChange={handleContentSizeChange}
-            onScrollToIndexFailed={(info) => {
-              const wait = new Promise((resolve) => setTimeout(resolve, 80));
-              wait.then(() => {
-                try {
-                  listRef.current?.scrollToIndex({
-                    index: info.index,
-                    animated: true,
-                    viewPosition: 0.5,
-                  });
-                } catch (_) {
-                  listRef.current?.scrollToOffset({
-                    offset: Math.max(0, info.index * 70),
-                    animated: true,
-                  });
-                }
-              });
-            }}
+            onScrollToIndexFailed={handleScrollToIndexFailed}
             scrollEventThrottle={16}
             ListHeaderComponent={(
               <View>
@@ -1840,16 +1842,13 @@ export default function ChatRoomScreen() {
             )}
             ref={listRef}
             renderItem={renderMessage}
-            initialNumToRender={40}
-            maxToRenderPerBatch={15}
-            removeClippedSubviews={false}
+            initialNumToRender={12}
+            maxToRenderPerBatch={8}
+            removeClippedSubviews={Platform.OS === 'android'}
             showsVerticalScrollIndicator={false}
-            onTouchStart={() => {
-              if (isMediaPickerOpen) setIsMediaPickerOpen(false);
-              if (isGiphyPickerOpen) setIsGiphyPickerOpen(false);
-            }}
+            onTouchStart={handleListTouchStart}
             updateCellsBatchingPeriod={50}
-            windowSize={11}
+            windowSize={9}
           />
           </MessageTimeSwipeArea>
 

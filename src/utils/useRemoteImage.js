@@ -6,6 +6,24 @@ const versionCache = new Map(); // exact cacheKey -> localUri
 const urlCache = new Map();     // cleanUrl -> last known localUri
 const scopeCache = new Map();   // scope -> last known localUri
 const inflightDownloads = new Map(); // targetFileUri -> Promise<string | null>
+const MAX_IMAGE_CACHE_SIZE = 500;
+
+function readCache(cache, key) {
+  if (!cache.has(key)) return null;
+  const cached = cache.get(key);
+  cache.delete(key);
+  cache.set(key, cached);
+  return cached;
+}
+
+function writeCache(cache, key, value) {
+  cache.delete(key);
+  if (cache.size >= MAX_IMAGE_CACHE_SIZE) {
+    const firstKey = cache.keys().next().value;
+    if (firstKey) cache.delete(firstKey);
+  }
+  cache.set(key, value);
+}
 
 function cleanUrl(url) {
   if (!url || typeof url !== 'string') return '';
@@ -40,14 +58,17 @@ function hashString(value) {
 }
 
 function getSynchronousCachedUri(cacheKey, clean, scope) {
-  if (cacheKey && versionCache.has(cacheKey)) {
-    return versionCache.get(cacheKey);
+  if (cacheKey) {
+    const cached = readCache(versionCache, cacheKey);
+    if (cached) return cached;
   }
-  if (clean && urlCache.has(clean)) {
-    return urlCache.get(clean);
+  if (clean) {
+    const cached = readCache(urlCache, clean);
+    if (cached) return cached;
   }
-  if (scope && scopeCache.has(scope)) {
-    return scopeCache.get(scope);
+  if (scope) {
+    const cached = readCache(scopeCache, scope);
+    if (cached) return cached;
   }
   return null;
 }
@@ -69,7 +90,7 @@ export function useRemoteImage(url, version, cacheScope) {
 
   const syncUri = isLocalOrData
     ? url
-    : (cacheKey ? getSynchronousCachedUri(cacheKey, clean, normalizedScope) : (clean && urlCache.has(clean) ? urlCache.get(clean) : null));
+    : (cacheKey ? getSynchronousCachedUri(cacheKey, clean, normalizedScope) : (clean ? readCache(urlCache, clean) : null));
 
   const [localUri, setLocalUri] = useState(syncUri);
   const [prevKey, setPrevKey] = useState(cacheKey);
@@ -96,8 +117,8 @@ export function useRemoteImage(url, version, cacheScope) {
 
     async function checkDiskAndDownload(retryCount = 0) {
       try {
-        if (versionCache.has(cacheKey)) {
-          const cached = versionCache.get(cacheKey);
+        const cached = readCache(versionCache, cacheKey);
+        if (cached) {
           if (!cancelled) setLocalUri(cached);
           return;
         }
@@ -105,9 +126,9 @@ export function useRemoteImage(url, version, cacheScope) {
         // Check if file already exists on disk
         const fileInfo = await FileSystem.getInfoAsync(targetFileUri).catch(() => null);
         if (fileInfo && fileInfo.exists && fileInfo.size > 500) {
-          versionCache.set(cacheKey, targetFileUri);
-          urlCache.set(clean, targetFileUri);
-          if (normalizedScope) scopeCache.set(normalizedScope, targetFileUri);
+          writeCache(versionCache, cacheKey, targetFileUri);
+          writeCache(urlCache, clean, targetFileUri);
+          if (normalizedScope) writeCache(scopeCache, normalizedScope, targetFileUri);
           if (!cancelled) setLocalUri(targetFileUri);
           return;
         }
@@ -137,9 +158,9 @@ export function useRemoteImage(url, version, cacheScope) {
         if (cancelled) return;
 
         if (resultUri) {
-          versionCache.set(cacheKey, resultUri);
-          urlCache.set(clean, resultUri);
-          if (normalizedScope) scopeCache.set(normalizedScope, resultUri);
+          writeCache(versionCache, cacheKey, resultUri);
+          writeCache(urlCache, clean, resultUri);
+          if (normalizedScope) writeCache(scopeCache, normalizedScope, resultUri);
           setLocalUri(resultUri);
         } else if (retryCount < 2) {
           const delay = Math.min(1000 * (2 ** retryCount), 4000);

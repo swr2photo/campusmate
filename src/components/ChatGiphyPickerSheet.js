@@ -302,16 +302,15 @@ export default function ChatGiphyPickerSheet({
     }
   }, [activeTab, hasMore, loading, loadingMore, loadMedia, mediaItems.length, offset, searchQuery, selectedCategory]);
 
-  // Split gifs into 2 columns for clean Pinterest/Instagram-style Masonry layout
-  const [column1, column2] = useMemo(() => {
-    if (activeTab !== 'gif') return [[], []];
-    const col1 = [];
-    const col2 = [];
-    mediaItems.forEach((gif, index) => {
-      if (index % 2 === 0) col1.push(gif);
-      else col2.push(gif);
-    });
-    return [col1, col2];
+  // Split gifs into 2-up rows so the grid stays virtualized while keeping the
+  // clean Pinterest/Instagram-style two column layout.
+  const gifRows = useMemo(() => {
+    if (activeTab !== 'gif') return [];
+    const rows = [];
+    for (let index = 0; index < mediaItems.length; index += 2) {
+      rows.push(mediaItems.slice(index, index + 2));
+    }
+    return rows;
   }, [activeTab, mediaItems]);
 
   // Filter Emojis
@@ -528,12 +527,15 @@ export default function ChatGiphyPickerSheet({
           /* GIF GRID (2 columns masonry) */
           <FlatList
             key="gif-flatlist-grid"
-            data={[{ id: 'masonry_row' }]}
-            keyExtractor={(item) => item.id}
+            data={gifRows}
+            keyExtractor={(row) => row[0].id}
             contentContainerStyle={styles.gridContent}
+            initialNumToRender={6}
             onEndReached={handleEndReached}
             onEndReachedThreshold={0.4}
             keyboardShouldPersistTaps="always"
+            removeClippedSubviews={Platform.OS === 'android'}
+            windowSize={5}
             ListFooterComponent={
               loadingMore ? (
                 <View style={styles.footerLoader}>
@@ -541,18 +543,16 @@ export default function ChatGiphyPickerSheet({
                 </View>
               ) : null
             }
-            renderItem={() => (
+            renderItem={({ item: row }) => (
               <View style={styles.columnsContainer}>
-                {/* Column 1 */}
-                <View style={styles.column}>
-                  {column1.map((gif) => {
-                    const cardHeight = Math.min(
-                      Math.max(Math.round(COLUMN_WIDTH / (gif.aspectRatio || 1.33)), 90),
-                      180
-                    );
-                    return (
+                {row.map((gif) => {
+                  const cardHeight = Math.min(
+                    Math.max(Math.round(COLUMN_WIDTH / (gif.aspectRatio || 1.33)), 90),
+                    180
+                  );
+                  return (
+                    <View key={gif.id} style={styles.column}>
                       <Pressable
-                        key={gif.id}
                         accessibilityLabel={`ส่งภาพ ${gif.title}`}
                         onPress={() => onSelectGif?.(gif)}
                         style={({ pressed }) => [
@@ -573,43 +573,10 @@ export default function ChatGiphyPickerSheet({
                           cachePolicy="memory-disk"
                         />
                       </Pressable>
-                    );
-                  })}
-                </View>
-
-                {/* Column 2 */}
-                <View style={styles.column}>
-                  {column2.map((gif) => {
-                    const cardHeight = Math.min(
-                      Math.max(Math.round(COLUMN_WIDTH / (gif.aspectRatio || 1.33)), 90),
-                      180
-                    );
-                    return (
-                      <Pressable
-                        key={gif.id}
-                        accessibilityLabel={`ส่งภาพ ${gif.title}`}
-                        onPress={() => onSelectGif?.(gif)}
-                        style={({ pressed }) => [
-                          styles.gifCard,
-                          {
-                            height: cardHeight,
-                            backgroundColor: cardBg,
-                            borderColor,
-                          },
-                          pressed && styles.pressedCard,
-                        ]}
-                      >
-                        <Image
-                          source={{ uri: gif.previewUrl || gif.url }}
-                          style={StyleSheet.absoluteFill}
-                          contentFit="cover"
-                          transition={150}
-                          cachePolicy="memory-disk"
-                        />
-                      </Pressable>
-                    );
-                  })}
-                </View>
+                    </View>
+                  );
+                })}
+                {row.length < 2 ? <View style={styles.column} /> : null}
               </View>
             )}
           />
@@ -826,6 +793,7 @@ const styles = StyleSheet.create({
   gridContent: {
     paddingBottom: 8,
     paddingHorizontal: GRID_PADDING,
+    gap: GAP,
   },
   columnsContainer: {
     flexDirection: 'row',

@@ -1431,7 +1431,7 @@ export default function ChatRoomScreen() {
   // Keep the SwiftUI child tree stable while typing, opening settings, or
   // changing other local state. List owns the native rows; this memo also
   // avoids rebuilding every message element on each parent render.
-  const renderedMessageRows = useMemo(() => {
+  const messageRows = useMemo(() => {
     const messagesById = new Map(effectiveMessages.map(message => [message.id, message]));
     const messages = effectiveMessages.map(message => resolveMessageReply(message, messagesById));
     if (!messages.length) return null;
@@ -1457,10 +1457,20 @@ export default function ChatRoomScreen() {
         previousItem={messages[index - 1]}
         readAt={otherReadAt}
         showAllMessageTimes={showAllMessageTimes}
-        tick={index === messages.length - 1 ? tick : 0}
+        tick={0}
       />
     ));
-  }, [chat?.id, currentUserId, chat?.avatar, chat?.avatarColor, chat?.unreadCounts, effectiveMessages, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUserId, handleReply, resolvedPartnerAvatar, showAllMessageTimes, tick]);
+  }, [chat?.id, currentUserId, chat?.avatar, chat?.avatarColor, chat?.unreadCounts, effectiveMessages, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUserId, handleReply, resolvedPartnerAvatar, showAllMessageTimes]);
+
+  // Only the newest row shows a ticking relative time, so refresh that single
+  // element instead of rebuilding every row's element tree on each tick.
+  const renderedMessageRows = useMemo(() => {
+    if (!messageRows || !tick) return messageRows;
+    const rows = messageRows.slice();
+    const lastIndex = rows.length - 1;
+    rows[lastIndex] = React.cloneElement(rows[lastIndex], { tick });
+    return rows;
+  }, [messageRows, tick]);
 
   if (!chat) {
     return (

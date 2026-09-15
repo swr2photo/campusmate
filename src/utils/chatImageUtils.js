@@ -4,7 +4,25 @@ import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const aspectRatioCache = new Map();
+const MAX_ASPECT_RATIO_CACHE_SIZE = 1000;
 let globalHasSeenFlipHint = null;
+
+function readAspectRatioCache(key) {
+  if (!aspectRatioCache.has(key)) return null;
+  const cached = aspectRatioCache.get(key);
+  aspectRatioCache.delete(key);
+  aspectRatioCache.set(key, cached);
+  return cached;
+}
+
+function writeAspectRatioCache(key, ratio) {
+  aspectRatioCache.delete(key);
+  if (aspectRatioCache.size >= MAX_ASPECT_RATIO_CACHE_SIZE) {
+    const firstKey = aspectRatioCache.keys().next().value;
+    if (firstKey) aspectRatioCache.delete(firstKey);
+  }
+  aspectRatioCache.set(key, ratio);
+}
 
 /**
  * Checks if the user has already seen the "แตะเพื่อเลื่อน" flip hint.
@@ -73,8 +91,8 @@ export function getChatImageBubbleSize(aspectRatio) {
 export function measureImageAspectRatio(uri, callback) {
   if (!uri || typeof uri !== 'string') return;
 
-  if (aspectRatioCache.has(uri)) {
-    const cached = aspectRatioCache.get(uri);
+  const cached = readAspectRatioCache(uri);
+  if (cached) {
     callback?.(cached, getChatImageBubbleSize(cached));
     return;
   }
@@ -84,7 +102,7 @@ export function measureImageAspectRatio(uri, callback) {
     (width, height) => {
       if (width && height && height > 0) {
         const ratio = width / height;
-        aspectRatioCache.set(uri, ratio);
+        writeAspectRatioCache(uri, ratio);
         callback?.(ratio, getChatImageBubbleSize(ratio));
       }
     },
@@ -102,7 +120,7 @@ export function measureImageAspectRatio(uri, callback) {
  */
 export function cacheAspectRatio(key, ratio) {
   if (key && typeof key === 'string' && ratio && typeof ratio === 'number' && ratio > 0) {
-    aspectRatioCache.set(key, ratio);
+    writeAspectRatioCache(key, ratio);
   }
 }
 
@@ -110,7 +128,7 @@ export function cacheAspectRatio(key, ratio) {
  * Synchronously gets cached aspect ratio if already measured.
  */
 export function getCachedAspectRatio(uri) {
-  return uri ? aspectRatioCache.get(uri) || null : null;
+  return uri ? readAspectRatioCache(uri) : null;
 }
 
 /**

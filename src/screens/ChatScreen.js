@@ -1,6 +1,6 @@
 import { compareConversationsByActivity } from '../utils/conversationOrder';
 import { chatPreviewText } from '../utils/chatPreviewText';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -130,6 +130,7 @@ export default function ChatScreen() {
   const { conversations = [], profile, removeConversation } = useApp();
   const params = useLocalSearchParams();
   const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [previewConversationId, setPreviewConversationId] = useState(null);
   const blurTargetRef = useRef(null);
@@ -149,15 +150,17 @@ export default function ChatScreen() {
     () => conversations.find((conversation) => conversation.id === previewConversationId) || null,
     [conversations, previewConversationId]
   );
+  // The TextInput stays controlled by `query`; the list filter trails behind it
+  // so typing never waits for the whole conversation list to recompute.
   const visibleConversations = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
+    const normalizedQuery = deferredQuery.trim().toLowerCase();
     return conversations.filter((conversation) => {
       const unreadCount = conversation.unreadCounts?.[currentUserId] || conversation.unread || 0;
       if (unreadOnly && unreadCount === 0) return false;
       if (!normalizedQuery) return true;
       return `${conversation.name || ''} ${conversation.lastMessage || ''}`.toLowerCase().includes(normalizedQuery);
     }).sort(compareConversationsByActivity);
-  }, [conversations, currentUserId, query, unreadOnly]);
+  }, [conversations, currentUserId, deferredQuery, unreadOnly]);
 
   const handleDeleteConversation = useCallback((conversation) => {
     const otherUserId = conversation.profileId

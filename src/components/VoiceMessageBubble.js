@@ -9,73 +9,7 @@ const WAVEFORM_HEIGHTS = [8, 14, 22, 16, 26, 12, 18, 28, 20, 14, 24, 18, 10, 16,
 // Throttle UI progress updates so waveform re-renders don't cause audio jitter
 const PROGRESS_UPDATE_INTERVAL_MS = 200;
 
-export default function VoiceMessageBubble({
-  audioUrl,
-  duration = 0,
-  mine = false,
-  colors,
-  conversationId,
-  currentUserId,
-  conversationKey,
-  isUploading = false,
-}) {
-  const { uri: decryptedAudioUri } = useDecryptedMedia(audioUrl, {
-    conversationId,
-    currentUserId,
-    conversationKey,
-    mediaType: 'audio',
-  });
-
-  // Stabilise source object reference so player doesn't recreate on every parent render
-  const effectiveUrl = decryptedAudioUri || (audioUrl && !audioUrl.includes('.enc') ? audioUrl : null);
-  const sourceRef = useRef(null);
-  if (effectiveUrl && sourceRef.current?.uri !== effectiveUrl) {
-    sourceRef.current = { uri: effectiveUrl };
-  } else if (!effectiveUrl) {
-    sourceRef.current = null;
-  }
-
-  const player = useAudioPlayer(sourceRef.current);
-  const status = useAudioPlayerStatus(player);
-
-  // Throttled progress to prevent per-native-frame re-renders causing playback jitter
-  const [progress, setProgress] = useState(0);
-  const [displayTime, setDisplayTime] = useState(duration || 0);
-  const lastUpdateRef = useRef(0);
-
-  useEffect(() => {
-    if (!status) return;
-    const now = Date.now();
-    // Allow immediate update when paused/stopped; throttle only during active playback
-    if (status.playing && now - lastUpdateRef.current < PROGRESS_UPDATE_INTERVAL_MS) return;
-    lastUpdateRef.current = now;
-
-    const currentTime = status.currentTime || 0;
-    const totalDuration = status.duration || duration || 0;
-    const newProgress = totalDuration > 0 ? Math.min(Math.max(currentTime / totalDuration, 0), 1) : 0;
-    setProgress(newProgress);
-    setDisplayTime(status.playing && currentTime > 0 ? currentTime : totalDuration || duration);
-  }, [status, duration]);
-
-  const isPlaying = Boolean(status?.playing);
-
-  const handleTogglePlay = useCallback(async () => {
-    if (!player || isUploading) return;
-    try {
-      await ensureAudioPlaybackMode();
-      if (isPlaying) {
-        player.pause();
-      } else {
-        if (progress >= 0.98) {
-          player.seekTo(0);
-        }
-        player.play();
-      }
-    } catch (e) {
-      console.warn('VoiceMessage playback error:', e);
-    }
-  }, [isPlaying, isUploading, player, progress]);
-
+function VoiceMessageView({ colors, displayTime, isPlaying, isUploading, mine, onPress, progress }) {
   const activeColor = mine ? '#FFFFFF' : (colors?.primary || '#3B5AFE');
   const inactiveColor = mine ? 'rgba(255, 255, 255, 0.4)' : (colors?.line || '#E2E8F0');
   const textColor = mine ? '#FFFFFF' : (colors?.ink || '#0F172A');
@@ -85,7 +19,7 @@ export default function VoiceMessageBubble({
       <Pressable
         accessibilityLabel={isUploading ? 'กำลังส่ง…' : (isPlaying ? 'หยุดเล่นเสียง' : 'เล่นข้อความเสียง')}
         hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-        onPress={handleTogglePlay}
+        onPress={onPress}
         style={({ pressed }) => [
           styles.playBtn,
           { backgroundColor: mine ? 'rgba(255,255,255,0.22)' : (colors?.primarySoft || 'rgba(59,90,254,0.12)') },
@@ -137,6 +71,149 @@ export default function VoiceMessageBubble({
         </View>
       </View>
     </View>
+  );
+}
+
+// Only the bubble the listener actually started decrypts its file and owns a
+// native player; a thread full of voice notes would otherwise do both per row.
+function ActiveVoiceMessage({
+  audioUrl,
+  colors,
+  conversationId,
+  conversationKey,
+  currentUserId,
+  duration,
+  isUploading,
+  mine,
+}) {
+  const { uri: decryptedAudioUri, loading: decrypting } = useDecryptedMedia(audioUrl, {
+    conversationId,
+    currentUserId,
+    conversationKey,
+    mediaType: 'audio',
+  });
+  const audioUri = decryptedAudioUri || (audioUrl && !audioUrl.includes('.enc') ? audioUrl : null);
+
+  // Stabilise source object reference so player doesn't recreate on every parent render
+  const sourceRef = useRef(null);
+  if (audioUri && sourceRef.current?.uri !== audioUri) {
+    sourceRef.current = { uri: audioUri };
+  } else if (!audioUri) {
+    sourceRef.current = null;
+  }
+
+  const player = useAudioPlayer(sourceRef.current);
+  const status = useAudioPlayerStatus(player);
+
+  // Throttled progress to prevent per-native-frame re-renders causing playback jitter
+  const [progress, setProgress] = useState(0);
+  const [displayTime, setDisplayTime] = useState(duration || 0);
+  const lastUpdateRef = useRef(0);
+  const autoStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (!status) return;
+    const now = Date.now();
+    // Allow immediate update when paused/stopped; throttle only during active playback
+    if (status.playing && now - lastUpdateRef.current < PROGRESS_UPDATE_INTERVAL_MS) return;
+    lastUpdateRef.current = now;
+
+    const currentTime = status.currentTime || 0;
+    const totalDuration = status.duration || duration || 0;
+    const newProgress = totalDuration > 0 ? Math.min(Math.max(currentTime / totalDuration, 0), 1) : 0;
+    setProgress(newProgress);
+    setDisplayTime(status.playing && currentTime > 0 ? currentTime : totalDuration || duration);
+  }, [status, duration]);
+
+  const isPlaying = Boolean(status?.playing);
+
+  useEffect(() => {
+    // This bubble is only mounted once the listener has pressed play.
+    if (autoStartedRef.current || !player || !audioUri || isUploading) return;
+    if (status && status.isLoaded === false) return;
+    autoStartedRef.current = true;
+    (async () => {
+      try {
+        await ensureAudioPlaybackMode();
+        player.play();
+      } catch (e) {
+        console.warn('VoiceMessage playback error:', e);
+      }
+    })();
+  }, [audioUri, isUploading, player, status]);
+
+  const handleTogglePlay = useCallback(async () => {
+    if (!player || isUploading) return;
+    try {
+      await ensureAudioPlaybackMode();
+      if (isPlaying) {
+        player.pause();
+      } else {
+        if (progress >= 0.98) {
+          player.seekTo(0);
+        }
+        player.play();
+      }
+    } catch (e) {
+      console.warn('VoiceMessage playback error:', e);
+    }
+  }, [isPlaying, isUploading, player, progress]);
+
+  return (
+    <VoiceMessageView
+      colors={colors}
+      displayTime={displayTime}
+      isPlaying={isPlaying}
+      isUploading={isUploading || decrypting}
+      mine={mine}
+      onPress={handleTogglePlay}
+      progress={progress}
+    />
+  );
+}
+
+export default function VoiceMessageBubble({
+  audioUrl,
+  duration = 0,
+  mine = false,
+  colors,
+  conversationId,
+  currentUserId,
+  conversationKey,
+  isUploading = false,
+}) {
+  const [activated, setActivated] = useState(false);
+
+  const handleStart = useCallback(() => {
+    if (isUploading) return;
+    setActivated(true);
+  }, [isUploading]);
+
+  if (!activated) {
+    return (
+      <VoiceMessageView
+        colors={colors}
+        displayTime={duration}
+        isPlaying={false}
+        isUploading={isUploading}
+        mine={mine}
+        onPress={handleStart}
+        progress={0}
+      />
+    );
+  }
+
+  return (
+    <ActiveVoiceMessage
+      audioUrl={audioUrl}
+      colors={colors}
+      conversationId={conversationId}
+      conversationKey={conversationKey}
+      currentUserId={currentUserId}
+      duration={duration}
+      isUploading={isUploading}
+      mine={mine}
+    />
   );
 }
 

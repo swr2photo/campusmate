@@ -15,7 +15,25 @@ import {
 } from './chatEncryptionService';
 
 const memoryMediaCache = new Map();
+const MAX_MEDIA_CACHE_SIZE = 200;
 const pendingMediaLoads = new Map();
+
+function readMemoryMediaCache(mediaUrl) {
+  if (!memoryMediaCache.has(mediaUrl)) return null;
+  const cached = memoryMediaCache.get(mediaUrl);
+  memoryMediaCache.delete(mediaUrl);
+  memoryMediaCache.set(mediaUrl, cached);
+  return cached;
+}
+
+function writeMemoryMediaCache(mediaUrl, localUri) {
+  memoryMediaCache.delete(mediaUrl);
+  if (memoryMediaCache.size >= MAX_MEDIA_CACHE_SIZE) {
+    const firstKey = memoryMediaCache.keys().next().value;
+    if (firstKey) memoryMediaCache.delete(firstKey);
+  }
+  memoryMediaCache.set(mediaUrl, localUri);
+}
 
 function hashString(str) {
   let hash = 5381;
@@ -226,7 +244,7 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
           });
 
           if (uploadRes.status >= 200 && uploadRes.status < 300) {
-            memoryMediaCache.set(data.downloadUrl, localUri);
+            writeMemoryMediaCache(data.downloadUrl, localUri);
             return data.downloadUrl;
           }
           // A rejected native PUT will also reject an identical fetch PUT. Skip
@@ -245,7 +263,7 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
         });
 
         if (putRes.ok) {
-          memoryMediaCache.set(data.downloadUrl, fileUri);
+          writeMemoryMediaCache(data.downloadUrl, fileUri);
           return data.downloadUrl;
         }
       }
@@ -263,7 +281,7 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
       const blob = await response.blob();
       await uploadBytes(storageRef, blob, { contentType });
       const downloadUrl = await getDownloadURL(storageRef);
-      memoryMediaCache.set(downloadUrl, fileUri);
+      writeMemoryMediaCache(downloadUrl, fileUri);
       return downloadUrl;
     } catch (err) {
       // Fallback using base64 upload if fetch blob fails
@@ -272,7 +290,7 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
       });
       await uploadString(storageRef, base64, 'base64', { contentType });
       const downloadUrl = await getDownloadURL(storageRef);
-      memoryMediaCache.set(downloadUrl, fileUri);
+      writeMemoryMediaCache(downloadUrl, fileUri);
       return downloadUrl;
     }
   } finally {
@@ -305,8 +323,8 @@ async function loadDecryptedMediaUri(mediaUrl, { conversationKey, mediaType = 'i
   }
 
   // Check in-memory cache first
-  if (memoryMediaCache.has(mediaUrl)) {
-    const cached = memoryMediaCache.get(mediaUrl);
+  const cached = readMemoryMediaCache(mediaUrl);
+  if (cached) {
     if (cached.startsWith('file://')) {
       const info = await FileSystem.getInfoAsync(cached).catch(() => null);
       if (info?.exists) return cached;
@@ -330,7 +348,7 @@ async function loadDecryptedMediaUri(mediaUrl, { conversationKey, mediaType = 'i
   // Check if disk cache already exists
   const fileInfo = await FileSystem.getInfoAsync(cachedFileUri).catch(() => null);
   if (fileInfo?.exists && fileInfo.size > 0) {
-    memoryMediaCache.set(mediaUrl, cachedFileUri);
+    writeMemoryMediaCache(mediaUrl, cachedFileUri);
     return cachedFileUri;
   }
 
@@ -340,7 +358,7 @@ async function loadDecryptedMediaUri(mediaUrl, { conversationKey, mediaType = 'i
     try {
       const downloadRes = await FileSystem.downloadAsync(mediaUrl, cachedFileUri);
       if (downloadRes.status >= 200 && downloadRes.status < 300) {
-        memoryMediaCache.set(mediaUrl, cachedFileUri);
+        writeMemoryMediaCache(mediaUrl, cachedFileUri);
         return cachedFileUri;
       }
       await FileSystem.deleteAsync(cachedFileUri, { idempotent: true }).catch(() => {});
@@ -381,7 +399,7 @@ async function loadDecryptedMediaUri(mediaUrl, { conversationKey, mediaType = 'i
     });
     await FileSystem.moveAsync({ from: tempPlainPath, to: cachedFileUri });
 
-    memoryMediaCache.set(mediaUrl, cachedFileUri);
+    writeMemoryMediaCache(mediaUrl, cachedFileUri);
     return cachedFileUri;
   } catch (decryptErr) {
     console.warn('[ChatMedia] Decrypt media failed:', decryptErr?.message || decryptErr);
@@ -398,8 +416,9 @@ export function getSyncCachedMediaUri(mediaUrl, mediaType = 'image') {
   if (mediaUrl.startsWith('file://') || mediaUrl.startsWith('content://') || mediaUrl.startsWith('data:')) {
     return mediaUrl;
   }
-  if (memoryMediaCache.has(mediaUrl)) {
-    return memoryMediaCache.get(mediaUrl);
+  const cached = readMemoryMediaCache(mediaUrl);
+  if (cached) {
+    return cached;
   }
   // On React Native (Android / web): unencrypted image URLs are loaded natively by <Image>
   if (mediaType === 'image' && !mediaUrl.includes('.enc')) {
@@ -410,7 +429,7 @@ export function getSyncCachedMediaUri(mediaUrl, mediaType = 'image') {
 
 export function preCacheDecryptedMedia(mediaUrl, localUri) {
   if (!mediaUrl || !localUri) return;
-  memoryMediaCache.set(mediaUrl, localUri);
+  writeMemoryMediaCache(mediaUrl, localUri);
 }
 
 export function formatAudioDuration(seconds = 0) {

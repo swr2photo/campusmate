@@ -1,8 +1,19 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const FAST_BOOT_KEY = '@campusmate:fast_boot_v1';
+const FAST_BOOT_FEED_LIMIT = 8;
 
 let memoryCache = null;
+
+function compactFastBootProfiles(profiles) {
+  if (!Array.isArray(profiles)) return [];
+  return profiles.slice(0, FAST_BOOT_FEED_LIMIT).map((item) => {
+    if (!item || typeof item !== 'object') return null;
+    const next = { ...item };
+    delete next.encryptionDevices;
+    return next;
+  }).filter(Boolean);
+}
 
 export async function getFastBootData() {
   if (memoryCache) return memoryCache;
@@ -21,12 +32,15 @@ export function getFastBootMemory() {
   return memoryCache;
 }
 
-export async function saveFastBootData({ user, profile }) {
+export async function saveFastBootData({ user, profile, availableProfiles } = {}) {
   try {
     const prev = memoryCache || {};
     const data = {
       user: user !== undefined ? user : prev.user || null,
       profile: profile !== undefined ? profile : prev.profile || null,
+      availableProfiles: availableProfiles !== undefined
+        ? compactFastBootProfiles(availableProfiles)
+        : (Array.isArray(prev.availableProfiles) ? prev.availableProfiles : []),
       hasEnteredBefore: true,
       savedAt: Date.now(),
     };

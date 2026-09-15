@@ -8,6 +8,7 @@ import {
   doc,
   documentId,
   getDoc,
+  getDocFromCache,
   getDocFromServer,
   getDocs,
   limit,
@@ -100,6 +101,7 @@ const DISCOVERY_META_ID = '_meta';
 const DISCOVERY_PAGE_SIZE = 40;
 const LEGACY_DISCOVERY_LIMIT = 200;
 const PROFILE_ID_QUERY_LIMIT = 30;
+const PAGED_DISCOVERY_SOURCES = new Set(['discovery', 'profiles', DISCOVERY_COLLECTION]);
 
 const legacyPrivateProfileFields = [
   'createdAt',
@@ -709,6 +711,20 @@ async function getProfileDocFresh(reference) {
   }
 }
 
+async function getProfileDocPreferCache(reference) {
+  try {
+    const cached = await getDocFromCache(reference);
+    if (cached.exists()) {
+      // Warm the memory cache for the next read without blocking Home.
+      void getDocFromServer(reference).catch(() => {});
+      return cached;
+    }
+  } catch {
+    // React Native uses a memory-only Firestore cache, so cold starts miss.
+  }
+  return getProfileDocFresh(reference);
+}
+
 export async function getPublicProfile(userId) {
   if (!userId) return null;
   const { db } = requireFirebase();
@@ -991,7 +1007,7 @@ export async function getUserProfile(userId) {
   if (!userId) return null;
   const { db } = requireFirebase();
   try {
-    const privateSnapshot = await getProfileDocFresh(doc(db, 'users', userId));
+    const privateSnapshot = await getProfileDocPreferCache(doc(db, 'users', userId));
     if (privateSnapshot.exists()) {
       return normalizeProfileRecord(userId, privateSnapshot.data());
     }
@@ -1000,7 +1016,7 @@ export async function getUserProfile(userId) {
   }
 
   try {
-    const publicSnapshot = await getProfileDocFresh(doc(db, 'profiles', userId));
+    const publicSnapshot = await getProfileDocPreferCache(doc(db, 'profiles', userId));
     if (publicSnapshot.exists()) {
       return normalizeProfileRecord(userId, publicSnapshot.data());
     }
@@ -1546,7 +1562,7 @@ export function createSharedProfilesSubscription(onProfiles, onError, options = 
   };
 
   const loadMore = () => {
-    if (disposed || !['discovery', 'profiles'].includes(source) || !hasMore) return Promise.resolve(false);
+    if (disposed || !PAGED_DISCOVERY_SOURCES.has(source) || !hasMore) return Promise.resolve(false);
     const lastPage = pageStates[pageStates.length - 1];
     if (!lastPage?.loaded || !lastPage.lastDocument || lastPage.loading) return Promise.resolve(false);
     lastPage.loading = true;
@@ -1576,10 +1592,21 @@ export function createSharedProfilesSubscription(onProfiles, onError, options = 
     },
   };
 
-  const start = async () => {
-    // อ่านตรงจาก collection 'profiles' เสมอ เพื่อให้ค้นหาเพื่อนได้ทันที
-    // โดยไม่ต้องพึ่งพา Cloud Functions หรือ collection discoveryProfiles
-    startLegacy();
+  const start = () => {
+    // Start the compact discovery projection immediately. Waiting for `_meta`
+    // first added a round-trip before Home could render a card. If the first
+    // page is empty and backfill is not complete, fall back to `profiles`.
+    source = DISCOVERY_COLLECTION;
+    startDiscoveryPage(0, null, (hadDocs) => {
+      if (disposed || discoveryFallbackStarted || hadDocs) return;
+      void getDoc(doc(db, DISCOVERY_COLLECTION, DISCOVERY_META_ID)).then((metaSnapshot) => {
+        if (disposed || discoveryFallbackStarted) return;
+        if (metaSnapshot.exists() && metaSnapshot.data()?.backfillComplete === true) return;
+        startLegacy();
+      }).catch(() => {
+        if (!disposed && !discoveryFallbackStarted) startLegacy();
+      });
+    }, DISCOVERY_COLLECTION, true);
   };
 
   void start();
@@ -1638,8 +1665,10 @@ export function filterAvailableProfiles(
       || !matchesPreferences(profile, compiledPreferences, currentUserProfile)
     ) return;
 
+    const cardProfile = { ...profile };
+    delete cardProfile.encryptionDevices;
     filteredProfiles.push({
-      ...profile,
+      ...cardProfile,
       isMatched: matchedIds.has(profile.id),
       distance: getDistanceBetweenProfiles(currentUserProfile, profile),
     });

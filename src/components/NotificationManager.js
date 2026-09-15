@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { router } from 'expo-router';
 import { Platform } from 'react-native';
-import { useApp } from '../context/AppContext';
+import { useAppProfile, useAppSync } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { useCall } from '../context/CallContext';
 import {
@@ -64,7 +64,8 @@ const unavailableRegistrationUserIds = new Set();
 const registrationInFlightByUserId = new Map();
 
 export default function NotificationManager() {
-  const { profile, isOnline } = useApp();
+  const { profile } = useAppProfile();
+  const { isOnline } = useAppSync();
   const { user } = useAuth();
   const { openIncomingCallFromNotification } = useCall();
   const [retryKey, setRetryKey] = useState(0);

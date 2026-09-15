@@ -97,6 +97,7 @@
       "react-native-notify-kit"
     ],
     "experiments": {
+      "reactCompiler": true,
       "typedRoutes": true
     },
     "extra": {

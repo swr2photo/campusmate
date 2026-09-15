@@ -3,7 +3,7 @@ import { Animated, Platform, Pressable, StyleSheet, Text, View, useWindowDimensi
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { AppProvider, useApp } from '../src/context/AppContext';
+import { AppProvider } from '../src/context/AppContext';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import { ToastProvider } from '../src/context/ToastContext';
 import { CallProvider } from '../src/context/CallContext';
@@ -102,13 +102,12 @@ function IPadAspectFrame({ backgroundColor, children }) {
 }
 
 function ColdBootGuard({ children }) {
-  const { isReady, isLoggedIn } = useAuth();
-  const { profile } = useApp();
+  const { isReady } = useAuth();
 
-  // If auth is still checking or returning logged-in user is loading their profile,
-  // show the beautiful AppSplashScreen (campus background + app icon + tagline)
-  // instead of a blank black screen.
-  if (!isReady || (isLoggedIn && !profile)) {
+  // Only auth has to resolve before routing is safe. Profile hydration is held
+  // by the destination route instead, so the router and the route chunk load
+  // while the profile is still being read.
+  if (!isReady) {
     return <AppSplashScreen />;
   }
 

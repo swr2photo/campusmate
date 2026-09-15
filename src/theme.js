@@ -60,12 +60,12 @@ export const darkColors = {
   dangerSoft: 'rgba(255,107,107,0.16)',
 };
 
+const darkTheme = { colors: darkColors, isDark: true };
+const lightTheme = { colors: lightColors, isDark: false };
+
 export const useTheme = () => {
   const scheme = useColorScheme();
-  return {
-    colors: scheme === 'dark' ? darkColors : lightColors,
-    isDark: scheme === 'dark'
-  };
+  return scheme === 'dark' ? darkTheme : lightTheme;
 };
 
 export const colors = lightColors;

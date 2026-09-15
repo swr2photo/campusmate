@@ -1,5 +1,7 @@
 import React, {
+  Suspense,
   createContext,
+  lazy,
   useCallback,
   useContext,
   useEffect,
@@ -9,8 +11,7 @@ import React, {
 } from 'react';
 import { Alert } from 'react-native';
 import { useAuth } from './AuthContext';
-import { useApp } from './AppContext';
-import CallModal from '../components/CallModal';
+import { useAppActions, useAppConversations, useAppProfile } from './AppContext';
 import {
   CALL_STATUS,
   CALL_TYPES,
@@ -28,15 +29,34 @@ import {
 
 const CallContext = createContext(null);
 
+// The call UI drags in LiveKit and WebRTC, which are irrelevant to every session
+// that never places a call, so the chunk is only fetched once one starts.
+const CallModal = lazy(async () => {
+  try {
+    const { registerGlobals } = await import('@livekit/react-native');
+    if (typeof registerGlobals === 'function') registerGlobals();
+  } catch (_) {}
+  return import('../components/CallModal');
+});
+
 const CALL_TIMEOUT_MS = 45000; // 45 seconds timeout for unanswered calls
 
 export function CallProvider({ children }) {
   const { user } = useAuth();
-  const { profile, sendMessage, availableProfiles, conversations, activeConversations } = useApp();
+  const { profile } = useAppProfile();
+  const { sendMessage } = useAppActions();
+  const { availableProfiles, conversations } = useAppConversations();
   const currentUserId = user?.id || user?.uid || profile?.id || null;
 
   const [activeCall, setActiveCall] = useState(null);
   const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+  // CallModal owns ringtone teardown that only runs while it is mounted, so it
+  // stays mounted for the rest of the session once the first call happens.
+  const [hasOpenedCall, setHasOpenedCall] = useState(false);
+
+  useEffect(() => {
+    if (isCallModalOpen) setHasOpenedCall(true);
+  }, [isCallModalOpen]);
 
   const activeCallRef = useRef(null);
   activeCallRef.current = activeCall;
@@ -369,17 +389,21 @@ export function CallProvider({ children }) {
   return (
     <CallContext.Provider value={value}>
       {children}
-      <CallModal
-        availableProfiles={availableProfiles}
-        callData={activeCall}
-        conversations={activeConversations || conversations}
-        currentUserId={currentUserId}
-        isOpen={isCallModalOpen}
-        onAccept={handleAcceptCall}
-        onClose={handleCloseModal}
-        onEnd={handleEndCall}
-        onReject={handleRejectCall}
-      />
+      {hasOpenedCall ? (
+        <Suspense fallback={null}>
+          <CallModal
+            availableProfiles={availableProfiles}
+            callData={activeCall}
+            conversations={conversations}
+            currentUserId={currentUserId}
+            isOpen={isCallModalOpen}
+            onAccept={handleAcceptCall}
+            onClose={handleCloseModal}
+            onEnd={handleEndCall}
+            onReject={handleRejectCall}
+          />
+        </Suspense>
+      ) : null}
     </CallContext.Provider>
   );
 }

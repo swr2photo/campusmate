@@ -3,6 +3,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -28,8 +29,13 @@ export function ToastProvider({ children }) {
     if (timerRef.current) clearTimeout(timerRef.current);
   }, []);
 
+  const value = useMemo(
+    () => ({ showToast, showImageModeration }),
+    [showToast, showImageModeration],
+  );
+
   return (
-    <ToastContext.Provider value={{ showToast, showImageModeration }}>
+    <ToastContext.Provider value={value}>
       <View style={styles.root}>
         {children}
         <ImageModerationNotice notice={imageNotice} onClose={() => setImageNotice(null)} />

@@ -113,7 +113,7 @@ export function SectionTitle({ title, subtitle, action, onAction }) {
   );
 }
 
-export const getStyles = (colors) => StyleSheet.create({
+const createStyles = (colors) => StyleSheet.create({
   avatar: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -191,3 +191,15 @@ export const getStyles = (colors) => StyleSheet.create({
   sectionSubtitle: { color: colors.inkMuted, fontSize: type.caption, marginTop: 3 },
   sectionAction: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
 });
+
+// `colors` is one of two module-level palettes, so this caches to two entries.
+const styleCache = new WeakMap();
+
+export const getStyles = (colors) => {
+  let styles = styleCache.get(colors);
+  if (!styles) {
+    styles = createStyles(colors);
+    styleCache.set(colors, styles);
+  }
+  return styles;
+};

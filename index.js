@@ -38,13 +38,8 @@ if (__DEV__) {
   };
 }
 
-// Initialize LiveKit WebRTC globals safely
-try {
-  const { registerGlobals } = require('@livekit/react-native');
-  if (typeof registerGlobals === 'function') {
-    registerGlobals();
-  }
-} catch (_) {}
+// LiveKit's WebRTC globals are registered lazily by CallContext when the first
+// call starts; doing it here would parse the A/V stack on every cold start.
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);
 // It also ensures that whether you load the app in Expo Go or in a native build,

@@ -1,20 +1,20 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useApp } from '../context/AppContext';
+import { useAppActions, useAppSync } from '../context/AppContext';
 import FeatureIcon from './FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 
 export default function OfflineBanner() {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const { syncNow } = useAppActions();
   const {
     isOnline,
     isSyncing,
     lastSyncError,
     pendingSyncCount,
-    syncNow,
-  } = useApp();
+  } = useAppSync();
 
   if (isOnline && (!isSyncing || pendingSyncCount === 0) && pendingSyncCount === 0 && !lastSyncError) return null;
 

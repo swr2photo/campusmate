@@ -1,7 +1,5 @@
-import { resumeVideoUpgrades } from '../services/videoUpgradeService';
 import { retainLoadingConversations } from '../utils/conversationOrder';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import * as Location from 'expo-location';
 import { collection, deleteDoc, doc, getDoc, getDocFromServer, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import NetInfo from '@react-native-community/netinfo';
 import { ActivityIndicator, AppState, ImageBackground, Pressable, Text, View } from 'react-native';
@@ -91,6 +89,15 @@ import {
 const loginHeroPhoto = require('../../assets/login-campus-hero.png');
 
 const AppContext = createContext(null);
+
+// Narrow slices of the app state. Consumers that only need one of these should
+// subscribe to the slice instead of `useApp()`, which changes identity on every
+// conversation, like, or sync update.
+const AppActionsContext = createContext(null);
+const AppProfileContext = createContext(null);
+const AppBadgeContext = createContext(null);
+const AppConversationsContext = createContext(null);
+const AppSyncContext = createContext(null);
 
 const defaultPrivacy = {
   showAge: true,
@@ -593,10 +600,20 @@ export function AppProvider({ children }) {
   const [conversations, setConversations] = useState([]);
   useEffect(() => {
     if (!user?.id) return;
-    const resume = () => { if (AppState.currentState === 'active') void resumeVideoUpgrades(user.id); };
-    resume();
-    const timer = setInterval(resume, 60000);
-    const sub = AppState.addEventListener('change', state => { if (state === 'active') resume(); });
+    // Imported on demand: this module pulls in the image picker, the image
+    // manipulator and Firebase Storage, none of which are needed to boot.
+    const resume = async () => {
+      if (AppState.currentState !== 'active') return;
+      try {
+        const { resumeVideoUpgrades } = await import('../services/videoUpgradeService');
+        await resumeVideoUpgrades(user.id);
+      } catch (error) {
+        console.warn('[AppContext] resumeVideoUpgrades failed:', error?.message || error);
+      }
+    };
+    void resume();
+    const timer = setInterval(() => { void resume(); }, 60000);
+    const sub = AppState.addEventListener('change', state => { if (state === 'active') void resume(); });
     return () => { clearInterval(timer); sub.remove(); };
   }, [user?.id]);
 
@@ -835,6 +852,7 @@ export function AppProvider({ children }) {
 
         const refreshLocationInBackground = async () => {
           try {
+            const Location = await import('expo-location');
             const { status } = await Location.requestForegroundPermissionsAsync();
             if (status !== 'granted') return;
             const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
@@ -2536,7 +2554,90 @@ export function AppProvider({ children }) {
     }
   }, [totalUnreadMessages, user?.id]);
 
+  // Most actions below are re-created on every render. Calls are routed through
+  // a ref so the exposed identities stay stable without capturing stale state.
+  const latestActionsRef = useRef(null);
+  latestActionsRef.current = {
+    blockUser,
+    cancelAppointment: cancelAppointmentAction,
+    cancelOutgoingLike: cancelOutgoingLikeAction,
+    chooseMeetup,
+    clearMeetup,
+    deleteMessageForMeInChat,
+    dismissProfile,
+    ensureConversation,
+    getMeetupStats,
+    loadMoreProfiles: loadMoreDiscoveryProfiles,
+    markAsRead,
+    matchProfile,
+    reactToMessageInChat,
+    recycleSkippedProfiles,
+    removeConversation,
+    reportContent,
+    resetMatching,
+    respondToLike,
+    saveMatchingPreferences,
+    saveProfile,
+    sendActivityInvite,
+    sendMessage,
+    syncNow,
+    toggleMeetupAcceptanceInChat,
+    unblockUser,
+    unsendMessageInChat,
+    updateChatSettingsInChat,
+    updateMeetupSchedule,
+    deleteAccount: async () => {
+      if (!user?.id) throw new Error('กรุณาเข้าสู่ระบบก่อนลบบัญชี');
+      await deleteAccountData(user.id);
+    },
+  };
+
+  const actions = useMemo(() => {
+    const bound = {};
+    Object.keys(latestActionsRef.current).forEach((name) => {
+      bound[name] = (...args) => latestActionsRef.current[name](...args);
+    });
+    bound.showPrivacyPolicy = () => setShowPrivacyPolicy(true);
+    bound.hidePrivacyPolicy = () => setShowPrivacyPolicy(false);
+    return bound;
+  }, []);
+
+  const profileSlice = useMemo(
+    () => ({ profile, profileLoading }),
+    [profile, profileLoading],
+  );
+
+  const pendingLikeCount = pendingIncomingLikes.length;
+  const badgeSlice = useMemo(
+    () => ({ pendingLikeCount, totalUnreadMessages }),
+    [pendingLikeCount, totalUnreadMessages],
+  );
+
+  const conversationsSlice = useMemo(() => ({
+    allConversations: liveConversations,
+    availableProfiles: filteredAvailableProfiles,
+    conversations: activeConversations,
+    hiddenConversationIds,
+    totalUnreadMessages,
+  }), [
+    activeConversations,
+    filteredAvailableProfiles,
+    hiddenConversationIds,
+    liveConversations,
+    totalUnreadMessages,
+  ]);
+
+  const syncSlice = useMemo(() => ({
+    isOnline,
+    isSyncing,
+    lastSyncError,
+    lastSyncedAt,
+    networkReady,
+    pendingSyncCount,
+  }), [isOnline, isSyncing, lastSyncError, lastSyncedAt, networkReady, pendingSyncCount]);
+
   const value = useMemo(() => ({
+    ...actions,
     profile,
     profileLoading,
     conversations: activeConversations,
@@ -2546,69 +2647,32 @@ export function AppProvider({ children }) {
     availableProfiles: filteredAvailableProfiles,
     hasMoreProfiles: hasMoreDiscoveryProfiles,
     isLoadingMoreProfiles: isLoadingMoreDiscoveryProfiles,
-    loadMoreProfiles: loadMoreDiscoveryProfiles,
     matchedProfileIds,
     incomingLikes,
     pendingIncomingLikes,
     acceptedIncomingLikes,
     outgoingLikes,
     pendingOutgoingLikes,
-    cancelOutgoingLike: cancelOutgoingLikeAction,
     appointments: combinedAppointments,
-    cancelAppointment: cancelAppointmentAction,
     campusSpots: computedSpots,
     selectedMeetup,
-    dismissProfile,
-    resetMatching,
-    recycleSkippedProfiles,
-    matchProfile,
-    respondToLike,
-    ensureConversation,
-    removeConversation,
-    blockUser,
-    unblockUser,
-    reportContent,
     blockedUserIds,
-    sendActivityInvite,
-    sendMessage,
-    deleteMessageForMeInChat,
-    unsendMessageInChat,
-    reactToMessageInChat,
-    markAsRead,
-    saveProfile,
-    saveMatchingPreferences,
-    chooseMeetup,
-    updateMeetupSchedule,
-    clearMeetup,
-    toggleMeetupAcceptanceInChat,
-    updateChatSettingsInChat,
-    getMeetupStats,
     isOnline,
     networkReady,
     pendingSyncCount,
     isSyncing,
     lastSyncedAt,
     lastSyncError,
-    syncNow,
-    deleteAccount: async () => {
-      if (!user?.id) throw new Error('กรุณาเข้าสู่ระบบก่อนลบบัญชี');
-      await deleteAccountData(user.id);
-    },
-    showPrivacyPolicy: () => setShowPrivacyPolicy(true),
-    hidePrivacyPolicy: () => setShowPrivacyPolicy(false),
     privacyPolicyVisible: showPrivacyPolicy,
   }), [
     acceptedIncomingLikes,
+    actions,
     activeConversations,
     combinedAppointments,
-    availableProfiles,
-    blockUser,
     blockedUserIds,
-    cancelAppointmentAction,
     computedSpots,
     filteredAvailableProfiles,
     hasMoreDiscoveryProfiles,
-    getMeetupStats,
     hiddenConversationIds,
     incomingLikes,
     liveConversations,
@@ -2625,16 +2689,9 @@ export function AppProvider({ children }) {
     pendingSyncCount,
     profile,
     profileLoading,
-    loadMoreDiscoveryProfiles,
-    removeConversation,
-    reportContent,
     selectedMeetup,
-    syncNow,
-    totalUnreadMessages,
-    unblockUser,
-    consentDismissed,
     showPrivacyPolicy,
-    user?.id,
+    totalUnreadMessages,
   ]);
 
 
@@ -2696,21 +2753,59 @@ export function AppProvider({ children }) {
   };
 
   return (
-    <AppContext.Provider value={value}>
-      {children}
-      {(needsConsent && !consentDismissed) ? (
-        <ConsentModal
-          visible={true}
-          onAccept={handleConsentAccept}
-          onViewPolicy={() => setShowPrivacyPolicy(true)}
-        />
-      ) : null}
-    </AppContext.Provider>
+    <AppActionsContext.Provider value={actions}>
+      <AppProfileContext.Provider value={profileSlice}>
+        <AppBadgeContext.Provider value={badgeSlice}>
+          <AppConversationsContext.Provider value={conversationsSlice}>
+            <AppSyncContext.Provider value={syncSlice}>
+              <AppContext.Provider value={value}>
+                {children}
+                {(needsConsent && !consentDismissed) ? (
+                  <ConsentModal
+                    visible={true}
+                    onAccept={handleConsentAccept}
+                    onViewPolicy={() => setShowPrivacyPolicy(true)}
+                  />
+                ) : null}
+              </AppContext.Provider>
+            </AppSyncContext.Provider>
+          </AppConversationsContext.Provider>
+        </AppBadgeContext.Provider>
+      </AppProfileContext.Provider>
+    </AppActionsContext.Provider>
   );
+}
+
+function useAppSlice(context, hookName) {
+  const slice = useContext(context);
+  if (!slice) throw new Error(`${hookName} ต้องอยู่ภายใน AppProvider`);
+  return slice;
 }
 
 export function useApp() {
   const context = useContext(AppContext);
   if (!context) throw new Error('useApp ต้องอยู่ภายใน AppProvider');
   return context;
+}
+
+/** Stable action identities. Never changes, so it is safe in dependency arrays. */
+export function useAppActions() {
+  return useAppSlice(AppActionsContext, 'useAppActions');
+}
+
+export function useAppProfile() {
+  return useAppSlice(AppProfileContext, 'useAppProfile');
+}
+
+/** Unread and pending-like counts only — does not change when message bodies do. */
+export function useAppBadges() {
+  return useAppSlice(AppBadgeContext, 'useAppBadges');
+}
+
+export function useAppConversations() {
+  return useAppSlice(AppConversationsContext, 'useAppConversations');
+}
+
+export function useAppSync() {
+  return useAppSlice(AppSyncContext, 'useAppSync');
 }

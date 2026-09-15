@@ -98,6 +98,7 @@ const matchingPreferenceFields = [
 const DISCOVERY_COLLECTION = 'discoveryProfiles';
 const DISCOVERY_META_ID = '_meta';
 const DISCOVERY_PAGE_SIZE = 40;
+const LEGACY_DISCOVERY_LIMIT = 200;
 const PROFILE_ID_QUERY_LIMIT = 30;
 
 const legacyPrivateProfileFields = [
@@ -1444,8 +1445,14 @@ export function createSharedProfilesSubscription(onProfiles, onError, options = 
     source = 'profiles';
     clearDiscoveryState();
     emitPageInfo(false);
+    // This compatibility path cannot paginate, so it is capped: an uncapped
+    // listener here streams every discoverable profile on campus to the device.
     legacyUnsubscribe = onSnapshot(
-      query(collection(db, 'profiles'), where('isDiscoverable', '==', true)),
+      query(
+        collection(db, 'profiles'),
+        where('isDiscoverable', '==', true),
+        limit(LEGACY_DISCOVERY_LIMIT),
+      ),
       (snapshot) => {
         if (snapshot.empty) {
           profileCache.clear();

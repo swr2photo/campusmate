@@ -1,70 +1,59 @@
+import { Button, Text } from '../components/NativeTypography';
+import NotificationBell from '../components/NotificationBell';
+import { font } from '../components/brandFont';
+import { useNativePalette } from '../theme';
+import RNText from '../components/AppText';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useRemoteImage } from '../utils/useRemoteImage';
-import { formatReadableDate, getActivityLabel } from '../utils/formatters';
+import { getImageRequestUri, useProfileImagePrefetch } from '../utils/useRemoteImage';
+import ExpoImage from '../components/CachedImage';
+import { formatDistance, formatReadableDate, getActivityLabel } from '../utils/formatters';
+import { dailyPick, getDailySeed, pickDailyProfile } from '../utils/dailyPick';
 import { FACULTIES } from '../data/faculties';
-import { useAssets } from 'expo-asset';
-import { router } from 'expo-router';
 import {
-  Button,
-  ContentUnavailableView,
-  Host,
-  HStack,
-  Image,
-  BottomSheet,
-  Form,
-  Section,
-  Slider,
-  Picker,
-  DisclosureGroup,
-  Label,
-  Menu,
-  Toggle,
-  ScrollView,
-  Spacer,
-  Text,
-  VStack,
-  ZStack,
-} from '@expo/ui/swift-ui';
-import {
-  accessibilityHint,
-  accessibilityLabel,
-  aspectRatio,
-  background,
-  buttonBorderShape,
-  buttonStyle,
-  clipShape,
-  clipped,
-  contentShape,
-  controlSize,
-  disabled,
-  font,
-  foregroundStyle,
-  frame,
-  labelStyle,
-  lineLimit,
-  onTapGesture,
-  padding,
-  presentationDetents,
-  presentationDragIndicator,
-  pickerStyle,
-  resizable,
-  scrollIndicators,
-  shadow,
-  shapes,
-  tag,
-  tint,
-} from '@expo/ui/swift-ui/modifiers';
-import { useApp } from '../context/AppContext';
+  MATCHING_ACTIVITY_OPTIONS,
+  MATCHING_AGE_MAX,
+  MATCHING_AGE_MIN,
+  MATCHING_AVAILABILITY_OPTIONS,
+  MATCHING_DEFAULT_AGE_MAX,
+  MATCHING_GENDER_OPTIONS,
+  MATCHING_MORE_ACTIVITY_OPTIONS,
+  MATCHING_MORE_GENDER_OPTIONS,
+  MATCHING_PACE_OPTIONS,
+  MATCHING_PRIMARY_ACTIVITY_OPTIONS,
+  MATCHING_PRIMARY_GENDER_OPTIONS,
+  MATCHING_UNLIMITED_DISTANCE,
+  MATCHING_WEEKDAY_OPTIONS,
+  MATCHING_YEAR_OPTIONS,
+  clearActivityDetailFilter,
+  createMatchingOptionState,
+  getActivityDetailFilterOptions,
+  getSelectedMatchingValues,
+  matchesActivityDetailFilters,
+  matchesAvailabilityPeriods,
+  pruneActivityDetailFilters,
+  toggleActivityDetailFilter,
+  matchesAvailabilityWeekdays,
+  normalizeMatchingAge,
+  profileHasAvailability,
+  profileHasPhoto,
+  toggleMatchingOption,
+} from '../data/matchingFilters';
+import { router, useFocusEffect } from 'expo-router';
+import { useEntitlement } from '../context/MembershipContext';
+import { TourTarget } from '../context/AppTourContext';
+import { useDiscoveryDeckState } from '../hooks/useDiscoveryDeckState';
+import { FEATURE_ADVANCED_FILTERS, FEATURE_UNLIMITED_REWIND, stripPaidMatchingPreferences } from '../data/plans';
+import { ContentUnavailableView, Host, HStack, Image, BottomSheet, Form, Section, Slider, Picker, Menu, Toggle, ScrollView, Spacer, VStack, ZStack, RNHostView } from '@expo/ui/swift-ui';
+import { accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollIndicators, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
+import { useAppActions, useAppBadges, useAppFeed, useAppProfile } from '../context/AppContext';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import { View, useColorScheme } from 'react-native';
+import { View, Pressable, useColorScheme, Animated } from 'react-native';
 
-const profilePhoto = require('../../assets/friend-profile-card.png');
+const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-const darkPalette = { background: '#14171B', surface: '#20242A', surfaceRaised: '#292E35', text: '#F7F8FA', secondary: '#B6BDC8', tertiary: '#7F8896', coral: '#FF7A6B', coralSoft: 'rgba(255,122,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#62A8FF', blueSoft: 'rgba(98,168,255,0.16)', mint: '#45D1A1', mintSoft: 'rgba(69,209,161,0.16)' , purple: '#9A8CFF', card: '#20242A', white: '#FFFFFF', chip: '#292E35', circle: '#292E35'};
-const lightPalette = { background: '#F6F8FC', surface: '#FFFFFF', surfaceRaised: '#F6F8FC', text: '#10203A', secondary: '#60708A', tertiary: '#8B98AC', coral: '#F47C6B', coralSoft: 'rgba(244,124,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#3986E8', blueSoft: 'rgba(57,134,232,0.16)', mint: '#18A878', mintSoft: 'rgba(24,168,120,0.16)' , purple: '#5B5CE2', card: '#FFFFFF', white: '#FFFFFF', chip: '#EEF0FF', circle: '#E7EBF2'};
-function usePalette() { const scheme = useColorScheme(); return scheme === 'dark' ? darkPalette : lightPalette; }
+const usePalette = useNativePalette;
 
 const cardShape = shapes.roundedRectangle({
   cornerRadius: 24,
@@ -85,178 +74,259 @@ function getRemainingTimeUntilMidnight() {
   return `${hours}:${minutes}:${seconds}`;
 }
 
-function getDailySeed() {
-  const now = new Date();
-  return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+function formatRemainingTime(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
+  const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+  const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+  return `${hours}:${minutes}:${seconds}`;
 }
 
-function pseudoRandom(seedStr) {
-  let hash = 0;
-  for (let i = 0; i < seedStr.length; i++) {
-    hash = Math.imul(31, hash) + seedStr.charCodeAt(i) | 0;
-  }
-  return function() {
-    hash = (hash ^ (hash << 13)) | 0;
-    hash = (hash ^ (hash >>> 17)) | 0;
-    hash = (hash ^ (hash << 5)) | 0;
-    return (Math.abs(hash) % 10000) / 10000;
-  };
-}
 
-function dailyShuffle(array, seedStr) {
-  const rng = pseudoRandom(seedStr);
-  const result = [...array];
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
-}
-
-export default function HomeScreen({ onOpenLikes }) {
+export default function HomeScreen() {
   const palette = usePalette();
   const colorScheme = useColorScheme();
   const {
     availableProfiles,
-    conversations,
-    getMeetupStats,
-    matchedProfileIds,
-    pendingIncomingLikes,
-    profile,
-    recycleSkippedProfiles,
-    saveMatchingPreferences,
+    hasMoreProfiles = false,
+    isLoadingMoreProfiles = false,
+    isResolvingDistances = false,
+    isDiscoveryReady = false,
+    discoveryError = null,
     selectedMeetup,
-  } = useApp();
-  const [assets] = useAssets([profilePhoto]);
+  } = useAppFeed();
+  const { conversationCount = 0, matchedCount: matchedProfileCount = 0 } = useAppBadges();
+  const { getMeetupStats, loadMoreProfiles, recycleSkippedProfiles, retryDiscovery, saveMatchingPreferences } = useAppActions();
+  const { profile } = useAppProfile();
+  // CampusMate Plus gates (src/data/plans.js).
+  const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
+  const rewind = useEntitlement(FEATURE_UNLIMITED_REWIND);
+  const scrollY = useRef(new Animated.Value(0)).current;
   const myMeetupStats = useMemo(() => (profile ? getMeetupStats(profile) : null), [profile, getMeetupStats]);
-  const matchedCount = Math.max(matchedProfileIds?.length || 0, conversations?.length || 0);
-  const [timeLeft, setTimeLeft] = useState(getRemainingTimeUntilMidnight());
-  const autoRefreshLock = useRef(false);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTimeLeft(getRemainingTimeUntilMidnight());
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const matchedCount = Math.max(matchedProfileCount, conversationCount);
 
   // Settings BottomSheet State
   const [showSettings, setShowSettings] = useState(false);
-  const [distance, setDistance] = useState(15);
-  const [years, setYears] = useState({ 1: true, 2: true, 3: true, 4: true });
-  const [genders, setGenders] = useState({ male: true, female: true, other: true });
-  const [activities, setActivities] = useState({ exerciseExpanded: false, running: true, gym: true, sports: true, study: true, chill: true });
+  const [distance, setDistance] = useState(25);
+  const [ageMin, setAgeMin] = useState(MATCHING_AGE_MIN);
+  const [ageMax, setAgeMax] = useState(MATCHING_DEFAULT_AGE_MAX);
+  const [years, setYears] = useState(() => createMatchingOptionState(MATCHING_YEAR_OPTIONS));
+  const [genders, setGenders] = useState(() => createMatchingOptionState(MATCHING_GENDER_OPTIONS));
+  const [activities, setActivities] = useState(() => createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
+  const [paces, setPaces] = useState(() => createMatchingOptionState(MATCHING_PACE_OPTIONS));
+  const [detailFilters, setDetailFilters] = useState({});
+  const [availabilityPeriods, setAvailabilityPeriods] = useState(() => createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
+  const [weekdays, setWeekdays] = useState(() => createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS));
+  const [requirePhoto, setRequirePhoto] = useState(false);
+  const [requireAvailability, setRequireAvailability] = useState(false);
+  const [availabilityFilterActive, setAvailabilityFilterActive] = useState(false);
+  const [sameFacultyOnly, setSameFacultyOnly] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
   const [faculty, setFaculty] = useState('all');
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const pinnedDailyRef = useRef({ day: getDailySeed(), id: null });
   
   const [showFilters, setShowFilters] = useState(false);
-  const [sameFacultyOnly, setSameFacultyOnly] = useState(false);
-  const [eveningOnly, setEveningOnly] = useState(false);
-
   
   React.useEffect(() => {
     if (!profile) return;
-    const preferences = profile.matchingPreferences || {};
+    const preferences = stripPaidMatchingPreferences(profile.matchingPreferences || {}, advancedFilters.allowed);
     const selectedActivities = preferences.activities || [];
     const selectedYears = preferences.years || [];
     const selectedGenders = preferences.genders || [];
-    setActivities({
-      exerciseExpanded: false,
-      running: selectedActivities.length === 0 || selectedActivities.includes('running'),
-      gym: selectedActivities.length === 0 || selectedActivities.includes('gym'),
-      sports: selectedActivities.length === 0 || selectedActivities.includes('sports'),
-      study: selectedActivities.length === 0 || selectedActivities.includes('study'),
-      chill: selectedActivities.length === 0 || selectedActivities.includes('chill'),
-    });
+    const selectedPaces = preferences.paces || [];
+    const selectedAvailabilityPeriods = preferences.availabilityPeriods || [];
+    const selectedWeekdays = preferences.weekdays || [];
+    const normalizedAgeMin = normalizeMatchingAge(preferences.ageMin, MATCHING_AGE_MIN);
+    const normalizedAgeMax = Math.max(
+      normalizedAgeMin,
+      normalizeMatchingAge(preferences.ageMax, MATCHING_DEFAULT_AGE_MAX)
+    );
+    setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS, selectedActivities));
     setFaculty(preferences.faculty || 'all');
-    setYears({
-      1: selectedYears.length === 0 || selectedYears.includes('ชั้นปีที่ 1'),
-      2: selectedYears.length === 0 || selectedYears.includes('ชั้นปีที่ 2'),
-      3: selectedYears.length === 0 || selectedYears.includes('ชั้นปีที่ 3'),
-      4: selectedYears.length === 0 || selectedYears.includes('ชั้นปีที่ 4'),
-    });
-    setGenders({
-      male: selectedGenders.length === 0 || selectedGenders.includes('male'),
-      female: selectedGenders.length === 0 || selectedGenders.includes('female'),
-      other: selectedGenders.length === 0 || selectedGenders.includes('nonbinary'),
-    });
-    setDistance(preferences.maxDistance ?? 25);
+    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS, selectedYears));
+    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS, selectedGenders));
+    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS, selectedPaces));
+    setDetailFilters(pruneActivityDetailFilters(preferences.activityDetails, selectedActivities));
+    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS, selectedAvailabilityPeriods));
+    setWeekdays(createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS, selectedWeekdays));
+    setDistance(Number.isFinite(Number(preferences.maxDistance)) ? Number(preferences.maxDistance) : 25);
+    setAgeMin(normalizedAgeMin);
+    setAgeMax(normalizedAgeMax);
     setSameFacultyOnly(preferences.sameFacultyOnly ?? false);
+    setRequirePhoto(preferences.requirePhoto === true);
+    setRequireAvailability(preferences.requireAvailability === true);
+    setAvailabilityFilterActive(
+      selectedAvailabilityPeriods.length > 0
+      && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
+    );
   }, [
     profile?.id,
     profile?.matchingPreferences?.activities,
+    profile?.matchingPreferences?.activityDetails,
+    profile?.matchingPreferences?.ageMax,
+    profile?.matchingPreferences?.ageMin,
+    profile?.matchingPreferences?.availabilityPeriods,
     profile?.matchingPreferences?.faculty,
     profile?.matchingPreferences?.genders,
     profile?.matchingPreferences?.maxDistance,
+    profile?.matchingPreferences?.paces,
+    profile?.matchingPreferences?.requireAvailability,
+    profile?.matchingPreferences?.requirePhoto,
     profile?.matchingPreferences?.sameFacultyOnly,
+    profile?.matchingPreferences?.weekdays,
     profile?.matchingPreferences?.years,
+    advancedFilters.allowed,
   ]);
 
   const handleFacultySelection = (nextFaculty) => {
+    if (!advancedFilters.guard()) return;
     setFaculty(nextFaculty);
     if (nextFaculty !== 'all') setSameFacultyOnly(false);
   };
 
   const handleSameFacultySelection = (enabled) => {
+    if (!advancedFilters.guard()) return;
     setSameFacultyOnly(enabled);
     if (enabled) setFaculty('all');
   };
 
   const saveSearchSettings = async () => {
-    const selectedActivities = ['running', 'gym', 'sports', 'study', 'chill'].filter((key) => activities[key]);
-    const selectedYears = [1, 2, 3, 4].filter((key) => years[key]).map((key) => `ชั้นปีที่ ${key}`);
-    const selectedGenders = [
-      genders.male && 'male',
-      genders.female && 'female',
-      genders.other && 'nonbinary',
-    ].filter(Boolean);
+    const selectedActivities = getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities);
+    const selectedYears = getSelectedMatchingValues(MATCHING_YEAR_OPTIONS, years);
+    const selectedGenders = getSelectedMatchingValues(MATCHING_GENDER_OPTIONS, genders);
+    const selectedPaces = getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces);
+    const selectedAvailabilityPeriods = getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods);
+    const selectedWeekdays = getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays);
+    const normalizedAgeMin = Math.min(
+      MATCHING_AGE_MAX,
+      Math.max(MATCHING_AGE_MIN, Math.round(ageMin))
+    );
+    const normalizedAgeMax = Math.max(
+      normalizedAgeMin,
+      Math.min(MATCHING_AGE_MAX, Math.max(MATCHING_AGE_MIN, Math.round(ageMax)))
+    );
     await saveMatchingPreferences({
       ...(profile.matchingPreferences || {}),
-      activities: selectedActivities.length === 5 ? [] : selectedActivities,
+      activities: selectedActivities,
+      activityDetails: pruneActivityDetailFilters(detailFilters, selectedActivities),
+      ageMin: normalizedAgeMin,
+      ageMax: normalizedAgeMax,
+      availabilityPeriods: selectedAvailabilityPeriods,
       faculty: sameFacultyOnly ? 'all' : faculty,
-      genders: selectedGenders.length === 3 ? [] : selectedGenders,
+      genders: selectedGenders,
       maxDistance: Math.round(distance),
+      paces: selectedPaces,
+      requireAvailability,
+      requirePhoto,
       sameFacultyOnly,
-      years: selectedYears.length === 4 ? [] : selectedYears,
+      weekdays: selectedWeekdays,
+      years: selectedYears,
     });
+    setAgeMin(normalizedAgeMin);
+    setAgeMax(normalizedAgeMax);
+    setAvailabilityFilterActive(
+      selectedAvailabilityPeriods.length > 0
+      && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
+    );
     setShowSettings(false);
   };
 
   const activeFacultyFilter = sameFacultyOnly
     ? (profile?.faculty || 'all')
     : (faculty || 'all');
+  const selectedFilterActivities = useMemo(
+    () => getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities),
+    [activities]
+  );
+  const detailFilterSections = useMemo(
+    () => selectedFilterActivities.map(getActivityDetailFilterOptions).filter(Boolean),
+    [selectedFilterActivities]
+  );
+  const savedDetailFilters = useMemo(
+    () => pruneActivityDetailFilters(
+      profile?.matchingPreferences?.activityDetails,
+      profile?.matchingPreferences?.activities || []
+    ),
+    [profile?.matchingPreferences?.activityDetails, profile?.matchingPreferences?.activities]
+  );
 
   const filteredProfiles = useMemo(() => {
     const filtered = availableProfiles.filter((candidate) => {
+      if (selectedCategory !== 'all' && candidate.activity !== selectedCategory && !candidate.activities?.includes(selectedCategory)) return false;
+      if (!matchesActivityDetailFilters(candidate, savedDetailFilters)) return false;
       if (activeFacultyFilter !== 'all' && candidate.faculty !== activeFacultyFilter) return false;
       if (sameFacultyOnly && candidate.faculty !== profile?.faculty) return false;
-      if (eveningOnly && !candidate.availability?.includes('17:') && !candidate.availability?.includes('18:')) return false;
+      if (availabilityFilterActive) {
+        const selectedAvailabilityPeriods = getSelectedMatchingValues(
+          MATCHING_AVAILABILITY_OPTIONS,
+          availabilityPeriods
+        );
+        if (
+          selectedAvailabilityPeriods.length > 0
+          && !matchesAvailabilityPeriods(candidate, selectedAvailabilityPeriods)
+        ) {
+          return false;
+        }
+      }
+      const selectedWeekdays = getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays);
+      if (selectedWeekdays.length && !matchesAvailabilityWeekdays(candidate, selectedWeekdays)) return false;
+      if (requirePhoto && !profileHasPhoto(candidate)) return false;
+      if (requireAvailability && !profileHasAvailability(candidate)) return false;
       return true;
     });
-    return dailyShuffle(filtered, getDailySeed() + (profile?.id || ''));
-  }, [activeFacultyFilter, availableProfiles, eveningOnly, profile?.faculty, profile?.id, sameFacultyOnly]);
+    const today = getDailySeed();
+    if (pinnedDailyRef.current.day !== today) {
+      pinnedDailyRef.current = { day: today, id: null };
+    }
+    const seed = `${today}:${profile?.id || ''}`;
+    const picked = pinnedDailyRef.current.id
+      ? pickDailyProfile(filtered, seed, pinnedDailyRef.current.id)
+      : dailyPick(filtered, seed);
+    pinnedDailyRef.current.id = picked[0]?.id || null;
+    return picked;
+  }, [activeFacultyFilter, availabilityFilterActive, availabilityPeriods, availableProfiles, profile?.faculty, profile?.id, requireAvailability, requirePhoto, sameFacultyOnly, savedDetailFilters, selectedCategory, weekdays]);
 
   const currentProfile = filteredProfiles[0] || null;
-  const remoteAvatar = useRemoteImage(currentProfile?.avatarUri);
-  const imageUri = remoteAvatar || assets?.[0]?.localUri || assets?.[0]?.uri;
+  const imageUri = getImageRequestUri(currentProfile?.avatarUri, currentProfile?.avatarRevision);
+  useProfileImagePrefetch(filteredProfiles.slice(1, 4));
 
+  const deck = useDiscoveryDeckState({
+    hasCandidate: Boolean(currentProfile),
+    isDiscoveryReady,
+    isLoadingMoreProfiles,
+    isResolvingDistances,
+    discoveryError,
+    retryDiscovery,
+  });
+  const isWaitingForProfiles = deck.state === 'loading';
+  const deckFailed = deck.state === 'error';
+  const hasRequestedMoreForThisEmptyState = useRef(false);
+
+  // When the deck runs dry, pull the next discovery page so new profiles show
+  // up on their own. Skipped profiles stay skipped until the user explicitly
+  // taps "เริ่มใหม่".
   useEffect(() => {
-    if (currentProfile) {
-      autoRefreshLock.current = false;
+    if (filteredProfiles.length > 0 || isLoadingMoreProfiles || isResolvingDistances) {
+      hasRequestedMoreForThisEmptyState.current = false;
       return;
     }
-    if (!availableProfiles?.length || filteredProfiles.length > 0) return;
-    if (autoRefreshLock.current) return;
+    if (!hasMoreProfiles || hasRequestedMoreForThisEmptyState.current) return;
+    hasRequestedMoreForThisEmptyState.current = true;
+    void loadMoreProfiles()?.catch?.((error) => {
+      console.warn('[HomeScreen.ios] loadMoreProfiles error:', error?.message || error);
+    });
+  }, [filteredProfiles.length, hasMoreProfiles, isLoadingMoreProfiles, isResolvingDistances, loadMoreProfiles]);
 
-    autoRefreshLock.current = true;
-    const timer = setTimeout(() => {
-      recycleSkippedProfiles();
-      setEveningOnly(false);
-    }, 1200);
-
-    return () => clearTimeout(timer);
-  }, [availableProfiles, currentProfile, filteredProfiles, recycleSkippedProfiles]);
+  useFocusEffect(
+    React.useCallback(() => {
+      hasRequestedMoreForThisEmptyState.current = false;
+      setRefreshTick((t) => t + 1);
+    }, [])
+  );
 
   const persistFacultyMatching = async (nextFaculty, nextSameFacultyOnly) => {
+    if (!advancedFilters.guard()) return;
     const previousFaculty = faculty;
     const previousSameFacultyOnly = sameFacultyOnly;
     const normalizedSameFacultyOnly = nextSameFacultyOnly === true && Boolean(profile?.faculty);
@@ -277,33 +347,119 @@ export default function HomeScreen({ onOpenLikes }) {
     }
   };
 
+  const persistAvailabilityPeriods = async (nextAvailabilityPeriods, nextActive) => {
+    if (!advancedFilters.guard()) return;
+    const previousAvailabilityPeriods = availabilityPeriods;
+    const previousActive = availabilityFilterActive;
+    setAvailabilityPeriods(nextAvailabilityPeriods);
+    setAvailabilityFilterActive(nextActive);
+    try {
+      await saveMatchingPreferences({
+        ...(profile?.matchingPreferences || {}),
+        availabilityPeriods: getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, nextAvailabilityPeriods),
+      });
+    } catch (error) {
+      setAvailabilityPeriods(previousAvailabilityPeriods);
+      setAvailabilityFilterActive(previousActive);
+      console.error('[HomeScreen] Failed to save availability filter:', error);
+    }
+  };
+
+  const toggleEveningFilter = () => {
+    const nextAvailabilityPeriods = availabilityFilterActive
+      ? { ...availabilityPeriods, evening: !availabilityPeriods.evening }
+      : Object.fromEntries(MATCHING_AVAILABILITY_OPTIONS.map(({ value }) => [value, value === 'evening']));
+    const selectedPeriods = MATCHING_AVAILABILITY_OPTIONS
+      .filter(({ value }) => nextAvailabilityPeriods[value])
+      .map(({ value }) => value);
+    const normalizedAvailabilityPeriods = selectedPeriods.length === 0
+      || selectedPeriods.length === MATCHING_AVAILABILITY_OPTIONS.length
+      ? createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS)
+      : nextAvailabilityPeriods;
+    const nextActive = selectedPeriods.length > 0 && selectedPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length;
+    void persistAvailabilityPeriods(normalizedAvailabilityPeriods, nextActive);
+  };
+
+  const toggleAvailabilityPeriod = (value) => {
+    if (!advancedFilters.guard()) return;
+    const nextAvailabilityPeriods = {
+      ...availabilityPeriods,
+      [value]: !availabilityPeriods[value],
+    };
+    const selectedPeriods = MATCHING_AVAILABILITY_OPTIONS
+      .filter(({ value: optionValue }) => nextAvailabilityPeriods[optionValue])
+      .map(({ value: optionValue }) => optionValue);
+    setAvailabilityPeriods(
+      selectedPeriods.length === 0
+      || selectedPeriods.length === MATCHING_AVAILABILITY_OPTIONS.length
+        ? createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS)
+        : nextAvailabilityPeriods
+    );
+    setAvailabilityFilterActive(
+      selectedPeriods.length > 0
+      && selectedPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
+    );
+  };
+
+  // "เริ่มใหม่" brings skipped profiles back and refreshes the deck while
+  // keeping every saved filter untouched.
   const handleReset = () => {
-    recycleSkippedProfiles();
-    setEveningOnly(false);
-    void persistFacultyMatching('all', false);
+    // "เริ่มใหม่" brings skipped people back: CampusMate Plus (unlimited rewind).
+    if (!rewind.guard()) return;
+    pinnedDailyRef.current.id = null;
+    setSelectedCategory('all');
+    void recycleSkippedProfiles()?.catch?.((error) => {
+      console.warn('[HomeScreen.ios] handleReset recycle error:', error?.message || error);
+    });
+    if (hasMoreProfiles && !isLoadingMoreProfiles) {
+      void loadMoreProfiles()?.catch?.((error) => {
+        console.warn('[HomeScreen.ios] handleReset loadMore error:', error?.message || error);
+      });
+    }
   };
 
 
 
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
+  const meetupAccent = colorScheme === 'dark' ? '#7966FF' : '#4546B8';
+  const meetupSoft = colorScheme === 'dark' ? 'rgba(112,178,255,0.16)' : '#EEF2F7';
+
+  const smallHeaderOpacity = scrollY.interpolate({
+    inputRange: [30, 60],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+
+  const largeHeaderOpacity = scrollY.interpolate({
+    inputRange: [0, 30],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+
+  const largeHeaderTranslateY = scrollY.interpolate({
+    inputRange: [0, 40],
+    outputRange: [0, -20],
+    extrapolate: 'clamp',
+  });
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
       <MaskedView
-        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 85, zIndex: 10 }}
+        pointerEvents="none"
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 104, zIndex: 10 }}
         maskElement={
           <LinearGradient colors={['#FFFFFF', '#FFFFFF00']} style={{ flex: 1 }} />
         }
       >
         <BlurView intensity={blurIntensity} tint={colorScheme} style={{ flex: 1 }} />
       </MaskedView>
-      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
+      <TourTarget id="home.filters" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
         <Host colorScheme={colorScheme} seedColor={palette.purple} style={{ width: '100%', height: 85 }}>
           <VStack modifiers={[padding({ top: 35, bottom: 15, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
-            <Header onSettings={() => setShowSettings(true)} />
+            <Header onSettings={() => router.push('/matching-filters')} />
           </VStack>
         </Host>
-      </View>
+      </TourTarget>
       <Host
         colorScheme={colorScheme}
         seedColor={palette.purple}
@@ -321,79 +477,12 @@ export default function HomeScreen({ onOpenLikes }) {
               frame({ maxWidth: Infinity, alignment: 'topLeading' }),
             ]}
           >
-            {selectedMeetup && (
-              <HStack
-                alignment="center"
-                spacing={10}
-                modifiers={[
-                  padding({ horizontal: 12, vertical: 9 }),
-                  frame({ maxWidth: Infinity }),
-                  background(palette.mintSoft, shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' })),
-                  shadow({ color: 'rgba(23, 128, 90, 0.08)', opacity: 0.8, radius: 8, x: 0, y: 2 }),
-                ]}
-              >
-                <Button
-                  onPress={() => router.push('/meetup')}
-                  modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity })]}
-                >
-                  <HStack alignment="center" spacing={10} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-                    <VStack
-                      alignment="center"
-                      modifiers={[
-                        frame({ width: 32, height: 32 }),
-                        background('#1FA778', shapes.circle()),
-                        shadow({ color: 'rgba(31, 167, 120, 0.2)', opacity: 1, radius: 6, x: 0, y: 2 }),
-                      ]}
-                    >
-                      <Image color="#FFFFFF" size={13} systemName="mappin.and.ellipse" />
-                    </VStack>
-                    <VStack alignment="leading" spacing={1} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-                      <HStack spacing={6} alignment="center">
-                        <Text modifiers={[font({ weight: 'bold', size: 11 }), foregroundStyle(palette.text), lineLimit(1)]}>
-                          จุดนัดพบ
-                        </Text>
-                        <Text modifiers={[font({ weight: 'bold', size: 10 }), foregroundStyle(myMeetupStats?.isFull ? '#FF453A' : '#1FA778')]}>
-                          {myMeetupStats ? `${myMeetupStats.isFull ? 'เต็มแล้ว' : `ร่วม ${myMeetupStats.acceptedCount}/${myMeetupStats.maxPeople}`}` : 'พร้อม'}
-                        </Text>
-                      </HStack>
-                      <Text modifiers={[font({ size: 13.5, weight: 'bold' }), foregroundStyle(palette.text), lineLimit(1)]}>
-                        {selectedMeetup.name}
-                      </Text>
-                      {selectedMeetup.schedule?.date ? (
-                        <Text modifiers={[font({ size: 10.5, weight: 'medium' }), foregroundStyle(palette.secondary), lineLimit(1)]}>
-                          {formatReadableDate(selectedMeetup.schedule.date)}
-                          {selectedMeetup.schedule?.startTime && selectedMeetup.schedule?.endTime ? ` · ${selectedMeetup.schedule.startTime}–${selectedMeetup.schedule.endTime}` : ''}
-                        </Text>
-                      ) : (
-                        <Text modifiers={[font({ size: 10.5, weight: 'medium' }), foregroundStyle(palette.secondary)]}>
-                          แตะเพื่อจัดการจุดนัดพบ
-                        </Text>
-                      )}
-                    </VStack>
-                  </HStack>
-                </Button>
-                <Button
-                  label="จัดการ"
-                  onPress={() => router.push('/meetup')}
-                  modifiers={[
-                    buttonStyle('glassProminent'),
-                    buttonBorderShape('capsule'),
-                    controlSize('small'),
-                    tint('#1FA778'),
-                  ]}
-                />
-              </HStack>
-            )}
-            <FilterChips
-              likesCount={pendingIncomingLikes.length}
-              onAll={handleReset}
-              onLikes={onOpenLikes}
-            />
+            <FilterChips onAll={handleReset} />
 
             {showFilters && (
               <SmartFilters
-                eveningOnly={eveningOnly}
-                onEvening={() => setEveningOnly((current) => !current)}
+                eveningOnly={availabilityFilterActive && availabilityPeriods.evening}
+                onEvening={toggleEveningFilter}
                 onSameFaculty={() => persistFacultyMatching('all', !sameFacultyOnly)}
                 sameFacultyOnly={sameFacultyOnly}
               />
@@ -411,7 +500,7 @@ export default function HomeScreen({ onOpenLikes }) {
                 />
                 <DiscoveryShortcuts
                   matchedCount={matchedCount}
-                  timeLeft={timeLeft}
+                  resetKey={currentProfile.id}
                 />
               </>
             ) : (
@@ -424,107 +513,274 @@ export default function HomeScreen({ onOpenLikes }) {
                 ]}
               >
                 <ContentUnavailableView
-                  description="ระบบจะค้นหาโปรไฟล์ใหม่โดยอัตโนมัติ หากตัวกรองไม่มีคนที่ตรงกัน"
-                  systemImage="person.2.slash"
-                  title="ยังไม่มีโปรไฟล์ที่ตรงกัน"
+                  description={deckFailed
+                    ? (deck.offline
+                      ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
+                      : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่')
+                    : isWaitingForProfiles
+                      ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
+                      : 'ตัวกรองของคุณยังคงอยู่ กด "เริ่มใหม่" เพื่อดูคนที่เคยข้ามอีกครั้ง หรือปรับตัวกรองจากมุมขวาบน'}
+                  systemImage={deckFailed
+                    ? (deck.offline ? 'wifi.slash' : 'exclamationmark.triangle')
+                    : isWaitingForProfiles ? 'arrow.triangle.2.circlepath' : 'person.2.slash'}
+                  title={deckFailed
+                    ? (deck.offline ? 'ไม่ได้เชื่อมต่ออินเทอร์เน็ต' : deck.stalled ? 'โหลดโปรไฟล์นานกว่าปกติ' : 'โหลดโปรไฟล์ไม่สำเร็จ')
+                    : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
                 />
-                <Button
-                  label="เริ่มใหม่"
-                  onPress={handleReset}
-                  systemImage="arrow.triangle.2.circlepath"
-                  modifiers={[
-                    buttonStyle('glassProminent'),
-                    buttonBorderShape('capsule'),
-                    controlSize('large'),
-                    tint(palette.purple),
-                    frame({ maxWidth: Infinity }),
-                  ]}
-                />
+                {deckFailed ? (
+                  <Button
+                    label="ลองอีกครั้ง"
+                    onPress={deck.retry}
+                    systemImage="arrow.clockwise"
+                    modifiers={[
+                      buttonStyle('glassProminent'),
+                      buttonBorderShape('capsule'),
+                      controlSize('large'),
+                      tint(palette.purple),
+                      frame({ maxWidth: Infinity }),
+                    ]}
+                  />
+                ) : null}
+                {!isWaitingForProfiles && !deckFailed ? (
+                  <Button
+                    label="เริ่มใหม่"
+                    onPress={handleReset}
+                    systemImage="arrow.triangle.2.circlepath"
+                    modifiers={[
+                      buttonStyle('glassProminent'),
+                      buttonBorderShape('capsule'),
+                      controlSize('large'),
+                      tint(palette.purple),
+                      frame({ maxWidth: Infinity }),
+                    ]}
+                  />
+                ) : null}
+                {!isWaitingForProfiles ? (
+                  <Button
+                    label="ปรับตัวกรอง"
+                    onPress={() => router.push('/matching-filters')}
+                    systemImage="slider.horizontal.3"
+                    modifiers={[
+                      buttonStyle('glass'),
+                      buttonBorderShape('capsule'),
+                      controlSize('large'),
+                      frame({ maxWidth: Infinity }),
+                    ]}
+                  />
+                ) : null}
               </VStack>
             )}
           </VStack>
         </ScrollView>
-      
-      <BottomSheet
-        isPresented={showSettings}
-        onIsPresentedChange={setShowSettings}
-        modifiers={[
-          presentationDetents(['large']),
-          presentationDragIndicator('visible')
-        ]}
-      >
-        <VStack style={{ flex: 1 }}>
-          <Text
-            modifiers={[
-              font({ textStyle: 'headline', weight: 'bold' }),
-              padding({ top: 20, bottom: 5 }),
-              frame({ maxWidth: Infinity, alignment: 'center' })
-            ]}
-          >
-            ตั้งค่าการจับคู่
-          </Text>
-          <Form>
-            <Section header={<Text>ระยะห่างจากคุณ</Text>} footer={<Text>ค้นหาเพื่อนในรัศมี {Math.round(distance)} กิโลเมตร</Text>}>
-              <Slider
-                value={distance}
-                onValueChange={setDistance}
-                min={1}
-                max={50}
-                step={1}
-              />
-            </Section>
-            <Section header={<Text>กิจกรรมที่สนใจ</Text>}>
-              <DisclosureGroup 
-                isExpanded={activities.exerciseExpanded} 
-                onIsExpandedChange={(val) => setActivities(a => ({ ...a, exerciseExpanded: val }))}
-              >
-                <DisclosureGroup.Label>
-                  <Label title="ออกกำลังกาย / กีฬา" systemImage="figure.run" />
-                </DisclosureGroup.Label>
-                <Toggle isOn={activities.running} onIsOnChange={(val) => setActivities(a => ({ ...a, running: val }))} label="วิ่ง" systemImage="figure.run" />
-                <Toggle isOn={activities.gym} onIsOnChange={(val) => setActivities(a => ({ ...a, gym: val }))} label="เข้ายิม / ฟิตเนส" systemImage="dumbbell.fill" />
-                <Toggle isOn={activities.sports} onIsOnChange={(val) => setActivities(a => ({ ...a, sports: val }))} label="กีฬาอื่น ๆ (เช่น แบด, บาส)" systemImage="sportscourt.fill" />
-              </DisclosureGroup>
-              <Toggle isOn={activities.study} onIsOnChange={(val) => setActivities(a => ({ ...a, study: val }))} label="ทบทวนบทเรียน / ติวสอบ" systemImage="book.closed.fill" />
-              <Toggle isOn={activities.chill} onIsOnChange={(val) => setActivities(a => ({ ...a, chill: val }))} label="คุยเล่น / คาเฟ่" systemImage="cup.and.saucer.fill" />
-            </Section>
-            <Section header={<Text>ช่วงชั้นปี (เลือกได้หลายข้อ)</Text>}>
-              <Toggle isOn={years[1]} onIsOnChange={(val) => setYears(y => ({ ...y, 1: val }))} label="ปี 1" />
-              <Toggle isOn={years[2]} onIsOnChange={(val) => setYears(y => ({ ...y, 2: val }))} label="ปี 2" />
-              <Toggle isOn={years[3]} onIsOnChange={(val) => setYears(y => ({ ...y, 3: val }))} label="ปี 3" />
-              <Toggle isOn={years[4]} onIsOnChange={(val) => setYears(y => ({ ...y, 4: val }))} label="ปี 4 ขึ้นไป" />
-            </Section>
-            <Section header={<Text>คณะ</Text>}>
-              <Picker label="เลือกคณะ" selection={faculty} onSelectionChange={handleFacultySelection} modifiers={[pickerStyle('menu')]}>
-                <Text modifiers={[tag('all')]}>ทุกคณะ</Text>
-                {FACULTIES.map((fac) => (
-                  <Text key={fac} modifiers={[tag(fac)]}>{fac}</Text>
-                ))}
-              </Picker>
-              <Toggle isOn={sameFacultyOnly} onIsOnChange={handleSameFacultySelection} label="เฉพาะคณะเดียวกับฉัน" systemImage="building.columns.fill" />
-            </Section>
-            <Section header={<Text>เพศ (เลือกได้หลายข้อ)</Text>}>
-              <Toggle isOn={genders.male} onIsOnChange={(val) => setGenders(g => ({ ...g, male: val }))} label="ชาย" />
-              <Toggle isOn={genders.female} onIsOnChange={(val) => setGenders(g => ({ ...g, female: val }))} label="หญิง" />
-              <Toggle isOn={genders.other} onIsOnChange={(val) => setGenders(g => ({ ...g, other: val }))} label="อื่นๆ" />
-            </Section>
-          </Form>
-          <Button
-            label="บันทึกตัวกรอง"
-            onPress={saveSearchSettings}
-            systemImage="checkmark.circle.fill"
-            modifiers={[
-              buttonStyle('glassProminent'),
-              buttonBorderShape('capsule'),
-              controlSize('large'),
-              tint(palette.purple),
-              padding({ horizontal: 20, bottom: 24 }),
-              frame({ maxWidth: Infinity }),
-            ]}
-          />
-        </VStack>
-      </BottomSheet>
 
+        <BottomSheet
+          isPresented={showSettings}
+          onIsPresentedChange={setShowSettings}
+          modifiers={[
+            presentationDetents(['large']),
+            presentationDragIndicator('visible')
+          ]}
+        >
+          <Host colorScheme={colorScheme === 'dark' ? 'dark' : 'light'} seedColor={palette.purple} style={{ flex: 1 }}>
+          <VStack style={{ flex: 1 }}>
+            <Text
+              modifiers={[
+                font({ textStyle: 'headline', weight: 'bold' }),
+                padding({ top: 20, bottom: 5 }),
+                frame({ maxWidth: Infinity, alignment: 'center' })
+              ]}
+            >
+              ตั้งค่าการจับคู่
+            </Text>
+            <Form>
+              <Section header={<Text>ช่วงอายุ</Text>} footer={<Text>แสดงคนอายุ {Math.round(ageMin)}–{Math.round(ageMax)} ปี</Text>}>
+                <Text>อายุต่ำสุด: {Math.round(ageMin)} ปี</Text>
+                <Slider
+                  value={ageMin}
+                  onValueChange={(value) => setAgeMin(Math.min(Math.round(value), ageMax))}
+                  min={MATCHING_AGE_MIN}
+                  max={MATCHING_AGE_MAX}
+                  step={1}
+                />
+                <Text>อายุสูงสุด: {Math.round(ageMax)} ปี</Text>
+                <Slider
+                  value={ageMax}
+                  onValueChange={(value) => setAgeMax(Math.max(Math.round(value), ageMin))}
+                  min={MATCHING_AGE_MIN}
+                  max={MATCHING_AGE_MAX}
+                  step={1}
+                />
+              </Section>
+              <Section
+                header={<Text>ระยะห่างจากคุณ</Text>}
+                footer={<Text>{distance === MATCHING_UNLIMITED_DISTANCE ? 'ไม่จำกัดระยะ' : `ค้นหาในรัศมี ${Math.round(distance)} กม.`} ระยะใกล้กว่า 700 ม. แสดงเป็น 700 ม. และไม่เปิดเผยพิกัด</Text>}
+              >
+                <Toggle
+                  isOn={distance === MATCHING_UNLIMITED_DISTANCE}
+                  label="ไม่จำกัดระยะ"
+                  onIsOnChange={(enabled) => setDistance(enabled ? MATCHING_UNLIMITED_DISTANCE : 25)}
+                  systemImage="location.fill"
+                />
+                <Slider
+                  max={50}
+                  min={1}
+                  onValueChange={setDistance}
+                  step={1}
+                  value={distance === MATCHING_UNLIMITED_DISTANCE ? 25 : Math.max(1, distance)}
+                />
+              </Section>
+              <Section footer={<Text>เว้นว่างไว้ถ้าไม่ต้องการจำกัด</Text>} header={<Text>กิจกรรม</Text>}>
+                {MATCHING_PRIMARY_ACTIVITY_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={!!activities[value]}
+                    key={value}
+                    label={label}
+                    onIsOnChange={() => setActivities((current) => toggleMatchingOption(MATCHING_ACTIVITY_OPTIONS, current, value))}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>กิจกรรมเพิ่มเติม</Text>}>
+                {MATCHING_MORE_ACTIVITY_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={!!activities[value]}
+                    key={value}
+                    label={label}
+                    onIsOnChange={() => setActivities((current) => toggleMatchingOption(MATCHING_ACTIVITY_OPTIONS, current, value))}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              {detailFilterSections.map((section) => (
+                <Section
+                  footer={<Text>เว้นว่างไว้ = ไม่จำกัด</Text>}
+                  header={<Text>รายละเอียด{section.label}</Text>}
+                  key={section.id}
+                >
+                  {section.fields.map((field) => {
+                    const selected = detailFilters[section.id]?.[field.key] || [];
+                    return (
+                      <Picker
+                        key={field.key}
+                        label={field.label}
+                        modifiers={[pickerStyle('navigationLink')]}
+                        onSelectionChange={(next) => {
+                          // Native pickers are single-choice; a filter saved
+                          // with several values from Android collapses to
+                          // whichever option is picked here.
+                          setDetailFilters((current) => {
+                            const cleared = clearActivityDetailFilter(current, section.id, field.key);
+                            return next === '__any__'
+                              ? cleared
+                              : toggleActivityDetailFilter(cleared, section.id, field.key, next);
+                          });
+                        }}
+                        selection={selected.length === 1 ? selected[0] : '__any__'}
+                      >
+                        <Text modifiers={[tag('__any__')]}>{selected.length > 1 ? `เลือกไว้ ${selected.length}` : 'ทั้งหมด'}</Text>
+                        {field.options.map(({ label, value }) => (
+                          <Text key={value} modifiers={[tag(value)]}>{label}</Text>
+                        ))}
+                      </Picker>
+                    );
+                  })}
+                </Section>
+              ))}
+              <Section header={<Text>ชั้นปี</Text>}>
+                {MATCHING_YEAR_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={!!years[value]}
+                    key={value}
+                    label={label}
+                    onIsOnChange={() => advancedFilters.guard() && setYears((current) => toggleMatchingOption(MATCHING_YEAR_OPTIONS, current, value))}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>คณะ</Text>}>
+                <Picker label="เลือกคณะ" onSelectionChange={handleFacultySelection} selection={faculty} modifiers={[pickerStyle('menu')]}>
+                  <Text modifiers={[tag('all')]}>ทุกคณะ</Text>
+                  {FACULTIES.map((fac) => (
+                    <Text key={fac} modifiers={[tag(fac)]}>{fac}</Text>
+                  ))}
+                </Picker>
+                <Toggle isOn={sameFacultyOnly} label="เฉพาะคณะเดียวกับฉัน" onIsOnChange={handleSameFacultySelection} systemImage="building.columns.fill" />
+              </Section>
+              <Section footer={<Text>ใช้เมื่อสนใจเพื่อนที่วิ่ง</Text>} header={<Text>เพซวิ่ง</Text>}>
+                {MATCHING_PACE_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={!!paces[value]}
+                    key={value}
+                    label={label}
+                    onIsOnChange={() => advancedFilters.guard() && setPaces((current) => toggleMatchingOption(MATCHING_PACE_OPTIONS, current, value))}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>วันที่สะดวก</Text>}>
+                {MATCHING_WEEKDAY_OPTIONS.map(({ longLabel, value }) => (
+                  <Toggle
+                    isOn={!!weekdays[value]}
+                    key={value}
+                    label={longLabel}
+                    onIsOnChange={() => advancedFilters.guard() && setWeekdays((current) => toggleMatchingOption(MATCHING_WEEKDAY_OPTIONS, current, value))}
+                  />
+                ))}
+              </Section>
+              <Section footer={<Text>จับคู่จากช่วงเวลาในโปรไฟล์</Text>} header={<Text>ช่วงเวลา</Text>}>
+                {MATCHING_AVAILABILITY_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={!!availabilityPeriods[value]}
+                    key={value}
+                    label={label}
+                    onIsOnChange={() => toggleAvailabilityPeriod(value)}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>เพศ</Text>}>
+                {MATCHING_PRIMARY_GENDER_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={!!genders[value]}
+                    key={value}
+                    label={label}
+                    onIsOnChange={() => setGenders((current) => toggleMatchingOption(MATCHING_GENDER_OPTIONS, current, value))}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>เพศเพิ่มเติม</Text>}>
+                {MATCHING_MORE_GENDER_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={!!genders[value]}
+                    key={value}
+                    label={label}
+                    onIsOnChange={() => setGenders((current) => toggleMatchingOption(MATCHING_GENDER_OPTIONS, current, value))}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>เงื่อนไขเพิ่มเติม</Text>}>
+                <Toggle isOn={requirePhoto} label="ต้องมีรูปโปรไฟล์" onIsOnChange={setRequirePhoto} systemImage="person.crop.circle" />
+                <Toggle isOn={requireAvailability} label="ต้องระบุเวลาว่าง" onIsOnChange={(value) => { if (advancedFilters.guard()) setRequireAvailability(value); }} systemImage="clock.fill" />
+              </Section>
+            </Form>
+            <Button
+              label="บันทึกตัวกรอง"
+              onPress={saveSearchSettings}
+              systemImage="checkmark.circle.fill"
+              modifiers={[
+                buttonStyle('glassProminent'),
+                buttonBorderShape('capsule'),
+                controlSize('large'),
+                tint(palette.purple),
+                padding({ horizontal: 20, bottom: 24 }),
+                frame({ maxWidth: Infinity }),
+              ]}
+            />
+          </VStack>
+          </Host>
+        </BottomSheet>
       </Host>
     </View>
   );
@@ -543,10 +799,11 @@ function Header({ onSettings }) {
         หาเพื่อน
       </Text>
       <Spacer />
+      <RNHostView matchContents><NotificationBell /></RNHostView>
       <Button
-        label="ตั้งค่า"
+        label="ตัวกรอง"
         onPress={onSettings}
-        systemImage="gearshape.fill"
+        systemImage="slider.horizontal.3"
         modifiers={[
           buttonStyle('glass'),
           buttonBorderShape('circle'),
@@ -559,8 +816,7 @@ function Header({ onSettings }) {
   );
 }
 
-function FilterChips({ likesCount, onAll, onLikes }) {
-  const palette = usePalette();
+function FilterChips({ onAll }) {
   return (
     <ScrollView
       axes="horizontal"
@@ -568,7 +824,7 @@ function FilterChips({ likesCount, onAll, onLikes }) {
       modifiers={[scrollIndicators('never', 'horizontal')]}
     >
       <HStack spacing={8}>
-        <FilterChip dot={likesCount > 0} label="ถูกใจคุณ" onPress={onLikes} />
+        <FilterChip label="ถูกใจ" onPress={() => router.push('/likes')} />
         <FilterChip label="เริ่มใหม่" onPress={onAll} />
       </HStack>
     </ScrollView>
@@ -654,6 +910,11 @@ function CompactFilter({ active, label, onPress, systemImage }) {
 
 function ProfileCard({ candidate, imageUri, onPress }) {
   const palette = usePalette();
+  const colorScheme = useColorScheme();
+  const glassGradient = colorScheme === 'dark'
+    ? ['rgba(20,23,27,0)', 'rgba(20,23,27,0.42)', 'rgba(20,23,27,0.9)']
+    : ['rgba(16,32,58,0)', 'rgba(16,32,58,0.28)', 'rgba(16,32,58,0.82)'];
+
   return (
     <ZStack
       alignment="topLeading"
@@ -669,78 +930,116 @@ function ProfileCard({ candidate, imageUri, onPress }) {
       ]}
     >
       <VStack spacing={0} modifiers={[frame({ maxWidth: Infinity })]}>
-        {imageUri ? (
-          <Image
-            uiImage={imageUri}
-            modifiers={[
-              resizable(),
-              aspectRatio({ ratio: 0.82, contentMode: 'fill' }),
-              frame({ height: 340, maxWidth: Infinity }),
-              clipped(),
-            ]}
-          />
-        ) : (
-          <Image
-            color={palette.secondary}
-            size={84}
-            systemName="person.crop.square.fill"
-            modifiers={[
-              frame({ height: 340, maxWidth: Infinity }),
-              background(candidate.avatarColor || palette.chip),
-            ]}
-          />
-        )}
-        <VStack
-          alignment="leading"
-          spacing={6}
-          modifiers={[
-            padding({ top: 35, bottom: 22, horizontal: 18 }),
-            frame({ minHeight: 122, maxWidth: Infinity, alignment: 'leading' }),
-            background(palette.card),
-          ]}
-        >
-          {candidate.isMatched && (
-            <HStack
-              alignment="center"
-              spacing={4}
+        <ZStack modifiers={[frame({ height: 340, maxWidth: Infinity })]}>
+          {imageUri ? (
+            <RNHostView matchContents={false} modifiers={[frame({ height: 340, maxWidth: Infinity })]}>
+              <ExpoImage source={{ uri: imageUri }} contentFit="cover" priority="high" style={{ width: '100%', height: 340 }} />
+            </RNHostView>
+          ) : (
+            <Image
+              color={palette.secondary}
+              size={84}
+              systemName="person.crop.square.fill"
               modifiers={[
-                padding({ horizontal: 8, vertical: 4 }),
-                background(palette.purpleSoft, shapes.capsule()),
+                frame({ height: 340, maxWidth: Infinity }),
+                background(candidate.avatarColor || palette.chip),
+              ]}
+            />
+          )}
+
+          <RNHostView matchContents={false}>
+            <View style={{ height: 340, width: '100%' }} pointerEvents="none">
+              <MaskedView
+                style={{ bottom: 0, height: 158, left: 0, position: 'absolute', right: 0 }}
+                maskElement={
+                  <LinearGradient
+                    colors={['transparent', '#FFFFFF', '#FFFFFF']}
+                    locations={[0, 0.48, 1]}
+                    style={{ flex: 1 }}
+                  />
+                }
+              >
+                <BlurView intensity={colorScheme === 'dark' ? 38 : 48} tint={colorScheme} style={{ flex: 1 }} />
+                <LinearGradient colors={glassGradient} locations={[0, 0.45, 1]} style={{ bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 }} />
+              </MaskedView>
+            </View>
+          </RNHostView>
+
+          <VStack
+            alignment="leading"
+            spacing={6}
+            modifiers={[
+              padding({ top: 44, bottom: 22, horizontal: 18 }),
+              frame({ height: 340, maxWidth: Infinity, alignment: 'bottomLeading' }),
+            ]}
+          >
+            <Spacer />
+            {candidate.isMatched && (
+              <HStack
+                alignment="center"
+                spacing={4}
+                modifiers={[
+                  padding({ horizontal: 8, vertical: 4 }),
+                  background('rgba(255,255,255,0.2)', shapes.capsule()),
+                ]}
+              >
+                <Image color={palette.white} size={11} systemName="person.2.fill" />
+                <Text modifiers={[font({ size: 11, weight: 'bold' }), foregroundStyle(palette.white)]}>
+                  เพื่อนที่คุณแมตช์แล้ว 💬
+                </Text>
+              </HStack>
+            )}
+            <Text
+              modifiers={[
+                font({ textStyle: 'title', weight: 'bold', design: 'rounded' }),
+                foregroundStyle(palette.white),
+                lineLimit(1),
               ]}
             >
-              <Image color={palette.purple} size={11} systemName="person.2.fill" />
-              <Text modifiers={[font({ size: 11, weight: 'bold' }), foregroundStyle(palette.purple)]}>
-                เพื่อนที่คุณแมตช์แล้ว 💬
-              </Text>
-            </HStack>
-          )}
-          <Text
-            modifiers={[
-              font({ textStyle: 'title', weight: 'bold', design: 'rounded' }),
-              foregroundStyle(palette.text),
-              lineLimit(1),
-            ]}
-          >
-            {candidate.name}{candidate.age ? `, ${candidate.age}` : ''}
-          </Text>
-          <Text
-            modifiers={[
-              font({ textStyle: 'subheadline', weight: 'medium' }),
-              foregroundStyle(palette.secondary),
-              lineLimit(1),
-            ]}
-          >
-            {[getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities), candidate.faculty].filter(Boolean).join(' · ') || 'แตะเพื่อดูโปรไฟล์'}
-          </Text>
-        </VStack>
+              {candidate.name}{candidate.age ? `, ${candidate.age}` : ''}
+            </Text>
+            <Text
+              modifiers={[
+                font({ textStyle: 'subheadline', weight: 'medium' }),
+                foregroundStyle('rgba(255,255,255,0.88)'),
+                lineLimit(1),
+              ]}
+            >
+              {[getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities), candidate.faculty, formatDistance(candidate.distance)].filter(Boolean).join(' · ') || 'แตะเพื่อดูโปรไฟล์'}
+            </Text>
+          </VStack>
+        </ZStack>
       </VStack>
 
     </ZStack>
   );
 }
 
-function DiscoveryShortcuts({ matchedCount = 0, timeLeft = '24:00:00' }) {
+function DiscoveryShortcuts({ matchedCount = 0, resetKey }) {
   const palette = usePalette();
+  const [timeLeft, setTimeLeft] = useState(getRemainingTimeUntilMidnight());
+  const resetDeadlineRef = useRef(Date.now() + RESET_INTERVAL_MS);
+
+  useEffect(() => {
+    resetDeadlineRef.current = Date.now() + RESET_INTERVAL_MS;
+    setTimeLeft(formatRemainingTime(RESET_INTERVAL_MS));
+  }, [resetKey]);
+
+  useEffect(() => {
+    const updateCountdown = () => {
+      const remaining = resetDeadlineRef.current - Date.now();
+      if (remaining <= 0) {
+        resetDeadlineRef.current = Date.now() + RESET_INTERVAL_MS;
+        setTimeLeft(formatRemainingTime(RESET_INTERVAL_MS));
+        return;
+      }
+      setTimeLeft(formatRemainingTime(remaining));
+    };
+    updateCountdown();
+    const timer = setInterval(updateCountdown, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   return (
     <HStack spacing={10} alignment="center" modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
       <HStack
@@ -765,7 +1064,7 @@ function DiscoveryShortcuts({ matchedCount = 0, timeLeft = '24:00:00' }) {
 
       <ShortcutCircle
         label="สถิติแมตช์"
-        onPress={() => router.push('/(tabs)/dashboard')}
+        onPress={() => router.navigate('/home')}
         systemImage="flame.fill"
         value={`${matchedCount}`}
       />

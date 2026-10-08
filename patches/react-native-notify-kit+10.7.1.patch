@@ -1,0 +1,26 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 9ebcef226f4e6bbb3ddeec67a8125817f6c7a266..aea29756de257a3c0fb8afcd21cf5690b442bc0e 100644
+--- a/android/build.gradle
++++ b/android/build.gradle	
+@@ -20,7 +20,9 @@ buildscript {
+ plugins {
+   id "com.android.library"
+   id "com.facebook.react"
+-  id "org.jetbrains.kotlin.android"
+ }
++if (project.findProperty('android.builtInKotlin')?.toString() == 'false') {
++    apply plugin: 'kotlin-android'
++}
+ 
+ ext {
+@@ -88,10 +90,6 @@ android {
+     targetCompatibility JavaVersion.VERSION_17
+   }
+ 
+-  kotlinOptions {
+-    jvmTarget = "17"
+-  }
+-
+   sourceSets {
+     main {
+       kotlin.srcDirs += 'src/main/kotlin'

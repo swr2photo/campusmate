@@ -3,6 +3,14 @@ import { Storage } from '../utils/storage';
 const SAVED_ACCOUNTS_KEY = 'campusmate_saved_accounts_v1';
 const ACTIVE_USER_KEY = 'campusmate_active_user_v1';
 
+function timestampToMillis(value) {
+  if (typeof value === 'number') return value;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value?.toMillis === 'function') return value.toMillis();
+  if (Number.isFinite(value?.seconds)) return value.seconds * 1000;
+  return 0;
+}
+
 export async function getSavedAccounts() {
   try {
     const raw = await Storage.getItem(SAVED_ACCOUNTS_KEY);
@@ -21,21 +29,28 @@ export async function saveAccount(account) {
     const existing = await getSavedAccounts();
     const accountId = account.id || account.email;
 
-    // Filter out previous entry for same account id or email
-    const filtered = existing.filter(
-      (a) => (a.id !== accountId) && (a.email !== account.email)
+    // Find previous entry for same account id or email to preserve existing fields
+    const prev = existing.find(
+      (a) => (a.id === accountId) || (account.email && a.email === account.email)
     );
 
-    const photoURL = account.avatarUri || account.photoURL || account.photos?.[0] || null;
+    // Filter out previous entry for same account id or email
+    const filtered = existing.filter(
+      (a) => (a.id !== accountId) && (!account.email || a.email !== account.email)
+    );
+
+    const photoURL = account.avatarUri || account.photoURL || account.photos?.[0] || prev?.avatarUri || prev?.photoURL || null;
 
     const updated = {
       id: account.id || accountId,
-      email: account.email || '',
-      displayName: account.displayName || account.nickname || account.name || account.email?.split('@')[0] || 'ผู้ใช้งาน',
+      email: account.email || prev?.email || '',
+      displayName: account.displayName || account.nickname || account.name || prev?.displayName || account.email?.split('@')[0] || 'ผู้ใช้งาน',
       photoURL: photoURL,
       avatarUri: photoURL,
-      faculty: account.faculty || '',
-      avatarColor: account.avatarColor || null,
+      faculty: account.faculty || prev?.faculty || '',
+      avatarColor: account.avatarColor || prev?.avatarColor || null,
+      avatarRevision: Number.isSafeInteger(account.avatarRevision) ? account.avatarRevision : (prev?.avatarRevision ?? 0),
+      updatedAt: timestampToMillis(account.updatedAt) || prev?.updatedAt || Date.now(),
       lastUsedAt: Date.now(),
     };
 
@@ -51,6 +66,11 @@ export async function saveAccount(account) {
 export async function enrichSavedAccountsWithFirestore(accounts) {
   if (!accounts || accounts.length === 0) return accounts || [];
   try {
+    const { getAuth } = require('firebase/auth');
+    const { firebaseApp } = require('./dbService');
+    const currentAuthUser = firebaseApp ? getAuth(firebaseApp).currentUser : null;
+    if (!currentAuthUser) return accounts;
+
     const { getUserProfile } = require('./firestoreService');
     const updatedAccounts = await Promise.all(
       accounts.map(async (acc) => {
@@ -66,6 +86,7 @@ export async function enrichSavedAccountsWithFirestore(accounts) {
               avatarUri: photo,
               faculty: profile.faculty || acc.faculty,
               avatarColor: profile.avatarColor || acc.avatarColor,
+              updatedAt: timestampToMillis(profile.updatedAt) || acc.updatedAt || Date.now(),
             };
           }
         } catch (e) {}
@@ -98,5 +119,13 @@ export async function getActiveUser() {
     return JSON.parse(raw);
   } catch (error) {
     return null;
+  }
+}
+
+export async function clearActiveUser() {
+  try {
+    await Storage.removeItem(ACTIVE_USER_KEY);
+  } catch (error) {
+    console.warn('Failed to clear active user:', error);
   }
 }

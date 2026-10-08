@@ -1,0 +1,40 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index f7cd0a599ffd33a1bb63f73008ee22d8223a2e86..0331a413a0d578ae32ff7efb8f533215cf4572bd 100644
+--- a/android/build.gradle
++++ b/android/build.gradle	
+@@ -1,5 +1,7 @@
+ apply plugin: 'com.android.library'
+-apply plugin: 'kotlin-android'
++if (project.findProperty('android.builtInKotlin')?.toString() == 'false') {
++    apply plugin: 'kotlin-android'
++}
+ apply plugin: 'maven-publish'
+ 
+ group = 'io.livekit.reactnative.expo'
+@@ -9,7 +11,6 @@ buildscript {
+   def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+   if (expoModulesCorePlugin.exists()) {
+     apply from: expoModulesCorePlugin
+-    applyKotlinExpoModulesCorePlugin()
+   }
+ 
+   // Simple helper that allows the root project to override versions declared by this library.
+@@ -60,18 +61,12 @@ android {
+       targetCompatibility JavaVersion.VERSION_11
+     }
+ 
+-    kotlinOptions {
+-      jvmTarget = JavaVersion.VERSION_11.majorVersion
+-    }
+   } else {
+     compileOptions {
+       sourceCompatibility JavaVersion.VERSION_17
+       targetCompatibility JavaVersion.VERSION_17
+     }
+ 
+-    kotlinOptions {
+-      jvmTarget = JavaVersion.VERSION_17
+-    }
+   }
+ 
+   namespace "io.livekit.reactnative.expo"

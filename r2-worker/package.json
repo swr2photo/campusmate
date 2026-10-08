@@ -1,0 +1,5 @@
+{
+  "name": "campusmate-media-worker",
+  "private": true,
+  "type": "module"
+}

@@ -1,26 +1,24 @@
 import React from 'react';
-import { router } from 'expo-router';
-import ProfileScreen from '../src/screens/ProfileScreen';
-import { useAuth } from '../src/context/AuthContext';
+import { router, Stack } from 'expo-router';
+import ProfileScreen from '../src/screens/ProfileScreen.ios';
 import { useToast } from '../src/context/ToastContext';
 
 export default function ProfileRoute() {
-  const { logout } = useAuth();
   const { showToast } = useToast();
 
   const close = () => {
     if (router.canGoBack()) router.back();
-    else router.replace('/home');
+    else router.replace('/me');
   };
 
   return (
-    <ProfileScreen
-      onClose={close}
-      onLogout={async () => {
-        await logout();
-        router.replace('/');
-      }}
-      onToast={showToast}
-    />
+    <>
+      <Stack.Screen options={{ title: 'แก้ไขโปรไฟล์' }} />
+      <ProfileScreen
+        onClose={close}
+        onToast={showToast}
+        showHeader={false}
+      />
+    </>
   );
 }

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json.schemastore.org/wrangler.json",
+  "name": "campusmate-place-photos",
+  "main": "src/index.js",
+  "account_id": "3dd0f976f772d6bfb28fc82710a63a9c",
+  "compatibility_date": "2026-10-03",
+  "workers_dev": false,
+  "routes": [{ "pattern": "photos.getcampusmate.app", "custom_domain": true }],
+  "r2_buckets": [{ "binding": "PLACE_PHOTOS", "bucket_name": "campusmate-public-images" }],
+  "observability": { "enabled": true }
+}

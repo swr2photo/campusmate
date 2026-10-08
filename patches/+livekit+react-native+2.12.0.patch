@@ -1,0 +1,15 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 4d1faae3d2035373de254d22809962d74a1f46f5..1698665aba68d09860ddd2f313687d998670c0cd 100644
+--- a/android/build.gradle
++++ b/android/build.gradle	
+@@ -15,7 +15,9 @@ buildscript {
+ }
+ 
+ apply plugin: 'com.android.library'
+-apply plugin: 'kotlin-android'
++if (project.findProperty('android.builtInKotlin')?.toString() == 'false') {
++    apply plugin: 'kotlin-android'
++}
+ 
+ def getExtOrDefault(name) {
+   return rootProject.ext.has(name) ? rootProject.ext.get(name) : project.properties['LivekitReactNative_' + name]

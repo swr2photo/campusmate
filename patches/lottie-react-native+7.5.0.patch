@@ -1,0 +1,15 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 5e939d6b31e05424585a5d77fff3e6de00a91395..5c8269c1aa2cee65237551c9500959cc549b634c 100644
+--- a/android/build.gradle
++++ b/android/build.gradle	
+@@ -107,8 +107,10 @@ android {
+         main {
+             if (isNewArchitectureEnabled()) {
+                 java.srcDirs += ['src/newarch', "${project.buildDir}/generated/source/codegen/java"]
++                kotlin.srcDirs += ['src/newarch', "${project.buildDir}/generated/source/codegen/java"]
+             } else {
+                 java.srcDirs += ['src/oldarch']
++                kotlin.srcDirs += ['src/oldarch']
+             }
+         }
+     }

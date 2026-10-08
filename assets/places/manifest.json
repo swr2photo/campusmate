@@ -1,0 +1,312 @@
+[
+  {
+    "spotId": "spot-gym-complex",
+    "name": "อาคารกีฬาและนันทนาการ (ยิมใหญ่ ม.อ.)",
+    "sourceUrl": "https://getcampusmate.app",
+    "localFile": "src/assets/images/campus/DSC_2415.jpg",
+    "credit": "CampusMate / swr2photo",
+    "license": "owned",
+    "rightsConfirmed": true,
+    "licenseReview": "Original high-resolution exterior photo of PSU Hat Yai Gym Complex taken by application author."
+  },
+  {
+    "spotId": "spot-indoor-stadium",
+    "name": "อาคารกีฬาในร่ม ม.อ.",
+    "sourceUrl": "https://sportscenter.psu.ac.th",
+    "downloadUrl": "https://sportscenter.psu.ac.th/wp-content/uploads/2025/06/DSC00410.png",
+    "credit": "PSU Sports Center / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official facility photograph published on PSU Sports Center portal for public university facility promotion."
+  },
+  {
+    "spotId": "spot-tennis-courts",
+    "name": "สนามเทนนิส ม.อ.",
+    "sourceUrl": "https://sportscenter.psu.ac.th",
+    "downloadUrl": "https://sportscenter.psu.ac.th/wp-content/uploads/2025/06/DSC7915.png",
+    "credit": "PSU Sports Center / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official facility photograph published on PSU Sports Center portal."
+  },
+  {
+    "spotId": "spot-swimming-pool",
+    "name": "อาคารสระว่ายน้ำ ม.อ.",
+    "sourceUrl": "https://sportscenter.psu.ac.th",
+    "downloadUrl": "https://sportscenter.psu.ac.th/wp-content/uploads/2025/06/DSC00510.png",
+    "credit": "PSU Sports Center / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official facility photograph published on PSU Sports Center portal."
+  },
+  {
+    "spotId": "spot-fitness-center",
+    "name": "อาคารศูนย์บริหารร่างกาย (ฟิตเนส ม.อ.)",
+    "sourceUrl": "https://sportscenter.psu.ac.th",
+    "downloadUrl": "https://sportscenter.psu.ac.th/wp-content/uploads/2025/06/c31_2.jpg",
+    "credit": "PSU Sports Center / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official facility photograph published on PSU Sports Center portal."
+  },
+  {
+    "spotId": "spot-psu-stadium",
+    "name": "สนามกีฬากลางแจ้งหลัก (PSU Stadium)",
+    "sourceUrl": "https://getcampusmate.app",
+    "localFile": "src/assets/images/campus/DSC_8697.jpg",
+    "credit": "CampusMate / swr2photo",
+    "license": "owned",
+    "rightsConfirmed": true,
+    "licenseReview": "Original running track and outdoor stadium photo taken by application author at PSU Hat Yai."
+  },
+  {
+    "spotId": "spot-dorm-sports",
+    "name": "สนามฟุตซอล & สตรีทบาส โซนหอพัก",
+    "sourceUrl": "https://sportscenter.psu.ac.th",
+    "downloadUrl": "https://sportscenter.psu.ac.th/wp-content/uploads/2025/06/DSC00453.png",
+    "credit": "PSU Sports Center / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official facility photograph published on PSU Sports Center portal."
+  },
+  {
+    "spotId": "spot-beach-volleyball-petanque",
+    "name": "สนามวอลเลย์บอลชายหาด & เปตอง",
+    "sourceUrl": "https://sportscenter.psu.ac.th",
+    "downloadUrl": "https://sportscenter.psu.ac.th/wp-content/uploads/2025/06/c17_pt3_resize.jpg",
+    "credit": "PSU Sports Center / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official facility photograph published on PSU Sports Center portal."
+  },
+  {
+    "spotId": "spot-reservoir-heart",
+    "name": "อ่างเก็บน้ำ ม.อ. (อ่างเก็บน้ำรูปหัวใจ / อ่างแก้ว)",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Reservoir_and_student_dormitories,_Prince_of_Songkla_University,_Hat_Yai,_Songkhla.jpg",
+    "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/4/41/Reservoir_and_student_dormitories%2C_Prince_of_Songkla_University%2C_Hat_Yai%2C_Songkhla.jpg",
+    "credit": "Wutkh / Wikimedia Commons",
+    "license": "CC-BY-4.0",
+    "rightsConfirmed": true,
+    "licenseReview": "Description and structured data both state CC-BY-4.0 on the source page reviewed 2026-10-04. Attribution and modifications retained."
+  },
+  {
+    "spotId": "spot-plaza-dorm",
+    "name": "ลานกิจกรรม PLAZA (โซนหอพัก)",
+    "sourceUrl": "https://sportscenter.psu.ac.th",
+    "downloadUrl": "https://sportscenter.psu.ac.th/wp-content/uploads/2025/06/DSC00414.png",
+    "credit": "PSU Sports Center / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official student dormitory activity plaza court photograph published on PSU Sports Center portal."
+  },
+  {
+    "spotId": "spot-rong-chang",
+    "name": "โรงช้าง (โรงอาหารกลาง ม.อ.)",
+    "sourceUrl": "https://www.wongnai.com/restaurants/342930wO-โรงอาหาร-ม-อ-โรงช้าง",
+    "downloadUrl": "https://img.wongnai.com/p/1920x0/2019/02/11/8e086bcdae0f47ffa5f0f577e49eb42f.jpg",
+    "credit": "Wongnai Reviewers / PSU Rong Chang",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Public dining review photograph depicting Rong Chang central cafeteria interior."
+  },
+  {
+    "spotId": "spot-lan-sai-sci",
+    "name": "ลานไทร คณะวิทยาศาสตร์",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Faculty_of_Science_Building,_Prince_of_Songkla_University,_Hat_Yai,_Songkhla.jpg",
+    "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/5/52/Faculty_of_Science_Building%2C_Prince_of_Songkla_University%2C_Hat_Yai%2C_Songkhla.jpg",
+    "credit": "Supanut Arunoprayote / Wikimedia Commons",
+    "license": "CC-BY-4.0",
+    "rightsConfirmed": true,
+    "licenseReview": "Depicts Faculty of Science grounds and surrounding trees at PSU Hat Yai. CC-BY-4.0."
+  },
+  {
+    "spotId": "spot-eng-plaza",
+    "name": "ลานหน้าคณะวิศวกรรมศาสตร์ (ลานเกียร์)",
+    "sourceUrl": "https://www.eng.psu.ac.th",
+    "downloadUrl": "https://www.eng.psu.ac.th/images/site/cover/4855443.jpeg",
+    "credit": "Faculty of Engineering / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official cover photograph of the Faculty of Engineering complex from eng.psu.ac.th."
+  },
+  {
+    "spotId": "spot-med-garden",
+    "name": "สวนหย่อม คณะแพทยศาสตร์",
+    "sourceUrl": "https://getcampusmate.app",
+    "localFile": "src/assets/images/campus/DSC_3614.jpg",
+    "credit": "CampusMate / swr2photo",
+    "license": "owned",
+    "rightsConfirmed": true,
+    "licenseReview": "Original photograph of Prince Mahidol statue and surrounding garden plaza at Faculty of Medicine taken by application author."
+  },
+  {
+    "spotId": "spot-nursing-pavilion",
+    "name": "ศาลาและที่นั่งริมสระน้ำ คณะพยาบาลศาสตร์",
+    "sourceUrl": "https://getcampusmate.app",
+    "localFile": "src/assets/images/campus/DSC_2460.jpg",
+    "credit": "CampusMate / swr2photo",
+    "license": "owned",
+    "rightsConfirmed": true,
+    "licenseReview": "Original high-resolution photograph of Faculty of Nursing waterfront pond and garden pavilion taken by application author."
+  },
+  {
+    "spotId": "spot-icc-hatyai",
+    "name": "ศูนย์ประชุมนานาชาติฯ ม.อ. (ICC Hat Yai)",
+    "sourceUrl": "https://icchatyai.com",
+    "downloadUrl": "https://icchatyai.com/images/slider/cache/9c2ec36d95488954acf534e6178256ab/ICCCOVER.jpg",
+    "credit": "The 60th Anniversary of His Majesty the King's Accession to the Throne International Convention Center (ICC Hat Yai)",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official header photograph from icchatyai.com depicting the convention center."
+  },
+  {
+    "spotId": "spot-natural-museum",
+    "name": "พิพิธภัณฑสถานธรรมชาติวิทยา ๕๐ พรรษาฯ ม.อ. หาดใหญ่",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Faculty_of_Science_and_Natural_History_Museum,_Prince_of_Songkla_University,_Hat_Yai_campus.jpg",
+    "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/c/ca/Faculty_of_Science_and_Natural_History_Museum%2C_Prince_of_Songkla_University%2C_Hat_Yai_campus.jpg",
+    "credit": "Wutkh / Wikimedia Commons",
+    "license": "CC-BY-4.0",
+    "rightsConfirmed": true,
+    "licenseReview": "Own work depicting the Faculty of Science and Natural History Museum, Hat Yai campus. Source CC-BY-4.0 reviewed 2026-10-04."
+  },
+  {
+    "spotId": "spot-upstairs-cafe",
+    "name": "Upstairs Café & Bistro",
+    "sourceUrl": "https://getcampusmate.app",
+    "localFile": "src/assets/images/campus/DSC_5070.jpg",
+    "credit": "CampusMate / swr2photo",
+    "license": "owned",
+    "rightsConfirmed": true,
+    "licenseReview": "Original photograph of the staff club terrace and reservoir cafe area taken by application author."
+  },
+  {
+    "spotId": "spot-peaberries-pharm",
+    "name": "PEABERRiES COFFEE BEAN (คณะเภสัชฯ)",
+    "sourceUrl": "https://www.pharmacy.psu.ac.th/th/history.html",
+    "downloadUrl": "https://www.pharmacy.psu.ac.th/images/IMG_1352cr.jpg",
+    "credit": "Faculty of Pharmaceutical Sciences / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official photograph of Faculty of Pharmacy building complex housing Peaberries coffee shop from pharmacy.psu.ac.th."
+  },
+  {
+    "spotId": "spot-chadpedmini-sci",
+    "name": "Chadpedmini (ชดเชย มินิ - คณะวิทยาศาสตร์)",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Basic_Science_(BSC)_Building,_Faculty_of_Science,_Prince_of_Songkla_University,_Hat_Yai,_Songkhla.jpg",
+    "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/1/14/Basic_Science_%28BSC%29_Building%2C_Faculty_of_Science%2C_Prince_of_Songkla_University%2C_Hat_Yai%2C_Songkhla.jpg",
+    "credit": "Supanut Arunoprayote / Wikimedia Commons",
+    "license": "CC-BY-4.0",
+    "rightsConfirmed": true,
+    "licenseReview": "Depicts Basic Science Building courtyard where Chadpedmini cafe is situated. CC-BY-4.0."
+  },
+  {
+    "spotId": "spot-black-canyon-hospital",
+    "name": "Black Canyon (รพ.สงขลานครินทร์)",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Songklanakarind_Hospital,_Faculty_of_Medicine,_Prince_of_Songkla_University,_Hat_Yai,_Songkhla.jpg",
+    "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/4/41/Songklanakarind_Hospital%2C_Faculty_of_Medicine%2C_Prince_of_Songkla_University%2C_Hat_Yai%2C_Songkhla.jpg",
+    "credit": "Supanut Arunoprayote / Wikimedia Commons",
+    "license": "CC-BY-4.0",
+    "rightsConfirmed": true,
+    "licenseReview": "Depicts Songklanakarind Hospital Sriwejjawat Building housing Black Canyon cafe. CC-BY-4.0."
+  },
+  {
+    "spotId": "spot-cafe-rongchang",
+    "name": "คาเฟ่ & เครื่องดื่ม โซนโรงช้าง",
+    "sourceUrl": "https://www.wongnai.com/restaurants/342930wO-โรงอาหาร-ม-อ-โรงช้าง",
+    "downloadUrl": "https://img.wongnai.com/p/800x0/2025/09/29/6bd8dcf007e6466695183cd858f367eb.jpg",
+    "credit": "Wongnai Reviewers / PSU Rong Chang",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Public review photograph of refreshment and cafe kiosk inside Rong Chang cafeteria."
+  },
+  {
+    "spotId": "spot-econ-cafe",
+    "name": "คาเฟ่ข้างคณะเศรษฐศาสตร์",
+    "sourceUrl": "https://economics.psu.ac.th",
+    "downloadUrl": "https://economics.psu.ac.th/econApp/PR/ACTIVITIES/Uploads/Images/20260904111736293_img_7308_edit_8973264e.jpg",
+    "credit": "Faculty of Economics / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official activity photograph showing the Faculty of Economics cafe garden area from economics.psu.ac.th."
+  },
+  {
+    "spotId": "spot-lib-the-forest-24h",
+    "name": "หอสมุดคุณหญิงหลง (โซน 24 ชม. The Forest)",
+    "sourceUrl": "https://lib.psu.ac.th",
+    "downloadUrl": "https://lib.psu.ac.th/wp-content/uploads/2026/09/25690921_103529_846_1x-scaled.jpg",
+    "credit": "Khunying Long Athakravisunthorn Learning Resources Center / PSU Library",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official photograph of The Forest 24h reading zone published on lib.psu.ac.th."
+  },
+  {
+    "spotId": "spot-lib-the-space-24h",
+    "name": "หอสมุดคุณหญิงหลง (The Space@KYL ชั้น 3)",
+    "sourceUrl": "https://lib.psu.ac.th",
+    "downloadUrl": "https://lib.psu.ac.th/wp-content/uploads/2026/09/25690921_101428_967_2x-scaled.jpg",
+    "credit": "Khunying Long Athakravisunthorn Learning Resources Center / PSU Library",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official photograph of The Space 24h reading zone on 3rd floor published on lib.psu.ac.th."
+  },
+  {
+    "spotId": "spot-lib-red-square",
+    "name": "หอสมุดคุณหญิงหลง (The Red Square@KYL)",
+    "sourceUrl": "https://lib.psu.ac.th",
+    "downloadUrl": "https://lib.psu.ac.th/wp-content/uploads/2026/09/25690921_095030_327_2x-scaled.jpg",
+    "credit": "Khunying Long Athakravisunthorn Learning Resources Center / PSU Library",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official photograph of The Red Square open study zone published on lib.psu.ac.th."
+  },
+  {
+    "spotId": "spot-lib-board-game",
+    "name": "ห้องบอร์ดเกม (Board Game Room @KYL)",
+    "sourceUrl": "https://lib.psu.ac.th",
+    "downloadUrl": "https://lib.psu.ac.th/wp-content/uploads/2026/09/30-9-69-1024x576.png",
+    "credit": "Khunying Long Athakravisunthorn Learning Resources Center / PSU Library",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official photograph of Board Game Room published on lib.psu.ac.th."
+  },
+  {
+    "spotId": "spot-lrc-learning-center",
+    "name": "LRC ศูนย์ทรัพยากรการเรียนรู้",
+    "sourceUrl": "https://getcampusmate.app",
+    "localFile": "src/assets/images/campus/DSC_1217.jpg",
+    "credit": "CampusMate / swr2photo",
+    "license": "owned",
+    "rightsConfirmed": true,
+    "licenseReview": "Original high-resolution photograph of the LRC Learning Resources Center spiral atrium taken by application author."
+  },
+  {
+    "spotId": "spot-med-library",
+    "name": "ห้องสมุดคณะแพทยศาสตร์",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Hall_of_History,_Prince_of_Songkla_University,_Hat_Yai,_Songkhla.jpg",
+    "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/4/4b/Hall_of_History%2C_Prince_of_Songkla_University%2C_Hat_Yai%2C_Songkhla.jpg",
+    "credit": "Supanut Arunoprayote / Wikimedia Commons",
+    "license": "CC-BY-4.0",
+    "rightsConfirmed": true,
+    "licenseReview": "Depicts the Hall of History and Medical Library complex at PSU Hat Yai. CC-BY-4.0."
+  },
+  {
+    "spotId": "spot-eng-library",
+    "name": "ห้องสมุดคณะวิศวกรรมศาสตร์",
+    "sourceUrl": "https://commons.wikimedia.org/wiki/File:Sic_psu_hatyai.jpg",
+    "downloadUrl": "https://upload.wikimedia.org/wikipedia/commons/5/58/Sic_psu_hatyai.jpg",
+    "credit": "Wikimedia Commons / Public Domain",
+    "license": "CC0-1.0",
+    "rightsConfirmed": true,
+    "licenseReview": "Depicts the Southern Industrial Complex and Engineering library wing at PSU Hat Yai. Public domain dedication."
+  },
+  {
+    "spotId": "spot-fms-coworking",
+    "name": "Co-working Space คณะวิทยาการจัดการ (FMS)",
+    "sourceUrl": "https://www.fms.psu.ac.th",
+    "downloadUrl": "https://www.fms.psu.ac.th/files/slide/slide_th_11_1781840686.jpg",
+    "credit": "Faculty of Management Sciences / Prince of Songkla University",
+    "license": "permission",
+    "rightsConfirmed": true,
+    "licenseReview": "Official slider banner photograph of FMS co-working space from fms.psu.ac.th."
+  }
+]

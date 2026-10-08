@@ -1,37 +1,27 @@
 import React from 'react';
-import { router } from 'expo-router';
-import { SafeAreaView, StyleSheet } from 'react-native';
+import { router, usePathname } from 'expo-router';
 import LikesScreen from '../src/screens/LikesScreen';
 import { useToast } from '../src/context/ToastContext';
-import { colors, useTheme } from '../src/theme';
+import { openChatRoom } from '../src/utils/openChatRoom';
 
 export default function LikesRoute() {
   const { showToast } = useToast();
-  const { colors } = useTheme();
-  const styles = getStyles(colors);
-
-  const close = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/home');
-  };
+  const pathname = usePathname();
 
   return (
-    <SafeAreaView style={styles.container}>
-      <LikesScreen
-        onClose={close}
-        onOpenChat={(chatId) => {
-          if (chatId) {
-            router.replace({ pathname: '/chat-room', params: { chatId } });
-          } else {
-            router.replace('/(tabs)/chat');
-          }
-        }}
-        onToast={showToast}
-      />
-    </SafeAreaView>
+    <LikesScreen
+      onClose={() => {
+        if (router.canGoBack()) router.back();
+        else router.replace('/home');
+      }}
+      onOpenChat={(chatId) => {
+        if (chatId) {
+          openChatRoom(chatId, { pathname });
+        } else {
+          router.replace('/(tabs)/chat');
+        }
+      }}
+      onToast={showToast}
+    />
   );
 }
-
-const getStyles = (colors) => StyleSheet.create({
-  container: { backgroundColor: colors.canvas, flex: 1 },
-});

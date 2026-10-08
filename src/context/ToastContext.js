@@ -2,39 +2,39 @@ import React, {
   createContext,
   useCallback,
   useContext,
-  useEffect,
-  useRef,
+  useMemo,
   useState,
 } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import { colors, radius, spacing, type } from '../theme';
+import { StyleSheet, View } from 'react-native';
+import ImageModerationNotice from '../components/ImageModerationNotice';
+import { showInAppNotification } from '../components/InAppNotificationBanner';
+
+export { showInAppNotification } from '../components/InAppNotificationBanner';
 
 const ToastContext = createContext(null);
 
 export function ToastProvider({ children }) {
-  const [toast, setToast] = useState(null);
-  const timerRef = useRef(null);
+  const [imageNotice, setImageNotice] = useState(null);
+  const showImageModeration = useCallback((error) => setImageNotice(error), []);
 
-  const showToast = useCallback((message, tone = 'success') => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    setToast({ message, tone });
-    timerRef.current = setTimeout(() => setToast(null), 2600);
+  const showToast = useCallback((message, tone = 'success', options = {}) => {
+    showInAppNotification({
+      message: String(message ?? ''),
+      tone,
+      ...(typeof options === 'object' ? options : {}),
+    });
   }, []);
 
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-  }, []);
+  const value = useMemo(
+    () => ({ showToast, showInAppNotification, showImageModeration }),
+    [showToast, showImageModeration],
+  );
 
   return (
-    <ToastContext.Provider value={{ showToast }}>
+    <ToastContext.Provider value={value}>
       <View style={styles.root}>
         {children}
-        {toast && (
-          <View pointerEvents="none" style={[styles.toast, toast.tone === 'info' && styles.toastInfo]}>
-            <Text style={styles.icon}>{toast.tone === 'info' ? 'i' : '\u2713'}</Text>
-            <Text style={styles.text}>{toast.message}</Text>
-          </View>
-        )}
+        <ImageModerationNotice notice={imageNotice} onClose={() => setImageNotice(null)} />
       </View>
     </ToastContext.Provider>
   );
@@ -47,33 +47,5 @@ export function useToast() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  toast: {
-    alignItems: 'center',
-    alignSelf: 'center',
-    backgroundColor: colors.green,
-    borderRadius: radius.pill,
-    bottom: 106,
-    flexDirection: 'row',
-    maxWidth: '92%',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    position: 'absolute',
-    zIndex: 100,
-  },
-  toastInfo: { backgroundColor: colors.primary },
-  icon: {
-    backgroundColor: 'rgba(255,255,255,0.22)',
-    borderRadius: 10,
-    color: colors.card,
-    fontSize: 12,
-    fontWeight: '900',
-    height: 20,
-    lineHeight: 20,
-    marginRight: spacing.sm,
-    textAlign: 'center',
-    width: 20,
-  },
-  text: { color: colors.card, flexShrink: 1, fontSize: type.caption, fontWeight: '800' },
+  root: { flex: 1, position: 'relative' },
 });
-

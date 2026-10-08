@@ -1,0 +1,24 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index ae141453b78b3f83243ece4fb5f2f63e43379dfe..3ceb81909509297393f08f3940dd110a59a79113 100644
+--- a/android/build.gradle
++++ b/android/build.gradle	
+@@ -57,7 +57,9 @@ apply plugin: 'com.android.library'
+ if (isNewArchitectureEnabled()) {
+     apply plugin: 'com.facebook.react'
+ }
+-apply plugin: 'kotlin-android'
++if (project.findProperty('android.builtInKotlin')?.toString() == 'false') {
++    apply plugin: 'kotlin-android'
++}
+ 
+ android {
+     if (supportsNamespace()) {
+@@ -73,7 +75,7 @@ android {
+         }
+     }
+ 
+-    compileSdkVersion getExtOrIntegerDefault('compileSdkVersion')
++    compileSdk getExtOrIntegerDefault('compileSdkVersion')
+ 
+     defaultConfig {
+         minSdkVersion getReactNativeWebViewMinSdkVersion()

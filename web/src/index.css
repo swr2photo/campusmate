@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: #f4f6fa;
+  --foreground: #10203a;
+  --card: #ffffff;
+  --card-foreground: #10203a;
+  --popover: #ffffff;
+  --popover-foreground: #10203a;
+  --primary: #5b5ce2;
+  --primary-foreground: #ffffff;
+  --secondary: #eef0ff;
+  --secondary-foreground: #4546b8;
+  --muted: #eef1f6;
+  --muted-foreground: #60708a;
+  --accent: #eef0ff;
+  --accent-foreground: #323a4d;
+  --destructive: #d65454;
+  --destructive-foreground: #ffffff;
+  --border: #e7ebf2;
+  --input: #dce3ee;
+  --ring: #5b5ce2;
+  --radius: 0.7rem;
+}
+
+.dark {
+  --background: #14171b;
+  --foreground: #f7f8fa;
+  --card: #20242a;
+  --card-foreground: #f7f8fa;
+  --popover: #20242a;
+  --popover-foreground: #f7f8fa;
+  --primary: #9a8cff;
+  --primary-foreground: #14171b;
+  --secondary: rgba(154, 140, 255, 0.16);
+  --secondary-foreground: #f7f8fa;
+  --muted: #292e35;
+  --muted-foreground: #b6bdc8;
+  --accent: #292e35;
+  --accent-foreground: #f7f8fa;
+  --destructive: #ff6b6b;
+  --destructive-foreground: #14171b;
+  --border: #3c4450;
+  --input: #3c4450;
+  --ring: #9a8cff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: "Leelawadee UI", "Sarabun", "Segoe UI", "Noto Sans Thai", ui-sans-serif, system-ui, sans-serif;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/wrangler.json",
+  "name": "campusmate-media",
+  "main": "src/index.js",
+  "account_id": "3dd0f976f772d6bfb28fc82710a63a9c",
+  "compatibility_date": "2026-10-02",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "secrets": {"required": ["R2_UPLOAD_SIGNING_KEY"]},
+  "routes": [{"pattern": "media.getcampusmate.app", "custom_domain": true}],
+  "r2_buckets": [{"binding": "MEDIA", "bucket_name": "campusmate-chat-media"}],
+  "vars": {"ALLOWED_ORIGINS": "https://getcampusmate.app,https://www.getcampusmate.app,https://campusmate-7f1ab.web.app,https://campusmate-7f1ab.firebaseapp.com"},
+  "observability": {"enabled": true, "head_sampling_rate": 0.1, "logs": {"invocation_logs": false}}
+}

@@ -1,45 +1,23 @@
-import { useColorScheme , View } from 'react-native';
+import { Button, Text } from '../components/NativeTypography';
+import StorysetStateView from '../components/StorysetStateView';
+import { font } from '../components/brandFont';
+import { useNativePalette } from '../theme';
+import { useColorScheme, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { useRemoteImage } from '../utils/useRemoteImage';
-import {
-  Button,
-  ContentUnavailableView,
-  Host,
-  HStack,
-  Image,
-  LazyVStack, ZStack,
-  ScrollView,
-  Spacer,
-  Text,
-  VStack,
-} from '@expo/ui/swift-ui';
-import {
-  background,
-  buttonBorderShape,
-  buttonStyle,
-  controlSize,
-  disabled,
-  font,
-  foregroundStyle,
-  frame,
-  glassEffect,
-  labelStyle,
-  lineLimit,
-  padding,
-  scrollIndicators,
-  shadow,
-  shapes,
-  symbolEffect,
-  tint, resizable, aspectRatio, clipped, clipShape,
-} from '@expo/ui/swift-ui/modifiers';
-import { useApp } from '../context/AppContext';
+import { ContentUnavailableView, RNHostView, Host, HStack, Image, LazyVStack, ZStack, ScrollView, Spacer, VStack } from '@expo/ui/swift-ui';
+import { background, buttonBorderShape, buttonStyle, controlSize, disabled, foregroundStyle, frame, glassEffect, labelStyle, lineLimit, padding, scrollIndicators, shadow, shapes, symbolEffect, tint, resizable, aspectRatio, clipped, clipShape } from '@expo/ui/swift-ui/modifiers';
+import { useAppActions, useAppFeed } from '../context/AppContext';
+import { useConfirm } from '../context/ConfirmContext';
+import { router } from 'expo-router';
+import { useEntitlement } from '../context/MembershipContext';
+import { FEATURE_INCOMING_LIKE_PROFILES } from '../data/plans';
+import { formatAvailabilitySlots } from '../utils/formatters';
 
-const darkPalette = { background: '#14171B', surface: '#20242A', surfaceRaised: '#292E35', text: '#F7F8FA', secondary: '#B6BDC8', tertiary: '#7F8896', coral: '#FF7A6B', coralSoft: 'rgba(255,122,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#62A8FF', blueSoft: 'rgba(98,168,255,0.16)', mint: '#45D1A1', mintSoft: 'rgba(69,209,161,0.16)' , purple: '#9A8CFF', card: '#20242A', white: '#FFFFFF', chip: '#292E35', circle: '#292E35'};
-const lightPalette = { background: '#F6F8FC', surface: '#FFFFFF', surfaceRaised: '#F6F8FC', text: '#10203A', secondary: '#60708A', tertiary: '#8B98AC', coral: '#F47C6B', coralSoft: 'rgba(244,124,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#3986E8', blueSoft: 'rgba(57,134,232,0.16)', mint: '#18A878', mintSoft: 'rgba(24,168,120,0.16)' , purple: '#5B5CE2', card: '#FFFFFF', white: '#FFFFFF', chip: '#EEF0FF', circle: '#E7EBF2'};
-function usePalette() { const scheme = useColorScheme(); return scheme === 'dark' ? darkPalette : lightPalette; }
+const usePalette = useNativePalette;
 
 const cardShape = shapes.roundedRectangle({ cornerRadius: 24, roundedCornerStyle: 'continuous' });
 const insetShape = shapes.roundedRectangle({ cornerRadius: 16, roundedCornerStyle: 'continuous' });
@@ -47,63 +25,90 @@ const insetShape = shapes.roundedRectangle({ cornerRadius: 16, roundedCornerStyl
 export default function LikesScreen({ onClose, onOpenChat, onToast }) {
   const palette = usePalette();
   const colorScheme = useColorScheme();
-  const {
-    acceptedIncomingLikes,
-    ensureConversation,
-    pendingIncomingLikes,
-    respondToLike,
-  } = useApp();
+  const { acceptedIncomingLikes, pendingIncomingLikes, pendingIncomingLikeCount, hasMorePendingLikes, isLoadingMorePendingLikes } = useAppFeed();
+  const incomingCount = pendingIncomingLikeCount ?? pendingIncomingLikes.length;
+  const likesEntitlement = useEntitlement(FEATURE_INCOMING_LIKE_PROFILES);
+  const locked = likesEntitlement.locked;
+  const { ensureConversation, respondToLike, loadMoreIncomingLikes } = useAppActions();
+  const { confirm } = useConfirm();
   const [activeTab, setActiveTab] = useState('pending');
   const [processingId, setProcessingId] = useState(null);
+  const processingIdRef = useRef(null);
 
-  const visibleLikes = activeTab === 'pending' ? pendingIncomingLikes : acceptedIncomingLikes;
+  const beginProcessing = useCallback((id) => {
+    if (processingIdRef.current) return false;
+    processingIdRef.current = id;
+    setProcessingId(id);
+    return true;
+  }, []);
 
-  const handleResponse = async (like, response) => {
-    if (processingId) return;
+  const endProcessing = useCallback(() => {
+    processingIdRef.current = null;
+    setProcessingId(null);
+  }, []);
 
-    setProcessingId(like.id);
+  const visibleLikes = activeTab === 'pending'
+    ? pendingIncomingLikes
+    : acceptedIncomingLikes;
+
+  const handleResponse = useCallback(async (like, response) => {
+    if (!beginProcessing(like.id)) return;
+
     try {
-      await respondToLike(like, response);
+      const conversationId = await respondToLike(like, response);
       if (response === 'accept') {
-        const conversationId = await ensureConversation(like);
+        const targetConversationId = typeof conversationId === 'string'
+          ? conversationId
+          : await ensureConversation(like);
         onToast?.(`จับคู่กับ ${like.name} แล้ว เริ่มแชตได้เลย`, 'success');
-        onOpenChat?.(conversationId);
+        onOpenChat?.(targetConversationId);
       } else {
         onToast?.('นำคำขอนี้ออกจากรายการแล้ว', 'info');
       }
     } catch (error) {
+      console.error('[LikesScreen.ios] handleResponse error:', error);
       onToast?.('ยังดำเนินการไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     } finally {
-      setProcessingId(null);
+      endProcessing();
     }
-  };
+  }, [beginProcessing, endProcessing, ensureConversation, onOpenChat, onToast, respondToLike]);
 
-  const handleRemoveMatch = async (like) => {
-    if (processingId) return;
+  const handleAccept = useCallback((like) => handleResponse(like, 'accept'), [handleResponse]);
+  const handleReject = useCallback((like) => handleResponse(like, 'reject'), [handleResponse]);
 
-    setProcessingId(like.id);
+  const handleRemoveMatch = useCallback(async (like) => {
+    const ok = await confirm({
+      title: 'ยืนยันการยกเลิกจับคู่',
+      body: `ต้องการยกเลิกการจับคู่กับ ${like.name} หรือไม่?`,
+      cancelLabel: 'ไม่ยกเลิก',
+      confirmLabel: 'ยืนยัน',
+      icon: 'heart.slash',
+    });
+    if (!ok) return;
+    if (!beginProcessing(like.id)) return;
     try {
-      await removeMatch(like.id);
-      onToast?.(`ลบ ${like.name} ออกจากรายการจับคู่แล้ว`, 'info');
+      await respondToLike(like, 'reject');
+      onToast?.(`ยกเลิกการจับคู่กับ ${like.name} แล้ว`, 'info');
     } catch (error) {
-      onToast?.('ยังดำเนินการไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+      console.error('[LikesScreen.ios] handleRemoveMatch error:', error);
+      onToast?.('ยังยกเลิกไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     } finally {
-      setProcessingId(null);
+      endProcessing();
     }
-  };
+  }, [beginProcessing, confirm, endProcessing, onToast, respondToLike]);
 
-  const handleOpenChat = async (like) => {
-    if (processingId) return;
-    setProcessingId(like.id);
+  const handleOpenChat = useCallback(async (like) => {
+    if (!beginProcessing(like.id)) return;
     try {
       const conversationId = await ensureConversation(like);
       onOpenChat?.(conversationId);
     } catch (error) {
+      console.error('[LikesScreen.ios] handleOpenChat error:', error);
       onToast?.('ยังเปิดห้องแชตไม่ได้ กรุณาลองใหม่อีกครั้ง', 'info');
     } finally {
-      setProcessingId(null);
+      endProcessing();
     }
-  };
+  }, [beginProcessing, endProcessing, ensureConversation, onOpenChat, onToast]);
 
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
 
@@ -134,11 +139,15 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
               frame({ maxWidth: Infinity, alignment: 'topLeading' }),
             ]}
           >
-          <Summary count={pendingIncomingLikes.length} />
+          <Summary
+            acceptedCount={acceptedIncomingLikes.length}
+            incomingCount={incomingCount}
+            tab={activeTab}
+          />
           <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity })]}>
             <TabButton
               active={activeTab === 'pending'}
-              count={pendingIncomingLikes.length}
+              count={incomingCount}
               label="ถูกใจคุณ"
               onPress={() => setActiveTab('pending')}
               systemImage="heart.fill"
@@ -152,33 +161,36 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
             />
           </HStack>
 
-          {visibleLikes.length === 0 ? (
-            <ContentUnavailableView
-              description={activeTab === 'pending'
-                ? 'เมื่อมีคนสนใจกิจกรรมเดียวกับคุณ รายการจะแสดงที่นี่'
-                : 'คนที่คุณรับเป็นเพื่อนแล้วจะแสดงในรายการนี้'}
-              systemImage={activeTab === 'pending' ? 'heart.slash' : 'person.2.slash'}
-              title={activeTab === 'pending' ? 'ยังไม่มีคนกดใจใหม่' : 'ยังไม่มีคู่ที่จับคู่แล้ว'}
-              modifiers={[
-                padding({ vertical: 42, horizontal: 20 }),
-                frame({ maxWidth: Infinity }),
-                background(palette.surface, cardShape),
-              ]}
-            />
+          {locked && activeTab === 'pending' ? <VStack spacing={14} modifiers={[padding({ vertical: 30, horizontal: 20 }), frame({ maxWidth: Infinity }), background(palette.surface, cardShape)]}>
+            <Image systemName="lock.fill" size={32} color={palette.violet} />
+            <Text modifiers={[font({ textStyle: 'headline' }), foregroundStyle(palette.text)]}>มี {incomingCount} คนกดใจคุณ</Text>
+            <Text modifiers={[foregroundStyle(palette.secondary)]}>CampusMate Plus ดูว่าใครกดใจคุณได้</Text>
+            <Button label="ดู CampusMate Plus" onPress={() => router.push('/membership')} modifiers={[buttonStyle('borderedProminent'), tint(palette.blue)]} />
+          </VStack> : visibleLikes.length === 0 ? (
+            <RNHostView matchContents>
+              <StorysetStateView image={activeTab === 'accepted' ? require('../../assets/mascot/likes-matched.png') : undefined}
+                title={activeTab === 'pending' ? 'ยังไม่มีคนกดใจใหม่' : 'ยังไม่มีคู่ที่จับคู่แล้ว'}
+                description={activeTab === 'pending' ? 'เมื่อมีเพื่อนสนใจคุณ รายการจะแสดงที่นี่' : 'คนที่คุณรับเป็นเพื่อนแล้วจะแสดงที่นี่ เริ่มทักทายกันได้เลย'}
+                actionLabel="ค้นหาเพื่อนใหม่" onAction={() => router.navigate('/home')} />
+            </RNHostView>
           ) : (
             visibleLikes.map((like) => (
               <LikeCard
                 accepted={activeTab === 'accepted'}
                 key={like.id}
                 like={like}
-                onAccept={() => handleResponse(like, 'accept')}
-                onOpenChat={() => handleOpenChat(like)}
-                onReject={() => handleResponse(like, 'reject')}
+                onAccept={handleAccept}
+                onOpenChat={handleOpenChat}
+                onRemove={handleRemoveMatch}
+                onReject={handleReject}
                 processing={processingId === like.id}
               />
             ))
           )}
 
+          {activeTab === 'pending' && !locked && hasMorePendingLikes ? <Button
+            label={isLoadingMorePendingLikes ? 'กำลังโหลด…' : 'ดูคนที่กดใจเพิ่มเติม'} onPress={loadMoreIncomingLikes}
+            modifiers={[disabled(isLoadingMorePendingLikes), buttonStyle('bordered'), tint(palette.blue)]} /> : null}
           <HStack
             spacing={8}
             modifiers={[
@@ -202,17 +214,19 @@ function Header({ onClose }) {
   const palette = usePalette();
   return (
     <HStack alignment="center" spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
-      <Button
-        label="ย้อนกลับ"
-        onPress={onClose}
-        systemImage="chevron.left"
-        modifiers={[
-          buttonStyle('glass'),
-          buttonBorderShape('circle'),
-          controlSize('large'),
-            labelStyle('iconOnly')
-        ]}
-      />
+      {onClose ? (
+        <Button
+          label="ย้อนกลับ"
+          onPress={onClose}
+          systemImage="chevron.left"
+          modifiers={[
+            buttonStyle('glass'),
+            buttonBorderShape('circle'),
+            controlSize('large'),
+            labelStyle('iconOnly'),
+          ]}
+        />
+      ) : null}
       <VStack alignment="leading" spacing={4}>
         <Text
           modifiers={[
@@ -220,7 +234,7 @@ function Header({ onClose }) {
             foregroundStyle(palette.text),
           ]}
         >
-          คนที่สนใจคุณ
+          ถูกใจ
         </Text>
       </VStack>
       <Spacer />
@@ -228,8 +242,18 @@ function Header({ onClose }) {
   );
 }
 
-function Summary({ count }) {
+function Summary({ acceptedCount, incomingCount, tab }) {
   const palette = usePalette();
+  const title = tab === 'pending'
+    ? (incomingCount ? `มี ${incomingCount} คนรอคำตอบจากคุณ` : 'ไม่มีคำขอใหม่ในตอนนี้')
+    : (acceptedCount ? `จับคู่สำเร็จแล้ว ${acceptedCount} คน` : 'ยังไม่มีคู่ที่จับคู่แล้ว');
+
+  const subtitle = tab === 'pending'
+    ? 'การปฏิเสธจะไม่ส่งการแจ้งเตือนไปให้อีกฝ่าย'
+    : 'เริ่มส่งข้อความหรือชวนไปทำกิจกรรมร่วมกันได้เลย';
+
+  const iconName = 'heart.circle.fill';
+
   return (
     <HStack
       spacing={14}
@@ -239,7 +263,7 @@ function Summary({ count }) {
         background(palette.coralSoft, cardShape),
       ]}
     >
-      <Image systemName="heart.circle.fill" size={38} color={palette.coral} />
+      <Image systemName={iconName} size={38} color={palette.coral} />
       <VStack alignment="leading" spacing={4}>
         <Text
           modifiers={[
@@ -247,7 +271,7 @@ function Summary({ count }) {
             foregroundStyle(palette.text),
           ]}
         >
-          {count ? `มี ${count} คนรอคำตอบจากคุณ` : 'ไม่มีคำขอใหม่ในตอนนี้'}
+          {title}
         </Text>
         <Text
           modifiers={[
@@ -256,7 +280,7 @@ function Summary({ count }) {
             lineLimit(2),
           ]}
         >
-          การปฏิเสธจะไม่ส่งการแจ้งเตือนไปให้อีกฝ่าย
+          {subtitle}
         </Text>
       </VStack>
     </HStack>
@@ -287,9 +311,13 @@ function TabButton({ active, count, label, onPress, systemImage }) {
 }
 
 
-function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing }) {
+const LikeCard = React.memo(function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, processing }) {
   const palette = usePalette();
-  const imageUri = useRemoteImage(like.avatarUri);
+  const imageUri = useRemoteImage(like.avatarUri, like.avatarRevision, like.id);
+  const handleAccept = useCallback(() => onAccept?.(like), [onAccept, like]);
+  const handleOpenChat = useCallback(() => onOpenChat?.(like), [onOpenChat, like]);
+  const handleReject = useCallback(() => onReject?.(like), [onReject, like]);
+  const handleRemove = useCallback(() => onRemove?.(like), [onRemove, like]);
   return (
     <VStack
       alignment="leading"
@@ -383,7 +411,14 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing }
                 </Text>
               </HStack>
             ) : null}
-            {like.availability ? (
+            {(like.availabilitySlots && like.availabilitySlots.length > 0) ? (
+              <HStack spacing={4} modifiers={[padding({ horizontal: 10, vertical: 6 }), background(palette.surfaceRaised, shapes.capsule())]}>
+                <Image systemName="clock.fill" size={12} color={palette.tertiary} />
+                <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(palette.tertiary)]}>
+                  {formatAvailabilitySlots(like.availabilitySlots, { compact: true })}
+                </Text>
+              </HStack>
+            ) : like.availability ? (
               <HStack spacing={4} modifiers={[padding({ horizontal: 10, vertical: 6 }), background(palette.surfaceRaised, shapes.capsule())]}>
                 <Image systemName="clock.fill" size={12} color={palette.tertiary} />
                 <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(palette.tertiary)]}>
@@ -397,10 +432,10 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing }
         {accepted ? (
           <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity })]}>
             <Button
-              label="ลบ"
-              onPress={onReject}
-              role="cancel"
-              systemImage="trash.fill"
+              label="ยกเลิกจับคู่"
+              onPress={handleRemove}
+              role="destructive"
+              systemImage="person.2.slash"
               modifiers={[
                 buttonStyle('glass'),
                 buttonBorderShape('capsule'),
@@ -412,7 +447,7 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing }
             <Button
               disabled={processing}
               label="เปิดห้องแชต"
-              onPress={onOpenChat}
+              onPress={handleOpenChat}
               systemImage="message.fill"
               modifiers={[
                 buttonStyle('glassProminent'),
@@ -427,7 +462,7 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing }
           <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity })]}>
             <Button
               label="ไม่รับตอนนี้"
-              onPress={onReject}
+              onPress={handleReject}
               role="cancel"
               systemImage="xmark"
               modifiers={[
@@ -441,7 +476,7 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing }
             />
             <Button
               label={processing ? 'กำลังจับคู่...' : 'รับเป็นเพื่อน'}
-              onPress={onAccept}
+              onPress={handleAccept}
               systemImage="heart.fill"
               modifiers={[
                 buttonStyle('glassProminent'),
@@ -457,4 +492,4 @@ function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, processing }
       </VStack>
     </VStack>
   );
-}
+});

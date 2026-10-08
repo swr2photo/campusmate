@@ -1,0 +1,1480 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Assumed data model:
+    // users/{uid}: private owner profile and E2EE public device keys.
+    // profiles/{uid}: bounded public profile projection (no email/GPS).
+    // discoveryProfiles/{uid}: server-owned, paged public discovery projection;
+    // _meta is a server-owned migration marker and is not part of the query.
+    // decisions/{fromUid_toUid}: directional like/skip state.
+    // conversations/{id}: two-party metadata and encrypted-key envelopes.
+    // conversations/{id}/messages/{id}: encrypted message records.
+    // appointments/{id}: a two-party appointment snapshot with an immutable
+    // schedule and a participant-cancellable status.
+    // spots/{id}: server-owned campus reference data.
+
+    function signedIn() {
+      return request.auth != null
+        && (!exists(/databases/$(database)/documents/accountRestrictions/$(request.auth.uid))
+          || get(/databases/$(database)/documents/accountRestrictions/$(request.auth.uid)).data.get('suspended', false) != true);
+    }
+
+    match /accountRestrictions/{userId} {
+      // Suspended clients can still read the reason and sign out immediately.
+      allow get: if request.auth != null && request.auth.uid == userId;
+      allow list, write: if false;
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isCampusAuthEmail() {
+      return signedIn()
+        && request.auth.token.email is string
+        && request.auth.token.email.matches('^[A-Za-z0-9._%+\\-]+@[Pp][Ss][Uu]\\.[Aa][Cc]\\.[Tt][Hh]$');
+    }
+
+    function validCampusVerificationFlag(data) {
+      return !('campusEmailVerified' in data)
+        || data.campusEmailVerified == null
+        || data.campusEmailVerified == false
+        || (data.campusEmailVerified == true && isCampusAuthEmail());
+    }
+
+    function optionalValue(data, field) {
+      return field in data ? data[field] : null;
+    }
+
+    function optionalMapEntry(data, field, key) {
+      return field in data && data[field] is map && key in data[field]
+        ? data[field][key]
+        : null;
+    }
+
+    function listContains(data, field, value) {
+      return field in data && data[field] is list && value in data[field];
+    }
+
+    function optionalString(data, field, maxLength) {
+      return !(field in data)
+        || data[field] == null
+        || (data[field] is string && data[field].size() <= maxLength);
+    }
+
+    function validStudentId(data) {
+      return !('studentId' in data)
+        || data.studentId == null
+        || (data.studentId is string && data.studentId.matches('^[0-9]{10}$'));
+    }
+
+    function optionalBoolean(data, field) {
+      return !(field in data) || data[field] == null || data[field] is bool;
+    }
+
+    function optionalNumber(data, field, minimum, maximum) {
+      return !(field in data)
+        || data[field] == null
+        || (data[field] is number && data[field] >= minimum && data[field] <= maximum)
+        || (data[field] is string && data[field].size() <= 50);
+    }
+
+    function optionalTimestamp(data, field) {
+      return !(field in data) || data[field] == null || data[field] is timestamp;
+    }
+
+    function validAvatarRevision(data) {
+      return !('avatarRevision' in data)
+        || data.avatarRevision == null
+        || (data.avatarRevision is int && data.avatarRevision >= 0
+          && data.avatarRevision <= 9007199254740991);
+    }
+
+    function optionalTimestampOrLegacyMillis(data, field) {
+      return !(field in data)
+        || data[field] == null
+        || data[field] is timestamp
+        || (data[field] is number && data[field] >= 0 && data[field] <= 4102444800000);
+    }
+
+    function optionalList(data, field, maxSize) {
+      return !(field in data)
+        || data[field] == null
+        || (data[field] is list && data[field].size() <= maxSize);
+    }
+
+    function optionalMap(data, field, maxSize) {
+      return !(field in data)
+        || data[field] == null
+        || (data[field] is map && data[field].size() <= maxSize);
+    }
+
+
+    function validEncryptionDevices(data) {
+      return !('encryptionDevices' in data)
+        || data.encryptionDevices == null
+        || (data.encryptionDevices is map && data.encryptionDevices.size() <= 10);
+    }
+
+    function validProfileSchedule(data) {
+      return data is map
+        && data.keys().hasOnly([
+          'date', 'startTime', 'endTime', 'scheduledFor', 'maxPeople', 'message'
+        ])
+        && data.keys().hasAll(['date', 'startTime', 'endTime'])
+        && data.date is string
+        && data.date.size() == 10
+        && data.startTime is string
+        && data.startTime.size() <= 32
+        && data.endTime is string
+        && data.endTime.size() <= 32
+        && optionalTimestampOrLegacyMillis(data, 'scheduledFor')
+        && (!( 'maxPeople' in data)
+          || (data.maxPeople is int && data.maxPeople >= 1 && data.maxPeople <= 50))
+        && optionalString(data, 'message', 500);
+    }
+
+    function validProfileMeetup(data) {
+      return data == null
+        || (
+          data is map
+          && data.keys().hasOnly([
+            'id', 'name', 'description', 'category', 'categoryLabel', 'group',
+            'emoji', 'rating', 'busyTime', 'image', 'latitude', 'longitude',
+            'schedule', 'scheduledAt'
+          ])
+          && data.keys().hasAll(['id', 'name'])
+          && data.id is string
+          && data.id.size() > 0
+          && data.id.size() <= 128
+          && data.name is string
+          && data.name.size() > 0
+          && data.name.size() <= 200
+          && optionalString(data, 'description', 500)
+          && optionalString(data, 'category', 50)
+          && optionalString(data, 'categoryLabel', 100)
+          && optionalString(data, 'group', 150)
+          && optionalString(data, 'emoji', 16)
+          && optionalString(data, 'rating', 20)
+          && optionalString(data, 'busyTime', 100)
+          && optionalString(data, 'image', 500)
+          && (!( 'latitude' in data)
+            || (data.latitude is number && data.latitude >= -90 && data.latitude <= 90))
+          && (!( 'longitude' in data)
+            || (data.longitude is number && data.longitude >= -180 && data.longitude <= 180))
+          && (!( 'schedule' in data)
+            || data.schedule == null
+            || validProfileSchedule(data.schedule))
+          && optionalString(data, 'scheduledAt', 100)
+        );
+    }
+
+    // Profile validators deliberately use hasOnly allowlists plus a small set
+    // of shape checks. A long chain of optionalString/optionalMap calls on a
+    // complete profile (meetup + encryptionDevices + matchingPreferences)
+    // exceeds Firestore's per-request expression budget and surfaces to the
+    // client as a generic "Missing or insufficient permissions." error.
+    function validCommonProfile(data, expectedId, allowLegacyMillis) {
+      return data is map
+        && data.keys().hasOnly([
+          'id', 'name', 'nickname', 'age', 'faculty', 'year',
+          'activity', 'activities', 'activityLabel', 'activityDetails',
+          'skill', 'pace', 'availability', 'availabilitySlots',
+          'bio', 'avatar', 'avatarColor', 'avatarUri', 'avatarRevision', 'gallery', 'compatibility',
+          'tags', 'interests', 'favoriteTracks', 'gender', 'meetup', 'selectedMeetup',
+          'scheduledAt', 'isDiscoverable', 'encryptionDevices', 'updatedAt',
+          'createdAt', 'lastSeen', 'displayName', 'photoURL', 'photos',
+          'spotifyTopArtists', 'spotifyTopGenres', 'isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'
+        ])
+        && data.keys().hasAll(['id', 'updatedAt'])
+        && data.id is string
+        && data.id == expectedId
+        && data.id.size() > 0
+        && data.id.size() <= 128
+        && (allowLegacyMillis
+          ? optionalTimestampOrLegacyMillis(data, 'updatedAt')
+          : optionalTimestamp(data, 'updatedAt'))
+        && optionalNumber(data, 'age', 18, 100)
+        && optionalString(data, 'avatarUri', 5000)
+        && validAvatarRevision(data)
+        && optionalList(data, 'gallery', 5)
+        && optionalList(data, 'activities', 30)
+        && optionalList(data, 'availabilitySlots', 50)
+        && optionalList(data, 'interests', 50)
+        && optionalList(data, 'favoriteTracks', 10)
+        && optionalList(data, 'spotifyTopArtists', 20)
+        && optionalList(data, 'spotifyTopGenres', 20)
+        && optionalMap(data, 'activityDetails', 30)
+        && optionalMap(data, 'meetup', 30)
+        && validEncryptionDevices(data);
+    }
+
+    function validPublicProfile(data, userId) {
+      return data is map
+        && data.keys().size() <= 40
+        && data.keys().hasAll(['id', 'isDiscoverable', 'updatedAt'])
+        && !data.keys().hasAny([
+          'email', 'campusEmail', 'campusEmailVerified', 'latitude', 'longitude', 'location', 'privacy',
+          'matchingPreferences', 'notificationsEnabled', 'locationEnabled', 'consentAcceptedAt',
+          'password', 'token', 'secretKey', 'role', 'status', 'uid', 'providerId'
+        ])
+        && validCommonProfile(data, userId, true);
+    }
+
+    function validMatchingPreferences(value) {
+      return value is map
+        && value.keys().size() <= 20;
+    }
+
+    function validPrivateProfile(data, userId) {
+      // The canonical writer omits legacy `location`; coordinate-only changes
+      // use the focused owner rule below.
+      return data is map
+        && data.keys().hasOnly([
+          'id', 'name', 'nickname', 'age', 'faculty', 'year',
+          'studentId',
+          'activity', 'activities', 'activityLabel', 'activityDetails',
+          'skill', 'pace', 'availability', 'availabilitySlots',
+          'bio', 'avatar', 'avatarColor', 'avatarUri', 'avatarRevision', 'gallery', 'compatibility',
+          'tags', 'interests', 'favoriteTracks', 'gender', 'meetup', 'selectedMeetup',
+          'scheduledAt', 'isDiscoverable', 'encryptionDevices', 'updatedAt',
+          'email', 'campusEmail', 'campusEmailVerified', 'isNewUser',
+          'displayName', 'photoURL', 'photos', 'latitude', 'longitude', 'locationUpdatedAt',
+          'privacy', 'matchingPreferences', 'notificationsEnabled',
+          'locationEnabled', 'consentAcceptedAt', 'createdAt', 'lastSeen',
+          'spotifyTopArtists', 'spotifyTopGenres', 'isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'
+        ])
+        && data.keys().hasAll(['id', 'updatedAt'])
+        && data.id is string
+        && data.id == userId
+        && data.id.size() > 0
+        && data.id.size() <= 128
+        && optionalTimestamp(data, 'updatedAt')
+        && optionalNumber(data, 'age', 18, 100)
+        && optionalString(data, 'email', 320)
+        && validStudentId(data)
+        && optionalString(data, 'avatarUri', 5000)
+        && validAvatarRevision(data)
+        && optionalList(data, 'gallery', 5)
+        && optionalList(data, 'activities', 30)
+        && optionalList(data, 'availabilitySlots', 50)
+        && optionalList(data, 'interests', 50)
+        && optionalList(data, 'favoriteTracks', 10)
+        && optionalList(data, 'spotifyTopArtists', 20)
+        && optionalList(data, 'spotifyTopGenres', 20)
+        && optionalMap(data, 'activityDetails', 30)
+        && optionalMap(data, 'meetup', 30)
+        && optionalMap(data, 'privacy', 10)
+        && optionalMap(data, 'matchingPreferences', 20)
+        && optionalNumber(data, 'latitude', -90, 90)
+        && optionalNumber(data, 'longitude', -180, 180)
+        && optionalTimestampOrLegacyMillis(data, 'locationUpdatedAt')
+        && validEncryptionDevices(data)
+        && validCampusVerificationFlag(data);
+    }
+
+    // A preferences write uses merge:true. Keep this narrow repair path so a
+    // legacy owner document with old aliases cannot block the current filter
+    // UI, while still preventing changes to another user's document.
+    function matchingPreferencesUpdateAllowed(userId) {
+      return isOwner(userId)
+        && request.resource.data.id == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'id', 'matchingPreferences', 'updatedAt'
+        ])
+        && request.resource.data.updatedAt is timestamp
+        && validMatchingPreferences(request.resource.data.matchingPreferences);
+    }
+
+    function matchingPreferencesCreateAllowed(userId) {
+      return isOwner(userId)
+        && request.resource.data.id == userId
+        && request.resource.data.keys().hasOnly(['id', 'matchingPreferences', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['id', 'matchingPreferences', 'updatedAt'])
+        && request.resource.data.updatedAt is timestamp
+        && validMatchingPreferences(request.resource.data.matchingPreferences);
+    }
+
+    function privateLocationUpdateAllowed(userId) {
+      return isOwner(userId)
+        && request.resource.data.id == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'id', 'latitude', 'longitude', 'updatedAt'
+        ])
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.latitude is number
+        && request.resource.data.latitude >= -90
+        && request.resource.data.latitude <= 90
+        && request.resource.data.longitude is number
+        && request.resource.data.longitude >= -180
+        && request.resource.data.longitude <= 180;
+    }
+
+    function locationEnabledUpdateAllowed(userId) {
+      return isOwner(userId)
+        && request.resource.data.id == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'id', 'locationEnabled', 'updatedAt'
+        ])
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.locationEnabled is bool;
+    }
+
+    // Meetup selection is a focused profile patch. It must work even when an
+    // older private/public profile still carries unrelated legacy fields that
+    // the complete profile validator intentionally does not accept.
+    function meetupUpdateAllowed(userId) {
+      return isOwner(userId)
+        && request.resource.data.id == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'id', 'meetup', 'updatedAt'
+        ])
+        && request.resource.data.updatedAt is timestamp
+        && validProfileMeetup(optionalValue(request.resource.data, 'meetup'));
+    }
+
+    // A fresh account can reach the meetup screen while its background
+    // profile bootstrap is still committing. Allow only this minimal owner
+    // projection in that case; all normal profile creation still uses the
+    // complete validators below.
+    function meetupCreateAllowed(userId) {
+      return isOwner(userId)
+        && request.resource.data.keys().hasOnly(['id', 'meetup', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['id', 'meetup', 'updatedAt'])
+        && request.resource.data.id == userId
+        && request.resource.data.updatedAt is timestamp
+        && validProfileMeetup(request.resource.data.meetup);
+    }
+
+    function encryptionDevicesUpdateAllowed(userId) {
+      return isOwner(userId)
+        && request.resource.data.id == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'id', 'encryptionDevices', 'updatedAt'
+        ])
+        && request.resource.data.updatedAt is timestamp
+        && validEncryptionDevices(request.resource.data);
+    }
+
+    // Evaluate diff().affectedKeys() once. Repeating it across a nested ternary
+    // on a complete profile document burns the expression budget before
+    // validPrivateProfile can finish.
+    function usersUpdateAllowed(userId) {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      return affected.hasOnly(['updatedAt'])
+        ? request.resource.data.updatedAt is timestamp
+        : affected.hasOnly(['id', 'encryptionDevices', 'updatedAt'])
+          ? encryptionDevicesUpdateAllowed(userId)
+          : affected.hasOnly(['id', 'matchingPreferences', 'updatedAt'])
+            ? matchingPreferencesUpdateAllowed(userId)
+            : affected.hasOnly(['id', 'latitude', 'longitude', 'updatedAt'])
+              ? privateLocationUpdateAllowed(userId)
+              : affected.hasOnly(['id', 'locationEnabled', 'updatedAt'])
+                ? locationEnabledUpdateAllowed(userId)
+                : affected.hasOnly(['id', 'meetup', 'updatedAt'])
+                  ? meetupUpdateAllowed(userId)
+                  : validPrivateProfile(request.resource.data, userId);
+    }
+
+    // Device-key publication must keep working for legacy profile documents
+    // that contain fields from an older schema. The owner can change only the
+    // document id, device-key map, and audit timestamp through this path.
+    function publicEncryptionDevicesUpdateAllowed(userId) {
+      return isOwner(userId)
+        && request.resource.data.id == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'id', 'encryptionDevices', 'updatedAt'
+        ])
+        && request.resource.data.updatedAt is timestamp
+        && validEncryptionDevices(request.resource.data);
+    }
+
+    function profilesUpdateAllowed(userId) {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      return affected.hasOnly(['updatedAt'])
+        ? request.resource.data.updatedAt is timestamp
+        : affected.hasOnly(['id', 'encryptionDevices', 'updatedAt'])
+          ? publicEncryptionDevicesUpdateAllowed(userId)
+          : affected.hasOnly(['id', 'meetup', 'updatedAt'])
+            ? meetupUpdateAllowed(userId)
+            : validPublicProfile(request.resource.data, userId);
+    }
+
+    function validDecision(data) {
+      return data is map
+        && data.keys().hasOnly([
+          'id', 'fromUserId', 'toUserId', 'type', 'status', 'likeMessage',
+          'createdAt', 'updatedAt'
+        ])
+        && data.fromUserId is string
+        && data.toUserId is string
+        && data.fromUserId.size() > 0
+        && data.fromUserId.size() <= 128
+        && data.toUserId.size() > 0
+        && data.toUserId.size() <= 128
+        && data.fromUserId != data.toUserId
+        && data.type in ['like', 'skip']
+        && data.status in ['pending', 'accepted', 'rejected', 'removed']
+        && optionalString(data, 'likeMessage', 500)
+        && (data.status != 'accepted' || data.type == 'like')
+        && optionalTimestampOrLegacyMillis(data, 'createdAt')
+        && optionalTimestampOrLegacyMillis(data, 'updatedAt')
+        && (data.type == 'like' || !('likeMessage' in data) || data.likeMessage == '' || data.likeMessage == null);
+    }
+
+    function isDecisionParty(data) {
+      return signedIn()
+        && (request.auth.uid == data.fromUserId || request.auth.uid == data.toUserId);
+    }
+
+    function discoverableProfile(userId) {
+      return exists(/databases/$(database)/documents/profiles/$(userId))
+        && (
+          !('isDiscoverable' in get(/databases/$(database)/documents/profiles/$(userId)).data)
+          || get(/databases/$(database)/documents/profiles/$(userId)).data.isDiscoverable != false
+        );
+    }
+
+    function acceptedLike(fromUid, toUid) {
+      let decisionPath = /databases/$(database)/documents/decisions/$(fromUid + '_' + toUid);
+      return exists(decisionPath)
+        && get(decisionPath).data.fromUserId == fromUid
+        && get(decisionPath).data.toUserId == toUid
+        && get(decisionPath).data.type == 'like'
+        && get(decisionPath).data.status == 'accepted';
+    }
+
+    function senderDecisionTransitionAllowed() {
+      return request.resource.data.type == resource.data.type
+        || (
+          resource.data.type == 'skip'
+          && request.resource.data.type == 'like'
+          && (
+            (request.resource.data.status == 'pending'
+              && discoverableProfile(resource.data.toUserId))
+            || (request.resource.data.status == 'accepted'
+              && acceptedLike(resource.data.toUserId, resource.data.fromUserId))
+          )
+        )
+        || (
+          resource.data.type == 'like'
+          && request.resource.data.type == 'skip'
+          && request.resource.data.status in ['pending', 'removed']
+        );
+    }
+
+    function validConversationProfile(data, expectedId) {
+      return data is map
+        && data.keys().hasOnly([
+          'id', 'isDiscoverable', 'updatedAt', 'name', 'nickname', 'displayName',
+          'age', 'faculty', 'year', 'activity', 'activityLabel', 'activities',
+          'availability', 'location', 'bio', 'avatar', 'avatarColor', 'avatarUri', 'avatarRevision',
+          'photoURL', 'gender', 'meetup', 'selectedMeetup', 'encryptionDevices'
+        ])
+        && data.id is string
+        && data.id == expectedId
+        && validEncryptionDevices(data)
+        && optionalTimestampOrLegacyMillis(data, 'updatedAt')
+        && validAvatarRevision(data);
+    }
+
+    function validCounterMap(data, participants) {
+      return data is map
+        && data.size() <= 2
+        && data.keys().hasOnly(participants)
+        && (!(participants[0] in data)
+          || (data[participants[0]] is int && data[participants[0]] >= 0 && data[participants[0]] <= 1000000))
+        && (!(participants[1] in data)
+          || (data[participants[1]] is int && data[participants[1]] >= 0 && data[participants[1]] <= 1000000));
+    }
+
+    function validParticipantSetting(value) {
+      return value is map
+        && value.keys().hasOnly([
+          'isMuted', 'showPinnedMeetup', 'isHidden', 'hiddenAt', 'historyClearedAt'
+        ])
+        && optionalBoolean(value, 'isMuted')
+        && optionalBoolean(value, 'showPinnedMeetup')
+        && optionalBoolean(value, 'isHidden')
+        && optionalTimestampOrLegacyMillis(value, 'hiddenAt')
+        && optionalTimestampOrLegacyMillis(value, 'historyClearedAt');
+    }
+
+    function validParticipantSettings(data, participants) {
+      return data is map
+        && data.size() <= 2
+        && data.keys().hasOnly(participants)
+        && (!(participants[0] in data) || validParticipantSetting(data[participants[0]]))
+        && (!(participants[1] in data) || validParticipantSetting(data[participants[1]]));
+    }
+
+    function validReadReceipts(data, participants) {
+      return data is map
+        && data.size() <= 2
+        && data.keys().hasOnly(participants)
+        && (!(participants[0] in data) || data[participants[0]] is timestamp)
+        && (!(participants[1] in data) || data[participants[1]] is timestamp);
+    }
+
+    function validEnvelopeGroups(encryption, participants) {
+      return encryption.keyEnvelopes is map
+        && encryption.keyEnvelopes.size() <= 2
+        && encryption.keyEnvelopes.keys().hasOnly(participants)
+        && (!(participants[0] in encryption.keyEnvelopes)
+          || (encryption.keyEnvelopes[participants[0]] is map
+            && encryption.keyEnvelopes[participants[0]].size() <= 10))
+        && (!(participants[1] in encryption.keyEnvelopes)
+          || (encryption.keyEnvelopes[participants[1]] is map
+            && encryption.keyEnvelopes[participants[1]].size() <= 10));
+    }
+
+    function validConversationEncryption(encryption, participants) {
+      return encryption is map
+        && encryption.keys().hasOnly(['version', 'algorithm', 'keyEnvelopes'])
+        && encryption.version == 1
+        && encryption.algorithm == 'x25519-xsalsa20-poly1305.v1'
+        && validEnvelopeGroups(encryption, participants);
+    }
+
+    function validConversation(data) {
+      return data is map
+        && data.keys().hasOnly([
+          'participants', 'participantProfiles', 'unreadCounts', 'lastMessage',
+          'lastMessageSenderId', 'lastMessageAt', 'lastMessageId', 'messages',
+          'encryption', 'createdAt', 'updatedAt', 'participantSettings',
+          'readReceipts', 'meetupAcceptedUsers'
+        ])
+        && data.keys().hasAll([
+          'participants', 'participantProfiles', 'unreadCounts', 'lastMessage',
+          'messages', 'createdAt', 'updatedAt'
+        ])
+        && data.participants is list
+        && data.participants.size() == 2
+        && data.participants[0] is string
+        && data.participants[1] is string
+        && data.participants[0].size() > 0
+        && data.participants[0].size() <= 128
+        && data.participants[1].size() > 0
+        && data.participants[1].size() <= 128
+        && data.participants[0] != data.participants[1]
+        && data.participantProfiles is map
+        && data.participantProfiles.size() == 2
+        && data.participantProfiles.keys().hasAll(data.participants)
+        && data.participantProfiles.keys().hasOnly(data.participants)
+        && validCounterMap(data.unreadCounts, data.participants)
+        && data.lastMessage is string
+        && data.lastMessage.size() <= 1000
+        && (!( 'lastMessageSenderId' in data)
+          || data.lastMessageSenderId == null
+          || (data.lastMessageSenderId is string && data.lastMessageSenderId in data.participants))
+        && optionalTimestamp(data, 'lastMessageAt')
+        && optionalString(data, 'lastMessageId', 128)
+        && data.messages is list
+        && data.messages.size() <= 500
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && ('encryption' in data)
+        && validConversationProfile(
+          data.participantProfiles[data.participants[0]],
+          data.participants[0]
+        )
+        && validConversationProfile(
+          data.participantProfiles[data.participants[1]],
+          data.participants[1]
+        )
+        && validConversationEncryption(data.encryption, data.participants)
+        && (!( 'participantSettings' in data)
+          || validParticipantSettings(data.participantSettings, data.participants))
+        && (!( 'readReceipts' in data)
+          || validReadReceipts(data.readReceipts, data.participants))
+        && (!( 'meetupAcceptedUsers' in data)
+          || (data.meetupAcceptedUsers is list
+            && data.meetupAcceptedUsers.size() <= 2
+            && data.meetupAcceptedUsers.hasOnly(data.participants)));
+    }
+
+    function validAppointmentSchedule(data) {
+      return data is map
+        && data.keys().hasOnly([
+          'date', 'startTime', 'endTime', 'scheduledFor', 'maxPeople', 'message'
+        ])
+        && data.keys().hasAll(['date', 'startTime', 'endTime', 'scheduledFor'])
+        && data.date is string
+        && data.date.size() == 10
+        && data.startTime is string
+        && data.startTime.size() <= 32
+        && data.endTime is string
+        && data.endTime.size() <= 32
+        && data.scheduledFor is timestamp
+        && (!( 'maxPeople' in data)
+          || (data.maxPeople is int && data.maxPeople >= 1 && data.maxPeople <= 50))
+        && optionalString(data, 'message', 500);
+    }
+
+    function validAppointmentMeetup(data) {
+      return data is map
+        && data.keys().hasOnly([
+          'id', 'name', 'description', 'category', 'categoryLabel', 'group',
+          'emoji', 'rating', 'busyTime', 'image', 'latitude', 'longitude',
+          'schedule', 'scheduledAt'
+        ])
+        && data.keys().hasAll(['id', 'name', 'schedule'])
+        && data.id is string
+        && data.id.size() > 0
+        && data.id.size() <= 128
+        && data.name is string
+        && data.name.size() > 0
+        && data.name.size() <= 200
+        && optionalString(data, 'description', 500)
+        && optionalString(data, 'category', 50)
+        && optionalString(data, 'categoryLabel', 100)
+        && optionalString(data, 'group', 150)
+        && optionalString(data, 'emoji', 16)
+        && optionalString(data, 'rating', 20)
+        && optionalString(data, 'busyTime', 100)
+        && optionalString(data, 'image', 500)
+        && (!( 'latitude' in data)
+          || (data.latitude is number && data.latitude >= -90 && data.latitude <= 90))
+        && (!( 'longitude' in data)
+          || (data.longitude is number && data.longitude >= -180 && data.longitude <= 180))
+        && validAppointmentSchedule(data.schedule)
+        && optionalString(data, 'scheduledAt', 100);
+    }
+
+    function validAppointment(data) {
+      return data is map
+        && data.keys().hasOnly([
+          'id', 'conversationId', 'participants', 'hostId', 'guestId', 'meetup',
+          'scheduledFor', 'status', 'createdAt', 'updatedAt', 'cancelledBy',
+          'cancelledAt'
+        ])
+        && data.keys().hasAll([
+          'id', 'conversationId', 'participants', 'hostId', 'guestId', 'meetup',
+          'scheduledFor', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string
+        && data.id.size() > 0
+        && data.id.size() <= 300
+        && data.conversationId is string
+        && data.conversationId.size() > 0
+        && data.conversationId.size() <= 260
+        && data.participants is list
+        && data.participants.size() == 2
+        && data.participants[0] is string
+        && data.participants[1] is string
+        && data.participants[0].size() > 0
+        && data.participants[0].size() <= 128
+        && data.participants[1].size() > 0
+        && data.participants[1].size() <= 128
+        && data.participants[0] != data.participants[1]
+        && data.hostId is string
+        && data.hostId.size() > 0
+        && data.hostId.size() <= 128
+        && data.guestId is string
+        && data.guestId.size() > 0
+        && data.guestId.size() <= 128
+        && data.hostId != data.guestId
+        && data.participants.hasAll([data.hostId, data.guestId])
+        && data.participants.hasOnly([data.hostId, data.guestId])
+        && validAppointmentMeetup(data.meetup)
+        && data.scheduledFor is timestamp
+        && data.meetup.schedule.scheduledFor == data.scheduledFor
+        && data.status in ['active', 'cancelled']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && optionalString(data, 'cancelledBy', 128)
+        && optionalTimestamp(data, 'cancelledAt');
+    }
+
+    function appointmentCreateAllowed(appointmentId) {
+      let data = request.resource.data;
+      return (signedIn() && data is map)
+        ? (data.keys().hasAll(['conversationId', 'hostId', 'guestId', 'status'])
+          ? ((appointmentId == 'a-' + data.conversationId + '-' + data.hostId
+              && data.status == 'active'
+              && request.auth.uid == data.guestId)
+            ? (validAppointment(data)
+              && exists(/databases/$(database)/documents/conversations/$(data.conversationId))
+              && get(/databases/$(database)/documents/conversations/$(data.conversationId)).data.participants == data.participants
+              && getAfter(/databases/$(database)/documents/conversations/$(data.conversationId)).data.participants == data.participants
+              && listContains(
+                getAfter(/databases/$(database)/documents/conversations/$(data.conversationId)).data,
+                'meetupAcceptedUsers',
+                data.guestId
+              )
+              && exists(/databases/$(database)/documents/profiles/$(data.hostId))
+              && (
+                get(/databases/$(database)/documents/profiles/$(data.hostId)).data.meetup == data.meetup
+                || (
+                  data.meetup is map
+                  && ('meetup' in get(/databases/$(database)/documents/profiles/$(data.hostId)).data)
+                  && get(/databases/$(database)/documents/profiles/$(data.hostId)).data.meetup is map
+                  && get(/databases/$(database)/documents/profiles/$(data.hostId)).data.meetup.name == data.meetup.name
+                )
+              ))
+            : false)
+          : false)
+        : false;
+    }
+
+    function appointmentUpdateAllowed(appointmentId) {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      return (signedIn()
+        && ('id' in resource.data)
+        && resource.data.id == appointmentId
+        && ('participants' in resource.data)
+        && resource.data.participants is list
+        && request.auth.uid in resource.data.participants)
+        ? (validAppointment(request.resource.data)
+          && request.resource.data.id == resource.data.id
+          && request.resource.data.conversationId == resource.data.conversationId
+          && request.resource.data.participants == resource.data.participants
+          && request.resource.data.hostId == resource.data.hostId
+          && request.resource.data.guestId == resource.data.guestId
+          && request.resource.data.meetup == resource.data.meetup
+          && request.resource.data.scheduledFor == resource.data.scheduledFor
+          && affected.hasOnly(['status', 'cancelledBy', 'cancelledAt', 'updatedAt'])
+          && request.resource.data.updatedAt is timestamp
+          && (
+            (
+              resource.data.status == 'active'
+              && request.resource.data.status == 'cancelled'
+              && request.resource.data.cancelledBy == request.auth.uid
+              && request.resource.data.cancelledAt is timestamp
+              && request.time < resource.data.scheduledFor - duration.value(1, 'd')
+            )
+            || (
+              resource.data.status == 'cancelled'
+              && request.resource.data.status == 'active'
+              && request.auth.uid == resource.data.guestId
+              && request.resource.data.cancelledBy == null
+              && request.resource.data.cancelledAt == null
+              && request.time < resource.data.scheduledFor - duration.value(1, 'd')
+            )
+          ))
+        : false;
+    }
+
+    function otherParticipantIndex(data) {
+      return data.participants[0] == request.auth.uid ? 1 : 0;
+    }
+
+    function ownMeetupMembershipOnly() {
+      let other = resource.data.participants[otherParticipantIndex(resource.data)];
+      return listContains(request.resource.data, 'meetupAcceptedUsers', other)
+        == listContains(resource.data, 'meetupAcceptedUsers', other);
+    }
+
+    function counterValue(data, userId) {
+      return (data is map && (userId in data)) ? data[userId] : 0;
+    }
+
+    function unreadCountsUpdateAllowed() {
+      let mine = request.auth.uid;
+      let other = resource.data.participants[otherParticipantIndex(resource.data)];
+      let oldMine = counterValue(resource.data.unreadCounts, mine);
+      let newMine = counterValue(request.resource.data.unreadCounts, mine);
+      let oldOther = counterValue(resource.data.unreadCounts, other);
+      let newOther = counterValue(request.resource.data.unreadCounts, other);
+      return (newMine == oldMine || newMine == 0)
+        && (
+          newOther == oldOther
+          || (
+            newOther == oldOther + 1
+            && optionalValue(request.resource.data, 'lastMessageId')
+              != optionalValue(resource.data, 'lastMessageId')
+          )
+        );
+    }
+
+    function lastMessageMetadataUpdateAllowed(conversationId) {
+      let messageId = optionalValue(request.resource.data, 'lastMessageId');
+      let metadataChanged = optionalValue(request.resource.data, 'lastMessageSenderId')
+          != optionalValue(resource.data, 'lastMessageSenderId')
+        || optionalValue(request.resource.data, 'lastMessageAt')
+          != optionalValue(resource.data, 'lastMessageAt')
+        || messageId != optionalValue(resource.data, 'lastMessageId');
+      return !metadataChanged
+        || (
+          messageId is string
+          && messageId.size() > 0
+          && existsAfter(/databases/$(database)/documents/conversations/$(conversationId)/messages/$(messageId))
+          && getAfter(/databases/$(database)/documents/conversations/$(conversationId)/messages/$(messageId)).data.senderId == request.auth.uid
+          && getAfter(/databases/$(database)/documents/conversations/$(conversationId)/messages/$(messageId)).data.encrypted == true
+          && request.resource.data.lastMessageSenderId == request.auth.uid
+        );
+    }
+
+    function conversationCoreIsImmutable() {
+      // The root messages list is legacy data and is no longer authoritative;
+      // current messages live in the protected subcollection. Do not read or
+      // compare that list here: even size() can exceed Firestore's
+      // 1000-expression limit when a migrated room contains hundreds of items.
+      // All authoritative metadata fields are checked explicitly by the
+      // update branches below.
+      return request.resource.data.participants == resource.data.participants
+        && request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    function settingsUpdateAllowed() {
+      let other = resource.data.participants[otherParticipantIndex(resource.data)];
+      return validParticipantSettings(
+          optionalValue(request.resource.data, 'participantSettings'),
+          resource.data.participants
+        )
+        && optionalMapEntry(request.resource.data, 'participantSettings', other)
+          == optionalMapEntry(resource.data, 'participantSettings', other);
+    }
+
+    function participantProfileUpdateAllowed() {
+      let other = resource.data.participants[otherParticipantIndex(resource.data)];
+      return request.resource.data.updatedAt is timestamp
+        && request.resource.data.participantProfiles is map
+        && request.resource.data.participantProfiles.keys().hasAll(resource.data.participants)
+        && request.resource.data.participantProfiles.keys().hasOnly(resource.data.participants)
+        && optionalMapEntry(request.resource.data, 'participantProfiles', other)
+          == optionalMapEntry(resource.data, 'participantProfiles', other)
+        && validConversationProfile(
+          request.resource.data.participantProfiles[request.auth.uid],
+          request.auth.uid
+        );
+    }
+
+    function readStateUpdateAllowed() {
+      let other = resource.data.participants[otherParticipantIndex(resource.data)];
+      return validCounterMap(optionalValue(request.resource.data, 'unreadCounts'), resource.data.participants)
+        && validReadReceipts(optionalValue(request.resource.data, 'readReceipts'), resource.data.participants)
+        && optionalMapEntry(request.resource.data, 'readReceipts', other)
+          == optionalMapEntry(resource.data, 'readReceipts', other)
+        && unreadCountsUpdateAllowed();
+    }
+
+    function encryptionUpdateAllowed() {
+      return request.resource.data.lastMessage == 'ข้อความที่เข้ารหัส'
+        && request.resource.data.updatedAt is timestamp
+        && validConversationEncryption(
+          optionalValue(request.resource.data, 'encryption'),
+          resource.data.participants
+        );
+    }
+
+    function timelineUpdateAllowed(conversationId) {
+      let senderId = optionalValue(request.resource.data, 'lastMessageSenderId');
+      return request.resource.data.lastMessage == 'ข้อความที่เข้ารหัส'
+        && request.resource.data.updatedAt is timestamp
+        && (
+          !('unreadCounts' in request.resource.data)
+          || request.resource.data.unreadCounts == null
+          || validCounterMap(request.resource.data.unreadCounts, resource.data.participants)
+        )
+        && optionalTimestamp(request.resource.data, 'lastMessageAt')
+        && optionalString(request.resource.data, 'lastMessageId', 128)
+        && (senderId == null
+          || (senderId is string && senderId in resource.data.participants))
+        && ownMeetupMembershipOnly()
+        && unreadCountsUpdateAllowed()
+        && lastMessageMetadataUpdateAllowed(conversationId);
+    }
+
+    function conversationUpdateAllowed(conversationId) {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      // Keep these branches mutually exclusive. Evaluating every validator in
+      // an OR chain makes an otherwise simple update walk through the full
+      // E2EE/profile validators and can hit Firestore's 1,000-expression cap.
+      return affected.hasOnly(['updatedAt'])
+        ? request.resource.data.updatedAt is timestamp
+        : (affected.hasOnly(['participantSettings', 'updatedAt']) && ('participantSettings' in affected))
+          ? settingsUpdateAllowed()
+          : (affected.hasOnly(['participantProfiles', 'updatedAt']) && ('participantProfiles' in affected))
+            ? participantProfileUpdateAllowed()
+            : (affected.hasOnly(['unreadCounts', 'readReceipts', 'updatedAt']) && affected.hasAny(['unreadCounts', 'readReceipts']))
+              ? readStateUpdateAllowed()
+              : (affected.hasOnly(['encryption', 'lastMessage', 'updatedAt']) && ('encryption' in affected))
+                ? encryptionUpdateAllowed()
+                : affected.hasOnly([
+                    'lastMessage', 'lastMessageSenderId', 'lastMessageAt', 'lastMessageId',
+                    'unreadCounts', 'meetupAcceptedUsers', 'updatedAt', 'messages'
+                  ])
+                  ? timelineUpdateAllowed(conversationId)
+                  : false;
+    }
+
+    // Older clients may send the unverified defaults when creating a profile.
+    // They still cannot create verified metadata or change it after creation.
+    function initialUnverifiedFaceState(data) {
+      return (!('isFaceVerified' in data) || data.isFaceVerified == false)
+        && (!('faceVerifiedAt' in data) || data.faceVerifiedAt == null)
+        && (!('faceMatchScore' in data) || data.faceMatchScore == null)
+        && (!('faceVerificationStatus' in data) || data.faceVerificationStatus == 'unverified' || data.faceVerificationStatus == null);
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+        && initialUnverifiedFaceState(request.resource.data)
+        && (
+          request.resource.data.keys().hasOnly(['id', 'meetup', 'updatedAt'])
+            ? meetupCreateAllowed(userId)
+            : request.resource.data.keys().hasOnly(['id', 'matchingPreferences', 'updatedAt'])
+              ? matchingPreferencesCreateAllowed(userId)
+              : validPrivateProfile(request.resource.data, userId)
+        );
+      allow update: if isOwner(userId)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
+        && usersUpdateAllowed(userId);
+      allow delete: if false;
+
+      match /blockedUsers/{blockedId} {
+        allow read, write, delete: if isOwner(userId);
+      }
+    }
+
+    match /entitlements/{userId} {
+      allow get: if isOwner(userId);
+      allow list, create, update, delete: if false;
+    }
+    match /revenueCatEvents/{eventId} {
+      allow read, write: if false;
+    }
+    match /profileVisibility/{userId} {
+      allow get: if isOwner(userId);
+      allow list, create, update, delete: if false;
+    }
+    match /likePageCursors/{userId}/tokens/{token} {
+      allow read, write: if false;
+    }
+    match /matchingSignals/{userId} {
+      allow get: if isOwner(userId);
+      allow list, write: if false;
+    }
+
+    match /profiles/{userId} {
+      allow read: if signedIn();
+      allow create: if isOwner(userId)
+        && initialUnverifiedFaceState(request.resource.data)
+        && (
+          request.resource.data.keys().hasOnly(['id', 'meetup', 'updatedAt'])
+            ? meetupCreateAllowed(userId)
+            : validPublicProfile(request.resource.data, userId)
+        );
+      allow update: if isOwner(userId)
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
+        && profilesUpdateAllowed(userId);
+      allow delete: if false;
+    }
+
+    // Discovery is deliberately split from the profile/detail document. Only
+    // signed-in users can read this public allowlisted projection; clients
+    // cannot create or modify ranking/discovery records themselves.
+    match /discoveryProfiles/{userId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    match /users/{userId}/notifications/{notificationId} {
+      allow read: if isOwner(userId);
+      allow create, delete: if false;
+      allow update: if isOwner(userId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt'])
+        && request.resource.data.readAt == request.time;
+    }
+
+    match /decisions/{decisionId} {
+      allow get: if signedIn() && (resource == null || isDecisionParty(resource.data));
+      allow list: if signedIn()
+        && (resource.data.fromUserId == request.auth.uid || resource.data.toUserId == request.auth.uid);
+      allow create: if signedIn()
+        && request.auth.uid == request.resource.data.fromUserId
+        && decisionId == request.resource.data.fromUserId + '_' + request.resource.data.toUserId
+        && validDecision(request.resource.data)
+        && (
+          (request.resource.data.status == 'pending'
+            && (request.resource.data.type == 'skip'
+              || discoverableProfile(request.resource.data.toUserId)))
+          || (
+            request.resource.data.status == 'accepted'
+            && request.resource.data.type == 'like'
+            && acceptedLike(request.resource.data.toUserId, request.resource.data.fromUserId)
+          )
+        );
+      allow update: if signedIn()
+        && isDecisionParty(resource.data)
+        && request.resource.data.fromUserId == resource.data.fromUserId
+        && request.resource.data.toUserId == resource.data.toUserId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'type', 'status', 'likeMessage', 'updatedAt'
+        ])
+        && validDecision(request.resource.data)
+        && (
+          (
+            request.auth.uid == resource.data.fromUserId
+            && senderDecisionTransitionAllowed()
+            && (
+              request.resource.data.status in ['pending', 'removed']
+              || (
+                request.resource.data.type == 'like'
+                && request.resource.data.status == 'accepted'
+                && acceptedLike(resource.data.toUserId, resource.data.fromUserId)
+              )
+            )
+          )
+          || (
+            request.auth.uid == resource.data.toUserId
+            && request.resource.data.type == resource.data.type
+            && optionalValue(request.resource.data, 'likeMessage') == optionalValue(resource.data, 'likeMessage')
+            && request.resource.data.status in ['accepted', 'rejected', 'removed']
+          )
+        );
+      allow delete: if signedIn()
+        && request.auth.uid == resource.data.fromUserId;
+    }
+
+    match /conversations/{conversationId} {
+      allow get: if signedIn()
+        && (resource == null || request.auth.uid in resource.data.participants);
+      allow list: if signedIn() && request.auth.uid in resource.data.participants;
+      allow create: if signedIn()
+        && validConversation(request.resource.data)
+        && request.auth.uid in request.resource.data.participants
+        && conversationId == 'c-' + request.resource.data.participants[0] + '-' + request.resource.data.participants[1]
+        && acceptedLike(request.resource.data.participants[0], request.resource.data.participants[1])
+        && acceptedLike(request.resource.data.participants[1], request.resource.data.participants[0])
+        && request.resource.data.messages.size() == 0
+        && request.resource.data.lastMessage == 'ข้อความที่เข้ารหัส';
+      allow update: if signedIn()
+        && request.auth.uid in resource.data.participants
+        && conversationCoreIsImmutable()
+        && conversationUpdateAllowed(conversationId);
+      allow delete: if false;
+    }
+
+    match /conversations/{conversationId}/messages/{messageId}/videoViews/{viewerId} {
+      function conversationParticipants() {
+        return get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
+      }
+      function isParticipant() {
+        return signedIn() && request.auth.uid in conversationParticipants();
+      }
+      function isProtectedView() {
+        let data = get(/databases/$(database)/documents/conversations/$(conversationId)/messages/$(messageId)).data;
+        return data.videoMode == 'once' || data.videoMode == 'replay'
+          || data.viewMode == 'once' || data.viewMode == 'replay';
+      }
+      allow read: if isParticipant();
+      allow create: if isParticipant()
+        && request.auth.uid == viewerId
+        && isProtectedView()
+        && request.resource.data.keys().hasOnly(['viewedAt'])
+        && request.resource.data.viewedAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /conversations/{conversationId}/messages/{messageId} {
+      function conversationData() {
+        return get(/databases/$(database)/documents/conversations/$(conversationId)).data;
+      }
+
+      function isConversationParticipant() {
+        return signedIn()
+          && exists(/databases/$(database)/documents/conversations/$(conversationId))
+          && request.auth.uid in conversationData().participants;
+      }
+
+      function validReactionMap(data) {
+        let participants = conversationData().participants;
+        return !('reactions' in data)
+          || data.reactions == null
+          || (
+            data.reactions is map
+            && data.reactions.size() <= 2
+            && data.reactions.keys().hasOnly(participants)
+            && (!(participants[0] in data.reactions)
+              || (data.reactions[participants[0]] is string
+                && data.reactions[participants[0]].size() <= 16))
+            && (!(participants[1] in data.reactions)
+              || (data.reactions[participants[1]] is string
+                && data.reactions[participants[1]].size() <= 16))
+           );
+      }
+
+      function validReactionTimes(data) {
+        let participants = conversationData().participants;
+        return !('reactionTimes' in data)
+          || data.reactionTimes == null
+          || (
+            data.reactionTimes is map
+            && data.reactionTimes.size() <= 2
+            && data.reactionTimes.keys().hasOnly(participants)
+            && (!(participants[0] in data.reactionTimes)
+              || data.reactionTimes[participants[0]] is timestamp)
+            && (!(participants[1] in data.reactionTimes)
+              || data.reactionTimes[participants[1]] is timestamp)
+          );
+      }
+
+      function validHiddenFor(data) {
+        return !('hiddenFor' in data)
+          || data.hiddenFor == null
+          || (
+            data.hiddenFor is list
+            && data.hiddenFor.size() <= 2
+            && data.hiddenFor.hasOnly(conversationData().participants)
+          );
+      }
+
+      function validForwardedFrom(data) {
+        return !('forwardedFrom' in data)
+          || data.forwardedFrom == null
+          || (
+            data.forwardedFrom is map
+            && data.forwardedFrom.keys().hasOnly(['conversationId', 'messageId'])
+            && data.forwardedFrom.keys().hasAll(['conversationId', 'messageId'])
+            && data.forwardedFrom.conversationId is string
+            && data.forwardedFrom.conversationId.size() <= 200
+            && data.forwardedFrom.messageId is string
+            && data.forwardedFrom.messageId.size() <= 128
+          );
+      }
+
+      function validVideoMetadata(data) {
+        return (
+          (!('videoMode' in data) && !('videoDuration' in data) && !('videoStartMs' in data) && !('videoEndMs' in data)
+            && (!('viewMode' in data) || data.viewMode in ['once', 'replay', 'chat']))
+          || (data.videoMode in ['once', 'replay', 'chat']
+            && data.videoDuration is number && data.videoDuration > 0 && data.videoDuration <= 60000
+            && optionalNumber(data, 'videoStartMs', 0, 60000)
+            && optionalNumber(data, 'videoEndMs', 1, 60000)
+            && (!('videoStartMs' in data) || !('videoEndMs' in data)
+              || (data.videoEndMs >= data.videoStartMs && data.videoEndMs <= data.videoDuration)))
+        );
+      }
+
+      function validMessageCore(data) {
+        return data.keys().hasAll([
+            'id', 'senderId', 'createdAt', 'time', 'encrypted',
+            'encryptionVersion', 'nonce', 'ciphertext'
+          ])
+          && data.id is string
+          && data.id.size() > 0
+          && data.id.size() <= 128
+          && data.senderId is string
+          && data.senderId in conversationData().participants
+          && data.createdAt is timestamp
+          && data.time is timestamp
+          && data.encrypted == true
+          && data.encryptionVersion == 1
+          && data.nonce is string
+          && data.nonce.size() == 32
+          && data.ciphertext is string
+          && data.ciphertext.size() > 0
+          && data.ciphertext.size() <= 20000
+          && optionalBoolean(data, 'isSystem')
+          && optionalBoolean(data, 'forwarded')
+          && validForwardedFrom(data)
+          && validVideoMetadata(data)
+          && optionalString(data, 'preview', 500);
+      }
+
+      function validMessage(data) {
+        return data is map
+          ? (data.keys().hasOnly([
+              'id', 'senderId', 'createdAt', 'time', 'encrypted',
+              'encryptionVersion', 'nonce', 'ciphertext', 'isSystem',
+              'forwarded', 'forwardedFrom', 'reactions', 'reactionTimes', 'hiddenFor', 'updatedAt',
+            'preview', 'videoMode', 'videoDuration', 'videoStartMs', 'videoEndMs', 'viewMode'
+            ])
+            ? (validMessageCore(data)
+              && validReactionMap(data)
+              && validReactionTimes(data)
+              && validHiddenFor(data)
+              && optionalTimestamp(data, 'updatedAt'))
+            : false)
+          : false;
+      }
+
+      // A newly encrypted message cannot contain reactions, reactionTimes, or
+      // hiddenFor yet;
+      // keeping its create validator separate avoids evaluating those
+      // read/update-only checks on every message send.
+      function validMessageCreate(data) {
+        return data is map
+          ? (data.keys().hasOnly([
+              'id', 'senderId', 'createdAt', 'time', 'encrypted',
+              'encryptionVersion', 'nonce', 'ciphertext', 'isSystem',
+              'forwarded', 'forwardedFrom', 'preview', 'videoMode', 'videoDuration', 'videoStartMs', 'videoEndMs', 'viewMode'
+            ])
+            ? validMessageCore(data)
+            : false)
+          : false;
+      }
+
+      function reactionValue(data, userId) {
+        return ('reactions' in data) && data.reactions != null && data.reactions is map && (userId in data.reactions)
+          ? data.reactions[userId]
+          : null;
+      }
+
+      function reactionTimeValue(data, userId) {
+        return ('reactionTimes' in data) && data.reactionTimes != null && data.reactionTimes is map && (userId in data.reactionTimes)
+          ? data.reactionTimes[userId]
+          : null;
+      }
+
+      function sameOtherParticipantReaction() {
+        let participants = conversationData().participants;
+        let other = participants[0] == request.auth.uid ? participants[1] : participants[0];
+        return reactionValue(resource.data, other)
+          == reactionValue(request.resource.data, other)
+          && reactionTimeValue(resource.data, other)
+            == reactionTimeValue(request.resource.data, other);
+      }
+
+      function hiddenList(data) {
+        return ('hiddenFor' in data) && data.hiddenFor != null && data.hiddenFor is list ? data.hiddenFor : [];
+      }
+
+      function hiddenForOnlyGrowsForCurrentUser() {
+        return ('hiddenFor' in request.resource.data)
+          && request.resource.data.hiddenFor is list
+          && hiddenList(resource.data).hasOnly(request.resource.data.hiddenFor)
+          && request.resource.data.hiddenFor.hasOnly(
+            hiddenList(resource.data).concat([request.auth.uid])
+          )
+          && request.resource.data.hiddenFor.size() <= hiddenList(resource.data).size() + 1;
+      }
+
+      allow read: if isConversationParticipant();
+      allow create: if isConversationParticipant()
+        && validMessageCreate(request.resource.data)
+        && messageId == request.resource.data.id
+        && request.resource.data.senderId == request.auth.uid
+        && !('reactions' in request.resource.data)
+        && !('hiddenFor' in request.resource.data);
+      allow update: if isConversationParticipant()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'reactions', 'reactionTimes', 'hiddenFor', 'updatedAt'
+        ])
+        && validMessage(request.resource.data)
+        && optionalValue(request.resource.data, 'id') == optionalValue(resource.data, 'id')
+        && optionalValue(request.resource.data, 'senderId') == optionalValue(resource.data, 'senderId')
+        && optionalValue(request.resource.data, 'encrypted') == optionalValue(resource.data, 'encrypted')
+        && optionalValue(request.resource.data, 'ciphertext') == optionalValue(resource.data, 'ciphertext')
+        && optionalValue(request.resource.data, 'nonce') == optionalValue(resource.data, 'nonce')
+        && optionalValue(request.resource.data, 'createdAt') == optionalValue(resource.data, 'createdAt')
+        && optionalValue(request.resource.data, 'time') == optionalValue(resource.data, 'time')
+        && sameOtherParticipantReaction()
+        && (
+          optionalValue(request.resource.data, 'hiddenFor') == optionalValue(resource.data, 'hiddenFor')
+          || hiddenForOnlyGrowsForCurrentUser()
+        );
+      allow delete: if isConversationParticipant()
+        && resource.data.senderId == request.auth.uid;
+    }
+
+    // Sender-created quality upgrades leave the original message and its
+    // view-once receipt untouched. Both bytes and URL remain encrypted.
+    match /conversations/{conversationId}/messages/{messageId}/videoRenditions/{quality} {
+      function parentVideo() {
+        return get(/databases/$(database)/documents/conversations/$(conversationId)/messages/$(messageId)).data;
+      }
+      function participant() {
+        return signedIn() && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
+      }
+      allow read: if participant();
+      allow create: if participant()
+        && quality in ['medium', 'high']
+        && parentVideo().senderId == request.auth.uid
+        && parentVideo().videoMode in ['once', 'replay', 'chat']
+        && request.resource.data.keys().hasOnly(['id', 'senderId', 'createdAt', 'time', 'encrypted', 'encryptionVersion', 'nonce', 'ciphertext', 'videoMode', 'videoDuration'])
+        && request.resource.data.id == messageId
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.videoMode == parentVideo().videoMode
+        && request.resource.data.videoDuration is number
+        && request.resource.data.videoDuration > 0 && request.resource.data.videoDuration <= 60000
+        && request.resource.data.createdAt is timestamp && request.resource.data.time is timestamp
+        && request.resource.data.encrypted == true && request.resource.data.encryptionVersion == 1
+        && request.resource.data.nonce is string && request.resource.data.nonce.size() == 32
+        && request.resource.data.ciphertext is string && request.resource.data.ciphertext.size() > 0
+        && request.resource.data.ciphertext.size() <= 20000;
+      allow update, delete: if false;
+    }
+
+    match /appointments/{appointmentId} {
+      // A first-time acceptance transaction reads the deterministic document
+      // before creating it. Allow the missing-document read, but keep reads of
+      // existing appointments participant-only.
+      allow get: if signedIn()
+        && (resource == null || request.auth.uid in resource.data.participants);
+      // The client listens with hostId == auth.uid and guestId == auth.uid.
+      // Keeping list access tied to those indexed fields lets Firestore prove
+      // the query is scoped to the signed-in participant instead of exposing
+      // the entire appointments collection.
+      allow list: if signedIn()
+        && (
+          resource.data.hostId == request.auth.uid
+          || resource.data.guestId == request.auth.uid
+        );
+      allow create: if appointmentCreateAllowed(appointmentId);
+      allow update: if appointmentUpdateAllowed(appointmentId);
+      allow delete: if false;
+    }
+
+    match /spots/{spotId} {
+      allow read: if signedIn();
+      allow write: if false;
+    }
+
+    // Party membership and request transitions are performed by callable
+    // functions so capacity, expiry and group-key grants commit atomically.
+    match /parties/{partyId} {
+      allow read: if signedIn();
+      allow write: if false;
+
+      match /requests/{requesterId} {
+        allow get: if signedIn() && (
+          request.auth.uid == requesterId ||
+          request.auth.uid == resource.data.hostId
+        );
+        allow write: if false;
+      }
+    }
+
+    // Collection-group queries must prove ownership from document fields.
+    match /{path=**}/requests/{requesterId} {
+      allow list: if signedIn() && (
+        resource.data.requesterId == request.auth.uid ||
+        resource.data.hostId == request.auth.uid
+      );
+      allow write: if false;
+    }
+
+    function validGroupRead(partyId, data) {
+      return signedIn()
+        && request.auth.uid in get(/databases/$(database)/documents/groupChats/$(partyId)).data.memberIds
+        && data.keys().hasOnly(['partyId', 'messageId', 'lastReadMessageAt', 'updatedAt'])
+        && data.keys().hasAll(['partyId', 'messageId', 'lastReadMessageAt', 'updatedAt'])
+        && data.partyId == partyId && data.messageId is string
+        && data.lastReadMessageAt is timestamp && data.lastReadMessageAt <= request.time
+        && data.updatedAt == request.time
+        && data.lastReadMessageAt == get(/databases/$(database)/documents/groupChats/$(partyId)/messages/$(data.messageId)).data.createdAt;
+    }
+
+    match /users/{userId}/groupChatReads/{partyId} {
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow create: if signedIn() && request.auth.uid == userId && validGroupRead(partyId, request.resource.data);
+      allow update: if signedIn() && request.auth.uid == userId && validGroupRead(partyId, request.resource.data)
+        && request.resource.data.lastReadMessageAt >= resource.data.lastReadMessageAt;
+      allow delete: if false;
+    }
+
+    match /groupChats/{partyId} {
+      function group() {
+        return get(/databases/$(database)/documents/groupChats/$(partyId)).data;
+      }
+      function groupMember() {
+        return signedIn() && request.auth.uid in group().memberIds;
+      }
+
+      allow get: if signedIn() && (
+        (resource == null &&
+          get(/databases/$(database)/documents/parties/$(partyId)).data.hostId == request.auth.uid)
+        || (resource != null && request.auth.uid in resource.data.memberIds)
+      );
+      allow list: if signedIn() && request.auth.uid in resource.data.memberIds;
+      allow write: if false;
+
+      match /epochs/{epochId} {
+        allow read: if groupMember();
+        allow write: if false;
+      }
+      match /readReceipts/{userId} {
+        allow read: if groupMember();
+        allow create: if groupMember() && request.auth.uid == userId && validGroupRead(partyId, request.resource.data);
+        allow update: if groupMember() && request.auth.uid == userId && validGroupRead(partyId, request.resource.data)
+          && request.resource.data.lastReadMessageAt >= resource.data.lastReadMessageAt;
+        allow delete: if false;
+      }
+
+      match /messages/{messageId} {
+        allow read: if groupMember();
+        allow create: if groupMember()
+          && group().rekeyRequired == false
+          && request.resource.data.keys().hasOnly([
+            'senderId', 'epoch', 'encrypted', 'type', 'nonce', 'ciphertext',
+            'createdAt'
+          ])
+          && request.resource.data.keys().hasAll([
+            'senderId', 'epoch', 'encrypted', 'type', 'nonce', 'ciphertext', 'createdAt'
+          ])
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.epoch == group().currentEpoch
+          && request.resource.data.encrypted == true
+          && request.resource.data.type in ['text', 'image']
+          && request.resource.data.nonce is string
+          && request.resource.data.nonce.size() == 32
+          && request.resource.data.ciphertext is string
+          && request.resource.data.ciphertext.size() > 0
+          && request.resource.data.ciphertext.size() <= 20000
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+
+    match /app_config/{configId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /reports/{reportId} {
+      allow create: if signedIn() && request.resource.data.reporterId == request.auth.uid;
+      allow read: if signedIn() && resource.data.reporterId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /calls/{callId} {
+      function isCallParticipant() {
+        return signedIn() && (
+          resource.data.callerId == request.auth.uid ||
+          resource.data.receiverId == request.auth.uid
+        );
+      }
+
+      allow get: if signedIn() && (
+        resource == null ||
+        resource.data.callerId == request.auth.uid ||
+        resource.data.receiverId == request.auth.uid
+      );
+      allow list: if signedIn() && (
+        resource.data.callerId == request.auth.uid ||
+        resource.data.receiverId == request.auth.uid
+      );
+      allow create: if signedIn()
+        && request.auth.uid == request.resource.data.callerId
+        && request.resource.data.callerId != request.resource.data.receiverId;
+      allow update: if signedIn() && (
+        resource.data.callerId == request.auth.uid ||
+        resource.data.receiverId == request.auth.uid
+      );
+      allow delete: if false;
+
+      match /callerCandidates/{candidateId} {
+        allow read: if isCallParticipant();
+        allow create: if signedIn() &&
+          get(/databases/$(database)/documents/calls/$(callId)).data.callerId == request.auth.uid;
+      }
+
+      match /receiverCandidates/{candidateId} {
+        allow read: if isCallParticipant();
+        allow create: if signedIn() &&
+          get(/databases/$(database)/documents/calls/$(callId)).data.receiverId == request.auth.uid;
+      }
+    }
+
+    // campusEmailChangeLocks/{uid} and passwordResetEmailLocks/{hash}
+    // are server-owned SMTP rate-limit records.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,12 @@
+import {spawnSync} from 'node:child_process';
+import {getEmailSendingConfig,isEmailSendingConfigured} from '../functions/campusEmailMailer.js';
+if(!process.argv.includes('--apply'))throw new Error('Load functions/.env and pass --apply');
+if(!isEmailSendingConfigured())throw new Error('SMTP credentials are missing');
+const c=getEmailSendingConfig();
+const payload=JSON.stringify({SMTP_HOST:c.smtpHost,SMTP_PORT:String(c.smtpPort),SMTP_USER:c.smtpUser,SMTP_PASS:c.smtpPass,CAMPUS_EMAIL_FROM:c.fromAddress,CAMPUS_EMAIL_FROM_NAME:c.fromName,RESEND_API_KEY:c.resendApiKey||''});
+const call=(args,input)=>process.platform==='win32'?spawnSync('cmd.exe',['/d','/s','/c',`gcloud ${args.join(' ')}`],{input,encoding:'utf8'}):spawnSync('gcloud',args,{input,encoding:'utf8'});
+const secret='CAMPUSMATE_ADMIN_SMTP_CONFIG',project='--project=campusmate-7f1ab';
+const existing=call(['secrets','describe',secret,project,'--format=value(name)']);
+const result=existing.status===0?call(['secrets','versions','add',secret,project,'--data-file=-','--quiet'],payload):call(['secrets','create',secret,project,'--replication-policy=automatic','--data-file=-','--quiet'],payload);
+if(result.status!==0)throw new Error('Secret Manager update failed; SMTP credentials were not printed');
+console.log(JSON.stringify({configured:true,secret,sender:c.fromAddress}));

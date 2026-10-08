@@ -1,0 +1,30 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 4560dc7d95f4f34aaecb8d0ce1e1bf4c0d6f97de..f2062bc7319d374950ad4ac34223c2998727de96 100644
+--- a/android/build.gradle
++++ b/android/build.gradle	
+@@ -88,6 +88,13 @@ android {
+             if (!isNewArchitectureEnabled) {
+                 srcDirs += 'src/oldarch/java'
+             }
++
++            // AsyncStorage 2.2.0 keeps the experimental Room-backed implementation
++            // under the default src/main/java tree. It must not be compiled unless
++            // AsyncStorage_useNextStorage is explicitly enabled.
++            if (!useNextStorage) {
++                exclude '**/next/**'
++            }
+         }
+     }
+ }
+diff --git a/android/src/main/java/com/reactnativecommunity/asyncstorage/next/ArgumentHelpers.kt b/android/src/main/java/com/reactnativecommunity/asyncstorage/next/ArgumentHelpers.kt
+deleted file mode 100644
+index bb6137747d5c51d0089d1984dfb72bc94ca73a06..0000000000000000000000000000000000000000
+diff --git a/android/src/main/java/com/reactnativecommunity/asyncstorage/next/ErrorHelpers.kt b/android/src/main/java/com/reactnativecommunity/asyncstorage/next/ErrorHelpers.kt
+deleted file mode 100644
+index 59549b37476147d20328c7f589b572e5322369b5..0000000000000000000000000000000000000000
+diff --git a/android/src/main/java/com/reactnativecommunity/asyncstorage/next/StorageModule.kt b/android/src/main/java/com/reactnativecommunity/asyncstorage/next/StorageModule.kt
+deleted file mode 100644
+index 41018e610e2eecd899cb1380a3933e1442a31fbe..0000000000000000000000000000000000000000
+diff --git a/android/src/main/java/com/reactnativecommunity/asyncstorage/next/StorageSupplier.kt b/android/src/main/java/com/reactnativecommunity/asyncstorage/next/StorageSupplier.kt
+deleted file mode 100644
+index c05f0181539b38e5c1ecfddd97ff9e66fdd06cdc..0000000000000000000000000000000000000000

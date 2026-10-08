@@ -1,0 +1,43 @@
+// Top-level build file where you can add configuration options common to all sub-projects/modules.
+
+buildscript {
+  repositories {
+    google()
+    mavenCentral()
+  }
+  dependencies {
+        classpath 'com.google.gms:google-services:4.4.4'
+    classpath('com.android.tools.build:gradle')
+    classpath('com.facebook.react:react-native-gradle-plugin')
+    def kotlinVersion = findProperty('android.kotlinVersion')
+    classpath(kotlinVersion ? "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion" : 'org.jetbrains.kotlin:kotlin-gradle-plugin')
+  }
+}
+
+allprojects {
+  repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://www.jitpack.io' }
+  }
+}
+
+apply plugin: "expo-root-project"
+apply plugin: "com.facebook.react.rootproject"
+
+// Optional local build limit for machines under memory pressure. AGP invokes
+// Ninja directly, so CMAKE_BUILD_PARALLEL_LEVEL alone does not bound its jobs.
+if (rootProject.hasProperty('campusmateNativeCompileJobs')) {
+  def jobs = rootProject.property('campusmateNativeCompileJobs').toString()
+  if (!(jobs in ['1', '2', '3', '4'])) throw new GradleException('Native compile jobs must be 1-4')
+  subprojects { nativeProject ->
+    def configurePool = {
+      nativeProject.android.defaultConfig.externalNativeBuild.cmake.arguments.addAll([
+        "-DCMAKE_JOB_POOLS=campusmate_compile=${jobs}",
+        '-DCMAKE_JOB_POOL_COMPILE=campusmate_compile',
+      ])
+    }
+    nativeProject.plugins.withId('com.android.library') { configurePool() }
+    nativeProject.plugins.withId('com.android.application') { configurePool() }
+  }
+}

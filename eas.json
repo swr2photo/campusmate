@@ -1,0 +1,48 @@
+{
+  "cli": {
+    "appVersionSource": "local"
+  },
+  "build": {
+    "preview": {
+      "environment": "preview",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "ios-simulator": {
+      "extends": "preview",
+      "ios": {
+        "simulator": true
+      }
+    },
+    "production": {
+      "environment": "production",
+      "autoIncrement": false,
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "CAMPUSMATE_PLUS_BACKEND_ENABLED": "true",
+        "CAMPUSMATE_SECURE_DISCOVERY_ENABLED": "true"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "android": {
+        "track": "internal"
+      }
+    },
+    "closed": {
+      "android": {
+        "track": "alpha"
+      }
+    },
+    "open": {
+      "android": {
+        "track": "beta"
+      }
+    }
+  }
+}

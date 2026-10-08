@@ -1,0 +1,31 @@
+{
+  "ignore_dirs": [
+    ".expo",
+    ".metro-cache",
+    ".firebase",
+    "functions",
+    "android",
+    "npm-cache",
+    "scripts",
+    "templates",
+    "node_modules.cm-vstore-backup-20260905",
+    "node_modules_router_recovery_20260829",
+    "node_modules_router_recovery2_20260829",
+    "tmp",
+    "photo",
+    ".codex",
+    ".agents",
+    ".agent-device",
+    ".idea",
+    ".vscode",
+    "qa_arranged_20260828",
+    "qa_final_20260828",
+    "qa_textflow_20260828",
+    "qa_textflow_20260828_check2",
+    "qa_textflow_20260828_current",
+    "qa_textflow_20260828_current_150",
+    "qa_textflow_20260828_final",
+    "qa_textflow_20260828_final_current",
+    "qa_textflow_experiments"
+  ]
+}

@@ -326,37 +326,50 @@ export default function NotificationManager() {
   useEffect(() => {
     if (!notifyKitModule?.notifee || !user?.id) return undefined;
 
-    notifyKitModule.notifee.getInitialNotification().then((initial) => {
-      if (initial?.notification?.data) {
-        const notifTime = initial.notification?.date || initial.notification?.timestamp;
-        const time = typeof notifTime === 'number' ? notifTime : (notifTime ? new Date(notifTime).getTime() : 0);
-        const isStale = time > 0 && (Date.now() - time > 5 * 60 * 1000);
-        if (!isStale) {
-          dispatchNotification(initial.notification.data);
+    try {
+      notifyKitModule.notifee.getInitialNotification().then((initial) => {
+        if (initial?.notification?.data) {
+          const notifTime = initial.notification?.date || initial.notification?.timestamp;
+          const time = typeof notifTime === 'number' ? notifTime : (notifTime ? new Date(notifTime).getTime() : 0);
+          const isStale = time > 0 && (Date.now() - time > 5 * 60 * 1000);
+          if (!isStale) {
+            dispatchNotification(initial.notification.data);
+          }
         }
-      }
-    }).catch(() => undefined);
+      }).catch(() => undefined);
+    } catch {
+      return undefined;
+    }
 
-    const unsubscribe = notifyKitModule.notifee.onForegroundEvent(({ type, detail }) => {
-      const actionId = detail?.pressAction?.id;
-      const data = detail?.notification?.data;
+    let unsubscribe;
+    try {
+      unsubscribe = notifyKitModule.notifee.onForegroundEvent(({ type, detail }) => {
+        const actionId = detail?.pressAction?.id;
+        const data = detail?.notification?.data;
 
-      if (actionId === 'reject' && data?.callId) {
-        rejectCall?.(data.callId, 'declined');
-        notifyKitModule.notifee.cancelNotification(detail?.notification?.id || `call-${data.callId}`).catch(() => {});
-        return;
-      }
+        if (actionId === 'reject' && data?.callId) {
+          rejectCall?.(data.callId, 'declined');
+          notifyKitModule.notifee.cancelNotification(detail?.notification?.id || `call-${data.callId}`).catch(() => {});
+          return;
+        }
 
-      if (
-        (type === notifyKitModule.EventType?.PRESS || type === notifyKitModule.EventType?.ACTION_PRESS || type === 1 || type === 2) &&
-        data
-      ) {
-        dispatchNotification(data);
-      }
-    });
+        if (
+          (type === notifyKitModule.EventType?.PRESS || type === notifyKitModule.EventType?.ACTION_PRESS || type === 1 || type === 2) &&
+          data
+        ) {
+          dispatchNotification(data);
+        }
+      });
+    } catch {
+      return undefined;
+    }
 
     return () => {
-      unsubscribe();
+      try {
+        if (typeof unsubscribe === 'function') {
+          unsubscribe();
+        }
+      } catch {}
     };
   }, [dispatchNotification, user?.id]);
 

@@ -77,7 +77,7 @@ export const APP_TOUR_STEPS = [
     route: '/chat',
     target: 'chat.search',
     tab: 'แชต',
-    icon: 'message.fill',
+    icon: 'bubble.left.fill',
     title: 'แชตกับเพื่อน',
     body: 'ห้องแชตของคู่ที่จับคู่แล้วและแชตกลุ่มจากตี้กิจกรรมอยู่ที่นี่ ค้นหาชื่อหรือดูเฉพาะข้อความที่ยังไม่อ่านได้',
   },

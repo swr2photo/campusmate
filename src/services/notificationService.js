@@ -35,8 +35,16 @@ export function getNotificationsModule() {
 }
 
 export function getNotifeeModule() {
-  if (Platform.OS === 'web') return null;
+  if (!isNotificationsAvailable) return null;
   try {
+    const { TurboModuleRegistry, NativeModules } = require('react-native');
+    const hasNative = Boolean(
+      TurboModuleRegistry?.get?.('NotifeeApiModule') ||
+      NativeModules?.NotifeeApiModule ||
+      NativeModules?.NotifeeNativeModule
+    );
+    if (!hasNative) return null;
+
     const notifyKit = require('react-native-notify-kit');
     return {
       notifee: notifyKit.default || notifyKit,

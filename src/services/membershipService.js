@@ -82,7 +82,10 @@ function waitForAccount(uid) {
   });
 }
 export function membershipConfigured() { return extra().plusBackendEnabled === true; }
-export function purchasesConfigured() { return membershipConfigured() && Boolean(apiKey()); }
+export function purchasesConfigured() {
+  if (Constants.appOwnership === 'expo' || Constants.executionEnvironment === 'storeClient') return false;
+  return membershipConfigured() && Boolean(apiKey());
+}
 export function subscribeMembership(uid, onData, onError) {
   const { db } = requireFirebase();
   return onSnapshot(doc(db, 'entitlements', uid), { includeMetadataChanges: true },

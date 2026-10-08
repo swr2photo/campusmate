@@ -1,6 +1,6 @@
 import Text from '../components/AppText';
-import React, { useEffect, useState } from 'react';
-import { Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Asset } from 'expo-asset';
 import Image from '../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -31,14 +31,43 @@ export default function OnboardingScreen({ onComplete }) {
   const { colors } = useTheme();
   const { height, width } = useWindowDimensions();
   const [page, setPage] = useState(0);
-  const [imageError, setImageError] = useState(false);
-  const [retry, setRetry] = useState(0);
-  useEffect(() => { void Asset.loadAsync(pages.map((item) => item.image)).catch(() => {}); }, []);
-  useEffect(() => { setImageError(false); }, [page]);
-  const current = pages[page];
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    void Asset.loadAsync(pages.map((item) => item.image)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ x: page * width, animated: false });
+  }, [width]);
+
   const compact = height < 700;
   const finish = () => { void onComplete(); };
-  const next = () => page === pages.length - 1 ? finish() : setPage(page + 1);
+
+  const goToPage = (nextIndex) => {
+    if (nextIndex >= pages.length) {
+      finish();
+      return;
+    }
+    setPage(nextIndex);
+    scrollRef.current?.scrollTo({ x: nextIndex * width, animated: true });
+  };
+
+  const next = () => {
+    if (page === pages.length - 1) {
+      finish();
+    } else {
+      goToPage(page + 1);
+    }
+  };
+
+  const handleScroll = (event) => {
+    const offsetX = event.nativeEvent.contentOffset.x;
+    const newPage = Math.round(offsetX / width);
+    if (newPage !== page && newPage >= 0 && newPage < pages.length) {
+      setPage(newPage);
+    }
+  };
 
   return (
     <SafeAreaView edges={['top', 'bottom']} style={[styles.safe, { backgroundColor: colors.canvas }]}>
@@ -48,28 +77,45 @@ export default function OnboardingScreen({ onComplete }) {
         </Pressable>
       </View>
 
-      <View style={styles.content}>
-        <View style={[styles.artArea, compact && styles.artAreaCompact]}>
-          <View style={[styles.artBlob, { backgroundColor: colors.primarySoft }]} />
-          <View style={[styles.artBubble, { backgroundColor: colors.blueSoft }]} />
-          <Image key={`${page}:${retry}`} source={current.image} contentFit="contain" priority="high"
-            style={[styles.illustration, { width: Math.min(width - 64, 380), height: compact ? 210 : 300 }]}
-            onLoad={() => setImageError(false)} onError={() => setImageError(true)}
-            accessibilityLabel={`ภาพประกอบ ${current.title}`} />
-          {imageError ? <Pressable accessibilityRole="button" onPress={() => { setImageError(false); setRetry((value) => value + 1); }}
-            style={styles.retry}><Text style={{ color: colors.primary }}>โหลดภาพไม่สำเร็จ · ลองอีกครั้ง</Text></Pressable> : null}
-        </View>
-        <View style={styles.copy}>
-          <Text style={[styles.eyebrow, { color: colors.primary }]}>{current.eyebrow}</Text>
-          <Text style={[styles.title, { color: colors.ink }]}>{current.title}</Text>
-          <Text style={[styles.description, { color: colors.inkMuted }]}>{current.description}</Text>
-        </View>
-      </View>
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        bounces={false}
+        onScroll={handleScroll}
+        onMomentumScrollEnd={handleScroll}
+        scrollEventThrottle={16}
+        style={styles.pager}
+      >
+        {pages.map((item, index) => (
+          <View key={index} style={[styles.pageContainer, { width }]}>
+            <View style={[styles.artArea, compact && styles.artAreaCompact]}>
+              <View style={[styles.artBlob, { backgroundColor: colors.primarySoft }]} />
+              <View style={[styles.artBubble, { backgroundColor: colors.blueSoft }]} />
+              <Image
+                source={item.image}
+                contentFit="contain"
+                priority="high"
+                style={[styles.illustration, { width: Math.min(width - 64, 380), height: compact ? 210 : 300 }]}
+                accessibilityLabel={`ภาพประกอบ ${item.title}`}
+              />
+            </View>
+            <View style={styles.copy}>
+              <Text style={[styles.eyebrow, { color: colors.primary }]}>{item.eyebrow}</Text>
+              <Text style={[styles.title, { color: colors.ink }]}>{item.title}</Text>
+              <Text style={[styles.description, { color: colors.inkMuted }]}>{item.description}</Text>
+            </View>
+          </View>
+        ))}
+      </ScrollView>
 
       <View style={styles.footer}>
         <View style={styles.dots} accessibilityLabel={`หน้า ${page + 1} จาก ${pages.length}`}>
           {pages.map((_, index) => (
-            <View key={index} style={[styles.dot, { backgroundColor: index === page ? colors.primary : colors.line }, index === page && styles.activeDot]} />
+            <Pressable key={index} accessibilityRole="button" accessibilityLabel={`ไปหน้า ${index + 1}`} onPress={() => goToPage(index)} hitSlop={8}>
+              <View style={[styles.dot, { backgroundColor: index === page ? colors.primary : colors.line }, index === page && styles.activeDot]} />
+            </Pressable>
           ))}
         </View>
         <Pressable accessibilityRole="button" onPress={next} style={[styles.nextButton, { backgroundColor: colors.primary }]}>
@@ -86,7 +132,8 @@ const styles = StyleSheet.create({
   header: { height: 60, paddingHorizontal: 28, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' },
   skipButton: { paddingVertical: 8, paddingHorizontal: 4 },
   skipText: { fontSize: 15, fontWeight: '600' },
-  content: { flex: 1, justifyContent: 'center', paddingHorizontal: 32 },
+  pager: { flex: 1 },
+  pageContainer: { flex: 1, justifyContent: 'center', paddingHorizontal: 32 },
   artArea: { height: '50%', minHeight: 210, maxHeight: 340, alignItems: 'center', justifyContent: 'center' },
   artAreaCompact: { minHeight: 180, maxHeight: 260 },
   artBlob: { position: 'absolute', width: '82%', height: '72%', borderRadius: 1000, transform: [{ rotate: '-12deg' }] },

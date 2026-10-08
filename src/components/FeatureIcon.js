@@ -262,6 +262,52 @@ const ANDROID_ICON_MAP = {
   waving_hand: 'hand-left',
 };
 
+const IOS_SYMBOL_MAP = {
+  'message.fill': 'bubble.left.fill',
+  message: 'bubble.left',
+  chat_bubble: 'bubble.left.fill',
+  chat: 'bubble.left.fill',
+  forum: 'bubble.left.and.bubble.right.fill',
+  favorite: 'heart.fill',
+  group: 'person.2.fill',
+  groups: 'person.2.fill',
+  event: 'calendar',
+  event_available: 'calendar',
+  history: 'clock.arrow.2.circlepath',
+  cancel: 'xmark.circle.fill',
+  check_circle: 'checkmark.circle.fill',
+  more_horiz: 'ellipsis',
+  settings: 'gearshape.fill',
+  search: 'magnifyingglass',
+  home: 'house.fill',
+  account_circle: 'person.crop.circle.fill',
+  account_box: 'person.crop.square.fill',
+  close: 'xmark',
+  arrow_back: 'arrow.left',
+  arrow_forward: 'arrow.right',
+  arrow_upward: 'arrow.up',
+  check: 'checkmark',
+  send: 'paperplane.fill',
+  edit: 'pencil',
+  delete: 'trash.fill',
+  directions_run: 'figure.run',
+  fitness_center: 'dumbbell.fill',
+  local_fire_department: 'flame.fill',
+  location_on: 'mappin.and.ellipse',
+  location_off: 'location.slash.fill',
+  lock: 'lock.fill',
+  menu: 'line.3.horizontal',
+  menu_book: 'book.fill',
+  photo_camera: 'camera.fill',
+  schedule: 'clock.fill',
+  school: 'graduationcap.fill',
+  sports_basketball: 'sportscourt.fill',
+  tune: 'slider.horizontal.3',
+  verified_user: 'lock.shield.fill',
+  warning: 'exclamationmark.triangle.fill',
+  waving_hand: 'hand.wave.fill',
+};
+
 function isEmoji(value) {
   return typeof value === 'string' && /[^\x00-\x7F]/.test(value) && !value.includes('.');
 }
@@ -272,22 +318,31 @@ export function getAndroidIconName(name) {
 
 export default function FeatureIcon({ color, name, size = 22, style }) {
   const resolvedName = typeof name === 'object'
-    ? (name[Platform.OS] || name.android || name.ios || name.web)
+    ? (name[Platform.OS] || name.ios || name.android || name.web)
     : name;
-
-  if (Platform.OS === 'ios') {
-    return (
-      <SymbolView
-        name={resolvedName}
-        size={size}
-        style={[{ height: size, width: size }, style]}
-        tintColor={color}
-      />
-    );
-  }
 
   if (isEmoji(resolvedName)) {
     return <Text style={[styles.emoji, { color, fontSize: size, lineHeight: size + 2 }, style]}>{resolvedName}</Text>;
+  }
+
+  if (Platform.OS === 'ios') {
+    const iosSymbol = IOS_SYMBOL_MAP[resolvedName] || resolvedName;
+    return (
+      <SymbolView
+        name={iosSymbol}
+        size={size}
+        style={[{ height: size, width: size }, style]}
+        tintColor={color}
+        fallback={
+          <Ionicons
+            color={color}
+            name={getAndroidIconName(resolvedName)}
+            size={size}
+            style={[{ height: size, width: size }, style]}
+          />
+        }
+      />
+    );
   }
 
   return (

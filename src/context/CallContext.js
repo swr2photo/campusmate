@@ -9,9 +9,9 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Alert } from 'react-native';
+import { Platform } from 'react-native';
 import { useAuth } from './AuthContext';
-import { useAppActions, useAppConversations, useAppProfile } from './AppContext';
+import { useAppActions, useAppConversations, useAppFeed, useAppProfile } from './AppContext';
 import {
   CALL_STATUS,
   CALL_TYPES,
@@ -26,6 +26,9 @@ import {
   subscribeToCall,
   subscribeToIncomingCalls,
 } from '../services/callSignalingService';
+import { dismissIncomingCallNotification } from '../services/notificationService';
+import { isCallFeatureAllowed } from '../utils/featureFlags';
+import { showAlert } from '../utils/appAlert';
 
 const CallContext = createContext(null);
 
@@ -45,8 +48,10 @@ export function CallProvider({ children }) {
   const { user } = useAuth();
   const { profile } = useAppProfile();
   const { sendMessage } = useAppActions();
-  const { availableProfiles, conversations } = useAppConversations();
-  const currentUserId = user?.id || user?.uid || profile?.id || null;
+  const { conversations } = useAppConversations();
+  const { availableProfiles } = useAppFeed();
+  const currentUserId = user?.id || user?.uid || null;
+  const canCall = useMemo(() => isCallFeatureAllowed(user, profile), [user, profile]);
 
   const [activeCall, setActiveCall] = useState(null);
   const [isCallModalOpen, setIsCallModalOpen] = useState(false);
@@ -71,6 +76,14 @@ export function CallProvider({ children }) {
     }
   }, []);
 
+  useEffect(() => {
+    if (currentUserId) return undefined;
+    clearCallTimeout();
+    setActiveCall(null);
+    setIsCallModalOpen(false);
+    return undefined;
+  }, [clearCallTimeout, currentUserId]);
+
   // Write call summary record to chat conversation
   const recordCallInChat = useCallback(
     async (call, durationSeconds = 0) => {
@@ -78,6 +91,7 @@ export function CallProvider({ children }) {
       try {
         const isVoice = call.callType === CALL_TYPES.VOICE;
         const typeLabel = isVoice ? 'การโทรด้วยเสียง' : 'วิดีโอคอล';
+        const callId = call.id || call.callId;
 
         const now = new Date();
         const thaiMillis = now.getTime() + 7 * 60 * 60 * 1000;
@@ -89,21 +103,29 @@ export function CallProvider({ children }) {
         let callText = '';
         let callStatus = call.status || 'ended';
 
+        const isCaller = call.callerId === currentUserId;
         if (call.status === CALL_STATUS.MISSED || call.endReason === 'timeout') {
           callText = `ไม่ได้รับสาย (${typeLabel}) • ${timeStr}`;
           callStatus = 'missed';
+        } else if (call.status === CALL_STATUS.BUSY || call.endReason === 'busy') {
+          callText = `สายไม่ว่าง (${typeLabel}) • ${timeStr}`;
+          callStatus = 'busy';
         } else if (call.status === CALL_STATUS.REJECTED || call.endReason === 'declined') {
           callText = `สายถูกปฏิเสธ (${typeLabel}) • ${timeStr}`;
           callStatus = 'rejected';
         } else if (durationSeconds > 0) {
           callText = `${typeLabel}สิ้นสุดลงแล้ว • ${timeStr} (${formatCallDuration(durationSeconds)})`;
           callStatus = 'ended';
+        } else if (durationSeconds === 0 && (call.status === CALL_STATUS.CALLING || call.status === CALL_STATUS.RINGING || call.endReason === 'hangup' || call.endReason === 'canceled')) {
+          callText = isCaller ? `ยกเลิกการโทร (${typeLabel}) • ${timeStr}` : `ไม่ได้รับสาย (${typeLabel}) • ${timeStr}`;
+          callStatus = isCaller ? 'canceled' : 'missed';
         } else {
           callText = `${typeLabel}สิ้นสุดลงแล้ว • ${timeStr}`;
           callStatus = 'ended';
         }
 
         await sendMessage(call.conversationId, callText, {
+          clientMessageId: callId ? `call-summary-${callId}` : undefined,
           mediaType: 'call',
           callType: call.callType || 'voice',
           callDuration: durationSeconds,
@@ -114,24 +136,58 @@ export function CallProvider({ children }) {
         console.warn('[CallContext] Failed to log call in chat:', err);
       }
     },
-    [sendMessage]
+    [currentUserId, sendMessage]
   );
 
   // Start outgoing call
   const startCall = useCallback(
     async ({ receiverId, receiverProfile, callerProfile, callType, conversationId }) => {
-      const myId = currentUserId || user?.id || user?.uid || profile?.id;
+      const myId = currentUserId;
       if (!myId) {
-        Alert.alert('กรุณาเข้าสู่ระบบ', 'ต้องเข้าสู่ระบบก่อนทำการโทร');
+        showAlert('กรุณาเข้าสู่ระบบ', 'ต้องเข้าสู่ระบบก่อนทำการโทร', { tone: 'warning' });
+        return;
+      }
+      if (!isCallFeatureAllowed(user, profile)) {
+        showAlert(
+          'ฟีเจอร์การโทรอยู่ในช่วงทดลอง',
+          'ระบบการโทรและวิดีโอคอลเปิดให้ใช้งานเฉพาะบัญชีที่ได้รับเลือกเท่านั้น',
+          { tone: 'info' }
+        );
         return;
       }
       if (!receiverId) {
-        Alert.alert('ไม่สามารถโทรได้', 'ไม่พบข้อมูลคู่สนทนาในห้องแชตนี้');
+        showAlert('ไม่สามารถโทรได้', 'ไม่พบข้อมูลคู่สนทนาในห้องแชตนี้', { tone: 'danger' });
         return;
       }
       if (receiverId === myId) {
-        Alert.alert('ไม่สามารถโทรได้', 'ไม่สามารถโทรหาตนเองได้');
+        showAlert('ไม่สามารถโทรได้', 'ไม่สามารถโทรหาตนเองได้', { tone: 'danger' });
         return;
+      }
+
+      if (Platform.OS === 'android') {
+        try {
+          const { PermissionsAndroid } = require('react-native');
+          const hasMic = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+          if (!hasMic) {
+            const reqMic = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+            if (reqMic !== PermissionsAndroid.RESULTS.GRANTED) {
+              showAlert('ต้องใช้สิทธิ์ไมโครโฟน', 'กรุณาอนุญาตการเข้าถึงไมโครโฟนเพื่อทำการโทร', { tone: 'warning' });
+              return;
+            }
+          }
+          if (callType === CALL_TYPES.VIDEO) {
+            const hasCam = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA);
+            if (!hasCam) {
+              const reqCam = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA);
+              if (reqCam !== PermissionsAndroid.RESULTS.GRANTED) {
+                showAlert('ต้องใช้สิทธิ์กล้อง', 'กรุณาอนุญาตการเข้าถึงกล้องเพื่อใช้วิดีโอคอล', { tone: 'warning' });
+                return;
+              }
+            }
+          }
+        } catch (permErr) {
+          console.warn('[CallContext] Pre-flight permission check failed:', permErr);
+        }
       }
 
       const myProfile = callerProfile || {
@@ -169,15 +225,15 @@ export function CallProvider({ children }) {
         }, CALL_TIMEOUT_MS);
       } catch (err) {
         console.error('[CallContext] Failed to start call:', err);
-        Alert.alert('เกิดข้อผิดพลาดในการโทร', err?.message || 'ไม่สามารถเชื่อมต่อสัญญาณการโทรได้ กรุณาลองใหม่อีกครั้ง');
+        showAlert('เกิดข้อผิดพลาดในการโทร', err?.message || 'ไม่สามารถเชื่อมต่อสัญญาณการโทรได้ กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
       }
     },
-    [currentUserId, user, profile, clearCallTimeout, recordCallInChat]
+    [currentUserId, profile, user, clearCallTimeout, recordCallInChat]
   );
 
   const startVoiceCall = useCallback(
     (target, conversationId) => {
-      const myId = currentUserId || user?.id || user?.uid || profile?.id;
+      const myId = currentUserId;
       const receiverId =
         (target?.participants && target.participants.find((uid) => uid !== myId)) ||
         target?.profileId ||
@@ -210,12 +266,12 @@ export function CallProvider({ children }) {
         conversationId: conversationId || (target?.id && String(target.id).startsWith('c-') ? target.id : null),
       });
     },
-    [startCall, currentUserId, user, profile]
+    [startCall, currentUserId]
   );
 
   const startVideoCall = useCallback(
     (target, conversationId) => {
-      const myId = currentUserId || user?.id || user?.uid || profile?.id;
+      const myId = currentUserId;
       const receiverId =
         (target?.participants && target.participants.find((uid) => uid !== myId)) ||
         target?.profileId ||
@@ -248,13 +304,14 @@ export function CallProvider({ children }) {
         conversationId: conversationId || (target?.id && String(target.id).startsWith('c-') ? target.id : null),
       });
     },
-    [startCall, currentUserId, user, profile]
+    [startCall, currentUserId]
   );
 
   // Accept incoming call
   const handleAcceptCall = useCallback(async () => {
     if (!activeCall?.id) return;
     clearCallTimeout();
+    dismissIncomingCallNotification(activeCall.id);
     try {
       await acceptCall(activeCall.id);
     } catch (err) {
@@ -267,6 +324,7 @@ export function CallProvider({ children }) {
     async (reason = 'declined') => {
       if (!activeCall?.id) return;
       clearCallTimeout();
+      dismissIncomingCallNotification(activeCall.id);
       try {
         await rejectCall(activeCall.id, reason);
         recordCallInChat(activeCall, 0);
@@ -282,6 +340,7 @@ export function CallProvider({ children }) {
     async (durationSeconds = 0) => {
       if (!activeCall?.id) return;
       clearCallTimeout();
+      dismissIncomingCallNotification(activeCall.id);
       try {
         await endCall(activeCall.id, durationSeconds);
         recordCallInChat(activeCall, durationSeconds);
@@ -295,9 +354,12 @@ export function CallProvider({ children }) {
   // Close modal cleanup
   const handleCloseModal = useCallback(() => {
     clearCallTimeout();
+    if (activeCall?.id) {
+      dismissIncomingCallNotification(activeCall.id);
+    }
     setIsCallModalOpen(false);
     setActiveCall(null);
-  }, [clearCallTimeout]);
+  }, [activeCall?.id, clearCallTimeout]);
 
   // Subscribe to incoming calls
   useEffect(() => {
@@ -315,10 +377,13 @@ export function CallProvider({ children }) {
         callTimeoutTimerRef.current = setTimeout(async () => {
           const current = activeCallRef.current;
           if (current?.id === incomingCall.id && (current.status === CALL_STATUS.CALLING || current.status === CALL_STATUS.RINGING)) {
+            // Caller owns the missed-call chat row; receiver only marks signaling state.
             await markCallMissed(incomingCall.id);
-            recordCallInChat(incomingCall, 0);
           }
         }, CALL_TIMEOUT_MS);
+      } else if (incomingCall && activeCallRef.current && incomingCall.id !== activeCallRef.current.id) {
+        // Automatically respond busy if already in another call
+        rejectCall(incomingCall.id, 'busy').catch(() => {});
       }
     });
 
@@ -376,6 +441,7 @@ export function CallProvider({ children }) {
     () => ({
       activeCall,
       isCallActive: Boolean(activeCall),
+      canCall,
       startVoiceCall,
       startVideoCall,
       acceptCall: handleAcceptCall,
@@ -383,7 +449,7 @@ export function CallProvider({ children }) {
       endCall: handleEndCall,
       openIncomingCallFromNotification,
     }),
-    [activeCall, startVoiceCall, startVideoCall, handleAcceptCall, handleRejectCall, handleEndCall, openIncomingCallFromNotification]
+    [activeCall, canCall, startVoiceCall, startVideoCall, handleAcceptCall, handleRejectCall, handleEndCall, openIncomingCallFromNotification]
   );
 
   return (

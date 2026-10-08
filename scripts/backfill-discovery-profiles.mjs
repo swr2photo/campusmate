@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase-admin/app';
-import { FieldPath, FieldValue, getFirestore } from 'firebase-admin/firestore';
+import { FieldPath, FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore';
 import { buildDiscoveryProfile, buildPublicProfile } from '../functions/discoveryProfile.js';
 
 initializeApp();
@@ -8,6 +8,20 @@ const db = getFirestore();
 const args = new Set(process.argv.slice(2));
 const commit = args.has('--commit');
 const PAGE_SIZE = 400;
+
+// functions/discoveryProfile.js resolves its own copy of firebase-admin from
+// functions/node_modules, so the Timestamps it produces are a different class
+// than the one this script's Firestore client expects. Re-create them here.
+function normalizeTimestamps(value) {
+  if (Array.isArray(value)) return value.map(normalizeTimestamps);
+  if (value && typeof value === 'object') {
+    if (typeof value.toMillis === 'function' && typeof value.seconds === 'number') {
+      return Timestamp.fromMillis(value.toMillis());
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, normalizeTimestamps(entry)]));
+  }
+  return value;
+}
 
 async function backfill() {
   let lastDocument = null;
@@ -29,8 +43,8 @@ async function backfill() {
       const batch = db.batch();
       snapshot.docs.forEach((profileDocument) => {
         userIds.add(profileDocument.id);
-        const publicProfile = buildPublicProfile(profileDocument.id, profileDocument.data());
-        const discoveryProfile = buildDiscoveryProfile(profileDocument.id, publicProfile);
+        const publicProfile = normalizeTimestamps(buildPublicProfile(profileDocument.id, profileDocument.data()));
+        const discoveryProfile = normalizeTimestamps(buildDiscoveryProfile(profileDocument.id, publicProfile));
         const publicRef = db.collection('profiles').doc(profileDocument.id);
         const discoveryRef = db.collection('discoveryProfiles').doc(profileDocument.id);
         batch.set(publicRef, publicProfile);

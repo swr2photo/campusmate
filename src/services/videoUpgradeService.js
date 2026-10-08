@@ -53,25 +53,21 @@ export async function resumeVideoUpgrades(userId) {
         }
         if (parent.data().senderId !== userId) { await cancelVideoUpgrade(userId, job.messageId); continue; }
         const key = await getOrFetchConversationKey(job.conversationId, userId);
-        for (; job.stage < 2; job.stage++) {
+        const renditionRef = doc(messageRef, 'videoRenditions', 'high');
+        if (!(await getDoc(renditionRef)).exists()) {
           if (!isCurrentUser(userId)) return;
-          const quality = job.stage === 0 ? 'medium' : 'high';
-          const renditionRef = doc(messageRef, 'videoRenditions', quality);
-          if (!(await getDoc(renditionRef)).exists()) {
-            exported = await exportChatVideo(job.asset, job.edit, quality);
-            if (!isCurrentUser(userId)) return;
-            const mediaUrl = await uploadChatMedia(exported.uri, {
-              conversationId: job.conversationId, mediaType: 'video', conversationKey: key, videoDuration: exported.duration,
-            });
-            if (!isCurrentUser(userId)) return;
-            const time = Timestamp.now();
-            await setDoc(renditionRef, encryptMessageRecord({
-              id: job.messageId, senderId: userId, createdAt: time, time,
-              text: '', mediaType: 'video', mediaUrl, videoMode: job.mode, videoDuration: exported.duration,
-            }, key));
-            await discardVideoExport(exported); exported = null;
-          }
-          await FileSystem.writeAsStringAsync(manifest, JSON.stringify({ ...job, stage: job.stage + 1 }));
+          exported = await exportChatVideo(job.asset, job.edit, 'high');
+          if (!isCurrentUser(userId)) return;
+          const mediaUrl = await uploadChatMedia(exported.uri, {
+            conversationId: job.conversationId, mediaType: 'video', conversationKey: key, videoDuration: exported.duration,
+          });
+          if (!isCurrentUser(userId)) return;
+          const time = Timestamp.now();
+          await setDoc(renditionRef, encryptMessageRecord({
+            id: job.messageId, senderId: userId, createdAt: time, time,
+            text: '', mediaType: 'video', mediaUrl, videoMode: job.mode, videoDuration: exported.duration,
+          }, key));
+          await discardVideoExport(exported); exported = null;
         }
         await cancelVideoUpgrade(userId, job.messageId);
       } catch (error) {

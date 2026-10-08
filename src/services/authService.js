@@ -1,5 +1,7 @@
 import {
   createUserWithEmailAndPassword,
+  deleteUser,
+  getAdditionalUserInfo,
   getAuth,
   getReactNativePersistence,
   GoogleAuthProvider,
@@ -9,12 +11,27 @@ import {
   signInWithPopup,
   signInWithCredential,
   signOut,
-  sendPasswordResetEmail,
   sendEmailVerification,
+  verifyBeforeUpdateEmail,
 } from 'firebase/auth';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { Platform } from 'react-native';
 import { firebaseApp, firebaseConfigError } from './dbService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  assertCampusEmail,
+  assertLoginEmailAllowed,
+  CAMPUS_EMAIL_ALREADY_USED_MESSAGE,
+  CAMPUS_EMAIL_NOT_IN_WORKSPACE_MESSAGE,
+  CAMPUS_EMAIL_SENDER,
+  CAMPUS_SIGNUP_REQUIRED_MESSAGE,
+  campusEmailError,
+  getCampusEmailErrorMessage,
+  isCampusEmail,
+  isLikelyNewFirebaseUser,
+  normalizeEmail,
+} from '../utils/campusEmail';
+import { getPasswordError, PASSWORD_REQUIREMENTS_MESSAGE } from '../utils/passwordPolicy';
 
 let auth = null;
 
@@ -67,6 +84,7 @@ function requireAuth() {
   if (!auth) {
     throw new Error(firebaseConfigError || 'Firebase Authentication is not initialized');
   }
+  auth.languageCode = 'th';
   return auth;
 }
 
@@ -98,7 +116,74 @@ function normalizeUser(user) {
     photoURL: user.photoURL,
     emailVerified: user.emailVerified,
     providerData: user.providerData,
+    creationTime: user.metadata?.creationTime || null,
+    lastSignInTime: user.metadata?.lastSignInTime || null,
   };
+}
+
+const AUTH_CONTINUE_URL = 'https://campusmate-7f1ab.web.app/email-verified.html';
+const FUNCTIONS_REGION = 'asia-southeast1';
+const AUTH_NETWORK_RETRY_DELAY_MS = 450;
+
+function isAuthNetworkError(error) {
+  return String(error?.code || '') === 'auth/network-request-failed';
+}
+
+async function withAuthNetworkRetry(request) {
+  try {
+    return await request();
+  } catch (error) {
+    if (!isAuthNetworkError(error)) throw error;
+    await new Promise((resolve) => setTimeout(resolve, AUTH_NETWORK_RETRY_DELAY_MS));
+    return request();
+  }
+}
+
+function shouldFallbackToFirebaseEmail(error) {
+  const code = String(error?.code || '').replace(/^functions\//, '');
+  return code === 'not-found'
+    || code === 'failed-precondition'
+    || code === 'unavailable'
+    || code === 'unimplemented';
+}
+
+async function rejectUnauthorizedNewUser(result) {
+  const user = result?.user;
+  if (!user || isCampusEmail(user.email)) return;
+  const isNewUser = getAdditionalUserInfo(result)?.isNewUser === true
+    || isLikelyNewFirebaseUser(normalizeUser(user));
+  if (!isNewUser) return;
+
+  try {
+    await deleteUser(user);
+  } catch (error) {
+    console.warn('[authService] Unable to delete unauthorized new account:', error?.code || error?.message || error);
+  }
+  try {
+    await signOutUser();
+  } catch (_) {}
+  throw campusEmailError('auth/campus-email-required', CAMPUS_SIGNUP_REQUIRED_MESSAGE);
+}
+
+async function sendVerifyBeforeUpdateEmail(user, email) {
+  try {
+    await verifyBeforeUpdateEmail(user, email, {
+      url: AUTH_CONTINUE_URL,
+      handleCodeInApp: false,
+    });
+  } catch (error) {
+    if (
+      error?.code === 'auth/unauthorized-continue-uri'
+      || error?.code === 'auth/invalid-continue-uri'
+      || error?.code === 'auth/missing-continue-uri'
+      || error?.code === 'auth/argument-error'
+      || error?.code === 'auth/invalid-argument'
+    ) {
+      await verifyBeforeUpdateEmail(user, email);
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function signInWithGoogle() {
@@ -110,12 +195,14 @@ export async function signInWithGoogle() {
   provider.addScope('profile');
   provider.addScope('email');
   const result = await signInWithPopup(requireAuth(), provider);
+  await rejectUnauthorizedNewUser(result);
   return { mode: 'firebase', user: normalizeUser(result.user) };
 }
 
 export async function signInWithGoogleCredential(id_token) {
   const credential = GoogleAuthProvider.credential(id_token);
-  const result = await signInWithCredential(requireAuth(), credential);
+  const result = await withAuthNetworkRetry(() => signInWithCredential(requireAuth(), credential));
+  await rejectUnauthorizedNewUser(result);
   return { mode: 'firebase', user: normalizeUser(result.user) };
 }
 
@@ -133,29 +220,78 @@ export function isFirebaseConfigured() {
   return Boolean(auth && !firebaseConfigError);
 }
 
+export async function checkCampusEmailAvailability(email) {
+  const campusEmail = assertCampusEmail(email);
+  if (!firebaseApp) {
+    throw new Error(firebaseConfigError || 'Firebase Authentication is not initialized');
+  }
+
+  const checkEmail = httpsCallable(
+    getFunctions(firebaseApp, FUNCTIONS_REGION),
+    'checkCampusEmailAvailability',
+    { timeout: 10000 }
+  );
+  const result = await checkEmail({ email: campusEmail });
+  const data = result?.data || {};
+  return {
+    email: campusEmail,
+    exists: data.exists === true,
+    ownedByCurrentUser: data.ownedByCurrentUser === true,
+    workspaceExists: data.workspaceExists === true,
+    workspaceCheckConfigured: data.workspaceCheckConfigured === true,
+  };
+}
+
+async function assertCampusEmailAvailable(email, { allowCurrentUser = false } = {}) {
+  const availability = await checkCampusEmailAvailability(email);
+  if (availability.workspaceCheckConfigured && !availability.workspaceExists) {
+    throw campusEmailError('auth/campus-email-not-found', CAMPUS_EMAIL_NOT_IN_WORKSPACE_MESSAGE);
+  }
+  if (availability.exists && !(allowCurrentUser && availability.ownedByCurrentUser)) {
+    throw campusEmailError('auth/email-already-in-use', CAMPUS_EMAIL_ALREADY_USED_MESSAGE);
+  }
+  return availability;
+}
+
 export async function signUpWithEmail(email, password) {
-  const result = await createUserWithEmailAndPassword(requireAuth(), email, password);
-  await sendEmailVerification(result.user);
+  const campusEmail = assertCampusEmail(email);
+  const passwordError = getPasswordError(password, { email: campusEmail });
+  if (passwordError) {
+    throw campusEmailError('auth/weak-password', passwordError);
+  }
+  await assertCampusEmailAvailable(campusEmail);
+  const result = await withAuthNetworkRetry(() => createUserWithEmailAndPassword(requireAuth(), campusEmail, password));
+  try {
+    await sendBrandedEmailVerificationForCurrentUser();
+  } catch (error) {
+    try { await signOutUser(); } catch (_) {}
+    throw error;
+  }
   return { mode: 'firebase', user: normalizeUser(result.user) };
 }
 
 export async function signInWithEmail(email, password) {
-  const result = await signInWithEmailAndPassword(requireAuth(), email, password);
+  const loginEmail = assertLoginEmailAllowed(email);
+  const result = await withAuthNetworkRetry(() => signInWithEmailAndPassword(requireAuth(), loginEmail, password));
+  try {
+    await result.user.reload();
+  } catch (_) {}
+  const signedInUser = requireAuth().currentUser || result.user;
   let verificationSent = false;
-  if (result.user.providerData?.some((p) => p.providerId === 'password') && !result.user.emailVerified) {
+  if (signedInUser.providerData?.some((p) => p.providerId === 'password') && !signedInUser.emailVerified) {
     try {
-      await sendEmailVerification(result.user);
+      await sendBrandedEmailVerificationForCurrentUser();
       verificationSent = true;
     } catch (verifErr) {
       console.warn('[authService] Failed to resend verification email on login:', verifErr);
-      if (verifErr.code === 'auth/too-many-requests') {
+      if (verifErr.code === 'auth/too-many-requests' || verifErr.code === 'functions/resource-exhausted') {
         verificationSent = 'throttled';
       }
     }
   }
   return {
     mode: 'firebase',
-    user: normalizeUser(result.user),
+    user: normalizeUser(signedInUser),
     verificationSent,
   };
 }
@@ -166,7 +302,8 @@ export async function resendEmailVerification(email, password) {
   let shouldSignOut = false;
 
   if (!user && email && password) {
-    const cred = await signInWithEmailAndPassword(authInstance, email, password);
+    const loginEmail = assertLoginEmailAllowed(email);
+    const cred = await withAuthNetworkRetry(() => signInWithEmailAndPassword(authInstance, loginEmail, password));
     user = cred.user;
     shouldSignOut = true;
   }
@@ -180,44 +317,147 @@ export async function resendEmailVerification(email, password) {
     return { alreadyVerified: true };
   }
 
-  await sendEmailVerification(user);
+  const data = await sendBrandedEmailVerificationForCurrentUser();
   if (shouldSignOut) await signOut(authInstance);
+  if (data?.alreadyVerified) return { alreadyVerified: true };
   return { success: true };
+}
+
+async function sendBrandedEmailVerificationForCurrentUser() {
+  if (!firebaseApp) {
+    throw new Error(firebaseConfigError || 'Firebase Authentication is not initialized');
+  }
+  const sendBrandedEmailVerification = httpsCallable(
+    getFunctions(firebaseApp, FUNCTIONS_REGION),
+    'sendBrandedEmailVerification',
+    { timeout: 20000 }
+  );
+  try {
+    const result = await sendBrandedEmailVerification();
+    return result?.data || { sent: true };
+  } catch (error) {
+    if (!shouldFallbackToFirebaseEmail(error)) throw error;
+    const user = requireAuth().currentUser;
+    if (!user) throw error;
+    await sendEmailVerification(user, {
+      url: AUTH_CONTINUE_URL,
+      handleCodeInApp: false,
+    });
+    return { sent: true, fallback: true };
+  }
 }
 
 export const resendVerificationEmail = resendEmailVerification;
 
 
-export async function sendPasswordReset(email) {
-  const normalizedEmail = String(email || '').trim().toLowerCase();
-  if (!normalizedEmail) {
-    throw new Error('กรุณาระบุอีเมลที่ต้องการรีเซ็ตรหัสผ่าน');
+export function getSignInErrorMessage(error, { mode } = {}) {
+  const configurationError = getFirebaseConfigurationErrorMessage(error);
+  if (configurationError) return configurationError;
+  if (
+    error?.code === 'auth/campus-email-required'
+    || error?.code === 'auth/student-id-required'
+    || error?.code === 'auth/campus-email-login-only'
+  ) {
+    return getCampusEmailErrorMessage(error);
+  }
+  if (error?.code === 'auth/user-not-found') {
+    return 'ไม่พบบัญชีที่ใช้อีเมลนี้ สมัครใหม่ได้เฉพาะอีเมล @psu.ac.th';
+  }
+  if (error?.code === 'auth/wrong-password' || error?.code === 'auth/invalid-credential') {
+    return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง (หากบัญชีนี้สมัครด้วย Google ให้เข้าสู่ระบบด้วย Google)';
+  }
+  if (error?.code === 'auth/email-already-in-use') {
+    return 'อีเมลนี้มีผู้ใช้งานแล้ว กรุณาเข้าสู่ระบบ';
+  }
+  if (error?.code === 'auth/weak-password' || error?.code === 'auth/password-does-not-meet-requirements') {
+    return /[ก-๙]/.test(String(error?.message || '')) ? error.message : PASSWORD_REQUIREMENTS_MESSAGE;
+  }
+  if (error?.code === 'auth/invalid-email') {
+    return 'รูปแบบอีเมลไม่ถูกต้อง';
+  }
+  if (error?.code === 'auth/too-many-requests') {
+    return 'มีการพยายามเข้าสู่ระบบผิดหลายครั้ง กรุณารอสักครู่แล้วลองใหม่';
+  }
+  if (error?.code === 'auth/network-request-failed') {
+    return 'เชื่อมต่ออินเทอร์เน็ตไม่ได้ กรุณาตรวจสอบสัญญาณแล้วลองใหม่';
+  }
+  return mode === 'signup'
+    ? 'สมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง'
+    : null;
+}
+
+export async function requestCampusEmailChange(newEmail) {
+  const campusEmail = assertCampusEmail(newEmail);
+  const user = requireAuth().currentUser;
+  if (!user) {
+    throw new Error('กรุณาเข้าสู่ระบบก่อนยืนยันอีเมลใหม่');
+  }
+  if (isCampusEmail(user.email)) {
+    return { alreadyCampus: true, user: normalizeUser(user) };
+  }
+  if (normalizeEmail(user.email) === campusEmail) {
+    return { alreadyCampus: true, user: normalizeUser(user) };
   }
 
-  const authInstance = requireAuth();
+  // Do not fall back to verifyBeforeUpdateEmail until the authoritative
+  // duplicate check has completed; that fallback must not bypass this guard.
+  await assertCampusEmailAvailable(campusEmail, { allowCurrentUser: true });
 
-  // Try sending with custom reset.html action URL first
-  try {
-    const actionCodeSettings = {
-      url: 'https://campusmate-7f1ab.web.app/reset.html',
-      handleCodeInApp: false,
-    };
-    return await sendPasswordResetEmail(authInstance, normalizedEmail, actionCodeSettings);
-  } catch (err) {
-    console.warn('[authService] sendPasswordReset with actionCodeSettings failed, retrying standard reset:', err?.code, err?.message);
-    // If custom continue URL / actionCodeSettings is rejected for ANY reason, retry with default Firebase reset
-    if (
-      err.code === 'auth/unauthorized-continue-uri' ||
-      err.code === 'auth/invalid-continue-uri' ||
-      err.code === 'auth/missing-continue-uri' ||
-      err.code === 'auth/argument-error' ||
-      err.code === 'auth/invalid-argument' ||
-      err.code === 'auth/internal-error'
-    ) {
-      return await sendPasswordResetEmail(authInstance, normalizedEmail);
+  if (firebaseApp) {
+    try {
+      const sendCampusEmailChange = httpsCallable(
+        getFunctions(firebaseApp, FUNCTIONS_REGION),
+        'sendCampusEmailChange',
+        { timeout: 20000 }
+      );
+      const result = await sendCampusEmailChange({ email: campusEmail });
+      const data = result?.data || {};
+      if (data.alreadyCampus) {
+        return { alreadyCampus: true, user: normalizeUser(user) };
+      }
+      return {
+        sent: true,
+        email: data.email || campusEmail,
+        sender: data.sender || 'noreply@getcampusmate.app',
+        user: normalizeUser(user),
+      };
+    } catch (error) {
+      if (!shouldFallbackToFirebaseEmail(error)) throw error;
+      console.warn('[authService] Branded campus email send unavailable, using Firebase default:', error?.code || error?.message);
     }
-    throw err;
   }
+
+  await sendVerifyBeforeUpdateEmail(user, campusEmail);
+  return { sent: true, email: campusEmail, user: normalizeUser(user) };
+}
+
+export async function reloadCampusEmailStatus() {
+  const user = requireAuth().currentUser;
+  if (!user) {
+    throw new Error('กรุณาเข้าสู่ระบบก่อนยืนยันอีเมลใหม่');
+  }
+  await user.reload();
+  return normalizeUser(requireAuth().currentUser || user);
+}
+
+export async function sendPasswordReset(email) {
+  const normalizedEmail = assertLoginEmailAllowed(email);
+  if (!firebaseApp) {
+    throw new Error(firebaseConfigError || 'Firebase Authentication is not initialized');
+  }
+
+  const sendBrandedPasswordReset = httpsCallable(
+    getFunctions(firebaseApp, FUNCTIONS_REGION),
+    'sendBrandedPasswordReset',
+    { timeout: 20000 }
+  );
+  const result = await sendBrandedPasswordReset({ email: normalizedEmail });
+  const data = result?.data || {};
+  return {
+    sent: true,
+    email: normalizedEmail,
+    sender: data.sender || CAMPUS_EMAIL_SENDER,
+  };
 }
 
 export async function getCurrentUserIdToken() {

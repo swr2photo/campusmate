@@ -1,8 +1,10 @@
+import Text from '../components/AppText';
 import { retainLoadingConversations } from '../utils/conversationOrder';
+import { withServerFaceVerification } from '../utils/faceVerificationState';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, getDoc, getDocFromServer, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import NetInfo from '@react-native-community/netinfo';
-import { ActivityIndicator, AppState, ImageBackground, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Image, Pressable, StyleSheet, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 
 const runAfterInteractionsHelper = (callback) => {
@@ -14,14 +16,23 @@ const runAfterInteractionsHelper = (callback) => {
   return { cancel: () => clearTimeout(timer) };
 };
 import { useAuth } from './AuthContext';
+import { useMembership } from './MembershipContext';
+import { FEATURE_ADVANCED_FILTERS, FEATURE_INCOMING_LIKE_PROFILES, FEATURE_UNLIMITED_REWIND, keepPaidMatchingPreferences } from '../data/plans';
+import { clearPrivateImageCaches } from '../components/CachedImage';
+import { allowedMatchingPreferences, recordSecureDiscoveryAction, respondToSecureLike, rewindSecureDiscoveryAction,
+  secureDiscoveryCall, secureDiscoveryConfigured, toServerDiscoveryFilters } from '../services/secureDiscoveryService';
+import { isCampusEmail, isLikelyNewFirebaseUser } from '../utils/campusEmail';
 import FeatureIcon from '../components/FeatureIcon';
+import { showInAppNotification } from '../components/InAppNotificationBanner';
 import { requireFirebase } from '../services/dbService';
+import { uploadGalleryImage } from '../services/profileGalleryService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createConversation,
   createSharedProfilesSubscription,
   createUserProfile,
   getUserProfile,
+  subscribeToFaceVerification,
   getPublicProfilesByIds,
   getSpotDistanceFromUser,
   formatDistance,
@@ -50,6 +61,7 @@ import {
   updateChatSettings,
   uploadImage,
   updateUserLocation,
+  updateUserLocationEnabled,
   updateUserMeetup,
   updateUserMatchingPreferences,
   hideConversation,
@@ -59,15 +71,28 @@ import {
   unblockUserAccount,
   getBlockedUserIds,
   submitContentReport,
+  cleanupDeletedUserInteractions,
 } from '../services/firestoreService';
 import {
   enqueueOfflineOperation,
+  subscribeOfflineQueueChanges,
   flushOfflineQueue,
   getOfflineQueueCount,
+  getOfflineQueue,
+  getFailedOfflineOperations,
+  retryFailedOfflineOperation,
   isRetryableNetworkError,
   loadOfflineSnapshot,
   saveOfflineSnapshot,
 } from '../services/offlineStorage';
+import { writeQueuedGroupMessage } from '../services/partyService';
+import { fetchPeerDistances } from '../services/peerDistanceService';
+import {
+  hasUsableCoordinates,
+  loadCachedUserLocation,
+  resolveUserLocation,
+  saveCachedUserLocation,
+} from '../services/userLocationService';
 import { CAMPUS_SPOTS } from '../data/campusSpots';
 import { saveAccount } from '../services/accountStorage';
 import { getFastBootData, getFastBootMemory, saveFastBootData } from '../services/fastBootService';
@@ -82,6 +107,7 @@ import {
 import {
   E2EE_PENDING_PREVIEW,
   ENCRYPTED_PREVIEW,
+  ensureConversationEncryption,
   ensureEncryptionIdentity,
   getEncryptionDevices,
 } from '../services/chatEncryptionService';
@@ -99,6 +125,8 @@ const AppActionsContext = createContext(null);
 const AppProfileContext = createContext(null);
 const AppBadgeContext = createContext(null);
 const AppConversationsContext = createContext(null);
+const AppFeedContext = createContext(null);
+const AppAppointmentsContext = createContext(null);
 const AppSyncContext = createContext(null);
 
 const defaultPrivacy = {
@@ -143,12 +171,8 @@ function normalizeCoordinate(value, min, max) {
 }
 
 function getFastBootFeedProfiles() {
-  const cached = getFastBootMemory();
-  if (!cached?.user?.id || cached.profile?.id !== cached.user.id) return [];
-  if (!Array.isArray(cached.availableProfiles)) return [];
-  return cached.availableProfiles
-    .map((item) => normalizeProfileRecord(item?.id, item))
-    .filter(isProfileReadyForDiscovery);
+  // Discovery feed profiles must be loaded fresh from live query, never from stale boot cache
+  return [];
 }
 
 function withProfileDefaults(profile) {
@@ -157,6 +181,10 @@ function withProfileDefaults(profile) {
     // Older profile documents may not have this field. Keep the historical
     // discoverable-by-default behavior while honoring an explicit opt-out.
     isDiscoverable: profile?.isDiscoverable !== false,
+    locationEnabled: profile?.locationEnabled !== false,
+    isFaceVerified: profile?.isFaceVerified === true,
+    faceMatchScore: typeof profile?.faceMatchScore === 'number' ? profile.faceMatchScore : null,
+    faceVerificationStatus: profile?.faceVerificationStatus || (profile?.isFaceVerified ? 'verified' : 'unverified'),
     privacy: { ...defaultPrivacy, ...(profile.privacy || {}) },
     matchingPreferences: {
       ...defaultMatchingPreferences,
@@ -218,6 +246,28 @@ function sortConversationMessages(messages) {
   });
 }
 
+function preferDecryptedMessage(currentMessage, incomingMessage) {
+  if (!incomingMessage) return currentMessage || null;
+  if (!currentMessage) return incomingMessage;
+  if (
+    incomingMessage.decryptionFailed
+    && !currentMessage.decryptionFailed
+    && currentMessage.text
+  ) {
+    return {
+      ...incomingMessage,
+      text: currentMessage.text,
+      mediaUrl: currentMessage.mediaUrl || incomingMessage.mediaUrl,
+      mediaUrls: currentMessage.mediaUrls || incomingMessage.mediaUrls,
+      mediaType: currentMessage.mediaType || incomingMessage.mediaType,
+      audioDuration: currentMessage.audioDuration ?? incomingMessage.audioDuration,
+      replyTo: incomingMessage.replyTo || currentMessage.replyTo,
+      decryptionFailed: false,
+    };
+  }
+  return incomingMessage;
+}
+
 function mergeConversationSnapshots(currentConversations, incomingConversations, preserveOptimistic = true) {
   const currentById = new Map((currentConversations || []).map((conversation) => [conversation.id, conversation]));
   const incomingIds = new Set((incomingConversations || []).map((conversation) => conversation.id));
@@ -233,17 +283,21 @@ function mergeConversationSnapshots(currentConversations, incomingConversations,
     );
     const isHydratingMessages = incomingConversation.messagesHydrating === true
       && incomingConversation.encryptionPending !== true;
+    const incomingPreviewOnly = incomingConversation.messagesPreviewOnly === true;
+    const incomingHasShorterTimeline = incomingMessages.length < currentMessages.length;
+    const keepLocalTimeline = isHydratingMessages || incomingPreviewOnly || incomingHasShorterTimeline;
     const messagesById = new Map();
 
-    // While the per-message listener is still hydrating, keep the last local
-    // timeline so a parent-document update cannot blank the chat history.
-    if (isHydratingMessages) {
+    // Inbox hydration only carries the latest message. Keep a longer local
+    // timeline so ChatRoom/offline cache does not collapse to one bubble.
+    if (keepLocalTimeline) {
       currentMessages.forEach((message) => {
         if (message?.id) messagesById.set(message.id, message);
       });
     }
     incomingMessages.forEach((message) => {
-      if (message?.id) messagesById.set(message.id, message);
+      if (!message?.id) return;
+      messagesById.set(message.id, preferDecryptedMessage(messagesById.get(message.id), message));
     });
     pendingLocalMessages.forEach((message) => {
       if (message?.id) messagesById.set(message.id, message);
@@ -254,10 +308,12 @@ function mergeConversationSnapshots(currentConversations, incomingConversations,
     const latestMessage = messages[messages.length - 1];
     const currentUpdatedAt = toCachedTimestampMillis(currentConversation.updatedAt);
     const incomingUpdatedAt = toCachedTimestampMillis(incomingConversation.updatedAt);
+    const keptLongerTimeline = incomingPreviewOnly && currentMessages.length > incomingMessages.length;
 
     return {
       ...incomingConversation,
       messages,
+      messagesPreviewOnly: incomingPreviewOnly && !keptLongerTimeline,
       ...(shouldUseLocalLatest && latestMessage ? {
         lastMessage: latestMessage.text || incomingConversation.lastMessage,
         lastMessageSenderId: latestMessage.senderId || incomingConversation.lastMessageSenderId,
@@ -295,39 +351,20 @@ function toCachedTimestampMillis(value) {
 }
 
 function getOfflineSnapshotSignature(snapshot) {
-  const compactMessage = (message) => [
-    message?.id,
-    toCachedTimestampMillis(message?.createdAt || message?.time),
-    message?.text,
-    message?.isDeleted,
-    message?.unsent,
-    message?.pendingSync,
-    message?.hiddenFor,
-    message?.reactions,
-  ];
   const compactConversation = (conversation) => [
     conversation?.id,
     toCachedTimestampMillis(conversation?.updatedAt),
     conversation?.lastMessageId,
-    toCachedTimestampMillis(conversation?.lastMessageAt),
+    conversation?.lastMessage,
     conversation?.messages?.length || 0,
-    (conversation?.messages || []).map(compactMessage),
   ];
   const compactProfile = (candidate) => [
     candidate?.id,
-    candidate?.name,
-    candidate?.nickname,
     candidate?.avatarUri,
-    candidate?.avatar,
     candidate?.isMatched,
     candidate?.distance,
-    candidate?.decisionId,
     candidate?.status,
-    candidate?.likeMessage,
-    toCachedTimestampMillis(candidate?.createdAt),
     toCachedTimestampMillis(candidate?.updatedAt),
-    candidate?.meetup,
-    candidate?.selectedMeetup,
   ];
 
   return JSON.stringify({
@@ -351,6 +388,112 @@ function getOfflineSnapshotSignature(snapshot) {
     selectedMeetup: snapshot.selectedMeetup,
     optimisticHiddenIds: snapshot.optimisticHiddenIds,
     blockedUserIds: snapshot.blockedUserIds,
+    outgoingDecisions: snapshot.outgoingDecisions,
+  });
+}
+
+// Strip an outgoing decision down to what the discovery filter needs.
+function compactOutgoingDecisions(decisions) {
+  if (!Array.isArray(decisions)) return [];
+  const byTarget = new Map();
+  decisions.forEach((decision) => {
+    const toUserId = typeof decision?.toUserId === 'string' ? decision.toUserId : null;
+    if (!toUserId) return;
+    byTarget.set(toUserId, {
+      toUserId,
+      type: decision.type === 'skip' ? 'skip' : 'like',
+      status: typeof decision.status === 'string' ? decision.status : 'pending',
+    });
+  });
+  return [...byTarget.values()];
+}
+
+function areCompactDecisionListsEqual(first, second) {
+  if (first === second) return true;
+  if (!Array.isArray(first) || !Array.isArray(second) || first.length !== second.length) return false;
+  return first.every((item, index) => {
+    const other = second[index];
+    return other && item.toUserId === other.toUserId && item.type === other.type && item.status === other.status;
+  });
+}
+
+// Fallback used before the live decision listener responds: cached raw
+// decisions win, hydrated likes fill in anything the cache does not know yet.
+function mergeOutgoingDecisionFallback(cachedDecisions, likes) {
+  const byTarget = new Map(cachedDecisions.map((decision) => [decision.toUserId, decision]));
+  (Array.isArray(likes) ? likes : []).forEach((like) => {
+    if (!like?.id || byTarget.has(like.id)) return;
+    byTarget.set(like.id, { toUserId: like.id, type: 'like', status: like.status || 'pending' });
+  });
+  return [...byTarget.values()];
+}
+
+function isNearCoordinate(latA, lngA, latB, lngB, thresholdDeg = 0.002) {
+  if (![latA, lngA, latB, lngB].every((value) => Number.isFinite(value))) return false;
+  const dLat = latA - latB;
+  const dLng = lngA - lngB;
+  return (dLat * dLat + dLng * dLng) <= (thresholdDeg * thresholdDeg);
+}
+
+function locationRefreshKey(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return 'none';
+  return `${lat.toFixed(3)},${lng.toFixed(3)}`;
+}
+
+function mergeDiscoveryProfiles(currentProfiles, nextProfiles) {
+  const currentById = new Map((currentProfiles || []).map((item) => [item.id, item]));
+  return (nextProfiles || []).map((item) => {
+    const previous = currentById.get(item.id);
+    if (!previous) return item;
+    // Keep a previous distance only when the next payload omitted it.
+    // Explicit null clears a stale value after a location refresh.
+    const nextDistance = Object.prototype.hasOwnProperty.call(item, 'distance')
+      ? (Number.isFinite(item.distance) ? item.distance : null)
+      : (Number.isFinite(previous.distance) ? previous.distance : null);
+    if (previous.distance === nextDistance && previous.updatedAt === item.updatedAt && previous.avatarUri === item.avatarUri && previous.isMatched === item.isMatched) {
+      return { ...item, distance: nextDistance };
+    }
+    return { ...item, distance: nextDistance };
+  });
+}
+
+function applyPeerDistances(profiles, distances, maxDistance, fetchedIds = null) {
+  const fetched = fetchedIds ? new Set(fetchedIds) : null;
+  const nextProfiles = (profiles || []).map((item) => {
+    const { distancePending, ...rest } = item;
+    if (Number.isFinite(distances?.[item.id])) {
+      return { ...rest, distance: distances[item.id] };
+    }
+    // After a fresh lookup, missing peers mean "no usable shared location"
+    // rather than "keep the previous (often wrong) distance".
+    if (fetched?.has(item.id)) {
+      return { ...rest, distance: null };
+    }
+    return { ...rest, distance: Number.isFinite(item.distance) ? item.distance : null };
+  });
+  return nextProfiles;
+}
+
+// While a distance lookup is in flight, profiles in that batch are flagged so
+// the deck does not show a card that the radius filter may remove a moment
+// later. Profiles outside the batch keep their previous state.
+function markDistancePending(profiles, pendingIds) {
+  if (!pendingIds.size) return profiles;
+  let changed = false;
+  const next = (profiles || []).map((item) => {
+    if (!pendingIds.has(item.id) || item.distancePending || Number.isFinite(item.distance)) return item;
+    changed = true;
+    return { ...item, distancePending: true };
+  });
+  return changed ? next : profiles;
+}
+
+function clearDistancePending(profiles) {
+  if (!(profiles || []).some((item) => item.distancePending)) return profiles;
+  return profiles.map((item) => {
+    if (!item.distancePending) return item;
+    const { distancePending, ...rest } = item;
+    return rest;
   });
 }
 
@@ -373,24 +516,14 @@ function areDiscoveryProfileListsEqual(firstList, secondList) {
       && firstProfile.skill === secondProfile.skill
       && firstProfile.pace === secondProfile.pace
       && firstProfile.availability === secondProfile.availability
-      && firstProfile.compatibility === secondProfile.compatibility
-      && firstProfile.avatar === secondProfile.avatar
-      && firstProfile.avatarColor === secondProfile.avatarColor
       && firstProfile.avatarUri === secondProfile.avatarUri
       && firstProfile.isMatched === secondProfile.isMatched
       && firstProfile.distance === secondProfile.distance
+      && Boolean(firstProfile.distancePending) === Boolean(secondProfile.distancePending)
       && firstProfile.decisionId === secondProfile.decisionId
       && firstProfile.status === secondProfile.status
       && firstProfile.likeMessage === secondProfile.likeMessage
-      && toCachedTimestampMillis(firstProfile.createdAt) === toCachedTimestampMillis(secondProfile.createdAt)
-      && toCachedTimestampMillis(firstProfile.updatedAt) === toCachedTimestampMillis(secondProfile.updatedAt)
-      && firstProfile.activities === secondProfile.activities
-      && firstProfile.availabilitySlots === secondProfile.availabilitySlots
-      && firstProfile.tags === secondProfile.tags
-      && firstProfile.interests === secondProfile.interests
-      && firstProfile.encryptionDevices === secondProfile.encryptionDevices
-      && firstProfile.meetup === secondProfile.meetup
-      && firstProfile.selectedMeetup === secondProfile.selectedMeetup;
+      && toCachedTimestampMillis(firstProfile.updatedAt) === toCachedTimestampMillis(secondProfile.updatedAt);
   });
 }
 
@@ -489,12 +622,33 @@ async function persistProfileToFirestore(userId, profileData) {
     && (nextProfile.avatarUri.startsWith('data:image') || nextProfile.avatarUri.startsWith('file:'))
   ) {
     nextProfile.avatarUri = await uploadImage(nextProfile.avatarUri, userId);
+    nextProfile.avatarRevision = Date.now();
   }
-  await createUserProfile(userId, nextProfile);
-  return nextProfile;
+  if (Array.isArray(nextProfile.gallery)) {
+    const uploadedGallery = [];
+    const gallery = nextProfile.gallery.filter((uri) => typeof uri === 'string' && uri).slice(0, 5);
+    for (const imageUri of gallery) {
+      let uri = imageUri;
+      if (uri && (uri.startsWith('data:image') || uri.startsWith('file:'))) {
+        uri = await uploadGalleryImage(uri, userId);
+      }
+      if (uri) uploadedGallery.push(uri);
+    }
+    nextProfile.gallery = uploadedGallery;
+  }
+  const saved = await createUserProfile(userId, nextProfile);
+  return { ...nextProfile, avatarRevision: saved?.avatarRevision ?? nextProfile.avatarRevision ?? 0 };
 }
 
 async function persistLikeResponse(userId, currentProfile, candidate, response) {
+  if (secureDiscoveryConfigured()) {
+    if (response === 'reject' && candidate.status === 'accepted') {
+      return secureDiscoveryCall('unmatchProfile', { targetUserId: candidate.id });
+    }
+    const result = await respondToSecureLike(candidate.id, response);
+    if (response === 'accept') return createConversation(userId, currentProfile, candidate);
+    return result;
+  }
   const decisionId = candidate.decisionId || `${candidate.id}_${userId}`;
   if (response === 'accept') {
     // 1. Await updating incoming like decision to 'accepted' first so Firestore security
@@ -528,10 +682,12 @@ async function executeQueuedOperation(operation) {
       return updateUserMeetup(userId, payload.meetup, payload.privacy);
     case 'saveMatchingPreferences':
       return updateUserMatchingPreferences(userId, payload.matchingPreferences);
+    case 'saveLocationEnabled':
+      return updateUserLocationEnabled(userId, payload.locationEnabled);
     case 'saveDecision':
-      return saveDecision(userId, payload.otherUserId, payload.decisionType, payload.likeMessage, payload.status);
+      return saveDecision(userId, payload.otherUserId, payload.decisionType, payload.likeMessage, payload.status, operation.id);
     case 'matchProfile': {
-      const result = await saveDecision(userId, payload.candidate.id, 'like', '', 'pending');
+      const result = await saveDecision(userId, payload.candidate.id, 'like', '', 'pending', operation.id);
       if (result?.matched) await createConversation(userId, payload.profile, payload.candidate);
       return result;
     }
@@ -542,6 +698,7 @@ async function executeQueuedOperation(operation) {
     case 'unmatchUser':
       return unmatchUser(userId, payload.otherUserId);
     case 'resetMatching': {
+      if (secureDiscoveryConfigured()) return rewindSecureDiscoveryAction();
       const { db } = requireFirebase();
       const outgoingQuery = query(collection(db, 'decisions'), where('fromUserId', '==', userId));
       const snapshot = await getDocs(outgoingQuery);
@@ -555,6 +712,8 @@ async function executeQueuedOperation(operation) {
       return createConversation(userId, payload.profile, payload.candidate);
     case 'sendMessage':
       return updateConversationMessage(payload.conversationId, userId, payload.text, payload.options);
+    case 'sendGroupMessage':
+      return writeQueuedGroupMessage(payload, userId);
     case 'markConversationAsRead':
       return markConversationAsRead(payload.conversationId, userId);
     case 'toggleMeetupAcceptance':
@@ -604,10 +763,21 @@ function withScheduleTimestamp(schedule) {
 
 export function AppProvider({ children }) {
   const { user } = useAuth();
+  const membership = useMembership();
+  // Plan gates (src/data/plans.js). While the entitlement is loading nothing paid is unlocked.
+  const membershipLoading = membership.status === 'loading';
+  const canAdvancedFilters = membership.can(FEATURE_ADVANCED_FILTERS);
+  const canSeeIncomingLikes = membership.can(FEATURE_INCOMING_LIKE_PROFILES);
+  const canRewind = membership.can(FEATURE_UNLIMITED_REWIND);
+  const previousMembership = useRef({ uid: user?.id, plus: canSeeIncomingLikes });
   const [profile, setProfile] = useState(() => {
     const cached = getFastBootMemory();
     return cached?.profile || null;
   });
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const discoveryFilterFingerprint = secureDiscoveryConfigured()
+    ? JSON.stringify(toServerDiscoveryFilters(profile?.matchingPreferences, profile, canAdvancedFilters)) : '';
   const [profileLoading, setProfileLoading] = useState(false);
   const [conversations, setConversations] = useState([]);
   useEffect(() => {
@@ -630,13 +800,40 @@ export function AppProvider({ children }) {
   }, [user?.id]);
 
   const [hiddenConversationIds, setHiddenConversationIds] = useState([]);
-  const [availableProfiles, setAvailableProfiles] = useState(() => getFastBootFeedProfiles());
+  const [availableProfiles, setAvailableProfiles] = useState([]);
+  const [isDiscoveryReady, setIsDiscoveryReady] = useState(false);
+  // Last discovery feed failure (null while healthy). Lets Home show retry instead of an endless skeleton.
+  const [discoveryError, setDiscoveryError] = useState(null);
+  const [discoveryRetryKey, setDiscoveryRetryKey] = useState(0);
   const [campusSpots, setCampusSpots] = useState([]);
   const [incomingLikes, setIncomingLikes] = useState([]);
+  const [serverPendingLikeCount, setServerPendingLikeCount] = useState(0);
+  const [discoveryActionCount, setDiscoveryActionCount] = useState(0);
   const [outgoingLikes, setOutgoingLikes] = useState([]);
   const [blockedUserIds, setBlockedUserIds] = useState([]);
   const [decisionSnapshots, setDecisionSnapshots] = useState(null);
+  const decisionSubscriptionRef = useRef(null);
+  // Compact copy of the last known outgoing decisions (toUserId/type/status)
+  // restored from the offline snapshot. Until the live decision listener
+  // answers, the discovery filter would otherwise only know about likes that
+  // happen to have a hydrated profile, so profiles that were already skipped
+  // or liked could flash back in on cold start.
+  const [cachedOutgoingDecisions, setCachedOutgoingDecisions] = useState([]);
   const [decisionProfiles, setDecisionProfiles] = useState([]);
+  useEffect(() => {
+    const previous = previousMembership.current;
+    const accountChanged = Boolean(previous.uid && previous.uid !== user?.id);
+    // Wait for the entitlement: a loading state is not a downgrade.
+    if (membershipLoading && !accountChanged) return;
+    if (secureDiscoveryConfigured() && ((previous.plus && !canSeeIncomingLikes) || accountChanged)) {
+      void clearPrivateImageCaches().catch(() => {});
+    }
+    previousMembership.current = { uid: user?.id, plus: canSeeIncomingLikes };
+    if (!secureDiscoveryConfigured() || canSeeIncomingLikes) return;
+    setIncomingLikes((current) => current.filter((item) => item.status === 'accepted'));
+    setDecisionSnapshots((current) => current ? { ...current, incomingDecisions: current.incomingDecisions.filter((item) => item.status === 'accepted') } : null);
+    setDecisionProfiles([]);
+  }, [canSeeIncomingLikes, membershipLoading, user?.id]);
   const [appointments, setAppointments] = useState([]);
   const [selectedMeetup, setSelectedMeetup] = useState(null);
   const [dataError, setDataError] = useState(null);
@@ -646,6 +843,10 @@ export function AppProvider({ children }) {
   const [networkReady, setNetworkReady] = useState(false);
   const [cacheHydratedUserId, setCacheHydratedUserId] = useState(null);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
+  const pendingSyncCountRef = useRef(0);
+  pendingSyncCountRef.current = pendingSyncCount;
+  const activeUserIdRef = useRef(user?.id);
+  activeUserIdRef.current = user?.id;
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [lastSyncError, setLastSyncError] = useState(null);
@@ -665,6 +866,7 @@ export function AppProvider({ children }) {
   const liveDiscoveryReadyRef = useRef(false);
   const fastBootFeedSigRef = useRef('');
   const previousUserIdRef = useRef(null);
+  const accountDeletedRef = useRef(false);
 
   const updateHiddenConversations = useCallback((nextIdsOrUpdater) => {
     setHiddenConversationIds((prev) => {
@@ -687,6 +889,19 @@ export function AppProvider({ children }) {
       const nextOnline = state.isConnected !== false && (Boolean(state.isConnected) || state.isInternetReachable !== false);
       if (networkReadyRef.current && !previousOnlineRef.current && nextOnline) {
         setRetryKey((current) => current + 1);
+        showInAppNotification({
+          title: 'เชื่อมต่อแล้ว',
+          message: 'กลับมาเชื่อมต่ออินเทอร์เน็ตแล้ว',
+          tone: 'success',
+          icon: 'wifi',
+        });
+      } else if (networkReadyRef.current && previousOnlineRef.current && !nextOnline) {
+        showInAppNotification({
+          title: 'ขาดการเชื่อมต่อ',
+          message: 'คุณกำลังใช้งานในโหมดออฟไลน์',
+          tone: 'warning',
+          icon: 'wifi.slash',
+        });
       }
       previousOnlineRef.current = nextOnline;
       networkReadyRef.current = true;
@@ -706,6 +921,7 @@ export function AppProvider({ children }) {
     if (!user?.id) {
       previousUserIdRef.current = null;
       liveDiscoveryReadyRef.current = false;
+      setIsDiscoveryReady(false);
       fastBootFeedSigRef.current = '';
       setCacheHydratedUserId(null);
       setPendingSyncCount(0);
@@ -716,6 +932,7 @@ export function AppProvider({ children }) {
       setIncomingLikes([]);
       setOutgoingLikes([]);
       setDecisionSnapshots(null);
+      setCachedOutgoingDecisions([]);
       setDecisionProfiles([]);
       setAppointments([]);
       setCampusSpots([]);
@@ -733,11 +950,11 @@ export function AppProvider({ children }) {
     discoveryProfileFetchesRef.current.clear();
     discoveryAutoLoadRef.current = 0;
     liveDiscoveryReadyRef.current = false;
+    setIsDiscoveryReady(false);
     setCacheHydratedUserId(null);
 
     const fastBoot = getFastBootMemory();
     const fastProfile = fastBoot?.profile?.id === userId ? withProfileDefaults(fastBoot.profile) : null;
-    const fastFeed = fastBoot?.profile?.id === userId ? getFastBootFeedProfiles() : [];
 
     setProfile((current) => {
       if (current?.id === userId) return current;
@@ -749,18 +966,17 @@ export function AppProvider({ children }) {
       setConversations([]);
       setHiddenConversationIds([]);
       setRemovedUserIds(new Set());
-      setAvailableProfiles(fastFeed);
+      setAvailableProfiles([]);
       setIncomingLikes([]);
       setOutgoingLikes([]);
       setDecisionSnapshots(null);
+      setCachedOutgoingDecisions([]);
       setDecisionProfiles([]);
       setAppointments([]);
       setCampusSpots([]);
       setSelectedMeetup(null);
       setOptimisticHiddenIds([]);
       setBlockedUserIds([]);
-    } else if (fastFeed.length) {
-      setAvailableProfiles((current) => (current.length ? current : fastFeed));
     }
 
     void getBlockedUserIds(userId)
@@ -773,8 +989,9 @@ export function AppProvider({ children }) {
       loadOfflineSnapshot(userId),
       getOfflineQueueCount(userId),
       AsyncStorage.getItem(`@campusmate:hidden_conversations:${userId}`).catch(() => null),
+      AsyncStorage.getItem(`@campusmate:removed_user_ids:${userId}`).catch(() => null),
     ])
-      .then(([snapshot, queueCount, rawHidden]) => {
+      .then(([snapshot, queueCount, rawHidden, rawRemoved]) => {
         if (!active) return;
         let storedHidden = [];
         if (rawHidden) {
@@ -783,6 +1000,17 @@ export function AppProvider({ children }) {
             if (Array.isArray(parsed)) storedHidden = parsed;
           } catch (_) {}
         }
+        let storedRemoved = [];
+        if (rawRemoved) {
+          try {
+            const parsed = JSON.parse(rawRemoved);
+            if (Array.isArray(parsed)) storedRemoved = parsed;
+          } catch (_) {}
+        }
+        if (storedRemoved.length > 0) {
+          setRemovedUserIds((current) => new Set([...current, ...storedRemoved]));
+        }
+        const storedRemovedSet = new Set(storedRemoved);
         if (snapshot) {
           const cachedProfile = snapshot.profile ? withProfileDefaults(snapshot.profile) : null;
           if (cachedProfile) {
@@ -791,34 +1019,30 @@ export function AppProvider({ children }) {
           }
           setConversations(
             Array.isArray(snapshot.conversations)
-              ? snapshot.conversations.map((item) => normalizeCachedConversation(item, userId))
+              ? snapshot.conversations
+                .map((item) => normalizeCachedConversation(item, userId))
+                .filter((conv) => {
+                  const otherId = conv?.profileId || conv?.participants?.find((p) => p !== userId);
+                  return !otherId || !storedRemovedSet.has(otherId);
+                })
               : []
           );
           const snapshotHidden = Array.isArray(snapshot.hiddenConversationIds) ? snapshot.hiddenConversationIds : [];
           const combinedHidden = Array.from(new Set([...storedHidden, ...snapshotHidden]));
           setHiddenConversationIds(combinedHidden);
-          if (
-            !liveDiscoveryReadyRef.current
-            && Array.isArray(snapshot.availableProfiles)
-            && snapshot.availableProfiles.length
-          ) {
-            setAvailableProfiles(
-              snapshot.availableProfiles
-                .map((item) => normalizeProfileRecord(item?.id, item))
-                .filter(isProfileReadyForDiscovery)
-            );
-          }
           setIncomingLikes(
             Array.isArray(snapshot.incomingLikes)
               ? snapshot.incomingLikes
                 .map((item) => normalizeProfileRecord(item?.id, item))
-                .filter(isProfileReadyForDiscovery)
+                .filter((item) => Boolean(item?.id) && !storedRemovedSet.has(item.id))
+                .filter((item) => !secureDiscoveryConfigured() || item.status === 'accepted')
               : []
           );
           setAppointments(Array.isArray(snapshot.appointments) ? snapshot.appointments : []);
           setCampusSpots(Array.isArray(snapshot.campusSpots) ? snapshot.campusSpots : []);
           setSelectedMeetup(snapshot.selectedMeetup || cachedProfile?.meetup || null);
           setOptimisticHiddenIds(Array.isArray(snapshot.optimisticHiddenIds) ? snapshot.optimisticHiddenIds : []);
+          setCachedOutgoingDecisions(compactOutgoingDecisions(snapshot.outgoingDecisions));
           if (Array.isArray(snapshot.blockedUserIds) && snapshot.blockedUserIds.length) {
             setBlockedUserIds((current) => (current.length ? current : snapshot.blockedUserIds));
           }
@@ -852,6 +1076,7 @@ export function AppProvider({ children }) {
       setIncomingLikes([]);
       setOutgoingLikes([]);
       setDecisionSnapshots(null);
+      setCachedOutgoingDecisions([]);
       setDecisionProfiles([]);
       setAppointments([]);
       setCampusSpots([]);
@@ -866,10 +1091,6 @@ export function AppProvider({ children }) {
       setDataError(null);
       return undefined;
     }
-    if (pendingSyncCount > 0) {
-      setProfileLoading(false);
-      return undefined;
-    }
 
     if (!profile) setProfileLoading(true);
     setDataError(null);
@@ -881,25 +1102,18 @@ export function AppProvider({ children }) {
       .then(async (storedProfile) => {
         if (!active) return;
 
-        const refreshLocationInBackground = async () => {
-          try {
-            const Location = await import('expo-location');
-            const { status } = await Location.requestForegroundPermissionsAsync();
-            if (status !== 'granted') return;
-            const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-            if (active) setProfile((current) => ({
-              ...(current || {}),
-              latitude: loc.coords.latitude,
-              longitude: loc.coords.longitude,
-            }));
-            await updateUserLocation(user.id, loc.coords.latitude, loc.coords.longitude);
-          } catch (error) {
-            console.log('Location fetch error:', error);
-          }
-        };
-
         if (storedProfile) {
-          const defaults = withProfileDefaults(storedProfile);
+          const pending = await getOfflineQueue(user.id);
+          if (!active) return;
+          const merged = pending.reduce((data, operation) => {
+            const payload = operation.payload || {};
+            if (operation.type === 'saveProfile') return { ...data, ...payload.profile };
+            if (operation.type === 'updateMeetup') return { ...data, meetup: payload.meetup };
+            if (operation.type === 'saveMatchingPreferences') return { ...data, matchingPreferences: payload.matchingPreferences };
+            if (operation.type === 'saveLocationEnabled') return { ...data, locationEnabled: payload.locationEnabled };
+            return data;
+          }, storedProfile);
+          const defaults = withProfileDefaults(withServerFaceVerification(merged, storedProfile));
           saveFastBootData({ profile: defaults });
           if (defaults.meetup) {
             setSelectedMeetup(defaults.meetup);
@@ -920,9 +1134,20 @@ export function AppProvider({ children }) {
           setProfile(defaults);
           backgroundProfileTask = runAfterInteractionsHelper(() => {
             if (!active) return;
-            void ensurePublicProfileProjection(user.id, defaults);
-            void refreshLocationInBackground();
+            if (!pending.length) void ensurePublicProfileProjection(user.id, defaults);
           });
+          return;
+        }
+
+        // Account was just deleted — do not resurrect the profile. The
+        // sign-out that follows will clear the user state entirely.
+        if (accountDeletedRef.current) {
+          if (active) setProfileLoading(false);
+          return;
+        }
+
+        if (!isCampusEmail(user.email) && isLikelyNewFirebaseUser(user)) {
+          if (active) setProfileLoading(false);
           return;
         }
 
@@ -936,14 +1161,14 @@ export function AppProvider({ children }) {
           isDiscoverable: true,
           isNewUser: true,
           notificationsEnabled: true,
+          locationEnabled: true,
         });
         if (active) setProfile(newProfile);
-        void createUserProfile(user.id, newProfile).catch((error) => {
-          console.warn('[AppContext] Background profile setup failed:', error?.message || error);
-        });
-        backgroundProfileTask = runAfterInteractionsHelper(() => {
-          if (active) void refreshLocationInBackground();
-        });
+        void createUserProfile(user.id, newProfile, { onlyIfMissing: true })
+          .then((saved) => { if (active && saved) setProfile(withProfileDefaults(saved)); })
+          .catch((error) => {
+            console.warn('[AppContext] Background profile setup failed:', error?.message || error);
+          });
       })
       .catch((error) => {
         if (!active) return;
@@ -958,7 +1183,7 @@ export function AppProvider({ children }) {
       active = false;
       backgroundProfileTask?.cancel?.();
     };
-  }, [cacheHydratedUserId, isOnline, pendingSyncCount, user?.displayName, user?.email, user?.id]);
+  }, [cacheHydratedUserId, isOnline, retryKey, user?.displayName, user?.email, user?.id]);
 
   // Shared profiles state — paged discovery listeners feed available profiles;
   // decision-only profiles are hydrated separately when needed.
@@ -1085,20 +1310,30 @@ export function AppProvider({ children }) {
     // snapshot hydration: decrypting chat history was blocking the first
     // Home card. Cached cards can render immediately and this listener
     // replaces them as soon as the first page arrives.
-    if (!user?.id || !isOnline) return undefined;
+    if (!user?.id) return undefined;
+    if (!isOnline) {
+      setDiscoveryError({ code: 'offline', message: 'offline' });
+      return () => setDiscoveryError(null);
+    }
     let active = true;
     liveDiscoveryReadyRef.current = false;
-    const handleSubscriptionError = (source) => (error) => {
+    setIsDiscoveryReady(false);
+    setDiscoveryError(null);
+    const handleSubscriptionError = (source) => (error, meta) => {
       console.error(`[AppContext] ${source} subscription error:`, {
         code: error?.code || 'unknown',
         message: error?.message || String(error),
       });
+      // Only a failed feed request counts; side listeners (revision/entitlement signals) do not.
+      if (active && meta?.feed) setDiscoveryError(error || new Error('discovery unavailable'));
       if (!isRetryableNetworkError(error)) setDataError(error);
     };
     discoveryAutoLoadRef.current = 0;
     const subscription = createSharedProfilesSubscription(
       (nextProfiles) => {
         liveDiscoveryReadyRef.current = true;
+        setIsDiscoveryReady(true);
+        setDiscoveryError(null);
         setSharedProfiles((currentProfiles) => (
           areDiscoveryProfileListsEqual(currentProfiles, nextProfiles) ? currentProfiles : nextProfiles
         ));
@@ -1106,6 +1341,7 @@ export function AppProvider({ children }) {
       handleSubscriptionError('discoveryProfiles'),
       {
         pageSize: 40,
+        filters: toServerDiscoveryFilters(profile?.matchingPreferences, profile, canAdvancedFilters),
         onPageInfo: ({ source, hasMore, loading }) => {
           if (!active) return;
           setHasMoreDiscoveryProfiles(
@@ -1125,13 +1361,15 @@ export function AppProvider({ children }) {
       setSharedProfiles([]);
       setHasMoreDiscoveryProfiles(false);
       setIsLoadingMoreDiscoveryProfiles(false);
+      liveDiscoveryReadyRef.current = false;
+      setIsDiscoveryReady(false);
     };
-  }, [isOnline, retryKey, user?.id]);
+  }, [isOnline, retryKey, discoveryRetryKey, user?.id, discoveryFilterFingerprint]);
 
   // Spots and appointments are secondary to discovery. Start them after the
   // first render and keep them independent from conversation retries.
   useEffect(() => {
-    if (!user?.id || !isOnline || pendingSyncCount > 0 || cacheHydratedUserId !== user.id) return undefined;
+    if (!user?.id || !isOnline || cacheHydratedUserId !== user.id) return undefined;
     let active = true;
     let unsubscribeSecondarySubscriptions = null;
     const handleSubscriptionError = (source, { blocking = true } = {}) => (error) => {
@@ -1156,14 +1394,14 @@ export function AppProvider({ children }) {
       interactionTask?.cancel?.();
       unsubscribeSecondarySubscriptions?.();
     };
-  }, [cacheHydratedUserId, isOnline, pendingSyncCount, user?.id]);
+  }, [cacheHydratedUserId, isOnline, user?.id]);
 
   // Conversations decrypt every message and can be much heavier than the
   // discovery data. Let the first profile card render before starting this
   // subscription, and only restart it when conversation hydration needs a
   // retry.
   useEffect(() => {
-    if (!user?.id || !isOnline || pendingSyncCount > 0 || cacheHydratedUserId !== user.id) return undefined;
+    if (!user?.id || !isOnline || cacheHydratedUserId !== user.id) return undefined;
     let active = true;
     let unsubscribeConversation = null;
     const handleSubscriptionError = (error) => {
@@ -1178,7 +1416,7 @@ export function AppProvider({ children }) {
       unsubscribeConversation = subscribeToConversations(user.id, (convs, snapshotInfo = {}) => {
         const preserveOptimistic = snapshotInfo.fromCache !== false
           || snapshotInfo.hasPendingWrites === true
-          || pendingSyncCount > 0;
+          || pendingSyncCountRef.current > 0;
         setConversations((current) => mergeConversationSnapshots(current, retainLoadingConversations(current, convs, snapshotInfo.loadingConversationIds), preserveOptimistic));
       }, handleSubscriptionError);
     });
@@ -1187,14 +1425,14 @@ export function AppProvider({ children }) {
       interactionTask?.cancel?.();
       unsubscribeConversation?.();
     };
-  }, [cacheHydratedUserId, isOnline, pendingSyncCount, retryKey, user?.id]);
+  }, [cacheHydratedUserId, isOnline, retryKey, user?.id]);
 
   // Older accepted meetups may have a conversation acceptance but no
   // appointments document because appointment history was introduced later.
   // Repair those records once per conversation; the service only permits the
   // accepted guest to create the missing document.
   useEffect(() => {
-    if (!user?.id || !isOnline || pendingSyncCount > 0 || cacheHydratedUserId !== user.id) return undefined;
+    if (!user?.id || !isOnline || cacheHydratedUserId !== user.id) return undefined;
     conversations.forEach((conversation) => {
       if (!conversation?.id || !Array.isArray(conversation.participants)) return;
       if (!conversation.meetupAcceptedUsers?.includes(user.id)) return;
@@ -1224,7 +1462,7 @@ export function AppProvider({ children }) {
     });
 
     return undefined;
-  }, [availableProfilesById, cacheHydratedUserId, conversations, isOnline, pendingSyncCount, sharedProfilesById, user?.id]);
+  }, [availableProfilesById, cacheHydratedUserId, conversations, isOnline, sharedProfilesById, user?.id]);
 
   useEffect(() => {
     if (!user?.id) appointmentRepairRef.current.clear();
@@ -1254,6 +1492,10 @@ export function AppProvider({ children }) {
       if (!isRetryableNetworkError(error)) setDataError(error);
     };
     const unsubscribe = subscribeToUserDecisions(user.id, (next) => {
+      if (secureDiscoveryConfigured()) {
+        setServerPendingLikeCount(next.pendingCount || 0);
+        setDiscoveryActionCount(next.discoveryActionCount || 0);
+      }
       setDecisionSnapshots(next);
       const latestProfiles = decisionProfileRecordsRef.current;
       const nextIncomingLikes = hydrateDecisionLikes(next.incomingDecisions, latestProfiles, 'incoming');
@@ -1265,7 +1507,9 @@ export function AppProvider({ children }) {
         areDiscoveryProfileListsEqual(currentLikes, nextOutgoingLikes) ? currentLikes : nextOutgoingLikes
       ));
     }, handleError);
+    decisionSubscriptionRef.current = unsubscribe;
     return () => {
+      if (decisionSubscriptionRef.current === unsubscribe) decisionSubscriptionRef.current = null;
       unsubscribe?.();
     };
   }, [cacheHydratedUserId, isOnline, retryKey, user?.id]);
@@ -1278,26 +1522,34 @@ export function AppProvider({ children }) {
     // that state we still show the server profiles and reconcile consumed
     // profiles as soon as the decision snapshot arrives.
     if (!profile || !user?.id || sharedProfiles.length === 0) return null;
-    const outgoingDecisions = outgoingDecisionSnapshot?.outgoingDecisions
-      || outgoingLikes.map((like) => ({
-        toUserId: like.id,
-        type: 'like',
-        status: like.status || 'pending',
-      }));
+    // Keep the current deck until the plan is known so a subscriber's filters never flash off.
+    if (membershipLoading) return null;
+    const outgoingDecisions = outgoingDecisionSnapshot
+      || mergeOutgoingDecisionFallback(cachedOutgoingDecisions, outgoingLikes);
     return filterAvailableProfiles(
       user.id,
       {
-        ...(profile.matchingPreferences || {}),
+        ...allowedMatchingPreferences(profile.matchingPreferences, canAdvancedFilters),
         currentFaculty: profile.faculty || '',
       },
       sharedProfiles,
       outgoingDecisions,
       profile
     );
-  }, [outgoingDecisionSnapshot, outgoingLikes, profile, sharedProfiles, user?.id]);
+  }, [cachedOutgoingDecisions, outgoingDecisionSnapshot, outgoingLikes, profile?.faculty, profile?.id, profile?.matchingPreferences, sharedProfiles, user?.id, canAdvancedFilters, membershipLoading]);
+
+  // Once the live listener has answered, remember its compact form so the
+  // next cold start filters correctly before the listener reconnects.
+  useEffect(() => {
+    if (!Array.isArray(outgoingDecisionSnapshot)) return;
+    const compact = compactOutgoingDecisions(outgoingDecisionSnapshot);
+    setCachedOutgoingDecisions((current) => (
+      areCompactDecisionListsEqual(current, compact) ? current : compact
+    ));
+  }, [outgoingDecisionSnapshot]);
 
   useEffect(() => {
-    if (!decisionSnapshots || !decisionProfileRecords.length) return undefined;
+    if (!decisionSnapshots) return undefined;
     const nextIncomingLikes = hydrateDecisionLikes(decisionSnapshots.incomingDecisions, decisionProfileRecords, 'incoming');
     const nextOutgoingLikes = hydrateDecisionLikes(decisionSnapshots.outgoingDecisions, decisionProfileRecords, 'outgoing');
     setIncomingLikes((currentLikes) => (
@@ -1310,30 +1562,222 @@ export function AppProvider({ children }) {
   }, [decisionProfileRecords, decisionSnapshots]);
 
   useEffect(() => {
+    if (!user?.id || cacheHydratedUserId !== user.id) return undefined;
+    if (profile?.locationEnabled === false) return undefined;
+    if (profile?.isNewUser) return undefined;
+
+    let active = true;
+    const refreshLocation = async (requestPermission) => {
+      if (!active || profileRef.current?.locationEnabled === false) return;
+      try {
+        const Location = await import('expo-location');
+        let status = (await Location.getForegroundPermissionsAsync()).status;
+        if (status !== 'granted') {
+          if (!requestPermission) return;
+          status = (await Location.requestForegroundPermissionsAsync()).status;
+        }
+        if (status !== 'granted' || !active) return;
+
+        const previous = profileRef.current;
+        const cachedLocation = await loadCachedUserLocation(user.id);
+        const resolved = await resolveUserLocation({
+          Location,
+          profileLatitude: previous?.latitude,
+          profileLongitude: previous?.longitude,
+          cachedLocation,
+        });
+        if (!active || !resolved || !hasUsableCoordinates(resolved.latitude, resolved.longitude)) return;
+
+        const nextLat = resolved.latitude;
+        const nextLng = resolved.longitude;
+        // Always refresh the durable last-used cache, even when the move is small.
+        await saveCachedUserLocation(user.id, nextLat, nextLng);
+        if (isNearCoordinate(previous?.latitude, previous?.longitude, nextLat, nextLng)) return;
+
+        // Write Firestore before local state so getPeerDistances sees the new coords.
+        await updateUserLocation(user.id, nextLat, nextLng);
+        if (!active) return;
+        setProfile((current) => (
+          current
+            ? { ...current, latitude: nextLat, longitude: nextLng }
+            : current
+        ));
+      } catch (error) {
+        console.log('Location fetch error:', error);
+        // GPS failed — keep serving peer distances from the last used location.
+        try {
+          const previous = profileRef.current;
+          if (hasUsableCoordinates(previous?.latitude, previous?.longitude)) {
+            await saveCachedUserLocation(user.id, previous.latitude, previous.longitude);
+            return;
+          }
+          const cachedLocation = await loadCachedUserLocation(user.id);
+          if (!active || !cachedLocation) return;
+          await updateUserLocation(user.id, cachedLocation.latitude, cachedLocation.longitude);
+          if (!active) return;
+          setProfile((current) => (
+            current
+              ? {
+                ...current,
+                latitude: cachedLocation.latitude,
+                longitude: cachedLocation.longitude,
+              }
+              : current
+          ));
+        } catch (cacheError) {
+          console.log('Location cache fallback error:', cacheError);
+        }
+      }
+    };
+
+    void refreshLocation(true);
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refreshLocation(false);
+    });
+    return () => {
+      active = false;
+      sub.remove();
+    };
+  }, [cacheHydratedUserId, profile?.locationEnabled, user?.id]);
+
+  // Keep a durable last-used location so distance still works when GPS is briefly unavailable.
+  useEffect(() => {
+    if (!user?.id || !profile || profile.locationEnabled === false) return undefined;
+    if (hasUsableCoordinates(profile.latitude, profile.longitude)) {
+      void saveCachedUserLocation(user.id, profile.latitude, profile.longitude);
+      return undefined;
+    }
+    let cancelled = false;
+    void (async () => {
+      const cachedLocation = await loadCachedUserLocation(user.id);
+      if (cancelled || !cachedLocation) return;
+      try {
+        await updateUserLocation(user.id, cachedLocation.latitude, cachedLocation.longitude);
+        if (cancelled) return;
+        setProfile((current) => (
+          current && !hasUsableCoordinates(current.latitude, current.longitude)
+            ? {
+              ...current,
+              latitude: cachedLocation.latitude,
+              longitude: cachedLocation.longitude,
+            }
+            : current
+        ));
+      } catch (error) {
+        console.warn('[AppContext] Cached location restore failed:', error?.message || error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    profile?.id,
+    profile?.latitude,
+    profile?.longitude,
+    profile?.locationEnabled,
+    user?.id,
+  ]);
+
+  const peerLocationKey = locationRefreshKey(profile?.latitude, profile?.longitude);
+
+  useEffect(() => {
     if (!remoteAvailableResult) return undefined;
-    setAvailableProfiles((currentProfiles) => (
-      areDiscoveryProfileListsEqual(currentProfiles, remoteAvailableResult.profiles)
-        ? currentProfiles
-        : remoteAvailableResult.profiles
-    ));
+    let cancelled = false;
+    const baseProfiles = remoteAvailableResult.profiles;
+    setAvailableProfiles((currentProfiles) => {
+      const merged = mergeDiscoveryProfiles(currentProfiles, baseProfiles);
+      return areDiscoveryProfileListsEqual(currentProfiles, merged) ? currentProfiles : merged;
+    });
     setRemovedUserIds((previousIds) => {
-      const nextIds = remoteAvailableResult.removedUserIds;
-      if (previousIds.size === nextIds.size && [...previousIds].every((id) => nextIds.has(id))) return previousIds;
-      return nextIds;
+      const nextIds = remoteAvailableResult.removedUserIds || new Set();
+      const merged = new Set([...previousIds, ...nextIds]);
+      if (previousIds.size === merged.size) return previousIds;
+      return merged;
     });
     setOptimisticHiddenIds((previousIds) => {
       const nextIds = previousIds.filter((id) => !remoteAvailableResult.removedUserIds.has(id));
       return nextIds.length === previousIds.length ? previousIds : nextIds;
     });
-    return undefined;
-  }, [remoteAvailableResult]);
+
+    const attachDistances = async () => {
+      if (profileRef.current?.locationEnabled === false) {
+        if (!cancelled) {
+          setAvailableProfiles((current) => {
+            const withoutDistance = clearDistancePending(mergeDiscoveryProfiles(current, baseProfiles)).map((item) => (
+              item.distance == null ? item : { ...item, distance: null }
+            ));
+            return areDiscoveryProfileListsEqual(current, withoutDistance) ? current : withoutDistance;
+          });
+        }
+        return;
+      }
+      let hasOwnLocation = hasUsableCoordinates(profileRef.current?.latitude, profileRef.current?.longitude);
+      if (!hasOwnLocation && user?.id) {
+        const cachedLocation = await loadCachedUserLocation(user.id);
+        if (cachedLocation && !cancelled) {
+          try {
+            await updateUserLocation(user.id, cachedLocation.latitude, cachedLocation.longitude);
+            setProfile((current) => (
+              current
+                ? {
+                  ...current,
+                  latitude: cachedLocation.latitude,
+                  longitude: cachedLocation.longitude,
+                }
+                : current
+            ));
+            hasOwnLocation = true;
+          } catch (error) {
+            console.warn('[AppContext] Unable to restore cached location:', error?.message || error);
+          }
+        }
+      }
+      const idsToFetch = [...new Set([
+        ...baseProfiles.slice(0, 16).map((item) => item.id),
+        ...baseProfiles.filter((item) => !Number.isFinite(item.distance)).slice(0, 12).map((item) => item.id),
+      ])].filter(Boolean).slice(0, 20);
+      if (!idsToFetch.length) {
+        // An empty page must not keep an earlier batch flagged as "distance pending".
+        if (!cancelled) setAvailableProfiles((current) => clearDistancePending(current));
+        return;
+      }
+      const maxDistance = Number(profileRef.current?.matchingPreferences?.maxDistance) || 0;
+      // Only hold cards when a radius is active and we actually have a
+      // location to measure from; otherwise the lookup cannot remove anyone.
+      const holdWhilePending = maxDistance > 0 && hasOwnLocation;
+      if (holdWhilePending) {
+        const pendingIds = new Set(idsToFetch);
+        setAvailableProfiles((current) => markDistancePending(current, pendingIds));
+      }
+      if (!hasOwnLocation) {
+        if (!cancelled) setAvailableProfiles((current) => clearDistancePending(current));
+        return;
+      }
+      try {
+        const distances = await fetchPeerDistances(idsToFetch);
+        if (cancelled) return;
+        setAvailableProfiles((current) => {
+          const merged = mergeDiscoveryProfiles(current, baseProfiles);
+          const nextProfiles = applyPeerDistances(merged, distances, maxDistance, idsToFetch);
+          return areDiscoveryProfileListsEqual(current, nextProfiles) ? current : nextProfiles;
+        });
+      } catch (error) {
+        console.warn('[AppContext] Peer distances failed:', error?.message || error);
+        if (!cancelled) setAvailableProfiles((current) => clearDistancePending(current));
+      }
+    };
+    void attachDistances();
+    return () => {
+      cancelled = true;
+    };
+  }, [peerLocationKey, profile?.locationEnabled, remoteAvailableResult, user?.id]);
 
   useEffect(() => {
     if (!user?.id || !availableProfiles.length) return undefined;
     const signature = availableProfiles.slice(0, 8).map((item) => item?.id).join(',');
     if (fastBootFeedSigRef.current === signature) return undefined;
     fastBootFeedSigRef.current = signature;
-    saveFastBootData({ availableProfiles });
+    saveFastBootData({ availableProfiles: secureDiscoveryConfigured() ? [] : availableProfiles, userId: user.id });
     return undefined;
   }, [availableProfiles, user?.id]);
 
@@ -1349,14 +1793,15 @@ export function AppProvider({ children }) {
           profile,
           conversations,
           hiddenConversationIds,
-          availableProfiles,
-          incomingLikes,
+          availableProfiles: secureDiscoveryConfigured() ? [] : availableProfiles,
+          incomingLikes: secureDiscoveryConfigured() ? incomingLikes.filter((item) => item.status === 'accepted') : incomingLikes,
           outgoingLikes,
           appointments,
           campusSpots,
           selectedMeetup,
           optimisticHiddenIds,
           blockedUserIds,
+          outgoingDecisions: cachedOutgoingDecisions,
         };
         const signature = getOfflineSnapshotSignature(snapshotData);
         const snapshotKey = `${user.id}:${signature}`;
@@ -1369,12 +1814,12 @@ export function AppProvider({ children }) {
       clearTimeout(timer);
       interactionTask?.cancel?.();
     };
-  }, [appointments, availableProfiles, blockedUserIds, cacheHydratedUserId, campusSpots, conversations, hiddenConversationIds, incomingLikes, outgoingLikes, optimisticHiddenIds, profile, selectedMeetup, user?.id]);
+  }, [appointments, availableProfiles, blockedUserIds, cacheHydratedUserId, cachedOutgoingDecisions, campusSpots, conversations, hiddenConversationIds, incomingLikes, outgoingLikes, optimisticHiddenIds, profile, selectedMeetup, user?.id]);
 
   const refreshQueueCount = useCallback(async () => {
     if (!user?.id) return 0;
     const count = await getOfflineQueueCount(user.id);
-    setPendingSyncCount(count);
+    if (activeUserIdRef.current === user.id) setPendingSyncCount(count);
     return count;
   }, [user?.id]);
 
@@ -1384,6 +1829,10 @@ export function AppProvider({ children }) {
     await refreshQueueCount();
     return { queued: true };
   }, [refreshQueueCount, user?.id]);
+
+  useEffect(() => subscribeOfflineQueueChanges((changedUserId) => {
+    if (changedUserId === user?.id && activeUserIdRef.current === user.id) void refreshQueueCount();
+  }), [refreshQueueCount, user?.id]);
 
   const runOrQueue = useCallback(async (type, payload, execute, options) => {
     if (!isOnline) return queueOperation(type, payload, options);
@@ -1408,20 +1857,41 @@ export function AppProvider({ children }) {
     setIsSyncing(true);
     setLastSyncError(null);
     try {
-      const result = await flushOfflineQueue(user.id, executeQueuedOperation);
+      const updateMessageStatus = (operation, sendStatus) => {
+        if (activeUserIdRef.current !== user.id || operation.type !== 'sendMessage') return;
+        const { conversationId, options } = operation.payload || {};
+        setConversations((current) => current.map((room) => room.id !== conversationId ? room : {
+          ...room, messages: (room.messages || []).map((message) => message.id === options?.clientMessageId
+            ? { ...message, pendingSync: sendStatus !== 'sent', sendStatus } : message),
+        }));
+      };
+      const result = await flushOfflineQueue(user.id, async (operation) => {
+        if (activeUserIdRef.current !== user.id) throw Object.assign(new Error('Account changed'), { code: 'cancelled' });
+        await executeQueuedOperation(operation);
+        updateMessageStatus(operation, 'sent');
+      });
+      if (activeUserIdRef.current !== user.id) return;
+      result.failed.forEach(({ operation }) => updateMessageStatus(operation, 'failed'));
       setPendingSyncCount(result.pendingCount);
       if (result.syncedCount > 0) {
         setLastSyncedAt(Date.now());
         setRetryKey((current) => current + 1);
+        showInAppNotification({
+          title: 'ซิงค์ข้อมูลสำเร็จ',
+          message: `ส่งข้อมูลที่ค้างไว้ ${result.syncedCount} รายการเรียบร้อยแล้ว`,
+          tone: 'success',
+          icon: 'arrow.clockwise',
+        });
       }
       if (result.retryableError) setLastSyncError(result.retryableError);
       else if (result.failed.length) setLastSyncError(result.failed[0].error);
     } catch (error) {
+      if (activeUserIdRef.current !== user.id) return;
       setLastSyncError(error);
       await refreshQueueCount();
     } finally {
       flushingQueueRef.current = false;
-      setIsSyncing(false);
+      if (activeUserIdRef.current === user.id) setIsSyncing(false);
     }
   }, [isOnline, refreshQueueCount, user?.id]);
 
@@ -1446,34 +1916,45 @@ export function AppProvider({ children }) {
     return () => clearTimeout(retryTimer);
   }, [cacheHydratedUserId, isOnline, isSyncing, lastSyncError, pendingSyncCount, syncNow, user?.id]);
 
+  const allPendingIncomingLikes = useMemo(
+    () => incomingLikes.filter((item) => item.status === 'pending' && item.isFaceVerified === true && !blockedUserIds.includes(item.id) && !removedUserIds.has(item.id)),
+    [blockedUserIds, incomingLikes, removedUserIds]
+  );
+  // Who liked you is a Plus feature in every discovery mode; free users only get the count.
   const pendingIncomingLikes = useMemo(
-    () => incomingLikes.filter((item) => item.status === 'pending' && !blockedUserIds.includes(item.id)),
-    [blockedUserIds, incomingLikes]
+    () => (canSeeIncomingLikes ? allPendingIncomingLikes : []),
+    [allPendingIncomingLikes, canSeeIncomingLikes]
   );
   const acceptedIncomingLikes = useMemo(
-    () => incomingLikes.filter((item) => item.status === 'accepted' && !blockedUserIds.includes(item.id)),
-    [blockedUserIds, incomingLikes]
+    () => incomingLikes.filter((item) => item.status === 'accepted' && item.isFaceVerified === true && !blockedUserIds.includes(item.id) && !removedUserIds.has(item.id)),
+    [blockedUserIds, incomingLikes, removedUserIds]
   );
   const pendingOutgoingLikes = useMemo(
-    () => outgoingLikes.filter((item) => item.status === 'pending' && !blockedUserIds.includes(item.id)),
-    [blockedUserIds, outgoingLikes]
+    () => outgoingLikes.filter((item) => item.status === 'pending' && item.isFaceVerified === true && !blockedUserIds.includes(item.id) && !removedUserIds.has(item.id)),
+    [blockedUserIds, outgoingLikes, removedUserIds]
   );
 
   // A paged discovery list cannot contain every profile referenced by a like.
   // Fetch only those missing IDs so the likes and matched-chat flows keep the
   // same behavior without restoring an unbounded profiles listener.
   useEffect(() => {
-    if (!user?.id || !decisionSnapshots) return undefined;
+    if (!user?.id) return undefined;
     const loadedIds = new Set(sharedProfiles.map((item) => item.id));
     decisionProfilesById.forEach((_, id) => loadedIds.add(id));
     const referencedIds = [
-      ...(decisionSnapshots.incomingDecisions || []),
-      ...(decisionSnapshots.outgoingDecisions || []),
+      ...(decisionSnapshots?.incomingDecisions || []),
+      ...(decisionSnapshots?.outgoingDecisions || []),
     ]
       .map((decision) => decision?.fromUserId === user.id ? decision.toUserId : decision?.fromUserId)
       .filter((id) => typeof id === 'string' && id !== user.id);
+    
+    conversations.forEach((conversation) => {
+      const otherUserId = conversation.profileId || conversation.participants?.find((id) => id !== user.id);
+      if (typeof otherUserId === 'string' && otherUserId !== user.id) referencedIds.push(otherUserId);
+    });
+
     const missingIds = [...new Set(referencedIds)].filter((id) => (
-      !loadedIds.has(id) && !discoveryProfileFetchesRef.current.has(id)
+      !loadedIds.has(id) && !discoveryProfileFetchesRef.current.has(id) && !removedUserIds.has(id)
     ));
     if (!missingIds.length) return undefined;
 
@@ -1481,7 +1962,11 @@ export function AppProvider({ children }) {
     let active = true;
     getPublicProfilesByIds(missingIds)
       .then((profiles) => {
-        if (!active || !profiles.length) return;
+        // A missing public API result may mean unverified, private or blocked;
+        // it is not evidence of deletion. Keep existing conversation snapshots
+        // and history. Account deletion has its own authenticated cleanup path.
+        if (!active) return;
+        if (!profiles.length) return;
         setDecisionProfiles((currentProfiles) => {
           const profilesById = new Map(currentProfiles.map((item) => [item.id, item]));
           let changed = false;
@@ -1494,15 +1979,17 @@ export function AppProvider({ children }) {
         });
       })
       .catch((error) => {
-        missingIds.forEach((id) => discoveryProfileFetchesRef.current.delete(id));
         if (!isRetryableNetworkError(error)) {
           console.warn('[AppContext] Decision profile hydration skipped:', error?.message || error);
         }
+      })
+      .finally(() => {
+        missingIds.forEach((id) => discoveryProfileFetchesRef.current.delete(id));
       });
     return () => {
       active = false;
     };
-  }, [decisionProfilesById, decisionSnapshots, sharedProfiles, user?.id]);
+  }, [conversations, decisionProfilesById, decisionSnapshots, removedUserIds, sharedProfiles, user?.id]);
 
   const visibleDiscoveryProfileCount = useMemo(() => {
     if (!remoteAvailableResult) return sharedProfiles.length === 0 ? 0 : null;
@@ -1564,8 +2051,24 @@ export function AppProvider({ children }) {
     return [...new Set(ids)];
   }, [activeConversations, user?.id]);
 
+  const rewindProfileAction = async () => {
+    if (!canRewind) return { profile: null, hasMore: false, plusRequired: true };
+    const result = await rewindSecureDiscoveryAction();
+    if (result.profile?.id) {
+      setOptimisticHiddenIds((current) => current.filter((id) => id !== result.profile.id));
+      setAvailableProfiles((current) => [result.profile, ...current.filter((item) => item.id !== result.profile.id)]);
+      setCachedOutgoingDecisions((current) => current.filter((decision) => decision.toUserId !== result.profile.id));
+    }
+    return result;
+  };
+
   const dismissProfile = async (profileId) => {
     if (!user?.id || !profileId) return;
+    if (secureDiscoveryConfigured()) {
+      const result = await recordSecureDiscoveryAction(profileId, 'skip');
+      setOptimisticHiddenIds((prev) => [...prev, profileId]);
+      return result;
+    }
     setOptimisticHiddenIds((prev) => [...prev, profileId]);
     return runOrQueue(
       'saveDecision',
@@ -1577,6 +2080,8 @@ export function AppProvider({ children }) {
 
   const resetMatching = async () => {
     if (!user?.id) return;
+    if (!canRewind) return { plusRequired: true };
+    if (secureDiscoveryConfigured()) return rewindProfileAction();
     setOptimisticHiddenIds([]);
 
     try {
@@ -1595,6 +2100,9 @@ export function AppProvider({ children }) {
 
   const recycleSkippedProfiles = async () => {
     if (!user?.id) return;
+    // Bringing skipped people back is the Plus rewind feature.
+    if (!canRewind) return { plusRequired: true };
+    if (secureDiscoveryConfigured()) return rewindProfileAction();
     setOptimisticHiddenIds([]);
     try {
       return await runOrQueue(
@@ -1741,7 +2249,7 @@ export function AppProvider({ children }) {
       current.some((c) => c.id === conversationId) ? current : [optimisticConversation, ...current]
     ));
 
-    await runOrQueue(
+    if (!secureDiscoveryConfigured()) await runOrQueue(
       'saveDecision',
       { otherUserId: candidate.id, decisionType: 'like', likeMessage: '', status: 'accepted' },
       () => saveDecision(user.id, candidate.id, 'like', '', 'accepted'),
@@ -1881,6 +2389,13 @@ export function AppProvider({ children }) {
 
   const matchProfile = async (candidate) => {
     if (!user?.id || !candidate?.id) return { matched: false };
+    if (secureDiscoveryConfigured()) {
+      const result = await recordSecureDiscoveryAction(candidate.id, 'like');
+      setOptimisticHiddenIds((prev) => [...prev, candidate.id]);
+      if (result.status !== 'accepted') return { matched: false };
+      const conversationId = await createConversation(user.id, profile, candidate);
+      return { matched: true, conversationId };
+    }
     setRemovedUserIds((current) => {
       if (!current.has(candidate.id)) return current;
       const next = new Set(current);
@@ -1921,10 +2436,23 @@ export function AppProvider({ children }) {
     if (!trimmedText || !user?.id) return false;
     const targetConversation = conversations.find((conversation) => conversation.id === conversationId);
     if (targetConversation?.encryptionPending) {
-      throw Object.assign(
-        new Error('ห้องนี้กำลังรอคีย์เข้ารหัสจากผู้ร่วมสนทนา กรุณาให้อีกฝ่ายเปิดแอปเวอร์ชันล่าสุด'),
-        { code: 'E2EE_KEY_MISSING' }
-      );
+      try {
+        const prepared = await ensureConversationEncryption(conversationId, user.id, {}, true);
+        if (prepared?.conversationKey) {
+          setConversations((current) => current.map((conversation) => (
+            conversation.id === conversationId
+              ? { ...conversation, encryptionPending: false, encryptionError: null }
+              : conversation
+          )));
+        } else {
+          throw new Error('missing key');
+        }
+      } catch {
+        throw Object.assign(
+          new Error('กำลังเชื่อมกุญแจเข้ารหัส ลองส่งอีกครั้งได้เลย ไม่ต้องรออัปเดตแอป'),
+          { code: 'E2EE_KEY_MISSING' }
+        );
+      }
     }
     const clientOptions = {
       ...options,
@@ -1953,6 +2481,20 @@ export function AppProvider({ children }) {
       ...(clientOptions.mediaUrl ? { mediaUrl: clientOptions.mediaUrl } : {}),
       ...(Array.isArray(clientOptions.mediaUrls) ? { mediaUrls: clientOptions.mediaUrls } : {}),
       ...(typeof clientOptions.audioDuration === 'number' ? { audioDuration: clientOptions.audioDuration } : {}),
+      ...(clientOptions.mediaType === 'track' ? {
+        ...(clientOptions.trackId ? { trackId: clientOptions.trackId } : {}),
+        ...(clientOptions.trackName ? { trackName: clientOptions.trackName } : {}),
+        ...(clientOptions.artists ? { artists: clientOptions.artists } : {}),
+        ...(clientOptions.albumArt ? { albumArt: clientOptions.albumArt } : {}),
+        ...(clientOptions.previewUrl ? { previewUrl: clientOptions.previewUrl } : {}),
+        ...(clientOptions.externalUrl ? { externalUrl: clientOptions.externalUrl } : {}),
+        ...(Number.isFinite(Number(clientOptions.previewStartMs))
+          ? { previewStartMs: Math.max(0, Math.round(Number(clientOptions.previewStartMs))) }
+          : {}),
+        ...(Number.isFinite(Number(clientOptions.previewEndMs))
+          ? { previewEndMs: Math.max(0, Math.round(Number(clientOptions.previewEndMs))) }
+          : {}),
+      } : {}),
       ...(clientOptions.replyTo ? { replyTo: clientOptions.replyTo } : {}),
       ...(clientOptions.forwarded ? { forwarded: true, forwardedFrom: clientOptions.forwardedFrom } : {}),
       pendingSync: true,
@@ -1975,18 +2517,20 @@ export function AppProvider({ children }) {
       };
     }));
     try {
-      await runOrQueue(
+      const sendResult = await runOrQueue(
         'sendMessage',
         { conversationId, text: trimmedText, options: clientOptions },
         () => updateConversationMessage(conversationId, user.id, trimmedText, clientOptions),
         { dedupeKey: `message:${clientOptions.clientMessageId}` }
       );
+      if (activeUserIdRef.current !== user.id) return false;
       setConversations((current) => current.map((conversation) => {
         if (conversation.id !== conversationId) return conversation;
         return {
           ...conversation,
           messages: (conversation.messages || []).map((msg) =>
-            msg.id === clientOptions.clientMessageId ? { ...msg, pendingSync: false } : msg
+            msg.id === clientOptions.clientMessageId
+              ? { ...msg, pendingSync: Boolean(sendResult?.queued), sendStatus: sendResult?.queued ? 'queued' : 'sent' } : msg
           ),
         };
       }));
@@ -1999,6 +2543,71 @@ export function AppProvider({ children }) {
       )));
       throw error;
     }
+  };
+
+  const retryFailedMessage = async (conversationId, messageId) => {
+    if (!user?.id) return;
+    const failed = await getFailedOfflineOperations(user.id);
+    const operation = failed.find((item) => item.type === 'sendMessage'
+      && item.payload?.conversationId === conversationId && item.payload?.options?.clientMessageId === messageId);
+    if (!operation || activeUserIdRef.current !== user.id) return;
+    await retryFailedOfflineOperation(user.id, operation.id);
+    if (activeUserIdRef.current !== user.id) return;
+    setConversations((current) => current.map((room) => room.id !== conversationId ? room : { ...room,
+      messages: (room.messages || []).map((item) => item.id !== messageId ? item : { ...item, pendingSync: true, sendStatus: 'queued' }) }));
+  };
+
+  const cacheConversationMessages = (conversationId, messages) => {
+    if (!conversationId || !Array.isArray(messages)) return;
+    setConversations((current) => {
+      let changed = false;
+      const next = current.map((conversation) => {
+        if (conversation.id !== conversationId) return conversation;
+        const currentMessages = Array.isArray(conversation.messages) ? conversation.messages : [];
+        const incomingIds = new Set(messages.map((message) => message?.id).filter(Boolean));
+        const oldestIncoming = messages[0];
+        const oldestIncomingMs = toCachedTimestampMillis(oldestIncoming?.createdAt || oldestIncoming?.time);
+        const messagesById = new Map();
+        currentMessages.forEach((message) => {
+          if (!message?.id) return;
+          const isIncoming = incomingIds.has(message.id);
+          const isOlderThanWindow = Boolean(oldestIncoming)
+            && toCachedTimestampMillis(message.createdAt || message.time) < oldestIncomingMs;
+          if (isIncoming || message.pendingSync || isOlderThanWindow) {
+            messagesById.set(message.id, message);
+          }
+        });
+        messages.forEach((message) => {
+          if (!message?.id) return;
+          messagesById.set(message.id, preferDecryptedMessage(messagesById.get(message.id), message));
+        });
+        const nextMessages = sortConversationMessages([...messagesById.values()]);
+        const previousLast = currentMessages[currentMessages.length - 1];
+        const nextLast = nextMessages[nextMessages.length - 1];
+        if (
+          conversation.messagesPreviewOnly !== true
+          && nextMessages.length === currentMessages.length
+          && previousLast?.id === nextLast?.id
+          && previousLast?.text === nextLast?.text
+          && Boolean(previousLast?.decryptionFailed) === Boolean(nextLast?.decryptionFailed)
+        ) {
+          return conversation;
+        }
+        changed = true;
+        return {
+          ...conversation,
+          messages: nextMessages,
+          messagesPreviewOnly: false,
+          ...(nextLast && !conversation.encryptionPending ? {
+            lastMessage: nextLast.text || conversation.lastMessage,
+            lastMessageSenderId: nextLast.senderId || conversation.lastMessageSenderId,
+            lastMessageAt: nextLast.createdAt || conversation.lastMessageAt,
+            lastMessageId: nextLast.id || conversation.lastMessageId,
+          } : {}),
+        };
+      });
+      return changed ? next : current;
+    });
   };
 
   const markAsRead = async (conversationId) => {
@@ -2023,18 +2632,32 @@ export function AppProvider({ children }) {
       && Object.keys(profileData).length === 1
       && Object.prototype.hasOwnProperty.call(profileData, 'meetup')
     );
+    const locationOnly = Boolean(
+      profileData
+      && typeof profileData === 'object'
+      && Object.keys(profileData).length === 1
+      && Object.prototype.hasOwnProperty.call(profileData, 'locationEnabled')
+    );
     if (!user?.id) throw new Error('กรุณาเข้าสู่ระบบก่อนบันทึกโปรไฟล์');
     const nextProfileData = {
       ...profileData,
       ...(typeof profileData.name === 'string' ? { name: profileData.name.trim() } : {}),
     };
+    const isAvatarChanged = (
+      nextProfileData.avatarUri !== undefined &&
+      nextProfileData.avatarUri !== profile?.avatarUri
+    );
     const nextProfile = withProfileDefaults({
       ...profile,
       ...nextProfileData,
+      ...(isAvatarChanged && profile?.isFaceVerified ? {
+        isFaceVerified: false,
+        faceMatchScore: null,
+        faceVerificationStatus: 'unverified',
+      } : {}),
       id: user.id,
-      email: user.email || profile?.email || '',
-      // Keep a local revision so avatar caches invalidate immediately after
-      // saving, before Firestore returns its server timestamp.
+      email: nextProfileData.email || user.email || profile?.email || '',
+      // Profile data revision is separate from the uploaded image revision.
       updatedAt: Date.now(),
       privacy: { ...profile?.privacy, ...nextProfileData.privacy },
       matchingPreferences: {
@@ -2042,41 +2665,49 @@ export function AppProvider({ children }) {
         ...nextProfileData.matchingPreferences,
       },
     });
-    setProfile(nextProfile);
+    const savedProfile = await runOrQueue(
+      locationOnly ? 'saveLocationEnabled' : meetupOnly ? 'updateMeetup' : 'saveProfile',
+      locationOnly
+        ? { locationEnabled: nextProfile.locationEnabled === true }
+        : meetupOnly
+          ? { meetup: nextProfile.meetup, privacy: nextProfile.privacy }
+          : { profile: nextProfile },
+      locationOnly
+        ? () => updateUserLocationEnabled(user.id, nextProfile.locationEnabled === true)
+        : meetupOnly
+          ? () => updateUserMeetup(user.id, nextProfile.meetup, nextProfile.privacy)
+          : () => persistProfileToFirestore(user.id, nextProfile),
+      {
+        dedupeKey: locationOnly ? 'saveLocationEnabled' : meetupOnly ? 'saveMeetup' : 'saveProfile',
+      }
+    );
+    // Publish the change only after persistence or durable offline queuing.
+    // A rejected image must not become the profile or overwrite the editor draft.
+    const committedProfile = savedProfile && !savedProfile.queued && !meetupOnly && !locationOnly
+      ? withProfileDefaults(savedProfile)
+      : nextProfile;
+    setProfile(committedProfile);
     void saveAccount({
       id: user.id,
-      email: user.email || nextProfile.email,
-      displayName: nextProfile.nickname || nextProfile.name || user.displayName,
-      photoURL: nextProfile.avatarUri || nextProfile.photos?.[0] || user.photoURL,
-      avatarUri: nextProfile.avatarUri || nextProfile.photos?.[0] || user.photoURL,
-      avatarColor: nextProfile.avatarColor || null,
-      faculty: nextProfile.faculty || '',
-      updatedAt: nextProfile.updatedAt,
+      email: committedProfile.email || user.email,
+      displayName: committedProfile.nickname || committedProfile.name || user.displayName,
+      photoURL: committedProfile.avatarUri || committedProfile.photos?.[0] || user.photoURL,
+      avatarUri: committedProfile.avatarUri || committedProfile.photos?.[0] || user.photoURL,
+      avatarColor: committedProfile.avatarColor || null,
+      avatarRevision: committedProfile.avatarRevision ?? 0,
+      faculty: committedProfile.faculty || '',
+      updatedAt: committedProfile.updatedAt,
     });
-    const savedProfile = await runOrQueue(
-      meetupOnly ? 'updateMeetup' : 'saveProfile',
-      meetupOnly
-        ? { meetup: nextProfile.meetup, privacy: nextProfile.privacy }
-        : { profile: nextProfile },
-      meetupOnly
-        ? () => updateUserMeetup(user.id, nextProfile.meetup, nextProfile.privacy)
-        : () => persistProfileToFirestore(user.id, nextProfile),
-      { dedupeKey: meetupOnly ? 'saveMeetup' : 'saveProfile' }
-    );
-    // The focused meetup patch returns a boolean; the optimistic local state
-    // above is already authoritative for this small update.
-    if (savedProfile && !savedProfile.queued && !meetupOnly) {
-      setProfile(withProfileDefaults(savedProfile));
-    }
-    return nextProfile;
+    return committedProfile;
   };
 
   const saveMatchingPreferences = async (matchingPreferences) => {
     if (!user?.id) throw new Error('กรุณาเข้าสู่ระบบก่อนบันทึกการตั้งค่าค้นหา');
-    const nextPreferences = {
+    // Paid filter keys can only be changed with the advancedFilters entitlement.
+    const nextPreferences = keepPaidMatchingPreferences({
       ...(profile?.matchingPreferences || {}),
       ...matchingPreferences,
-    };
+    }, profile?.matchingPreferences, canAdvancedFilters);
     setProfile((current) => withProfileDefaults({
       ...(current || {}),
       matchingPreferences: nextPreferences,
@@ -2181,6 +2812,27 @@ export function AppProvider({ children }) {
       await saveProfile({ meetup: null });
     }
   };
+
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    return subscribeToFaceVerification(user.id, (serverProfile) => {
+      setProfile((current) => current?.id === user.id
+        ? withProfileDefaults(withServerFaceVerification(current, serverProfile)) : current);
+    }, (error) => console.warn('[FaceVerification] Status refresh failed:', error?.code));
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (profile?.id && profile.id === user?.id) void saveFastBootData({ profile });
+  }, [user?.id, profile?.id, profile?.isFaceVerified, profile?.faceVerificationStatus, profile?.faceMatchScore, profile?.faceVerifiedAt]);
+
+  const markFaceVerified = useCallback((similarityScore) => {
+    setProfile((prev) => withProfileDefaults({
+      ...prev,
+      isFaceVerified: true,
+      faceMatchScore: typeof similarityScore === 'number' ? similarityScore : 90,
+      faceVerificationStatus: 'verified',
+    }));
+  }, []);
 
   const toggleMeetupAcceptanceInChat = async (conversationId, hostUserId, spotName, meetup = null) => {
     if (!user?.id || !conversationId) return false;
@@ -2447,11 +3099,15 @@ export function AppProvider({ children }) {
     };
   }, [liveConversations, user?.id]);
 
+  const isResolvingDistances = useMemo(
+    () => availableProfiles.some((profileItem) => profileItem.distancePending),
+    [availableProfiles]
+  );
   const filteredAvailableProfiles = useMemo(() => {
-    if (optimisticHiddenIds.length === 0 && blockedUserIds.length === 0) return availableProfiles;
+    if (optimisticHiddenIds.length === 0 && blockedUserIds.length === 0 && !isResolvingDistances) return availableProfiles;
     const hiddenIds = new Set([...optimisticHiddenIds, ...blockedUserIds]);
-    return availableProfiles.filter((profileItem) => !hiddenIds.has(profileItem.id));
-  }, [availableProfiles, blockedUserIds, optimisticHiddenIds]);
+    return availableProfiles.filter((profileItem) => !hiddenIds.has(profileItem.id) && !profileItem.distancePending);
+  }, [availableProfiles, blockedUserIds, isResolvingDistances, optimisticHiddenIds]);
 
   const combinedAppointments = useMemo(() => {
     const result = [];
@@ -2617,18 +3273,27 @@ export function AppProvider({ children }) {
     ensureConversation,
     getMeetupStats,
     loadMoreProfiles: loadMoreDiscoveryProfiles,
+    retryDiscovery: () => {
+      setDiscoveryError(null);
+      setDiscoveryRetryKey((current) => current + 1);
+    },
+    loadMoreIncomingLikes: () => decisionSubscriptionRef.current?.loadMore?.(),
     markAsRead,
+    markFaceVerified,
     matchProfile,
     reactToMessageInChat,
     recycleSkippedProfiles,
     removeConversation,
     reportContent,
     resetMatching,
+    rewindProfileAction,
     respondToLike,
     saveMatchingPreferences,
     saveProfile,
     sendActivityInvite,
     sendMessage,
+    retryFailedMessage,
+    cacheConversationMessages,
     syncNow,
     toggleMeetupAcceptanceInChat,
     unblockUser,
@@ -2637,7 +3302,13 @@ export function AppProvider({ children }) {
     updateMeetupSchedule,
     deleteAccount: async () => {
       if (!user?.id) throw new Error('กรุณาเข้าสู่ระบบก่อนลบบัญชี');
-      await deleteAccountData(user.id);
+      accountDeletedRef.current = true;
+      try {
+        await deleteAccountData(user.id, user.email);
+      } catch (error) {
+        accountDeletedRef.current = false;
+        throw error;
+      }
     },
   };
 
@@ -2652,29 +3323,83 @@ export function AppProvider({ children }) {
   }, []);
 
   const profileSlice = useMemo(
-    () => ({ profile, profileLoading }),
-    [profile, profileLoading],
+    () => ({ profile, profileError: dataError, profileLoading }),
+    [dataError, profile, profileLoading],
   );
 
-  const pendingLikeCount = pendingIncomingLikes.length;
+  const pendingLikeCount = secureDiscoveryConfigured() ? serverPendingLikeCount : allPendingIncomingLikes.length;
   const badgeSlice = useMemo(
-    () => ({ pendingLikeCount, totalUnreadMessages }),
-    [pendingLikeCount, totalUnreadMessages],
+    () => ({
+      conversationCount: activeConversations.length,
+      matchedCount: matchedProfileIds.length,
+      pendingLikeCount,
+      totalUnreadMessages,
+    }),
+    [activeConversations.length, matchedProfileIds.length, pendingLikeCount, totalUnreadMessages],
   );
 
   const conversationsSlice = useMemo(() => ({
     allConversations: liveConversations,
-    availableProfiles: filteredAvailableProfiles,
     conversations: activeConversations,
     hiddenConversationIds,
     totalUnreadMessages,
   }), [
     activeConversations,
-    filteredAvailableProfiles,
     hiddenConversationIds,
     liveConversations,
     totalUnreadMessages,
   ]);
+
+  const feedSlice = useMemo(() => ({
+    pendingIncomingLikeCount: pendingLikeCount,
+    hasMorePendingLikes: canSeeIncomingLikes && decisionSnapshots?.hasMorePending === true,
+    isLoadingMorePendingLikes: decisionSnapshots?.isLoadingMorePending === true,
+    discoveryActionCount,
+    acceptedIncomingLikes,
+    availableProfiles: filteredAvailableProfiles,
+    blockedUserIds,
+    campusSpots: computedSpots,
+    hasMoreProfiles: hasMoreDiscoveryProfiles,
+    incomingLikes,
+    isDiscoveryReady,
+    discoveryError,
+    isLoadingMoreProfiles: isLoadingMoreDiscoveryProfiles,
+    isLikesLoading: decisionSnapshots === null && !incomingLikes.length,
+    likesError: dataError || lastSyncError || null,
+    isResolvingDistances,
+    matchedProfileIds,
+    outgoingLikes,
+    pendingIncomingLikes,
+    pendingOutgoingLikes,
+    selectedMeetup,
+  }), [
+    pendingLikeCount,
+    canSeeIncomingLikes,
+    discoveryActionCount,
+    acceptedIncomingLikes,
+    blockedUserIds,
+    computedSpots,
+    dataError,
+    decisionSnapshots,
+    discoveryError,
+    filteredAvailableProfiles,
+    hasMoreDiscoveryProfiles,
+    incomingLikes,
+    isDiscoveryReady,
+    isLoadingMoreDiscoveryProfiles,
+    isResolvingDistances,
+    lastSyncError,
+    matchedProfileIds,
+    outgoingLikes,
+    pendingIncomingLikes,
+    pendingOutgoingLikes,
+    selectedMeetup,
+  ]);
+
+  const appointmentsSlice = useMemo(
+    () => ({ appointments: combinedAppointments }),
+    [combinedAppointments],
+  );
 
   const syncSlice = useMemo(() => ({
     isOnline,
@@ -2696,6 +3421,7 @@ export function AppProvider({ children }) {
     availableProfiles: filteredAvailableProfiles,
     hasMoreProfiles: hasMoreDiscoveryProfiles,
     isLoadingMoreProfiles: isLoadingMoreDiscoveryProfiles,
+    isDiscoveryReady,
     matchedProfileIds,
     incomingLikes,
     pendingIncomingLikes,
@@ -2724,6 +3450,7 @@ export function AppProvider({ children }) {
     hasMoreDiscoveryProfiles,
     hiddenConversationIds,
     incomingLikes,
+    isDiscoveryReady,
     liveConversations,
     matchedProfileIds,
     outgoingLikes,
@@ -2750,11 +3477,13 @@ export function AppProvider({ children }) {
 
   if (blockingError) {
     return (
-      <ImageBackground
-        source={loginHeroPhoto}
-        style={{ flex: 1, backgroundColor: '#0B0D14' }}
-        imageStyle={{ resizeMode: 'cover' }}
-      >
+      <View style={{ flex: 1, backgroundColor: '#0B0D14' }}>
+        <Image
+          pointerEvents="none"
+          resizeMode="cover"
+          source={loginHeroPhoto}
+          style={StyleSheet.absoluteFill}
+        />
         <LinearGradient
           colors={['rgba(11,13,20,0.5)', 'rgba(11,13,20,0.78)', 'rgba(11,13,20,0.95)']}
           locations={[0, 0.45, 0.9]}
@@ -2768,7 +3497,16 @@ export function AppProvider({ children }) {
               {!isOnline ? 'ยังไม่มีข้อมูลออฟไลน์' : 'โหลดข้อมูลไม่สำเร็จ'}
             </Text>
             <Text style={{ color: '#B6BDC8', marginTop: 8, textAlign: 'center', fontSize: 13, lineHeight: 18 }}>
-              {blockingError.message || 'กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่อีกครั้ง'}
+              {(() => {
+                const msg = String(blockingError.message || '');
+                if (/deadline[-_ ]?exceeded|timed?[-_ ]?out|timeout/i.test(msg)) {
+                  return 'การเชื่อมต่อใช้เวลานานเกินไป กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่อีกครั้ง';
+                }
+                if (/network|offline|unavailable|internet|connection/i.test(msg)) {
+                  return 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต';
+                }
+                return msg || 'กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่อีกครั้ง';
+              })()}
             </Text>
             <Pressable
               onPress={() => {
@@ -2782,12 +3520,12 @@ export function AppProvider({ children }) {
             </Pressable>
           </View>
         </LinearGradient>
-      </ImageBackground>
+      </View>
     );
   }
 
-  // Show consent modal for new users who haven't accepted yet
-  const needsConsent = profile?.isNewUser && !profile?.consentAcceptedAt;
+  // Show consent modal for users who haven't accepted yet (after setup is complete)
+  const needsConsent = Boolean(profile && !profile.isNewUser && !profile.consentAcceptedAt && !profileLoading);
 
   const handleConsentAccept = async () => {
     console.log('Consent accepted, dismissing...');
@@ -2806,18 +3544,21 @@ export function AppProvider({ children }) {
       <AppProfileContext.Provider value={profileSlice}>
         <AppBadgeContext.Provider value={badgeSlice}>
           <AppConversationsContext.Provider value={conversationsSlice}>
-            <AppSyncContext.Provider value={syncSlice}>
-              <AppContext.Provider value={value}>
-                {children}
-                {(needsConsent && !consentDismissed) ? (
-                  <ConsentModal
-                    visible={true}
-                    onAccept={handleConsentAccept}
-                    onViewPolicy={() => setShowPrivacyPolicy(true)}
-                  />
-                ) : null}
-              </AppContext.Provider>
-            </AppSyncContext.Provider>
+            <AppFeedContext.Provider value={feedSlice}>
+              <AppAppointmentsContext.Provider value={appointmentsSlice}>
+                <AppSyncContext.Provider value={syncSlice}>
+                  <AppContext.Provider value={value}>
+                    {children}
+                    {(needsConsent && !consentDismissed) ? (
+                      <ConsentModal
+                        visible={true}
+                        onAccept={handleConsentAccept}
+                      />
+                    ) : null}
+                  </AppContext.Provider>
+                </AppSyncContext.Provider>
+              </AppAppointmentsContext.Provider>
+            </AppFeedContext.Provider>
           </AppConversationsContext.Provider>
         </AppBadgeContext.Provider>
       </AppProfileContext.Provider>
@@ -2853,6 +3594,14 @@ export function useAppBadges() {
 
 export function useAppConversations() {
   return useAppSlice(AppConversationsContext, 'useAppConversations');
+}
+
+export function useAppFeed() {
+  return useAppSlice(AppFeedContext, 'useAppFeed');
+}
+
+export function useAppAppointments() {
+  return useAppSlice(AppAppointmentsContext, 'useAppAppointments');
 }
 
 export function useAppSync() {

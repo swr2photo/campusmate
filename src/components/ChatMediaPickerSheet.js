@@ -1,22 +1,18 @@
+import Text from './AppText';
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Animated,
-  Dimensions,
+import { ActivityIndicator, AppState, Dimensions, Linking, Modal, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
+import Animated, {
+  cancelAnimation,
   Easing,
-  FlatList,
-  Linking,
-  Modal,
-  PanResponder,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useColorScheme,
-  View,
-} from 'react-native';
+  Extrapolation,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { FlatList, Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { scheduleOnRN } from 'react-native-worklets';
 import { Image } from 'expo-image';
 import { BlurView } from 'expo-blur';
 import { useVideoPlayer } from 'expo-video';
@@ -24,6 +20,24 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import FeatureIcon from './FeatureIcon';
+import { project, rubberband } from '../utils/motion';
+import { showAlert } from '../utils/appAlert';
+
+const EASE_OUT = Easing.bezier(0.23, 1, 0.32, 1);
+// Keep Android media access usable when Expo PHOTO is missing from the installed APK.
+
+
+function rubberbandVisibleH(next, maxH, collapsedH) {
+  'worklet';
+  if (next > maxH) {
+    return maxH + rubberband(next - maxH, maxH);
+  }
+  if (next < 0) {
+    const dim = collapsedH > 0 ? collapsedH : 1;
+    return -rubberband(-next, dim);
+  }
+  return next;
+}
 
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get('window');
 const NUM_COLUMNS = 4;
@@ -35,7 +49,111 @@ const GRID_HORIZONTAL_PADDING = Math.max(
   0,
   Math.floor((SCREEN_WIDTH - (ITEM_SIZE * NUM_COLUMNS + (NUM_COLUMNS - 1) * SPACING)) / 2)
 );
-const COLLAPSED_HEIGHT = 310;
+export const MEDIA_PICKER_COLLAPSED_HEIGHT = 310;
+const COLLAPSED_HEIGHT = MEDIA_PICKER_COLLAPSED_HEIGHT;
+const GRID_ROW_HEIGHT = ITEM_SIZE + SPACING;
+const SCRUBBER_WIDTH = 28;
+const TH_MONTHS_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+function formatAssetMonthLabel(timestamp) {
+  if (!timestamp && timestamp !== 0) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${TH_MONTHS_SHORT[date.getMonth()]} ${date.getFullYear() + 543}`;
+}
+
+function getAssetTimestamp(asset) {
+  const raw = asset?.creationTime ?? asset?.modificationTime;
+  const value = typeof raw === 'number' ? raw : Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+async function getAndroidMediaAccess() {
+  if (Platform.OS !== 'android') return null;
+  const api = Number(Platform.Version);
+  const empty = { granted: false, privileges: 'none', images: false, video: false, limited: false };
+  try {
+    if (api >= 33) {
+      let images = false;
+      let video = false;
+      let limited = false;
+      try {
+        images = await PermissionsAndroid.check('android.permission.READ_MEDIA_IMAGES');
+      } catch (_) {}
+      try {
+        video = await PermissionsAndroid.check('android.permission.READ_MEDIA_VIDEO');
+      } catch (_) {}
+      if (api >= 34) {
+        try {
+          limited = await PermissionsAndroid.check('android.permission.READ_MEDIA_VISUAL_USER_SELECTED');
+        } catch (_) {}
+      }
+      if (images || video) {
+        return { granted: true, privileges: images && video ? 'all' : 'limited', images, video, limited };
+      }
+      if (limited) return { granted: true, privileges: 'limited', images, video, limited };
+      return { ...empty, images, video, limited };
+    }
+    const ok = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE);
+    return { granted: Boolean(ok), privileges: ok ? 'all' : 'none', images: Boolean(ok), video: Boolean(ok), limited: false };
+  } catch {
+    return empty;
+  }
+}
+
+async function getExpoLibraryPermission(shouldRequest = false) {
+  const requestedMediaTypes = Platform.OS === 'android' ? ['photo', 'video'] : undefined;
+  const fallback = {
+    granted: false,
+    status: 'undetermined',
+    canAskAgain: true,
+    accessPrivileges: 'none',
+  };
+  const readOrRequest = async (mediaTypes) => {
+    let perm = await MediaLibrary.getPermissionsAsync(false, mediaTypes);
+    const needsPrompt = perm.status !== 'granted'
+      && perm.accessPrivileges !== 'limited'
+      && perm.canAskAgain !== false;
+    if (shouldRequest && needsPrompt) {
+      perm = await MediaLibrary.requestPermissionsAsync(false, mediaTypes);
+    }
+    return perm;
+  };
+  try {
+    return await readOrRequest(requestedMediaTypes);
+  } catch (err) {
+    if (Platform.OS === 'android') {
+      try {
+        return await readOrRequest(['video']);
+      } catch (_) {}
+    }
+    console.warn('[ChatMediaPickerSheet] expo permission check failed:', err);
+    return fallback;
+  }
+}
+
+function mediaTypesForAccess(androidAccess) {
+  if (Platform.OS !== 'android' || !androidAccess) {
+    return [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video];
+  }
+  const types = [];
+  if (androidAccess.images) types.push(MediaLibrary.MediaType.photo);
+  if (androidAccess.video || androidAccess.limited) types.push(MediaLibrary.MediaType.video);
+  if (types.length === 0) {
+    return [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video];
+  }
+  return types;
+}
+
+function hasLibraryAccess(perm, androidAccess) {
+  return Boolean(
+    perm?.granted
+    || perm?.status === 'granted'
+    || perm?.accessPrivileges === 'limited'
+    || perm?.accessPrivileges === 'all'
+    || androidAccess?.granted
+  );
+}
 
 function isVideoAsset(asset) {
   return asset?.mediaType === 'video' || asset?.type === 'video' ||
@@ -132,6 +250,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
   onOpenEditor,
   colors,
   inline = true,
+  overlay = false,
 }, ref) {
   const insets = useSafeAreaInsets();
   const bottomInset = insets?.bottom ?? 0;
@@ -139,9 +258,15 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
   const EXPANDED_HEIGHT = Math.round(SCREEN_HEIGHT - topInset - 16);
 
   const [isExpanded, setIsExpanded] = useState(false);
-  const sheetHeightAnim = useRef(new Animated.Value(COLLAPSED_HEIGHT + bottomInset)).current;
-  const currentHeightRef = useRef(COLLAPSED_HEIGHT + bottomInset);
-  const startHeightRef = useRef(COLLAPSED_HEIGHT + bottomInset);
+  const maxH = EXPANDED_HEIGHT + bottomInset;
+  const collapsedH = COLLAPSED_HEIGHT + bottomInset;
+  const visibleH = useSharedValue(collapsedH);
+  const maxHSv = useSharedValue(maxH);
+  const collapsedHSv = useSharedValue(collapsedH);
+  const dragStartH = useSharedValue(collapsedH);
+  const closingSv = useSharedValue(0);
+  const previewScale = useSharedValue(0.92);
+  const previewOpacity = useSharedValue(0);
 
   const colorScheme = useColorScheme();
   const [assets, setAssets] = useState([]);
@@ -158,51 +283,65 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
   const [hasNextPage, setHasNextPage] = useState(false);
   const [endCursor, setEndCursor] = useState(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [isRequestingAccess, setIsRequestingAccess] = useState(false);
+  const [scrubLabel, setScrubLabel] = useState('');
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const isClosingRef = useRef(false);
+  const requestingPermissionRef = useRef(false);
+  const gridListRef = useRef(null);
+  const scrubTrackHeightRef = useRef(1);
+  const scrubLabelOpacity = useSharedValue(0);
+  const scrubThumbY = useSharedValue(0);
 
-  // Animation values for iOS Quick Look photo preview
-  const previewScaleAnim = useRef(new Animated.Value(0.92)).current;
-  const previewOpacityAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    maxHSv.set(maxH);
+    collapsedHSv.set(collapsedH);
+  }, [collapsedH, collapsedHSv, maxH, maxHSv]);
+
+  const syncExpanded = useCallback((expanded) => {
+    setIsExpanded(expanded);
+  }, []);
+
+  const clearClosingFlag = useCallback(() => {
+    isClosingRef.current = false;
+    closingSv.set(0);
+  }, [closingSv]);
+
+  const handleClosed = useCallback(() => {
+    isClosingRef.current = false;
+    closingSv.set(0);
+    setIsExpanded(false);
+    onClose?.();
+  }, [closingSv, onClose]);
 
   const expandSheet = useCallback(() => {
-    setIsExpanded(true);
-    Animated.timing(sheetHeightAnim, {
-      toValue: EXPANDED_HEIGHT + bottomInset,
-      duration: 320,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start(() => {
-      currentHeightRef.current = EXPANDED_HEIGHT + bottomInset;
-    });
-  }, [EXPANDED_HEIGHT, bottomInset, sheetHeightAnim]);
+    isClosingRef.current = false;
+    closingSv.set(0);
+    visibleH.set(withTiming(maxH, { duration: 320, easing: EASE_OUT }, (finished) => {
+      if (finished) scheduleOnRN(syncExpanded, true);
+    }));
+  }, [closingSv, maxH, syncExpanded, visibleH]);
 
   const collapseSheet = useCallback(() => {
-    setIsExpanded(false);
-    Animated.timing(sheetHeightAnim, {
-      toValue: COLLAPSED_HEIGHT + bottomInset,
-      duration: 300,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start(() => {
-      currentHeightRef.current = COLLAPSED_HEIGHT + bottomInset;
-    });
-  }, [bottomInset, sheetHeightAnim]);
-
-  const isClosingRef = useRef(false);
+    isClosingRef.current = false;
+    closingSv.set(0);
+    visibleH.set(withTiming(collapsedH, { duration: 300, easing: EASE_OUT }, (finished) => {
+      if (finished) scheduleOnRN(syncExpanded, false);
+    }));
+  }, [collapsedH, closingSv, syncExpanded, visibleH]);
 
   const closeSheetWithAnimation = useCallback(() => {
-    if (isClosingRef.current) return;
+    if (isClosingRef.current || closingSv.get()) return;
     isClosingRef.current = true;
-    setIsExpanded(false);
-    Animated.timing(sheetHeightAnim, {
-      toValue: 0,
-      duration: 250,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: false,
-    }).start(() => {
-      isClosingRef.current = false;
-      onClose?.();
-    });
-  }, [sheetHeightAnim, onClose]);
+    closingSv.set(1);
+    visibleH.set(withTiming(0, { duration: 250, easing: EASE_OUT }, (finished) => {
+      if (finished) {
+        scheduleOnRN(handleClosed);
+      } else {
+        scheduleOnRN(clearClosingFlag);
+      }
+    }));
+  }, [clearClosingFlag, closingSv, handleClosed, visibleH]);
 
   useImperativeHandle(ref, () => ({
     close: closeSheetWithAnimation,
@@ -220,37 +359,24 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
 
   const handleOpenPreview = useCallback((item) => {
     setPreviewPhoto(item);
-    Animated.parallel([
-      Animated.spring(previewScaleAnim, {
-        toValue: 1,
-        damping: 22,
-        stiffness: 280,
-        useNativeDriver: true,
-      }),
-      Animated.timing(previewOpacityAnim, {
-        toValue: 1,
-        duration: 180,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [previewScaleAnim, previewOpacityAnim]);
+    cancelAnimation(previewScale);
+    cancelAnimation(previewOpacity);
+    previewScale.set(0.92);
+    previewOpacity.set(0);
+    previewScale.set(withSpring(1, { duration: 300, dampingRatio: 0.8 }));
+    previewOpacity.set(withTiming(1, { duration: 180, easing: EASE_OUT }));
+  }, [previewOpacity, previewScale]);
+
+  const clearPreviewPhoto = useCallback(() => {
+    setPreviewPhoto(null);
+  }, []);
 
   const handleClosePreview = useCallback(() => {
-    Animated.parallel([
-      Animated.timing(previewScaleAnim, {
-        toValue: 0.92,
-        duration: 140,
-        useNativeDriver: true,
-      }),
-      Animated.timing(previewOpacityAnim, {
-        toValue: 0,
-        duration: 140,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      setPreviewPhoto(null);
-    });
-  }, [previewScaleAnim, previewOpacityAnim]);
+    previewScale.set(withTiming(0.92, { duration: 140, easing: EASE_OUT }));
+    previewOpacity.set(withTiming(0, { duration: 140, easing: EASE_OUT }, (finished) => {
+      if (finished) scheduleOnRN(clearPreviewPhoto);
+    }));
+  }, [clearPreviewPhoto, previewOpacity, previewScale]);
 
   // Determine dark mode
   const isDark =
@@ -267,121 +393,191 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
   useEffect(() => {
     if (isOpen) {
       isClosingRef.current = false;
+      closingSv.set(0);
       setSelectedAssets([]);
       setIsSending(false);
       setPreviewPhoto(null);
       setShowAlbumPicker(false);
       setIsExpanded(false);
-      sheetHeightAnim.setValue(0);
-      currentHeightRef.current = 0;
-      Animated.timing(sheetHeightAnim, {
-        toValue: COLLAPSED_HEIGHT + bottomInset,
-        duration: 260,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: false,
-      }).start(() => {
-        currentHeightRef.current = COLLAPSED_HEIGHT + bottomInset;
-      });
+      cancelAnimation(visibleH);
+      visibleH.set(0);
+      visibleH.set(withTiming(collapsedH, { duration: 260, easing: EASE_OUT }));
     }
-  }, [isOpen, bottomInset, sheetHeightAnim]);
+  }, [collapsedH, closingSv, isOpen, visibleH]);
 
-  // PanResponder on top bar: smoothly slides gradually to any height, flicks to expand/collapse/close, tap to toggle
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gestureState) => {
-        return Math.abs(gestureState.dy) > 4;
-      },
-      onPanResponderGrant: () => {
-        startHeightRef.current = currentHeightRef.current;
-      },
-      onPanResponderMove: (_, gestureState) => {
-        // dy < 0: dragging up (growing)
-        // dy > 0: dragging down (shrinking)
-        const targetHeight = startHeightRef.current - gestureState.dy;
-        const maxH = EXPANDED_HEIGHT + bottomInset + 12;
-        const minH = 0;
-        const clamped = Math.min(Math.max(targetHeight, minH), maxH);
-        currentHeightRef.current = clamped;
-        sheetHeightAnim.setValue(clamped);
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        const isTap = Math.abs(gestureState.dx) < 6 && Math.abs(gestureState.dy) < 6;
-        if (isTap) {
-          toggleExpand();
-          return;
-        }
-
-        const totalCollapsed = COLLAPSED_HEIGHT + bottomInset;
-        const totalExpanded = EXPANDED_HEIGHT + bottomInset;
-        const finalHeight = currentHeightRef.current;
-
-        // 1. High-velocity flicks
-        if (gestureState.vy < -0.45) {
-          expandSheet();
-          return;
-        }
-        if (gestureState.vy > 0.55) {
-          if (finalHeight > totalCollapsed + 80) {
-            collapseSheet();
-          } else {
-            closeSheetWithAnimation();
-          }
-          return;
-        }
-
-        // 2. Below collapsed threshold -> close or snap back to collapsed
-        if (finalHeight < totalCollapsed) {
-          if (finalHeight < totalCollapsed - 40) {
-            closeSheetWithAnimation();
-          } else {
-            collapseSheet();
-          }
-          return;
-        }
-
-        // 3. Near top expanded (within 40px):
-        if (finalHeight >= totalExpanded - 40) {
-          expandSheet();
-          return;
-        }
-
-        // 4. Near bottom collapsed (within 35px):
-        if (finalHeight <= totalCollapsed + 35) {
-          collapseSheet();
-          return;
-        }
-
-        // In between: RETAIN THE EXACT HEIGHT USER DRAGGED TO!
-        // This gives full freedom to smoothly slide to any intermediate height ("ค่อย ๆ เลื่อนได้")!
-        setIsExpanded(finalHeight > (totalCollapsed + totalExpanded) / 2);
-        currentHeightRef.current = finalHeight;
-      },
+  const panGesture = useMemo(() => Gesture.Pan()
+    .activeOffsetY([-4, 4])
+    .onStart(() => {
+      cancelAnimation(visibleH);
+      closingSv.set(0);
+      dragStartH.set(visibleH.get());
     })
-  ).current;
+    .onUpdate((event) => {
+      const next = dragStartH.get() - event.translationY;
+      visibleH.set(rubberbandVisibleH(next, maxHSv.get(), collapsedHSv.get()));
+    })
+    .onEnd((event) => {
+      const collapsed = collapsedHSv.get();
+      const max = maxHSv.get();
+      const current = visibleH.get();
+      const projectedH = current - project(event.velocityY);
+      const springVel = -event.velocityY;
 
-  // Load photos from device MediaLibrary
-  const loadDevicePhotos = useCallback(async () => {
+      const springTo = (toH, expanded) => {
+        'worklet';
+        if (toH <= 0) {
+          if (closingSv.get()) return;
+          closingSv.set(1);
+        }
+        visibleH.set(withSpring(toH, { duration: 300, dampingRatio: 0.8, velocity: springVel }, (finished) => {
+          if (!finished) {
+            if (toH <= 0) closingSv.set(0);
+            return;
+          }
+          if (toH <= 0) {
+            scheduleOnRN(handleClosed);
+          } else {
+            scheduleOnRN(syncExpanded, expanded);
+          }
+        }));
+      };
+
+      const isTap = Math.abs(event.translationX) < 6 && Math.abs(event.translationY) < 6;
+      if (isTap) {
+        if (current > (collapsed + max) / 2) {
+          springTo(collapsed, false);
+        } else {
+          springTo(max, true);
+        }
+        return;
+      }
+
+      // 1. High-velocity flicks (Reanimated velocityY is px/s; old PanResponder vy ≈ /1000)
+      if (event.velocityY < -450) {
+        springTo(max, true);
+        return;
+      }
+      if (event.velocityY > 550) {
+        if (current > collapsed + 80) {
+          springTo(collapsed, false);
+        } else {
+          springTo(0, false);
+        }
+        return;
+      }
+      if (projectedH >= max && event.velocityY <= 0) {
+        springTo(max, true);
+        return;
+      }
+
+      // 2. Below collapsed threshold -> close or snap back to collapsed
+      if (current < collapsed) {
+        if (current < collapsed - 40) {
+          springTo(0, false);
+        } else {
+          springTo(collapsed, false);
+        }
+        return;
+      }
+
+      // 3. Near top expanded (within 40px)
+      if (current >= max - 40) {
+        springTo(max, true);
+        return;
+      }
+
+      // 4. Near bottom collapsed (within 35px)
+      if (current <= collapsed + 35) {
+        springTo(collapsed, false);
+        return;
+      }
+
+      // In between: retain the exact height the user dragged to
+      const retained = Math.min(Math.max(current, 0), max);
+      if (retained !== current) {
+        springTo(retained, retained > (collapsed + max) / 2);
+      } else {
+        scheduleOnRN(syncExpanded, current > (collapsed + max) / 2);
+      }
+    }), [
+    collapsedHSv,
+    closingSv,
+    dragStartH,
+    handleClosed,
+    maxHSv,
+    syncExpanded,
+    visibleH,
+  ]);
+
+  const spacerStyle = useAnimatedStyle(() => ({
+    height: interpolate(
+      visibleH.get(),
+      [0, collapsedHSv.get()],
+      [0, collapsedHSv.get()],
+      Extrapolation.CLAMP,
+    ),
+  }));
+
+  const sheetStyle = useAnimatedStyle(() => ({
+    height: Math.max(visibleH.get(), 0),
+  }));
+
+  const backdropStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(
+      visibleH.get(),
+      [collapsedHSv.get(), maxHSv.get()],
+      [0, 0.45],
+      Extrapolation.CLAMP,
+    ),
+  }));
+
+  const sendBarStyle = useAnimatedStyle(() => ({
+    bottom: 0,
+  }));
+
+  const previewCardStyle = useAnimatedStyle(() => ({
+    opacity: previewOpacity.get(),
+    transform: [{ scale: previewScale.get() }],
+  }));
+
+  // Load photos from device MediaLibrary.
+  // Pass true to show the system permission prompt; opening the sheet only checks current status
+  // so the prompt appears when the user taps Allow (and is not swallowed on first paint).
+  const loadDevicePhotos = useCallback(async (shouldRequest = false) => {
     try {
       setLoading(true);
-      const requestedMediaTypes = Platform.OS === 'android' ? ['photo', 'video'] : undefined;
-      let perm;
-      perm = await MediaLibrary.getPermissionsAsync(false, requestedMediaTypes);
-      if (perm.status !== 'granted' && perm.canAskAgain !== false) {
-        perm = await MediaLibrary.requestPermissionsAsync(false, requestedMediaTypes);
+      const androidAccess = await getAndroidMediaAccess();
+      let perm = await getExpoLibraryPermission(shouldRequest);
+      let hasAccess = hasLibraryAccess(perm, androidAccess);
+      let currentPrivileges = !hasAccess
+        ? 'none'
+        : (perm.accessPrivileges === 'limited' || androidAccess?.privileges === 'limited' ? 'limited' : 'all');
+      const queryMediaTypes = mediaTypesForAccess(androidAccess);
+
+      if (!hasAccess && Platform.OS === 'android') {
+        try {
+          const probe = await MediaLibrary.getAssetsAsync({
+            first: 1,
+            mediaType: queryMediaTypes,
+          });
+          if (probe) {
+            hasAccess = true;
+            currentPrivileges = androidAccess?.privileges === 'all' ? 'all' : 'limited';
+            perm = { ...perm, status: 'granted', granted: true, accessPrivileges: currentPrivileges };
+          }
+        } catch (_) {}
       }
-      setPermissionStatus(perm.status);
+
+      setPermissionStatus(hasAccess ? 'granted' : (perm.status || 'denied'));
       setCanAskPermission(perm.canAskAgain !== false);
-      const currentPrivileges = perm.accessPrivileges || (perm.status === 'granted' ? 'all' : 'none');
       setAccessPrivileges(currentPrivileges);
 
-      if (perm.status === 'granted' || currentPrivileges === 'limited') {
+      if (hasAccess) {
         const queryOptions = {
           first: 60,
-          mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+          mediaType: queryMediaTypes,
           sortBy: [[MediaLibrary.SortBy.creationTime, false]],
         };
-        // On iOS PhotoKit, querying a specific album ID when permissions are limited throws E_NO_PERMISSIONS
         if (selectedAlbum?.id && selectedAlbum.id !== '__all__' && currentPrivileges !== 'limited') {
           queryOptions.album = selectedAlbum.id;
         }
@@ -405,7 +601,6 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
         setHasNextPage(Boolean(result?.hasNextPage));
         setEndCursor(result?.endCursor || null);
 
-        // Load albums safely (includeSmartAlbums only on iOS; keep Android albums with undefined assetCount)
         try {
           let albumList = [];
           try {
@@ -413,7 +608,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
           } catch (_) {
             try {
               albumList = await MediaLibrary.getAlbumsAsync();
-        } catch (_) {}
+            } catch (_) {}
           }
           const validAlbums = (albumList || []).filter((a) => a && a.title && (a.assetCount === undefined || a.assetCount === null || a.assetCount > 0));
           setAlbums(validAlbums);
@@ -439,7 +634,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
       const queryOptions = {
         first: 60,
         after: endCursor,
-        mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+        mediaType: mediaTypesForAccess(await getAndroidMediaAccess()),
         sortBy: [[MediaLibrary.SortBy.creationTime, false]],
       };
       if (selectedAlbum?.id && selectedAlbum.id !== '__all__' && accessPrivileges !== 'limited') {
@@ -468,29 +663,75 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
     }
   }, [hasNextPage, loadingMore, loading, endCursor, selectedAlbum, accessPrivileges]);
 
-  // Open iOS/Android Photo Picker to select more photos if in limited mode
   const handleManageLimitedPhotos = useCallback(async () => {
     try {
+      if (typeof MediaLibrary.presentPermissionsPickerAsync === 'function') {
+        await MediaLibrary.presentPermissionsPickerAsync(['photo', 'video']);
+        await loadDevicePhotos(false);
+        return;
+      }
       if (Platform.OS === 'android') {
         onClose?.();
         setTimeout(() => onSelectLibrary?.(), 100);
         return;
       }
-      if (typeof MediaLibrary.presentPermissionsPickerAsync === 'function') {
-        await MediaLibrary.presentPermissionsPickerAsync(['photo', 'video']);
-        loadDevicePhotos();
-      } else {
-        Linking.openSettings();
-      }
+      Linking.openSettings();
     } catch (_) {
       Linking.openSettings();
     }
   }, [loadDevicePhotos, onClose, onSelectLibrary]);
 
+  const handleRequestMediaAccess = useCallback(async () => {
+    if (requestingPermissionRef.current) return;
+    requestingPermissionRef.current = true;
+    setIsRequestingAccess(true);
+    try {
+      if (Platform.OS === 'android') {
+        const api = Number(Platform.Version);
+        if (api >= 33) {
+          try {
+            await PermissionsAndroid.requestMultiple([
+              'android.permission.READ_MEDIA_IMAGES',
+              'android.permission.READ_MEDIA_VIDEO',
+            ]);
+          } catch (requestErr) {
+            console.warn('[ChatMediaPickerSheet] native media request failed:', requestErr);
+            try {
+              await PermissionsAndroid.request('android.permission.READ_MEDIA_VIDEO');
+            } catch (_) {}
+          }
+        } else {
+          await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      } else {
+        await MediaLibrary.requestPermissionsAsync(false);
+      }
+    } catch (err) {
+      console.warn('[ChatMediaPickerSheet] request media access failed:', err);
+    }
+    try {
+      await loadDevicePhotos(false);
+    } catch (err) {
+      console.warn('[ChatMediaPickerSheet] reload after media access failed:', err);
+    } finally {
+      requestingPermissionRef.current = false;
+      setIsRequestingAccess(false);
+    }
+  }, [loadDevicePhotos]);
+
   useEffect(() => {
     if (isOpen) {
       loadDevicePhotos();
     }
+  }, [isOpen, loadDevicePhotos]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') loadDevicePhotos(false);
+    });
+    return () => sub.remove();
   }, [isOpen, loadDevicePhotos]);
 
   // Toggle selection (support multiple photos up to 10)
@@ -501,11 +742,11 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
         return prev.filter((a) => a.id !== item.id);
       }
       if (prev.length > 0 && isVideoAsset(prev[0]) !== isVideoAsset(item)) {
-        Alert.alert('เลือกสื่อทีละประเภท', 'กรุณาเลือกรูปภาพหรือวิดีโออย่างใดอย่างหนึ่งต่อครั้ง');
+        showAlert('เลือกสื่อทีละประเภท', 'กรุณาเลือกรูปภาพหรือวิดีโออย่างใดอย่างหนึ่งต่อครั้ง', { tone: 'warning' });
         return prev;
       }
       if (prev.length >= 10) {
-        Alert.alert('เลือกได้สูงสุด 10 รายการ', 'คุณสามารถส่งรูปภาพหรือวิดีโอพร้อมกันได้สูงสุด 10 รายการ');
+        showAlert('เลือกได้สูงสุด 10 รายการ', 'คุณสามารถส่งรูปภาพหรือวิดีโอพร้อมกันได้สูงสุด 10 รายการ', { tone: 'warning' });
         return prev;
       }
       return [...prev, item];
@@ -585,7 +826,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
   const handleEditSelected = useCallback(async () => {
     if (!selectedAssets.length) return;
     if (isVideoAsset(selectedAssets[0])) {
-      Alert.alert('แก้ไขรูปภาพไม่ได้', 'เครื่องมือแก้ไขนี้ใช้ได้กับรูปภาพเท่านั้น');
+      showAlert('แก้ไขรูปภาพไม่ได้', 'เครื่องมือแก้ไขนี้ใช้ได้กับรูปภาพเท่านั้น', { tone: 'danger' });
       return;
     }
     try {
@@ -653,8 +894,6 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
     }
   }, [handleClosePreview, resolveAssetToFileUri, onClose, onOpenEditor]);
 
-  if (!isOpen) return null;
-
   const cardBg = colors?.card || (isDark ? '#181A20' : '#FFFFFF');
   const line = colors?.line || (isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)');
   const ink = colors?.ink || (isDark ? '#F8FAFC' : '#0F172A');
@@ -679,6 +918,122 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
       ...safeAssets,
     ];
   }, [safeAssets]);
+
+  // Month marks for the right-edge fast scrubber (Photos-style).
+  const monthMarks = useMemo(() => {
+    const marks = [];
+    safeAssets.forEach((asset, assetIndex) => {
+      const timestamp = getAssetTimestamp(asset);
+      if (!timestamp) return;
+      const date = new Date(timestamp);
+      const key = `${date.getFullYear()}-${date.getMonth()}`;
+      if (marks.length && marks[marks.length - 1].key === key) return;
+      marks.push({
+        key,
+        label: formatAssetMonthLabel(timestamp),
+        gridIndex: assetIndex + 2,
+        assetIndex,
+      });
+    });
+    return marks;
+  }, [safeAssets]);
+
+  const getGridItemLayout = useCallback((_data, index) => {
+    const row = Math.floor(index / NUM_COLUMNS);
+    return {
+      length: GRID_ROW_HEIGHT,
+      offset: SPACING + row * GRID_ROW_HEIGHT,
+      index,
+    };
+  }, []);
+
+  const scrollGridToIndex = useCallback((gridIndex) => {
+    const list = gridListRef.current;
+    if (!list || gridIndex < 0) return;
+    try {
+      list.scrollToIndex({
+        index: Math.min(gridIndex, Math.max(gridData.length - 1, 0)),
+        animated: false,
+        viewPosition: 0,
+      });
+    } catch (_) {
+      const row = Math.floor(gridIndex / NUM_COLUMNS);
+      list.scrollToOffset?.({
+        offset: Math.max(0, SPACING + row * GRID_ROW_HEIGHT),
+        animated: false,
+      });
+    }
+  }, [gridData.length]);
+
+  const updateScrubFromY = useCallback((localY, trackHeight) => {
+    const height = Math.max(trackHeight || scrubTrackHeightRef.current || 1, 1);
+    const clampedY = Math.min(Math.max(localY, 0), height);
+    scrubThumbY.set(clampedY);
+    const progress = height > 0 ? clampedY / height : 0;
+
+    if (!monthMarks.length || !safeAssets.length) {
+      setScrubLabel('');
+      return;
+    }
+
+    const markIndex = Math.min(
+      monthMarks.length - 1,
+      Math.max(0, Math.round(progress * (monthMarks.length - 1)))
+    );
+    const mark = monthMarks[markIndex];
+    if (!mark) return;
+    setScrubLabel(mark.label);
+    scrollGridToIndex(mark.gridIndex);
+  }, [monthMarks, safeAssets.length, scrollGridToIndex, scrubThumbY]);
+
+  const beginScrub = useCallback((localY, trackHeight) => {
+    if (!isExpanded) expandSheet();
+    setIsScrubbing(true);
+    scrubLabelOpacity.set(withTiming(1, { duration: 120, easing: EASE_OUT }));
+    updateScrubFromY(localY, trackHeight);
+  }, [expandSheet, isExpanded, scrubLabelOpacity, updateScrubFromY]);
+
+  const endScrub = useCallback(() => {
+    setIsScrubbing(false);
+    scrubLabelOpacity.set(withTiming(0, { duration: 180, easing: EASE_OUT }, (finished) => {
+      if (finished) scheduleOnRN(setScrubLabel, '');
+    }));
+  }, [scrubLabelOpacity]);
+
+  const scrubGesture = useMemo(() => Gesture.Pan()
+    .enabled(!showAlbumPicker)
+    .onTouchesDown((event) => {
+      'worklet';
+      const touch = event.allTouches[0];
+      if (!touch) return;
+      scheduleOnRN(beginScrub, touch.y, scrubTrackHeightRef.current);
+    })
+    .onUpdate((event) => {
+      scheduleOnRN(updateScrubFromY, event.y, scrubTrackHeightRef.current);
+    })
+    .onFinalize(() => {
+      scheduleOnRN(endScrub);
+    }), [beginScrub, endScrub, showAlbumPicker, updateScrubFromY]);
+
+  const scrubLabelStyle = useAnimatedStyle(() => ({
+    opacity: scrubLabelOpacity.get(),
+    transform: [
+      { translateY: Math.max(scrubThumbY.get() - 18, 0) },
+      { scale: interpolate(scrubLabelOpacity.get(), [0, 1], [0.92, 1], Extrapolation.CLAMP) },
+    ],
+  }));
+
+  const handleGridScrollBeginDrag = useCallback(() => {
+    if (!isExpanded) expandSheet();
+  }, [expandSheet, isExpanded]);
+
+  const handleScrollToIndexFailed = useCallback((info) => {
+    const row = Math.floor((info?.index || 0) / NUM_COLUMNS);
+    gridListRef.current?.scrollToOffset?.({
+      offset: Math.max(0, SPACING + row * GRID_ROW_HEIGHT),
+      animated: false,
+    });
+  }, []);
 
   const renderGridItem = useCallback(({ item, index }) => {
     if (!item) return null;
@@ -813,52 +1168,40 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
     );
   }, [cardTileBg, primary, ink, isDark, selectedAssets, handleOpenPreview, handleToggleSelect, onClose, onSelectCamera, onSelectLibrary]);
 
-  const layoutSpacerHeight = sheetHeightAnim.interpolate({
-    inputRange: [0, COLLAPSED_HEIGHT + bottomInset, EXPANDED_HEIGHT + bottomInset],
-    outputRange: [0, COLLAPSED_HEIGHT + bottomInset, COLLAPSED_HEIGHT + bottomInset],
-    extrapolate: 'clamp',
-  });
+  if (!isOpen) return null;
 
   const content = (
-    <View style={styles.sheetContainerWrapper}>
+    <View
+      collapsable={false}
+      pointerEvents="box-none"
+      style={overlay ? styles.overlayHost : styles.sheetContainerWrapper}
+    >
       {/* Dim backdrop when expanding full screen */}
       <Animated.View
-        pointerEvents={isExpanded ? 'auto' : 'none'}
-        style={[
-          styles.expandBackdrop,
-          {
-            opacity: sheetHeightAnim.interpolate({
-              inputRange: [COLLAPSED_HEIGHT + bottomInset, EXPANDED_HEIGHT + bottomInset],
-              outputRange: [0, 0.45],
-              extrapolate: 'clamp',
-            }),
-          },
-        ]}
-      >
-        <Pressable
-          accessibilityLabel="ย่อหน้าต่างเลือกรูปภาพ"
-          onPress={collapseSheet}
-          style={StyleSheet.absoluteFill}
-        />
-      </Animated.View>
+        pointerEvents="none"
+        style={[styles.expandBackdrop, backdropStyle]}
+      />
 
       {/* Dynamic Animated Spacer maintaining bottom padding for chat messages & moving input bar in 1:1 sync */}
-      <Animated.View style={{ height: layoutSpacerHeight }} />
+      {!overlay ? <Animated.View style={spacerStyle} /> : null}
 
       {/* Main Animated Bottom Sheet */}
       <Animated.View
+        pointerEvents="auto"
         style={[
           styles.drawerContainer,
           {
             backgroundColor: cardBg,
-            height: sheetHeightAnim,
+            overflow: 'hidden',
             paddingBottom: bottomInset,
             borderTopColor: line,
           },
+          sheetStyle,
         ]}
       >
         {/* Draggable Top Area (both Grabber and Header can be gradually slid up/down) */}
-        <View {...panResponder.panHandlers} style={styles.topDraggableArea}>
+        <GestureDetector gesture={panGesture}>
+        <View collapsable={false} style={styles.topDraggableArea}>
           {/* iOS Top Grabber Handle */}
           <View
             accessibilityLabel={isExpanded ? "ลากหรือแตะเพื่อย่อลง" : "ลากหรือแตะเพื่อขยายเต็มจอ"}
@@ -878,7 +1221,12 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
             <Pressable
               accessibilityLabel="เลือกอัลบัมรูปภาพ"
               hitSlop={6}
-              onPress={() => setShowAlbumPicker((prev) => !prev)}
+              onPress={() => {
+                setIsScrubbing(false);
+                setScrubLabel('');
+                scrubLabelOpacity.set(0);
+                setShowAlbumPicker((prev) => !prev);
+              }}
               style={({ pressed }) => [
                 styles.albumDropdownTrigger,
                 {
@@ -970,6 +1318,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
             </View>
           </View>
         </View>
+        </GestureDetector>
 
       {/* iOS Frosted Glass Album Dropdown Menu (Scrollable) */}
       {showAlbumPicker && (
@@ -1201,25 +1550,35 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
       )}
 
       {/* Content: Photo Grid or Permission Banner (Only block on iOS where photo access is mandatory to view) */}
-      {Platform.OS === 'android' && (
-        permissionStatus === 'undetermined' ||
-        permissionStatus === 'denied' ||
-        accessPrivileges === 'none'
-      ) ? (
-        <View style={styles.permissionContainer}>
+      {Platform.OS === 'android' && permissionStatus !== 'granted' && accessPrivileges !== 'limited' && accessPrivileges !== 'all' ? (
+        <View collapsable={false} style={styles.permissionContainer}>
           <View style={[styles.permissionIconCircle, { backgroundColor: 'rgba(59, 90, 254, 0.12)' }]}>
             <FeatureIcon color={primary} name="photo.on.rectangle" size={28} />
           </View>
           <Text style={[styles.permissionTitle, { color: ink }]}>เลือกสื่อจากอัลบั้ม</Text>
           <Text style={[styles.permissionSub, { color: inkSoft }]}>อนุญาตเพื่อแสดงรูปภาพและวิดีโอใน grid ของแอป และเลือกส่งได้ทันที</Text>
+          <View collapsable={false} style={{ width: '100%', zIndex: 4 }}>
           <Pressable
+            accessibilityRole="button"
             accessibilityLabel={canAskPermission ? 'อนุญาตรูปภาพและวิดีโอ' : 'เปิดการตั้งค่าสิทธิ์รูปภาพและวิดีโอ'}
-            onPress={() => canAskPermission ? loadDevicePhotos() : Linking.openSettings()}
-            style={[styles.permissionBtn, { backgroundColor: primary }]}
+            accessible
+            android_ripple={{ color: 'rgba(255,255,255,0.22)' }}
+            disabled={isRequestingAccess}
+            onPress={handleRequestMediaAccess}
+            style={({ pressed }) => [
+              styles.permissionBtn,
+              { backgroundColor: primary, opacity: pressed || isRequestingAccess ? 0.82 : 1 },
+            ]}
           >
-            <Text style={styles.permissionBtnText}>{canAskPermission ? 'อนุญาตรูปภาพและวิดีโอ' : 'เปิดการตั้งค่าสิทธิ์'}</Text>
+            {isRequestingAccess ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <Text style={styles.permissionBtnText}>{canAskPermission ? 'อนุญาตรูปภาพและวิดีโอ' : 'เปิดการตั้งค่าสิทธิ์'}</Text>
+            )}
           </Pressable>
+          </View>
           <Pressable
+            accessibilityRole="button"
             accessibilityLabel="เลือกสื่อผ่านตัวเลือกระบบ"
             onPress={() => { onClose?.(); setTimeout(() => onSelectLibrary?.(), 150); }}
             style={[styles.secondaryBtn, { borderColor: line }]}
@@ -1228,7 +1587,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
           </Pressable>
         </View>
       ) : Platform.OS === 'ios' && permissionStatus === 'denied' ? (
-        <View style={styles.permissionContainer}>
+        <View collapsable={false} style={styles.permissionContainer}>
           <View style={[styles.permissionIconCircle, { backgroundColor: 'rgba(239, 68, 68, 0.12)' }]}>
             <FeatureIcon color="#EF4444" name="photo" size={28} />
           </View>
@@ -1239,8 +1598,13 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
             เปิดสิทธิ์เพื่อให้แสดงภาพถ่ายล่าสุดในเครื่อง และส่งรูปได้ทันทีในห้องแชต
           </Text>
           <Pressable
-            onPress={() => canAskPermission ? loadDevicePhotos() : Linking.openSettings()}
-            style={[styles.permissionBtn, { backgroundColor: primary }]}
+            accessibilityRole="button"
+            android_ripple={{ color: 'rgba(255,255,255,0.22)' }}
+            onPress={handleRequestMediaAccess}
+            style={({ pressed }) => [
+              styles.permissionBtn,
+              { backgroundColor: primary, opacity: pressed ? 0.82 : 1 },
+            ]}
           >
             <Text style={styles.permissionBtnText}>{canAskPermission ? 'อนุญาตการเข้าถึง' : 'เปิดการตั้งค่าสิทธิ์'}</Text>
           </Pressable>
@@ -1266,43 +1630,95 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
           onRetry={loadDevicePhotos}
           primary={primary}
         >
-          <FlatList
-            key={`media-picker-grid-${NUM_COLUMNS}`}
-            style={styles.gridFlatList}
-            contentContainerStyle={[
-              styles.gridContentContainer,
-              {
-                paddingHorizontal: GRID_HORIZONTAL_PADDING,
-                paddingBottom: selectedAssets.length > 0 ? 64 + bottomInset : bottomInset + 8,
-              },
-            ]}
-            data={gridData}
-            extraData={selectedAssets}
-            initialNumToRender={20}
-            keyExtractor={(item, index) => (item?.id ? String(item.id) : (item?.uri ? String(item.uri) : `picker-item-${index}`))}
-            maxToRenderPerBatch={24}
-            numColumns={NUM_COLUMNS}
-            onEndReached={handleLoadMore}
-            onEndReachedThreshold={0.5}
-            renderItem={renderGridItem}
-            showsVerticalScrollIndicator={false}
-            windowSize={7}
-            ListFooterComponent={
-              loadingMore ? (
-                <View style={styles.gridFooterLoader}>
-                  <ActivityIndicator color={primary} size="small" />
+          <View style={styles.gridHost}>
+            <FlatList
+              ref={gridListRef}
+              key={`media-picker-grid-${NUM_COLUMNS}`}
+              style={styles.gridFlatList}
+              contentContainerStyle={[
+                styles.gridContentContainer,
+                {
+                  paddingHorizontal: GRID_HORIZONTAL_PADDING,
+                  paddingBottom: selectedAssets.length > 0 ? 64 + bottomInset : bottomInset + 8,
+                },
+              ]}
+              data={gridData}
+              extraData={selectedAssets}
+              getItemLayout={getGridItemLayout}
+              initialNumToRender={24}
+              keyExtractor={(item, index) => (item?.id ? String(item.id) : (item?.uri ? String(item.uri) : `picker-item-${index}`))}
+              maxToRenderPerBatch={24}
+              nestedScrollEnabled
+              numColumns={NUM_COLUMNS}
+              onEndReached={handleLoadMore}
+              onEndReachedThreshold={0.5}
+              onScrollBeginDrag={handleGridScrollBeginDrag}
+              onScrollToIndexFailed={handleScrollToIndexFailed}
+              renderItem={renderGridItem}
+              showsVerticalScrollIndicator={false}
+              windowSize={9}
+              ListFooterComponent={
+                loadingMore ? (
+                  <View style={styles.gridFooterLoader}>
+                    <ActivityIndicator color={primary} size="small" />
+                  </View>
+                ) : null
+              }
+            />
+
+            {monthMarks.length > 1 && !showAlbumPicker ? (
+              <GestureDetector gesture={scrubGesture}>
+                <View
+                  accessibilityLabel="เลื่อนค้างเพื่อดูช่วงเดือน"
+                  accessibilityRole="adjustable"
+                  hitSlop={8}
+                  onLayout={(event) => {
+                    scrubTrackHeightRef.current = Math.max(event.nativeEvent.layout.height, 1);
+                  }}
+                  style={styles.scrubberTrack}
+                >
+                  <View
+                    pointerEvents="none"
+                    style={[
+                      styles.scrubberRail,
+                      {
+                        backgroundColor: isDark
+                          ? 'rgba(255, 255, 255, 0.16)'
+                          : 'rgba(15, 23, 42, 0.12)',
+                      },
+                    ]}
+                  />
+                  {isScrubbing ? (
+                    <Animated.View
+                      pointerEvents="none"
+                      style={[
+                        styles.scrubberLabel,
+                        {
+                          backgroundColor: isDark
+                            ? 'rgba(24, 27, 36, 0.94)'
+                            : 'rgba(15, 23, 42, 0.88)',
+                        },
+                        scrubLabelStyle,
+                      ]}
+                    >
+                      <Text numberOfLines={1} style={styles.scrubberLabelText}>
+                        {scrubLabel || monthMarks[0]?.label || ''}
+                      </Text>
+                    </Animated.View>
+                  ) : null}
                 </View>
-              ) : null
-            }
-          />
+              </GestureDetector>
+            ) : null}
+          </View>
         </MediaPickerListErrorBoundary>
       )}
 
       {/* Bottom Send Floating iOS Glass Bar */}
       {selectedAssets.length > 0 && (
-        <View
+        <Animated.View
           style={[
             styles.bottomSendBar,
+            sendBarStyle,
             {
               borderTopColor: glassBorder,
               paddingBottom: Math.max(bottomInset, 8),
@@ -1385,7 +1801,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
               )}
             </Pressable>
           </View>
-        </View>
+        </Animated.View>
       )}
 
       {/* Fullscreen Long-Press Photo Preview Modal (iOS Quick Look / Peek) */}
@@ -1420,13 +1836,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
           {/* Centered Floating Preview Card */}
           {previewPhoto && (
             <Animated.View
-              style={[
-                styles.previewCardContainer,
-                {
-                  opacity: previewOpacityAnim,
-                  transform: [{ scale: previewScaleAnim }],
-                },
-              ]}
+              style={[styles.previewCardContainer, previewCardStyle]}
             >
               {/* Photo View with Rounded Corners */}
               <View
@@ -1594,6 +2004,10 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
 export default ChatMediaPickerSheet;
 
 const styles = StyleSheet.create({
+  overlayHost: {
+    ...StyleSheet.absoluteFill,
+    zIndex: 40,
+  },
   sheetContainerWrapper: {
     position: 'relative',
     width: '100%',
@@ -1604,8 +2018,8 @@ const styles = StyleSheet.create({
     left: 0,
     position: 'absolute',
     right: 0,
-    top: -SCREEN_HEIGHT,
-    zIndex: 9998,
+    top: 0,
+    zIndex: 0,
   },
   drawerContainer: {
     borderTopLeftRadius: 18,
@@ -1613,6 +2027,7 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     bottom: 0,
     elevation: 16,
+    flexDirection: 'column',
     left: 0,
     overflow: 'hidden',
     position: 'absolute',
@@ -1629,7 +2044,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
   },
   modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
   },
   topDraggableArea: {
@@ -1718,7 +2133,7 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.96 }],
   },
   dropdownBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 90,
   },
   dropdownCard: {
@@ -1799,6 +2214,52 @@ const styles = StyleSheet.create({
   },
   gridFlatList: {
     flex: 1,
+    minHeight: 0,
+  },
+  gridHost: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
+    position: 'relative',
+    width: '100%',
+  },
+  scrubberTrack: {
+    bottom: 8,
+    justifyContent: 'flex-start',
+    overflow: 'visible',
+    position: 'absolute',
+    right: 0,
+    top: 8,
+    width: SCRUBBER_WIDTH,
+    zIndex: 20,
+  },
+  scrubberRail: {
+    alignSelf: 'center',
+    borderRadius: 2,
+    bottom: 12,
+    position: 'absolute',
+    top: 12,
+    width: 3,
+  },
+  scrubberLabel: {
+    alignItems: 'center',
+    borderRadius: 14,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    maxWidth: 140,
+    minWidth: 72,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    position: 'absolute',
+    right: SCRUBBER_WIDTH + 8,
+  },
+  scrubberLabelText: {
+    color: '#FFFFFF',
+    flexShrink: 0,
+    fontSize: 13,
+    fontWeight: '700',
+    includeFontPadding: false,
+    letterSpacing: -0.2,
   },
   gridContentContainer: {
     paddingTop: SPACING,
@@ -1933,7 +2394,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   selectedOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.25)',
   },
   selectCircle: {
@@ -2056,10 +2517,10 @@ const styles = StyleSheet.create({
   },
   permissionContainer: {
     alignItems: 'center',
-    flex: 1,
-    justifyContent: 'center',
     paddingHorizontal: 24,
-    paddingVertical: 20,
+    paddingTop: 16,
+    paddingBottom: 12,
+    width: '100%',
   },
   permissionIconCircle: {
     alignItems: 'center',
@@ -2082,11 +2543,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   permissionBtn: {
-    borderRadius: 20,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    width: '100%',
     alignItems: 'center',
+    borderRadius: 22,
+    elevation: 2,
+    justifyContent: 'center',
+    minHeight: 44,
+    overflow: 'hidden',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    width: '100%',
+    zIndex: 2,
   },
   permissionBtnText: {
     color: '#FFFFFF',
@@ -2095,12 +2561,15 @@ const styles = StyleSheet.create({
   },
   secondaryBtn: {
     alignItems: 'center',
-    borderRadius: 20,
+    borderRadius: 22,
     borderWidth: 1,
+    justifyContent: 'center',
     marginTop: 8,
+    minHeight: 44,
     paddingHorizontal: 20,
-    paddingVertical: 9,
+    paddingVertical: 11,
     width: '100%',
+    zIndex: 2,
   },
   secondaryBtnText: {
     fontSize: 12,

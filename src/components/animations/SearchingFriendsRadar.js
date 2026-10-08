@@ -1,5 +1,6 @@
+import Text from '../AppText';
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import LottieViewSafe from './LottieViewSafe';
 import { RADAR_SEARCH_LOTTIE } from './lottieData';
 import FeatureIcon from '../FeatureIcon';

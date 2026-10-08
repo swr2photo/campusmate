@@ -1,6 +1,23 @@
+import { Button, Text } from '../components/NativeTypography';
+import { font } from '../components/brandFont';
+import RNText from '../components/AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useRemoteImage } from '../utils/useRemoteImage';
-import { Animated, Dimensions, PanResponder, Text as RNText, View, useColorScheme, Image as RNImage } from 'react-native';
+import { getImageRequestUri, useProfileImagePrefetch } from '../utils/useRemoteImage';
+import ExpoImage from '../components/CachedImage';
+import { Dimensions, Linking, Pressable, StyleSheet, View, useColorScheme, Image as RNImage } from 'react-native';
+import Animated, {
+  Easing,
+  Extrapolation,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withDelay,
+  withTiming,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { scheduleOnRN } from 'react-native-worklets';
+import { project } from '../utils/motion';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaskedView from '@react-native-masked-view/masked-view';
@@ -8,6 +25,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
+import { secureDiscoveryConfigured, subscribeSecureProfile } from '../services/secureDiscoveryService';
 import {
   getPublicProfile,
   isProfileReadyForDiscovery,
@@ -15,46 +33,13 @@ import {
   normalizeProfileRecord,
   toSafePublicProfile,
 } from '../services/firestoreService';
-import {
-  Button,
-  HStack,
-  Host,
-  Image,
-  ScrollView,
-  Spacer,
-  Text,
-  VStack,
-  ZStack,
-  RNHostView,
-} from '@expo/ui/swift-ui';
-import {
-  accessibilityLabel,
-  aspectRatio,
-  background,
-  buttonBorderShape,
-  buttonStyle,
-  clipShape,
-  clipped,
-  controlSize,
-  disabled,
-  font,
-  foregroundStyle,
-  frame,
-  labelStyle,
-  lineLimit,
-  offset,
-  padding,
-  resizable,
-  scrollIndicators,
-  shadow,
-  shapes,
-  tint,
-  blur,
-  opacity,
-} from '@expo/ui/swift-ui/modifiers';
-import { useApp } from '../context/AppContext';
+import { HStack, Host, Image, ScrollView, Spacer, VStack, ZStack, RNHostView } from '@expo/ui/swift-ui';
+import { accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, multilineTextAlignment, offset, padding, resizable, scrollIndicators, shadow, shapes, tint } from '@expo/ui/swift-ui/modifiers';
+import { useAppActions, useAppConversations, useAppFeed, useAppProfile } from '../context/AppContext';
 
 import { formatAvailabilitySlots, formatDistance, formatReadableDate, genderLabel, getActivityLabel } from '../utils/formatters';
+import { describeActivityDetails } from '../data/activityCategories';
+import TrackPreviewButton from '../components/TrackPreviewButton';
 
 const { height: screenHeight, width: screenWidth } = Dimensions.get('window');
 const actionButtonWidth = 96;
@@ -76,21 +61,21 @@ const darkPalette = {
   text: '#F7F8FA',
   secondary: '#B6BDC8',
   tertiary: '#7F8896',
-  purple: '#9A8CFF',
-  purpleSoft: 'rgba(154,140,255,0.18)',
+  purple: '#88B5F2',
+  purpleSoft: 'rgba(112,178,255,0.18)',
   coral: '#FF7A6B',
   white: '#FFFFFF',
 };
 
 const lightPalette = {
-  background: '#F6F8FC',
+  background: '#F7F7F8',
   surface: '#FFFFFF',
   surfaceRaised: '#E9EDF4',
-  text: '#10203A',
-  secondary: '#60708A',
+  text: '#25272B',
+  secondary: '#6B7078',
   tertiary: '#8B98AC',
-  purple: '#5B5CE2',
-  purpleSoft: '#EEF0FF',
+  purple: '#2869C7',
+  purpleSoft: '#EEF2F7',
   coral: '#D65454',
   white: '#FFFFFF',
 };
@@ -103,24 +88,43 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const palette = usePalette();
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
-  const { availableProfiles, conversations, dismissProfile, getMeetupStats, matchProfile, pendingIncomingLikes, acceptedIncomingLikes, profile: currentProfile, sendActivityInvite, hasMoreProfiles, isLoadingMoreProfiles, loadMoreProfiles } = useApp();
+  const {
+    acceptedIncomingLikes,
+    availableProfiles,
+    hasMoreProfiles,
+    isLoadingMoreProfiles,
+    outgoingLikes,
+    pendingIncomingLikes,
+  } = useAppFeed();
+  const { conversations } = useAppConversations();
+  const { profile: currentProfile } = useAppProfile();
+  const { dismissProfile, loadMoreProfiles, matchProfile, sendActivityInvite } = useAppActions();
   const [processing, setProcessing] = useState(false);
   const [sessionExcludedIds, setSessionExcludedIds] = useState([]);
-  const [directProfile, setDirectProfile] = useState(null);
-  const translateX = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(0)).current;
-  const cardScale = useRef(new Animated.Value(1)).current;
-  const cardOpacity = useRef(new Animated.Value(1)).current;
+  const [rawDirectProfile, setDirectProfile] = useState(null);
+
+  // Direct profile links follow the same verification requirement as discovery.
+  // Existing chat messages and participant snapshots remain available separately.
+  const directProfileHidden = Boolean(rawDirectProfile)
+    && rawDirectProfile.isFaceVerified !== true;
+  const directProfile = directProfileHidden ? null : rawDirectProfile;
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const cardScale = useSharedValue(1);
+  const cardOpacity = useSharedValue(1);
+  const swipeLock = useSharedValue(0);
   const decisionStarted = useRef(false);
   const decisionInFlight = useRef(false);
   const decisionCandidateId = useRef(null);
   const candidateCache = useRef(new Map());
 
   useEffect(() => {
+    setDirectProfile(null);
     if (!profileId) {
       setDirectProfile(null);
       return;
     }
+    if (secureDiscoveryConfigured()) return subscribeSecureProfile(profileId, setDirectProfile);
     let active = true;
     let serverReadComplete = false;
     try {
@@ -154,37 +158,49 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
 
   const isViewOnly = Boolean(isViewOnlyParam);
 
+  // Everyone this user already decided on: session swipes plus likes that
+  // exist on the server. Feed snapshots hiding those people can lag the like
+  // write, so without this a just-liked card can flash back in briefly.
+  const decidedIds = useMemo(() => {
+    const ids = new Set(sessionExcludedIds);
+    (Array.isArray(outgoingLikes) ? outgoingLikes : []).forEach((like) => {
+      if (like?.id && like.status !== 'rejected' && like.status !== 'removed') ids.add(like.id);
+    });
+    (Array.isArray(acceptedIncomingLikes) ? acceptedIncomingLikes : []).forEach((like) => {
+      if (like?.id) ids.add(like.id);
+    });
+    return ids;
+  }, [acceptedIncomingLikes, outgoingLikes, sessionExcludedIds]);
+
   const candidatePool = useMemo(() => {
     const seenIds = new Set();
-    const excludedIds = new Set(sessionExcludedIds);
     return mergeCandidateProfiles(availableProfiles || [], pendingIncomingLikes || []).filter((item) => {
+      if (item.isFaceVerified !== true) return false;
       const id = item?.id;
-      if (!id || excludedIds.has(id) || seenIds.has(id) || !isProfileReadyForDiscovery(item)) return false;
+      if (!id || decidedIds.has(id) || seenIds.has(id) || !isProfileReadyForDiscovery(item)) return false;
       seenIds.add(id);
       return true;
     });
-  }, [availableProfiles, pendingIncomingLikes, sessionExcludedIds]);
+  }, [availableProfiles, decidedIds, pendingIncomingLikes]);
 
   // Keep the last known pool so a short Firestore refresh cannot leave the
-  // card blank while the decision request is still being completed.
+  // card blank while the decision request is still being completed. Mirror
+  // the pool whenever it has content so people who left discovery are not
+  // kept around only to reappear on the next swipe.
   useEffect(() => {
-    if (isViewOnly) return;
-    candidatePool.forEach((item) => candidateCache.current.set(item.id, item));
+    if (isViewOnly || (!candidatePool.length && !secureDiscoveryConfigured())) return;
+    candidateCache.current = new Map(candidatePool.map((item) => [item.id, item]));
   }, [candidatePool, isViewOnly]);
 
   const candidate = useMemo(() => {
     if (isViewOnly) {
-      const matchedConvo = conversations?.find((c) => c.profileId === profileId || c.participants?.includes(profileId));
-      const fromAvailable = candidatePool.find((item) => item.id === profileId);
-      const fromConversation = matchedConvo?.participantProfiles?.[profileId]
-        ? normalizeProfileRecord(profileId, matchedConvo.participantProfiles[profileId])
-        : null;
-      return mergeCandidateProfiles(fromAvailable, fromConversation, directProfile?.id === profileId ? directProfile : null)[0] || null;
+      // Do not revive a hidden direct profile from an old chat snapshot.
+      return directProfile;
     }
 
     // Keep the profile opened from Home as the first card when it is present.
     const isDecisionExcluded = (id) => (
-      sessionExcludedIds.includes(id)
+      decidedIds.has(id)
       || (decisionInFlight.current && decisionCandidateId.current === id)
     );
     const requestedProfile = profileId && candidatePool.find((item) => (
@@ -211,7 +227,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     }
 
     return null;
-  }, [candidatePool, conversations, directProfile, isViewOnly, processing, profileId, sessionExcludedIds]);
+  }, [candidatePool, conversations, decidedIds, directProfile, isViewOnly, processing, profileId]);
 
   useEffect(() => {
     if (isViewOnly || candidate || !hasMoreProfiles || isLoadingMoreProfiles) return undefined;
@@ -231,11 +247,6 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     return Boolean((isMutualAccepted || isOutgoingAccepted) && hasLiveConvo);
   }, [candidate, conversations, acceptedIncomingLikes]);
 
-  const meetupStats = useMemo(
-    () => (candidate ? getMeetupStats(candidate) : null),
-    [candidate, getMeetupStats]
-  );
-
   const close = useCallback(() => {
     if (onClose) {
       onClose();
@@ -254,10 +265,10 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     setProcessing(true);
     setSessionExcludedIds((current) => [...current, candidateId]);
     decisionStarted.current = false;
-    translateX.setValue(0);
-    translateY.setValue(0);
-    cardScale.setValue(1);
-    cardOpacity.setValue(1);
+    translateX.set(0);
+    translateY.set(0);
+    cardScale.set(1);
+    cardOpacity.set(1);
     try {
       if (decision === 'like') {
         if (isCandidateMatched) {
@@ -294,133 +305,104 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const finishSwipe = useCallback((decision) => {
     if (processing || decisionStarted.current || decisionInFlight.current) return;
     decisionStarted.current = true;
+    swipeLock.set(1);
     const buttonCenterOffset = (screenWidth / 2) - actionSideInset - (actionButtonWidth / 2);
     const targetX = decision === 'like' ? buttonCenterOffset : -buttonCenterOffset;
     const targetY = (screenHeight / 2) - 58;
+    const easeOut = Easing.bezier(0.23, 1, 0.32, 1);
 
-    Animated.parallel([
-      Animated.timing(translateX, {
-        duration: 280,
-        toValue: targetX,
-        useNativeDriver: true,
-      }),
-      Animated.timing(translateY, {
-        duration: 280,
-        toValue: targetY,
-        useNativeDriver: true,
-      }),
-      Animated.timing(cardScale, {
-        duration: 280,
-        toValue: 0.08,
-        useNativeDriver: true,
-      }),
-      Animated.timing(cardOpacity, {
-        delay: 110,
-        duration: 170,
-        toValue: 0,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      void handleDecision(decision);
-    });
-  }, [cardOpacity, cardScale, handleDecision, processing, translateX, translateY]);
+    translateX.set(withTiming(targetX, { duration: 280, easing: easeOut }));
+    translateY.set(withTiming(targetY, { duration: 280, easing: easeOut }));
+    cardScale.set(withTiming(0.08, { duration: 280, easing: easeOut }));
+    cardOpacity.set(withDelay(110, withTiming(0, { duration: 170, easing: easeOut }, (finished) => {
+      if (finished) scheduleOnRN(handleDecision, decision);
+    })));
+  }, [handleDecision, processing, swipeLock, translateX, translateY, cardScale, cardOpacity]);
 
   const resetSwipe = useCallback(() => {
     decisionStarted.current = false;
-    Animated.parallel([
-      Animated.spring(translateX, {
-        friction: 7,
-        tension: 70,
-        toValue: 0,
-        useNativeDriver: true,
-      }),
-      Animated.spring(translateY, {
-        friction: 7,
-        tension: 70,
-        toValue: 0,
-        useNativeDriver: true,
-      }),
-      Animated.spring(cardScale, {
-        friction: 7,
-        tension: 70,
-        toValue: 1,
-        useNativeDriver: true,
-      }),
-      Animated.timing(cardOpacity, {
-        duration: 120,
-        toValue: 1,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [cardOpacity, cardScale, translateX, translateY]);
+    swipeLock.set(0);
+    translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+    translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+    cardScale.set(withSpring(1, { duration: 400, dampingRatio: 1 }));
+    cardOpacity.set(withTiming(1, { duration: 120, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
+  }, [cardOpacity, cardScale, swipeLock, translateX, translateY]);
 
-  const panResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_, gestureState) => (
-      !decisionStarted.current
-      && Math.abs(gestureState.dx) > 18
-      && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) + 8
-    ),
-    onMoveShouldSetPanResponderCapture: (_, gestureState) => (
-      !decisionStarted.current
-      && Math.abs(gestureState.dx) > 18
-      && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) + 8
-    ),
-    onPanResponderGrant: () => {
-      decisionStarted.current = false;
-    },
-    onPanResponderMove: (_, gestureState) => {
-      if (!decisionStarted.current) translateX.setValue(gestureState.dx);
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dx > 110 || gestureState.vx > 0.75) {
-        finishSwipe('like');
-      } else if (gestureState.dx < -110 || gestureState.vx < -0.75) {
-        finishSwipe('skip');
+  const panGesture = useMemo(() => Gesture.Pan()
+    .enabled(!isViewOnly)
+    .activeOffsetX([-18, 18])
+    .failOffsetY([-24, 24])
+    .onUpdate((event) => {
+      if (swipeLock.get()) return;
+      translateX.set(event.translationX);
+    })
+    .onEnd((event) => {
+      if (swipeLock.get()) return;
+      const projected = translateX.get() + project(event.velocityX);
+      if (projected > 100 || (event.translationX > 25 && event.velocityX > 600)) {
+        scheduleOnRN(finishSwipe, 'like');
+      } else if (projected < -100 || (event.translationX < -25 && event.velocityX < -600)) {
+        scheduleOnRN(finishSwipe, 'skip');
       } else {
-        resetSwipe();
+        translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8, velocity: event.velocityX }));
+        translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8, velocity: event.velocityY }));
+        cardScale.set(withSpring(1, { duration: 400, dampingRatio: 1 }));
+        cardOpacity.set(withTiming(1, { duration: 120, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    },
-    onPanResponderTerminate: resetSwipe,
-    onPanResponderTerminationRequest: () => false,
-  }), [finishSwipe, resetSwipe, translateX]);
+    }), [cardOpacity, cardScale, finishSwipe, isViewOnly, swipeLock, translateX, translateY]);
 
-  const rotate = translateX.interpolate({
-    inputRange: [-screenWidth, 0, screenWidth],
-    outputRange: ['-8deg', '0deg', '8deg'],
+  const topCardStyle = useAnimatedStyle(() => ({
+    opacity: cardOpacity.get(),
+    transform: [
+      { translateX: translateX.get() },
+      { translateY: translateY.get() },
+      {
+        rotate: `${interpolate(translateX.get(), [-screenWidth, 0, screenWidth], [-8, 0, 8], Extrapolation.CLAMP)}deg`,
+      },
+      { scale: cardScale.get() },
+    ],
+  }));
+  const skipActionScaleStyle = useAnimatedStyle(() => ({
+    transform: [
+      {
+        scale: interpolate(translateX.get(), [-120, 0, 120], [1.45, 1, 0.88], Extrapolation.CLAMP),
+      },
+      {
+        translateX: interpolate(translateX.get(), [-120, 0, 120], [-22, 0, 6], Extrapolation.CLAMP),
+      },
+    ],
+  }));
+  const likeActionScaleStyle = useAnimatedStyle(() => ({
+    transform: [
+      {
+        scale: interpolate(translateX.get(), [-120, 0, 120], [0.88, 1, 1.45], Extrapolation.CLAMP),
+      },
+      {
+        translateX: interpolate(translateX.get(), [-120, 0, 120], [-6, 0, 22], Extrapolation.CLAMP),
+      },
+    ],
+  }));
+  const skipActionBgStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(translateX.get(), [-120, -20, 0], [1, 0, 0], Extrapolation.CLAMP),
+  }));
+  const likeActionBgStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(translateX.get(), [0, 20, 120], [0, 0, 1], Extrapolation.CLAMP),
+  }));
+  const likeWashStyle = useAnimatedStyle(() => {
+    if (isViewOnly) return { opacity: 0 };
+    return {
+      opacity: interpolate(translateX.get(), [0, 16, 110], [0, 0.18, 0.5], Extrapolation.CLAMP),
+    };
   });
-  
-  const skipActionScale = translateX.interpolate({
-    inputRange: [-120, 0, 120],
-    outputRange: [1.3, 1, 0.9],
-    extrapolate: 'clamp',
+  const skipWashStyle = useAnimatedStyle(() => {
+    if (isViewOnly) return { opacity: 0 };
+    return {
+      opacity: interpolate(translateX.get(), [-110, -16, 0], [0.5, 0.18, 0], Extrapolation.CLAMP),
+    };
   });
 
-  const skipActionBgOpacity = translateX.interpolate({
-    inputRange: [-120, -20, 0],
-    outputRange: [1, 0, 0],
-    extrapolate: 'clamp',
-  });
-  const likeActionBgOpacity = translateX.interpolate({
-    inputRange: [0, 20, 120],
-    outputRange: [0, 0, 1],
-    extrapolate: 'clamp',
-  });
-
-  const likeActionScale = translateX.interpolate({
-    inputRange: [-120, 0, 120],
-    outputRange: [0.94, 1, 1.12],
-    extrapolate: 'clamp',
-  });
-
-  const remoteAvatar = useRemoteImage(candidate?.avatarUri, candidate?.updatedAt, candidate?.id);
-  const imageUri = remoteAvatar;
-  const nextCandidate = useMemo(
-    () => candidatePool.find((item) => item.id !== candidateId) || null,
-    [candidateId, candidatePool]
-  );
-  // Start downloading the next profile's image while the current card is on
-  // screen. useRemoteImage writes to the same local cache used by the card.
-  useRemoteImage(nextCandidate?.avatarUri, nextCandidate?.updatedAt, nextCandidate?.id);
+  const imageUri = getImageRequestUri(candidate?.avatarUri, candidate?.avatarRevision);
+  useProfileImagePrefetch(isViewOnly ? [] : candidatePool.filter((item) => item.id !== candidateId && !decidedIds.has(item.id)));
 
 
 
@@ -432,18 +414,18 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     if (candidateId === previousCandidateId.current) return;
     previousCandidateId.current = candidateId;
     decisionStarted.current = false;
-    translateX.stopAnimation();
-    translateY.stopAnimation();
-    cardScale.stopAnimation();
-    cardOpacity.stopAnimation();
-    translateX.setValue(0);
-    translateY.setValue(0);
-    cardScale.setValue(1);
-    cardOpacity.setValue(1);
-  }, [candidateId, cardOpacity, cardScale, translateX, translateY]);
+    swipeLock.set(0);
+    translateX.set(0);
+    translateY.set(0);
+    cardScale.set(1);
+    cardOpacity.set(1);
+  }, [candidateId, cardOpacity, cardScale, swipeLock, translateX, translateY]);
 
   if (!candidate) {
-    const waitingForNextProfile = processing;
+    const waitingForNextProfile = processing || (!isViewOnly && (isLoadingMoreProfiles || hasMoreProfiles));
+    // "Not found" is only meaningful for a profile opened directly that was
+    // never decided on; an empty deck after swiping is the normal end state.
+    const notFound = Boolean(profileId) && !decidedIds.has(profileId);
     return (
       <View style={{ backgroundColor: palette.background, flex: 1 }}>
         <Host colorScheme={colorScheme} seedColor={palette.purple} style={{ flex: 1 }}>
@@ -455,11 +437,20 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
             <Image
               color={palette.secondary}
               size={54}
-              systemName={waitingForNextProfile ? 'arrow.triangle.2.circlepath' : 'person.crop.circle.badge.questionmark'}
+              systemName={waitingForNextProfile
+                ? 'arrow.triangle.2.circlepath'
+                : notFound
+                  ? 'person.crop.circle.badge.questionmark'
+                  : 'checkmark.seal.fill'}
             />
             <Text modifiers={[font({ textStyle: 'headline', weight: 'bold' }), foregroundStyle(palette.text)]}>
-              {waitingForNextProfile ? 'กำลังโหลดเพื่อนคนถัดไป...' : 'ไม่พบโปรไฟล์นี้แล้ว'}
+              {waitingForNextProfile ? 'กำลังโหลดเพื่อนคนถัดไป...' : notFound && directProfileHidden ? 'โปรไฟล์นี้ยังไม่พร้อมให้ดู' : notFound ? 'ไม่พบโปรไฟล์นี้แล้ว' : 'ดูโปรไฟล์ครบแล้ว'}
             </Text>
+            {!waitingForNextProfile ? (
+              <Text modifiers={[font({ textStyle: 'subheadline' }), foregroundStyle(palette.secondary), multilineTextAlignment('center')]}>
+                {notFound && directProfileHidden ? 'โปรไฟล์จะแสดงหลังจากเจ้าของยืนยันตัวตนด้วยใบหน้าแล้ว' : notFound ? 'โปรไฟล์อาจถูกซ่อนหรือลบไปแล้ว' : 'ยังไม่มีคนใหม่ที่ตรงกับตัวกรองของคุณ ลองปรับตัวกรองหรือกลับมาดูใหม่ภายหลัง'}
+              </Text>
+            ) : null}
             {!waitingForNextProfile ? (
               <Button
                 label="กลับไปค้นหาเพื่อน"
@@ -480,14 +471,10 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
 
   return (
     <View style={{ backgroundColor: palette.background, flex: 1 }}>
+      <GestureDetector gesture={panGesture}>
       <Animated.View
         key={candidateId}
-        {...(isViewOnly ? {} : panResponder.panHandlers)}
-        style={{
-          flex: 1,
-          opacity: isViewOnly ? 1 : cardOpacity,
-          transform: isViewOnly ? [] : [{ translateX }, { translateY }, { rotate }, { scale: cardScale }],
-        }}
+        style={[{ flex: 1 }, topCardStyle]}
       >
         <Host colorScheme={colorScheme} seedColor={palette.purple} style={{ flex: 1 }}>
           <ScrollView
@@ -514,15 +501,37 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
                     candidate={candidate}
                     imageUri={imageUri}
                     palette={palette}
-                    translateX={translateX}
                   />
-                  <ProfileDetails candidate={candidate} meetupStats={meetupStats} palette={palette} />
+                  <ProfileDetails
+                    candidate={candidate}
+                    myFavoriteTracks={Array.isArray(currentProfile?.favoriteTracks) ? currentProfile.favoriteTracks : []}
+                    palette={palette}
+                  />
                 </VStack>
               </ZStack>
             </VStack>
           </ScrollView>
         </Host>
+        {!isViewOnly ? (
+          <>
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                { backgroundColor: palette.purple, bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
+                likeWashStyle,
+              ]}
+            />
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                { backgroundColor: palette.coral, bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
+                skipWashStyle,
+              ]}
+            />
+          </>
+        ) : null}
       </Animated.View>
+      </GestureDetector>
 
       <MaskedView
         pointerEvents="none"
@@ -542,7 +551,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
       {!isViewOnly ? (
         <>
           <View pointerEvents="box-none" style={decisionStyles.actions}>
-            <Animated.View style={{ transform: [{ scale: skipActionScale }] }}>
+            <Animated.View style={skipActionScaleStyle}>
               <DecisionAction
                 disabled={processing}
                 label="ไม่เลือก"
@@ -550,11 +559,11 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
                 palette={palette}
                 colorScheme={colorScheme}
                 type="skip"
-                activeOpacity={skipActionBgOpacity}
+                activeStyle={skipActionBgStyle}
                 activeColor={palette.coral}
               />
             </Animated.View>
-            <Animated.View style={{ transform: [{ scale: likeActionScale }] }}>
+            <Animated.View style={likeActionScaleStyle}>
               <DecisionAction
                 disabled={processing}
                 icon={isCandidateMatched ? 'message.fill' : 'heart.fill'}
@@ -563,14 +572,11 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
                 palette={palette}
                 colorScheme={colorScheme}
                 type="like"
-                activeOpacity={likeActionBgOpacity}
+                activeStyle={likeActionBgStyle}
                 activeColor={palette.purple}
               />
             </Animated.View>
           </View>
-          <RNText pointerEvents="none" style={[decisionStyles.hint, { color: palette.secondary }]}>
-            {isCandidateMatched ? 'ปัดซ้ายเพื่อข้าม · ปัดขวาเพื่อไปห้องแชต' : 'ปัดซ้ายเพื่อไม่เลือก · ปัดขวาเพื่อถูกใจ'}
-          </RNText>
         </>
       ) : null}
     </View>
@@ -606,20 +612,9 @@ function Header({ candidate, isViewOnly, onClose, palette }) {
   );
 }
 
-function ProfileHero({ candidate, imageUri, palette, translateX }) {
-  const [blurRadius, setBlurRadius] = useState(0);
+function ProfileHero({ candidate, imageUri, palette }) {
   const displayName = candidate?.nickname || candidate?.name || 'ผู้ใช้ CampusMate';
   const activityDisplay = getActivityLabel(candidate?.activity, candidate?.activityLabel, candidate?.activities);
-
-  useEffect(() => {
-    if (!translateX) return;
-    const listenerId = translateX.addListener(({ value }) => {
-      const newBlur = Math.min(Math.abs(value) / 8, 20); // 0 to 20
-      // Only update if difference is noticeable to avoid too many re-renders
-      setBlurRadius((prev) => (Math.abs(prev - newBlur) > 1.5 ? newBlur : prev));
-    });
-    return () => translateX.removeListener(listenerId);
-  }, [translateX]);
 
   return (
     <ZStack
@@ -631,10 +626,9 @@ function ProfileHero({ candidate, imageUri, palette, translateX }) {
       ]}
     >
       {imageUri ? (
-        <Image
-          uiImage={imageUri}
-          modifiers={[resizable(), aspectRatio({ contentMode: 'fill' }), frame({ height: 430, maxWidth: Infinity }), clipped(), blurRadius > 0 ? blur(blurRadius) : null].filter(Boolean)}
-        />
+        <RNHostView matchContents={false} modifiers={[frame({ height: 430, maxWidth: Infinity })]}>
+          <ExpoImage source={{ uri: imageUri }} contentFit="cover" priority="high" style={{ width: '100%', height: 430 }} />
+        </RNHostView>
       ) : (
         <VStack
           alignment="center"
@@ -656,7 +650,7 @@ function ProfileHero({ candidate, imageUri, palette, translateX }) {
                 <LinearGradient colors={['transparent', 'black', 'black']} locations={[0, 0.4, 1]} style={{ flex: 1 }} />
               }
             >
-              <RNImage
+              <ExpoImage
                 source={{ uri: imageUri }}
                 style={{ position: 'absolute', bottom: 0, width: '100%', height: 430 }}
                 blurRadius={30}
@@ -690,22 +684,95 @@ function ProfileHero({ candidate, imageUri, palette, translateX }) {
   );
 }
 
-function ProfileDetails({ candidate, meetupStats, palette }) {
+function ProfileDetails({ candidate, myFavoriteTracks = [], palette }) {
   const allTags = Array.from(new Set([...(candidate.tags || []), ...(candidate.interests || [])]));
   const activityDisplay = getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities);
+  const activityDetailRows = describeActivityDetails(candidate.activityDetails, candidate.activities);
+  const paceDisplay = activityDetailRows.some((row) => row.id === 'running') ? '' : candidate.pace;
   const displayName = candidate.nickname || candidate.name || 'ผู้ใช้ CampusMate';
+  const candidateTracks = Array.isArray(candidate?.favoriteTracks)
+    ? candidate.favoriteTracks.filter((track) => track && typeof track === 'object' && track.id && track.name)
+    : [];
+  const myIds = new Set((myFavoriteTracks || []).map((track) => track?.id).filter(Boolean));
+  const sharedTracks = candidateTracks.filter((track) => myIds.has(track.id));
   const hasVisibleDetails = Boolean(
     candidate.age != null
     || candidate.gender
     || candidate.faculty
     || candidate.year
     || activityDisplay
+    || activityDetailRows.length
     || candidate.skill
-    || candidate.pace
+    || paceDisplay
     || candidate.availability
     || candidate.availabilitySlots?.length
     || candidate.distance != null
-    || candidate.meetup
+  );
+
+  const openTrack = (url) => {
+    if (typeof url === 'string' && url.trim()) {
+      Linking.openURL(url.trim()).catch(() => {});
+    }
+  };
+
+  const renderTrackRow = (track, keyPrefix) => (
+    <HStack
+      key={`${keyPrefix}-${track.id}`}
+      spacing={8}
+      modifiers={[
+        padding({ all: 10 }),
+        background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 14, roundedCornerStyle: 'continuous' })),
+        frame({ maxWidth: Infinity, alignment: 'leading' }),
+      ]}
+    >
+      <Button onPress={() => openTrack(track.externalUrl)} modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity })]}>
+        <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+        {track.albumArt ? (
+          <RNImage source={{ uri: track.albumArt }} style={{ width: 40, height: 40, borderRadius: 8 }} />
+        ) : (
+          <VStack
+            modifiers={[
+              frame({ width: 40, height: 40 }),
+              background(palette.violetSoft || palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 8 })),
+            ]}
+          >
+            <Spacer />
+            <HStack>
+              <Spacer />
+              <Image color={palette.purple} size={14} systemName="music.note" />
+              <Spacer />
+            </HStack>
+            <Spacer />
+          </VStack>
+        )}
+        <VStack alignment="leading" spacing={2} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+          <Text modifiers={[font({ textStyle: 'subheadline', weight: 'semibold' }), foregroundStyle(palette.text), lineLimit(1)]}>
+            {track.name}
+          </Text>
+          <Text modifiers={[font({ textStyle: 'caption', weight: 'medium' }), foregroundStyle(palette.tertiary), lineLimit(1)]}>
+            {track.artists || 'Unknown'}
+          </Text>
+        </VStack>
+        <Image color={palette.tertiary} size={13} systemName="arrow.up.right.square" />
+        </HStack>
+      </Button>
+      {(track.previewUrl || track.youtubeVideoId || track.name) ? (
+        <RNHostView>
+          <TrackPreviewButton
+            backgroundColor={palette.purpleSoft}
+            color={palette.purple}
+            previewEndMs={track.previewEndMs}
+            previewStartMs={track.previewStartMs}
+            previewUrl={track.previewUrl}
+            size={32}
+            track={track}
+            trackArtists={track.artists}
+            trackName={track.name}
+            youtubeVideoId={track.youtubeVideoId}
+          />
+        </RNHostView>
+      ) : null}
+    </HStack>
   );
 
   return (
@@ -746,26 +813,29 @@ function ProfileDetails({ candidate, meetupStats, palette }) {
         ) : null}
       </HStack>
 
-      <VStack alignment="leading" spacing={9} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+      <ProfileInfoList palette={palette}>
         {candidate.age ? <ProfileInfoRow icon="calendar" label="อายุ" value={`${candidate.age} ปี`} palette={palette} /> : null}
         {candidate.gender ? <ProfileInfoRow icon="person.2.fill" label="เพศ" value={genderLabel(candidate.gender)} palette={palette} /> : null}
         {(candidate.faculty && !candidate.faculty.includes('???')) ? <ProfileInfoRow icon="building.columns.fill" label="คณะ" value={candidate.faculty} palette={palette} /> : null}
         {(candidate.year && !candidate.year.includes('???')) ? <ProfileInfoRow icon="graduationcap.fill" label="ชั้นปี" value={candidate.year} palette={palette} /> : null}
         {activityDisplay ? <ProfileInfoRow icon="figure.run" label="กิจกรรมที่ชอบ" value={activityDisplay} palette={palette} /> : null}
+        {activityDetailRows.map((row) => (
+          <ProfileInfoRow icon={row.symbol} key={`detail-${row.id}`} label={row.label} value={row.lines.join('\n')} palette={palette} />
+        ))}
         {candidate.skill ? <ProfileInfoRow icon="star.fill" label="ระดับ / ทักษะ" value={candidate.skill} palette={palette} /> : null}
-        {candidate.pace ? <ProfileInfoRow icon="speedometer" label="สไตล์ / เพซ" value={candidate.pace} palette={palette} /> : null}
+        {paceDisplay ? <ProfileInfoRow icon="speedometer" label="สไตล์ / เพซ" value={paceDisplay} palette={palette} /> : null}
         {(candidate.availabilitySlots && candidate.availabilitySlots.length > 0) ? (
           <ProfileInfoRow
             icon="clock.fill"
-            label="เวลาที่สะดวก"
+            label="วันและเวลาที่สะดวก"
             value={formatAvailabilitySlots(candidate.availabilitySlots)}
             palette={palette}
           />
         ) : (candidate.availability && !candidate.availability.includes('???')) ? (
-          <ProfileInfoRow icon="clock.fill" label="เวลาที่สะดวก" value={candidate.availability} palette={palette} />
+          <ProfileInfoRow icon="clock.fill" label="วันและเวลาที่สะดวก" value={candidate.availability} palette={palette} />
         ) : null}
         {candidate.distance != null ? <ProfileInfoRow icon="location.circle.fill" label="ระยะห่างจากคุณ" value={formatDistance(candidate.distance)} palette={palette} /> : null}
-      </VStack>
+      </ProfileInfoList>
 
       {!hasVisibleDetails ? (
         <HStack
@@ -783,74 +853,6 @@ function ProfileDetails({ candidate, meetupStats, palette }) {
           </Text>
         </HStack>
       ) : null}
-
-      {candidate.meetup && (
-        <VStack
-          alignment="leading"
-          spacing={12}
-          modifiers={[
-            padding({ all: 16 }),
-            frame({ maxWidth: Infinity, alignment: 'leading' }),
-            background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 20, roundedCornerStyle: 'continuous' })),
-          ]}
-        >
-          <HStack alignment="center" spacing={8}>
-            <Image color={palette.purple} size={18} systemName="mappin.and.ellipse" />
-            <Text modifiers={[font({ textStyle: 'headline', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>
-              จุดนัดหมาย
-            </Text>
-            <Spacer />
-            {meetupStats?.isFull ? (
-              <Text modifiers={[padding({ horizontal: 10, vertical: 4 }), background('rgba(255,100,100,0.18)', shapes.capsule()), font({ textStyle: 'caption2', weight: 'bold' }), foregroundStyle('#FF453A')]}>
-                นัดหมายเต็มแล้ว ({meetupStats.maxPeople}/{meetupStats.maxPeople})
-              </Text>
-            ) : (
-              <Text modifiers={[padding({ horizontal: 10, vertical: 4 }), background(palette.purpleSoft, shapes.capsule()), font({ textStyle: 'caption2', weight: 'bold' }), foregroundStyle(palette.purple)]}>
-                {meetupStats ? `รับสมัคร (ว่างอีก ${meetupStats.remaining} ที่)` : 'นัดพบกันที่นี่'}
-              </Text>
-            )}
-          </HStack>
-
-          <VStack alignment="leading" spacing={8} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-            <HStack alignment="center" spacing={8}>
-              <Image color={palette.secondary} size={14} systemName="location.fill" />
-              <Text modifiers={[font({ textStyle: 'body', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>
-                {candidate.meetup.name}
-              </Text>
-            </HStack>
-
-            {candidate.meetup.schedule?.date ? (
-              <HStack alignment="center" spacing={8}>
-                <Image color={palette.secondary} size={14} systemName="calendar" />
-                <Text modifiers={[font({ textStyle: 'subheadline', weight: 'medium' }), foregroundStyle(palette.secondary)]}>
-                  {formatReadableDate(candidate.meetup.schedule.date)}
-                  {candidate.meetup.schedule?.startTime && candidate.meetup.schedule?.endTime ? ` · ${candidate.meetup.schedule.startTime}–${candidate.meetup.schedule.endTime}` : ''}
-                </Text>
-              </HStack>
-            ) : null}
-
-            {candidate.meetup.schedule?.maxPeople ? (
-              <HStack alignment="center" spacing={8}>
-                <Image color={palette.secondary} size={14} systemName="person.2.fill" />
-                <Text modifiers={[font({ textStyle: 'subheadline', weight: 'medium' }), foregroundStyle(palette.secondary)]}>
-                  {meetupStats
-                    ? `ผู้เข้าร่วม ${meetupStats.acceptedCount}/${meetupStats.maxPeople} คน (รวมเจ้าของโพสต์)`
-                    : `จำนวน ${candidate.meetup.schedule.maxPeople} คน`}
-                </Text>
-              </HStack>
-            ) : null}
-
-            {candidate.meetup.schedule?.message ? (
-              <HStack alignment="top" spacing={8} modifiers={[padding({ top: 2 })]}>
-                <Image color={palette.purple} size={14} systemName="text.bubble.fill" />
-                <Text modifiers={[font({ textStyle: 'callout' }), foregroundStyle(palette.text)]}>
-                  {candidate.meetup.schedule.message}
-                </Text>
-              </HStack>
-            ) : null}
-          </VStack>
-        </VStack>
-      )}
 
       <VStack
         alignment="leading"
@@ -872,77 +874,118 @@ function ProfileDetails({ candidate, meetupStats, palette }) {
         </Text>
       </VStack>
 
-      {allTags.length ? (
+      {Array.isArray(candidate.gallery) && candidate.gallery.length > 0 ? (
         <VStack alignment="leading" spacing={8} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
           <Text modifiers={[font({ textStyle: 'caption', weight: 'bold' }), foregroundStyle(palette.tertiary)]}>
-            ความสนใจ
+            แกลเลอรีรูปภาพ
           </Text>
           <ScrollView axes="horizontal" showsIndicators={false} modifiers={[scrollIndicators('never', 'horizontal')]}>
-            <HStack spacing={8}>
-              {allTags.map((tag) => (
-                <Text
-                  key={tag}
+            <HStack spacing={12}>
+              {candidate.gallery.map((uri, idx) => (
+                <Image
+                  key={idx}
+                  source={{ uri }}
                   modifiers={[
-                    padding({ horizontal: 12, vertical: 8 }),
-                    background(palette.surfaceRaised, shapes.capsule()),
-                    font({ textStyle: 'caption', weight: 'semibold' }),
-                    foregroundStyle(palette.text),
+                    frame({ width: 120, height: 160 }),
+                    clipShape(shapes.roundedRectangle(12)),
                   ]}
-                >
-                  {tag}
-                </Text>
+                  resizeMode="cover"
+                />
               ))}
             </HStack>
           </ScrollView>
+        </VStack>
+      ) : null}
+
+      {sharedTracks.length ? (
+        <VStack alignment="leading" spacing={8} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+          <Text modifiers={[font({ textStyle: 'caption', weight: 'bold' }), foregroundStyle(palette.tertiary)]}>
+            เพลงที่ชอบเหมือนกัน
+          </Text>
+          <VStack alignment="leading" spacing={8} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+            {sharedTracks.map((track) => renderTrackRow(track, 'shared'))}
+          </VStack>
+        </VStack>
+      ) : null}
+
+      {candidateTracks.length ? (
+        <VStack alignment="leading" spacing={8} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+          <Text modifiers={[font({ textStyle: 'caption', weight: 'bold' }), foregroundStyle(palette.tertiary)]}>
+            เพลงโปรด
+          </Text>
+          <VStack alignment="leading" spacing={8} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+            {candidateTracks.map((track) => renderTrackRow(track, 'fav'))}
+          </VStack>
         </VStack>
       ) : null}
     </VStack>
   );
 }
 
-function ProfileInfoRow({ icon, label, value, palette }) {
-  const isMulti = typeof value === 'string' && value.includes('\n');
+function ProfileInfoList({ children, palette }) {
+  const items = React.Children.toArray(children).filter(Boolean);
   return (
-    <HStack
-      alignment={isMulti ? 'top' : 'center'}
-      spacing={12}
-      modifiers={[
-        padding({ all: 12 }),
-        frame({ maxWidth: Infinity, alignment: 'leading' }),
-        background(palette.surfaceRaised, shapes.roundedRectangle({ cornerRadius: 16 })),
-      ]}
-    >
-      <ZStack modifiers={[frame({ width: 38, height: 38 }), background(palette.purpleSoft, shapes.circle())]}>
+    <VStack alignment="leading" spacing={0} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+      {items.map((child, index) => (
+        <React.Fragment key={child.key || `info-${index}`}>
+          {React.cloneElement(child, { showDivider: index < items.length - 1, palette: child.props.palette || palette })}
+        </React.Fragment>
+      ))}
+    </VStack>
+  );
+}
+
+function ProfileInfoRow({ icon, label, value, palette, showDivider = false }) {
+  const isMulti = typeof value === 'string' && value.includes('\n');
+  const dividerColor = palette.separator || 'rgba(60, 60, 67, 0.18)';
+  return (
+    <VStack alignment="leading" spacing={0} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+      <HStack
+        alignment={isMulti ? 'top' : 'center'}
+        spacing={12}
+        modifiers={[
+          padding({ vertical: 11 }),
+          frame({ maxWidth: Infinity, alignment: 'leading' }),
+        ]}
+      >
         <Image color={palette.purple} size={18} systemName={icon} />
-      </ZStack>
-      <VStack alignment="leading" spacing={2} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-        <Text modifiers={[font({ textStyle: 'caption', weight: 'semibold' }), foregroundStyle(palette.tertiary)]}>
-          {label}
-        </Text>
-        <Text modifiers={[font({ textStyle: 'body', weight: 'semibold' }), foregroundStyle(palette.text), ...(isMulti ? [] : [lineLimit(2)])]}>
-          {value || 'ไม่ระบุ'}
-        </Text>
-      </VStack>
-    </HStack>
+        <VStack alignment="leading" spacing={2} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
+          <Text modifiers={[font({ textStyle: 'caption', weight: 'semibold' }), foregroundStyle(palette.tertiary)]}>
+            {label}
+          </Text>
+          <Text modifiers={[font({ textStyle: 'body', weight: 'semibold' }), foregroundStyle(palette.text), ...(isMulti ? [] : [lineLimit(2)])]}>
+            {value || 'ไม่ระบุ'}
+          </Text>
+        </VStack>
+      </HStack>
+      {showDivider ? (
+        <HStack
+          modifiers={[
+            padding({ leading: 30 }),
+            frame({ height: 0.5, maxWidth: Infinity }),
+            background(dividerColor),
+          ]}
+        />
+      ) : null}
+    </VStack>
   );
 }
 
 
 
-function DecisionAction({ colorScheme, disabled: isDisabled, icon, label, onPress, palette, type, activeOpacity, activeColor }) {
+function DecisionAction({ colorScheme, disabled: isDisabled, icon, label, onPress, palette, type, activeStyle, activeColor }) {
   const isLike = type === 'like';
   const systemImageName = icon || (isLike ? 'heart.fill' : 'xmark');
   return (
     <View style={decisionStyles.actionGroup}>
       <View style={[decisionStyles.nativeButtonHost, { position: 'relative' }]}>
-        <Animated.View 
-          style={{ 
-            position: 'absolute', 
-            top: 0, left: 0, right: 0, bottom: 0, 
-            backgroundColor: activeColor, 
-            borderRadius: 32, 
-            opacity: activeOpacity || 0 
-          }} 
+        <Animated.View
+          style={[{
+            position: 'absolute',
+            top: 0, left: 0, right: 0, bottom: 0,
+            backgroundColor: activeColor,
+            borderRadius: 32,
+          }, activeStyle]}
         />
         <Host colorScheme={colorScheme} seedColor={palette.purple} style={decisionStyles.nativeButtonHost}>
           <Button
@@ -995,5 +1038,5 @@ const decisionStyles = {
   badgeText: { fontSize: 16, fontWeight: '900' },
   hint: { bottom: 6, fontSize: 11, left: 0, position: 'absolute', right: 0, textAlign: 'center', zIndex: 29 },
   likeBadge: { borderColor: '#FFFFFF', right: 20, transform: [{ rotate: '8deg' }] },
-  skipBadge: { backgroundColor: 'rgba(255,255,255,0.94)', borderColor: '#5B5CE2', left: 20, transform: [{ rotate: '-8deg' }] },
+  skipBadge: { backgroundColor: 'rgba(255,255,255,0.94)', borderColor: '#2869C7', left: 20, transform: [{ rotate: '-8deg' }] },
 };

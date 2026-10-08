@@ -1,16 +1,25 @@
 import React from 'react';
-import { router } from 'expo-router';
-import HomeScreen from '../../../src/screens/HomeScreen';
+import { router, Stack, usePathname } from 'expo-router';
+import LikesScreen from '../../../src/screens/LikesScreen';
 import { useToast } from '../../../src/context/ToastContext';
-
-import { Stack } from 'expo-router';
+import { openChatRoom } from '../../../src/utils/openChatRoom';
 
 export default function DiscoverRoute() {
   const { showToast } = useToast();
+  const pathname = usePathname();
   return (
     <>
-      <Stack.Screen options={{ title: 'หาเพื่อน' }} />
-      <HomeScreen onOpenLikes={() => router.push('/likes')} onToast={showToast} />
+      <Stack.Screen options={{ headerRight: () => null, title: 'ถูกใจ' }} />
+      <LikesScreen
+        onOpenChat={(chatId) => {
+          if (chatId) {
+            openChatRoom(chatId, { pathname });
+          } else {
+            router.navigate('/chat');
+          }
+        }}
+        onToast={showToast}
+      />
     </>
   );
 }

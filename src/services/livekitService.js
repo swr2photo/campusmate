@@ -13,7 +13,82 @@ try {
   LiveKitRN = require('@livekit/react-native');
 } catch (_) {}
 
-// Deferred track-sync timers per room, so they can be cancelled on disconnect
+function isAudioKind(kind, track) {
+  return kind === 'audio' || track?.kind === 'audio';
+}
+
+function startRemoteAudioTrack(track) {
+  if (!track) return;
+  try { track.start?.(); } catch (_) {}
+  try { if (typeof track.setVolume === 'function') track.setVolume(1); } catch (_) {}
+  try { if (track.mediaStreamTrack) track.mediaStreamTrack.enabled = true; } catch (_) {}
+}
+
+async function configureCallAudioSession(isVideo) {
+  if (!LiveKitRN?.AudioSession) return;
+  try {
+    await LiveKitRN.AudioSession.configureAudio({
+      android: {
+        preferredOutputList: ['bluetooth', 'headset', 'speaker', 'earpiece'],
+        audioTypeOptions: LiveKitRN.AndroidAudioTypePresets?.communication || {
+          manageAudioFocus: true,
+          audioMode: 'inCommunication',
+          audioFocusMode: 'gain',
+          audioStreamType: 'voiceCall',
+          audioAttributesUsageType: 'voiceCommunication',
+          audioAttributesContentType: 'speech',
+        },
+      },
+      ios: {
+        defaultOutput: 'speaker',
+      },
+    });
+  } catch (err) {
+    console.warn('[LiveKit] configureAudio failed:', err);
+  }
+  if (Platform.OS === 'ios' && typeof LiveKitRN.AudioSession.setAppleAudioConfiguration === 'function') {
+    try {
+      await LiveKitRN.AudioSession.setAppleAudioConfiguration({
+        audioCategory: 'playAndRecord',
+        audioCategoryOptions: ['allowBluetooth', 'defaultToSpeaker'],
+        audioMode: isVideo ? 'videoChat' : 'voiceChat',
+      });
+    } catch (err) {
+      console.warn('[LiveKit] setAppleAudioConfiguration failed:', err);
+    }
+  }
+  try {
+    await LiveKitRN.AudioSession.startAudioSession();
+  } catch (err) {
+    console.warn('[LiveKit] Failed to start AudioSession:', err);
+  }
+  if (typeof LiveKitRN.AudioSession.setDefaultRemoteAudioTrackVolume === 'function') {
+    try {
+      await LiveKitRN.AudioSession.setDefaultRemoteAudioTrackVolume(1);
+    } catch (_) {}
+  }
+}
+
+function subscribeParticipantMedia(participant, onRemoteTrackUpdate) {
+  participant?.trackPublications?.forEach?.((pub) => {
+    if (!pub.isSubscribed && typeof pub.setSubscribed === 'function') {
+      pub.setSubscribed(true);
+    }
+    if (isAudioKind(pub.kind, pub.track)) {
+      startRemoteAudioTrack(pub.track);
+    } else if ((pub.kind === 'video' || pub.track?.kind === 'video') && pub.track && onRemoteTrackUpdate) {
+      onRemoteTrackUpdate({
+        track: pub.track,
+        publication: pub,
+        participant,
+        kind: 'video',
+        source: pub.source,
+        isMuted: Boolean(pub.isMuted),
+      });
+    }
+  });
+}
+
 const roomSyncTimeouts = new WeakMap();
 
 /**
@@ -45,6 +120,8 @@ export async function connectToLiveKitRoom({
   onRemoteTrackUpdate,
   onLocalTrackUpdate,
   onDisconnect,
+  onReconnecting,
+  onReconnected,
 }) {
   if (!isLiveKitAvailable()) {
     console.warn('[LiveKit] LiveKit client is not available in this environment');
@@ -74,6 +151,11 @@ export async function connectToLiveKitRoom({
     autoSubscribe: true,
     adaptiveStream: false,
     dynacast: false,
+    audioCaptureDefaults: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
     videoCaptureDefaults: { resolution: { width: 640, height: 360, frameRate: 24 }, facingMode: 'user' },
     publishDefaults: { videoEncoding: { maxBitrate: 600000, maxFramerate: 24 }, simulcast: false },
   });
@@ -96,6 +178,10 @@ export async function connectToLiveKitRoom({
 
   // Track subscription events for remote participant
   room.on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+    if (isAudioKind(track?.kind || publication?.kind, track)) {
+      startRemoteAudioTrack(track);
+      return;
+    }
     notifyRemoteTrack(track, publication, participant, Boolean(publication?.isMuted || track?.isMuted));
   });
 
@@ -104,23 +190,16 @@ export async function connectToLiveKitRoom({
       if (!publication.isSubscribed && typeof publication.setSubscribed === 'function') {
         publication.setSubscribed(true);
       }
-      if (publication.track) {
+      if (isAudioKind(publication.kind, publication.track)) {
+        startRemoteAudioTrack(publication.track);
+      } else if (publication.track) {
         notifyRemoteTrack(publication.track, publication, participant, Boolean(publication.isMuted));
       }
     }
   });
 
   room.on(RoomEvent.ParticipantConnected, (participant) => {
-    participant.trackPublications?.forEach?.((pub) => {
-      if (pub.kind === 'video') {
-        if (!pub.isSubscribed && typeof pub.setSubscribed === 'function') {
-          pub.setSubscribed(true);
-        }
-        if (pub.track) {
-          notifyRemoteTrack(pub.track, pub, participant, Boolean(pub.isMuted));
-        }
-      }
-    });
+    subscribeParticipantMedia(participant, onRemoteTrackUpdate);
   });
 
   room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
@@ -202,34 +281,47 @@ export async function connectToLiveKitRoom({
     }
   });
 
-  // Start LiveKit AudioSession for VoIP call audio focus (keeps audio alive in background)
-  if (LiveKitRN?.AudioSession) {
-    try {
-      if (Platform.OS === 'android' && LiveKitRN.AndroidAudioTypePresets?.communication) {
-        await LiveKitRN.AudioSession.configureAudio({
-          android: {
-            audioTypeOptions: LiveKitRN.AndroidAudioTypePresets.communication,
-          },
-        });
+  if (RoomEvent.Reconnecting) {
+    room.on(RoomEvent.Reconnecting, () => {
+      if (onReconnecting) {
+        onReconnecting();
       }
-      await LiveKitRN.AudioSession.startAudioSession();
-    } catch (audioErr) {
-      console.warn('[LiveKit] Failed to start AudioSession:', audioErr);
-    }
+    });
   }
+
+  if (RoomEvent.Reconnected) {
+    room.on(RoomEvent.Reconnected, () => {
+      syncExistingTracks();
+      if (onReconnected) {
+        onReconnected();
+      }
+    });
+  }
+
+  await configureCallAudioSession(isVideo);
 
   // Connect to LiveKit server
   try {
     await room.connect(url, token);
-    await setLiveKitSpeaker(isVideo);
+    try { await room.startAudio?.(); } catch (_) {}
+    await setLiveKitSpeaker(true);
   } catch (error) {
     await disconnectLiveKitRoom(room);
     throw error;
   }
 
-  // Enable audio
+  // Enable microphone so the other person can hear us
   try {
     await room.localParticipant.setMicrophoneEnabled(true);
+    const micPub = room.localParticipant.getTrackPublication(LiveKitClient.Track.Source.Microphone);
+    if (!micPub?.track && typeof LiveKitClient.createLocalAudioTrack === 'function') {
+      const audioTrack = await LiveKitClient.createLocalAudioTrack({
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      });
+      await room.localParticipant.publishTrack(audioTrack);
+    }
   } catch (err) {
     console.warn('[LiveKit] Failed to enable microphone:', err);
   }
@@ -256,16 +348,7 @@ export async function connectToLiveKitRoom({
   const syncExistingTracks = () => {
     try {
       room.remoteParticipants?.forEach?.((participant) => {
-        participant.trackPublications?.forEach?.((pub) => {
-          if (pub.kind === 'video') {
-            if (!pub.isSubscribed && typeof pub.setSubscribed === 'function') {
-              pub.setSubscribed(true);
-            }
-            if (pub.track) {
-              notifyRemoteTrack(pub.track, pub, participant, Boolean(pub.isMuted));
-            }
-          }
-        });
+        subscribeParticipantMedia(participant, onRemoteTrackUpdate);
       });
 
       // Also sync existing local track publication if ready
@@ -312,10 +395,23 @@ export async function setLiveKitMicrophone(room, enabled) {
 export async function setLiveKitSpeaker(enabled) {
   if (!LiveKitRN?.AudioSession) return;
   try {
-    const target = enabled ? 'speaker' : 'earpiece';
+    const outputs = typeof LiveKitRN.AudioSession.getAudioOutputs === 'function'
+      ? await LiveKitRN.AudioSession.getAudioOutputs()
+      : [];
+    let target;
+    if (Platform.OS === 'ios') {
+      target = enabled ? 'force_speaker' : 'default';
+    } else {
+      target = enabled ? 'speaker' : 'earpiece';
+    }
+    if (Array.isArray(outputs) && outputs.length && !outputs.includes(target)) {
+      target = enabled
+        ? (outputs.includes('speaker') ? 'speaker' : outputs[0])
+        : (outputs.includes('earpiece') ? 'earpiece' : outputs[0]);
+    }
     await LiveKitRN.AudioSession.selectAudioOutput(target);
   } catch (err) {
-    throw err;
+    console.warn('[LiveKit] selectAudioOutput failed:', err);
   }
 }
 
@@ -327,9 +423,13 @@ export async function setLiveKitCamera(room, enabled) {
   if (enabled && Platform.OS === 'android') {
     try {
       const { PermissionsAndroid } = require('react-native');
-      await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA);
+      const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.CAMERA);
+      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+        throw new Error('กรุณาอนุญาตการเข้าถึงกล้องในการตั้งค่าตัวเครื่อง');
+      }
     } catch (permErr) {
       console.warn('[LiveKit] Camera permission request error:', permErr);
+      throw permErr;
     }
   }
   try {
@@ -341,7 +441,9 @@ export async function setLiveKitCamera(room, enabled) {
 }
 
 /**
- * Flip between front and back camera
+ * Flip between front and back camera.
+ * On React Native, switching the live track in place is more reliable than
+ * stopping it and calling getUserMedia again.
  */
 export async function switchLiveKitCamera(room, targetFacingMode) {
   if (!room?.localParticipant) throw new Error('Call is not connected');
@@ -353,51 +455,80 @@ export async function switchLiveKitCamera(room, targetFacingMode) {
   const track = pub?.track || room.localParticipant.getTrackPublication(LiveKitClient?.Track?.Source?.Camera)?.track;
   if (!track) throw new Error('Camera is unavailable');
 
-  // Find target camera device using enumerateDevices
-  const isTargetFront = targetFacingMode === 'user';
+  const wantedFront = targetFacingMode === 'user';
+  const wantedFacing = wantedFront ? 'user' : 'environment';
+
+  const readFacing = (mediaTrack) => {
+    try {
+      const facing = mediaTrack?.getSettings?.()?.facingMode;
+      if (facing === 'environment' || facing === 'user') return facing;
+    } catch (_) {}
+    return null;
+  };
+
+  const notifyRestarted = () => {
+    if (typeof track.emit === 'function') {
+      try { track.emit('restarted', track); } catch (_) {}
+    }
+  };
+
+  const mediaTrack = track.mediaStreamTrack;
+
+  // 1. Native in-place switch (React Native WebRTC)
+  if (mediaTrack && typeof mediaTrack.applyConstraints === 'function') {
+    try {
+      const settings = typeof mediaTrack.getSettings === 'function' ? mediaTrack.getSettings() : {};
+      const constraints = { ...settings, facingMode: wantedFacing };
+      delete constraints.deviceId;
+      await mediaTrack.applyConstraints(constraints);
+      const applied = readFacing(mediaTrack);
+      if (!applied || applied === wantedFacing) {
+        notifyRestarted();
+        return { track, facingMode: applied || wantedFacing };
+      }
+    } catch (err) {
+      console.warn('[LiveKit] applyConstraints camera switch failed:', err);
+    }
+  }
+
+  if (mediaTrack && typeof mediaTrack._switchCamera === 'function') {
+    try {
+      await mediaTrack._switchCamera();
+      notifyRestarted();
+      return { track, facingMode: readFacing(mediaTrack) || wantedFacing };
+    } catch (err) {
+      console.warn('[LiveKit] _switchCamera failed:', err);
+    }
+  }
+
+  // 2. Restart the LiveKit track with an explicit device / facingMode
   let targetDeviceId = null;
   if (global.navigator?.mediaDevices?.enumerateDevices) {
     try {
       const devices = await global.navigator.mediaDevices.enumerateDevices();
       const videoDevices = devices.filter((d) => d.kind === 'videoinput');
-      const match = videoDevices.find((d) =>
-        isTargetFront
-          ? d.facing === 'front' || d.facing === 'user'
-          : d.facing === 'environment' || d.facing === 'back'
-      );
-      if (match?.deviceId) {
-        targetDeviceId = match.deviceId;
-      }
+      const match = videoDevices.find((d) => {
+        const facing = String(d.facing || d.facingMode || '').toLowerCase();
+        const label = String(d.label || '').toLowerCase();
+        return wantedFront
+          ? facing === 'front' || facing === 'user' || label.includes('front')
+          : facing === 'environment' || facing === 'back' || facing === 'rear' || label.includes('back');
+      });
+      if (match?.deviceId) targetDeviceId = match.deviceId;
     } catch (e) {
       console.warn('[LiveKit] enumerateDevices failed in switchCamera:', e);
     }
   }
 
-  // 1. Primary & reliable method: restartTrack with target deviceId and facingMode
   if (typeof track.restartTrack === 'function') {
-    try {
-      const options = targetDeviceId
-        ? { deviceId: targetDeviceId, facingMode: targetFacingMode }
-        : { facingMode: targetFacingMode };
-      await track.restartTrack(options);
-      return track;
-    } catch (err) {
-      console.warn('[LiveKit] restartTrack failed, trying fallback:', err);
-    }
+    const options = targetDeviceId
+      ? { deviceId: targetDeviceId, facingMode: wantedFacing }
+      : { facingMode: wantedFacing };
+    await track.restartTrack(options);
+    return { track, facingMode: readFacing(track.mediaStreamTrack) || wantedFacing };
   }
 
-  // 2. Fallback: native WebRTC switchCamera directly on the mediaStreamTrack if available
-  const mediaTrack = track.mediaStreamTrack;
-  if (mediaTrack && typeof mediaTrack._switchCamera === 'function') {
-    try {
-      mediaTrack._switchCamera();
-      return track;
-    } catch (err) {
-      console.warn('[LiveKit] _switchCamera fallback failed:', err);
-    }
-  }
-
-  return track;
+  throw new Error('ไม่สามารถสลับกล้องได้');
 }
 
 /**

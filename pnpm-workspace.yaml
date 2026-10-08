@@ -6,20 +6,48 @@ overrides:
   fast-xml-parser: '5.11.1'
   uuid: '11.1.1'
 minimumReleaseAgeExclude:
-  - '@expo/cli@57.0.20 || 57.0.23'
+  - '@expo/cli@57.0.20 || 57.0.23 || 58.0.5 || 58.0.7'
   - '@expo/env@2.4.3'
   - '@expo/fingerprint@0.20.11'
   - '@expo/metro-config@57.0.12'
-  - expo-constants@57.0.16 || 57.0.17
+  - expo-constants@57.0.16 || 57.0.17 || 58.0.5 || 58.0.7
   - expo-font@57.0.2
-  - expo@57.0.18 || 57.0.21
-  - expo-notifications@57.0.16
+  - expo@57.0.18 || 57.0.21 || 58.0.0-preview.5 || 58.0.0-preview.7
+  - expo-notifications@57.0.16 || 58.0.5 || 58.0.7
   - expo-eas-client@57.0.3
-  - expo-updates@57.0.21
+  - expo-updates@57.0.21 || 58.0.7 || 58.0.9
   - '@expo/metro-file-map@57.0.3'
   - babel-preset-expo@57.0.11
-  - expo-modules-core@57.0.17
-  - expo-modules-jsi@57.1.0
-  - '@expo/ui@57.0.17'
-  - expo-glass-effect@57.0.2
-  - expo-router@57.0.20
+  - expo-modules-core@57.0.17 || 58.0.5 || 58.0.7
+  - expo-modules-jsi@57.1.0 || 58.0.4
+  - '@expo/ui@57.0.17 || 58.0.5 || 58.0.7'
+  - expo-glass-effect@57.0.2 || 58.0.2
+  - expo-router@57.0.20 || 58.0.6 || 58.0.8
+  - expo-asset@58.0.5 || 58.0.7
+  - expo-file-system@58.0.1 || 58.0.2
+  - '@expo/metro-runtime@58.0.5 || 58.0.7'
+  - expo-audio@58.0.2
+  - expo-auth-session@58.0.4 || 58.0.5
+  - expo-camera@58.0.3
+  - expo-image-manipulator@58.0.6 || 58.0.8
+  - expo-image-picker@58.0.5 || 58.0.7
+  - expo-image@58.0.4 || 58.0.6
+  - expo-linking@58.0.5 || 58.0.7
+  - expo-location@58.0.5 || 58.0.7
+  - expo-media-library@58.0.1 || 58.0.2
+  - expo-task-manager@58.0.6 || 58.0.8
+  - expo-web-browser@58.0.2
+  - '@expo/log-box@58.0.5'
+  - '@expo/prebuild-config@58.0.4'
+  - expo-modules-autolinking@58.0.4
+  - expo-screen-capture@58.0.3
+  - '@expo/schema-utils@58.0.1'
+  - expo-build-properties@58.0.9
+patchedDependencies:
+  '@livekit/react-native-expo-plugin@1.0.2': patches/+livekit+react-native-expo-plugin+1.0.2.patch
+  '@livekit/react-native@2.12.0': patches/+livekit+react-native+2.12.0.patch
+  '@react-native-async-storage/async-storage@2.2.0': patches/+react-native-async-storage+async-storage+2.2.0.patch
+  lottie-react-native@7.5.0: patches/lottie-react-native+7.5.0.patch
+  react-native-keyboard-controller@1.22.4: patches/react-native-keyboard-controller+1.22.4.patch
+  react-native-notify-kit@10.7.1: patches/react-native-notify-kit+10.7.1.patch
+  react-native-webview@14.0.1: patches/react-native-webview+14.0.1.patch

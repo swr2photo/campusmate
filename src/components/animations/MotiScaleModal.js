@@ -56,7 +56,7 @@ export default function MotiScaleModal({
 
 const styles = StyleSheet.create({
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'center',

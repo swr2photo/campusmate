@@ -1,5 +1,13 @@
 import './src/services/notificationBackgroundTask';
-import { LogBox } from 'react-native';
+import { LogBox, Platform } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import * as Font from 'expo-font';
+import * as SplashScreen from 'expo-splash-screen';
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
+if (Platform.OS === 'android') {
+  Font.loadAsync(Ionicons.font).catch(() => {});
+}
 
 // Ignore non-fatal development warnings from displaying intrusive banners over UI
 LogBox.ignoreLogs([

@@ -1,6 +1,6 @@
 import Constants from 'expo-constants';
 import * as TaskManager from 'expo-task-manager';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService';
 import {
@@ -8,6 +8,7 @@ import {
   BACKGROUND_NOTIFICATION_TASK,
 } from './notificationConstants';
 import { extractBackgroundNotificationData } from './notificationPayload';
+import { dismissPendingLikeNotifications, isLegacyLikeIdentity } from './notificationPrivacy';
 import {
   getEncryptedItem,
   removeEncryptedItem,
@@ -53,6 +54,11 @@ export function getNotifeeModule() {
 export const notifyKitModule = getNotifeeModule();
 const Notifications = getNotificationsModule();
 
+export async function clearPrivateLikeNotifications() {
+  if (Constants.expoConfig?.extra?.secureDiscoveryEnabled !== true) return { failures: 0 };
+  return dismissPendingLikeNotifications(Notifications, notifyKitModule?.notifee);
+}
+
 let currentActiveConversationId = null;
 
 export function setActiveConversation(conversationId) {
@@ -63,6 +69,13 @@ export function getActiveConversation() {
   return currentActiveConversationId;
 }
 
+/** Only suppress while the matching chat is open AND the app is foregrounded. */
+function isActivelyViewingConversation(conversationId) {
+  if (!conversationId || !currentActiveConversationId) return false;
+  if (currentActiveConversationId !== String(conversationId)) return false;
+  return AppState.currentState === 'active';
+}
+
 function isRemoteHttpUri(value) {
   return typeof value === 'string'
     && (value.startsWith('http://') || value.startsWith('https://'));
@@ -71,6 +84,7 @@ function isRemoteHttpUri(value) {
 /**
  * LINE-style Android chat notification: sender/chat photo as the circular
  * large icon / MessagingStyle person, app icon as the small status-bar icon.
+ * @returns {Promise<boolean>} true if a local notification was displayed
  */
 export async function displayChatMessageNotification({
   senderName,
@@ -81,10 +95,10 @@ export async function displayChatMessageNotification({
   messageId,
   badgeCount,
 }) {
-  if (!notifyKitModule?.notifee) return;
+  if (!notifyKitModule?.notifee) return false;
   try {
-    if (conversationId && currentActiveConversationId && currentActiveConversationId === String(conversationId)) {
-      return;
+    if (isActivelyViewingConversation(conversationId)) {
+      return false;
     }
 
     const title = senderName || 'ข้อความใหม่';
@@ -139,16 +153,111 @@ export async function displayChatMessageNotification({
         },
       },
     });
+    return true;
   } catch (err) {
     console.warn('[NotificationService] Failed to display messaging notification:', err);
+    return false;
   }
+}
+
+export async function displayIncomingCallNotification({
+  callId,
+  callerName,
+  avatarUri,
+  callType,
+  conversationId,
+}) {
+  if (!notifyKitModule?.notifee || !callId) return false;
+  try {
+    const isVideo = callType === 'video';
+    const title = callerName || 'สายเรียกเข้า';
+    const body = isVideo ? 'วิดีโอคอลเรียกเข้า...' : 'สายเรียกเข้า (โทรด้วยเสียง)...';
+    const hasRemoteAvatar = isRemoteHttpUri(avatarUri);
+
+    await notifyKitModule.notifee.displayNotification({
+      id: `call-${callId}`,
+      title,
+      body,
+      data: {
+        type: 'incoming_call',
+        callId: String(callId || ''),
+        callerName: String(callerName || ''),
+        callType: isVideo ? 'video' : 'voice',
+        conversationId: String(conversationId || ''),
+      },
+      android: {
+        channelId: CHANNELS.calls,
+        category: notifyKitModule.AndroidCategory?.CALL || 'call',
+        importance: notifyKitModule.AndroidImportance?.HIGH || 4,
+        fullScreenAction: {
+          id: 'default',
+        },
+        pressAction: {
+          id: 'default',
+          launchActivity: 'default',
+        },
+        showTimestamp: true,
+        timestamp: Date.now(),
+        ongoing: true,
+        autoCancel: false,
+        ...(hasRemoteAvatar ? {
+          largeIcon: avatarUri,
+          circularLargeIcon: true,
+        } : {}),
+        actions: [
+          {
+            title: 'ตอบรับ',
+            pressAction: { id: 'accept', launchActivity: 'default' },
+          },
+          {
+            title: 'ปฏิเสธ',
+            pressAction: { id: 'reject' },
+          },
+        ],
+      },
+    });
+    return true;
+  } catch (err) {
+    console.warn('[NotificationService] Failed to display incoming call notification:', err);
+    return false;
+  }
+}
+
+export async function dismissIncomingCallNotification(callId) {
+  if (!notifyKitModule?.notifee || !callId) return;
+  try {
+    await notifyKitModule.notifee.cancelNotification(`call-${callId}`);
+  } catch (_) {}
 }
 
 export async function handleBackgroundNotificationTask({ data, error } = {}) {
   if (error) return;
 
   const notificationData = extractBackgroundNotificationData(data || {});
-  if (String(notificationData.type || '') !== 'message') return;
+  const type = String(notificationData.type || '');
+
+  if (type === 'incoming_call' || type === 'call') {
+    if (notificationData.callId) {
+      try {
+        await configureAndroidChannels();
+        await displayIncomingCallNotification({
+          callId: notificationData.callId,
+          callerName: notificationData.callerName || notificationData.notificationTitle,
+          avatarUri: notificationData.callerAvatar || notificationData.notificationAvatarUri,
+          callType: notificationData.callType,
+          conversationId: notificationData.conversationId,
+        });
+      } catch (callErr) {
+        console.warn('[NotificationService] Failed to render headless call notification:', callErr);
+      }
+    }
+    return;
+  }
+
+  if (type !== 'message') return;
+  if (notificationData.notificationTitle || notificationData.notificationBody) {
+    return;
+  }
 
   const conversationId = notificationData.conversationId;
   if (!conversationId) return;
@@ -162,7 +271,9 @@ export async function handleBackgroundNotificationTask({ data, error } = {}) {
       text: notificationData.notificationBody
         || notificationData.messagePreview
         || notificationData.preview
-        || (notificationData.mediaType === 'image' ? 'ส่งรูปภาพ' : 'มีข้อความใหม่'),
+        || (notificationData.mediaType === 'image'
+          ? 'ส่งรูปภาพ'
+          : (notificationData.mediaType === 'track' ? 'ส่งเพลง' : 'มีข้อความใหม่')),
       conversationId,
       messageId: notificationData.messageId || notificationData.id,
       badgeCount: notificationData.notificationBadge,
@@ -195,9 +306,11 @@ if (Notifications) {
       const data = notification?.request?.content?.data || {};
       const conversationId = data.conversationId;
       const type = String(data.type || '');
-      const isViewingCurrentChat = Boolean(
-        conversationId && currentActiveConversationId && currentActiveConversationId === String(conversationId)
-      );
+      if (Constants.expoConfig?.extra?.secureDiscoveryEnabled === true && isLegacyLikeIdentity(data)) {
+        void clearPrivateLikeNotifications();
+        return { shouldPlaySound: false, shouldSetBadge: false, shouldShowBanner: false, shouldShowList: false };
+      }
+      const isViewingCurrentChat = isActivelyViewingConversation(conversationId);
 
       // On Android, if notifyKit (Notifee) is available and this is a chat message,
       // render using AndroidStyle.MESSAGING (circular sender avatar + small app icon badge),
@@ -205,10 +318,31 @@ if (Notifications) {
       if (
         Platform.OS === 'android' &&
         notifyKitModule?.notifee &&
+        (type === 'incoming_call' || type === 'call') &&
+        data.callId
+      ) {
+        const shown = await displayIncomingCallNotification({
+          callId: data.callId,
+          callerName: data.callerName || notification.request?.content?.title,
+          avatarUri: data.callerAvatar || data.avatarUri,
+          callType: data.callType,
+          conversationId,
+        });
+        return {
+          shouldPlaySound: !shown,
+          shouldSetBadge: true,
+          shouldShowBanner: !shown,
+          shouldShowList: !shown,
+        };
+      }
+
+      if (
+        Platform.OS === 'android' &&
+        notifyKitModule?.notifee &&
         (type === 'message' || (!type && conversationId)) &&
         !isViewingCurrentChat
       ) {
-        displayChatMessageNotification({
+        const shown = await displayChatMessageNotification({
           senderName: data.senderName
             || data.notificationTitle
             || notification.request?.content?.title,
@@ -220,17 +354,18 @@ if (Notifications) {
           badgeCount: data.notificationBadge,
         });
         return {
-          shouldPlaySound: false,
+          shouldPlaySound: !shown,
           shouldSetBadge: true,
-          shouldShowBanner: false,
-          shouldShowList: false,
+          shouldShowBanner: !shown,
+          shouldShowList: !shown,
         };
       }
 
+      const isForeground = AppState.currentState === 'active';
       return {
         shouldPlaySound: !isViewingCurrentChat,
         shouldSetBadge: true,
-        shouldShowBanner: !isViewingCurrentChat,
+        shouldShowBanner: !isForeground && !isViewingCurrentChat,
         shouldShowList: !isViewingCurrentChat,
       };
     },

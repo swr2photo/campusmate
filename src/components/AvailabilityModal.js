@@ -1,31 +1,26 @@
+import Text from './AppText';
 import React, { useState, useEffect } from 'react';
-import {
-  Animated,
-  Alert,
-  PanResponder,
-  View,
-  Text,
-  StyleSheet,
-  Modal,
-  Pressable,
-  TouchableOpacity,
-  ScrollView,
-  Platform,
-} from 'react-native';
-import { Feather } from '@expo/vector-icons';
+import { View, StyleSheet, Modal, Pressable, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import Animated, {
+  cancelAnimation,
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { scheduleOnRN } from 'react-native-worklets';
+import { project, rubberband } from '../utils/motion';
+import FeatureIcon from './FeatureIcon';
+import AvailabilityCalendar from './AvailabilityCalendar';
+import { nextAvailabilityDays, availabilitySlotKey, removeAvailabilitySlot } from '../utils/availabilityCalendar';
 import { timeToMinutes } from '../data/matchingFilters';
-import { useTheme, colors, spacing, type } from '../theme';
+import { useTheme, spacing, type } from '../theme';
 
 // Generate next 14 days
 const generateDays = () => {
-  const days = [];
-  const today = new Date();
-  for (let i = 0; i < 14; i++) {
-    const d = new Date(today);
-    d.setDate(today.getDate() + i);
-    days.push(d);
-  }
-  return days;
+  return nextAvailabilityDays();
 };
 
 const formatDayStr = (date) => {
@@ -61,12 +56,18 @@ const parseLocalIsoDate = (value) => {
 const normalizeAvailabilitySlot = (slot) => {
   if (!slot || typeof slot !== 'object' || Array.isArray(slot)) return null;
   const date = typeof slot.date === 'string' ? slot.date.trim().slice(0, 32) : '';
-  const start = typeof slot.start === 'string' ? slot.start.trim() : '';
-  const end = typeof slot.end === 'string' ? slot.end.trim() : '';
+  const day = typeof slot.day === 'string' ? slot.day.trim().slice(0, 32) : '';
+  const label = typeof slot.label === 'string' ? slot.label.trim().slice(0, 64) : '';
+  const start = typeof slot.start === 'string' ? slot.start.trim() : (typeof slot.startTime === 'string' ? slot.startTime.trim() : '');
+  const end = typeof slot.end === 'string' ? slot.end.trim() : (typeof slot.endTime === 'string' ? slot.endTime.trim() : '');
   const startMinutes = timeToMinutes(start);
   const endMinutes = timeToMinutes(end);
-  if (!date || startMinutes == null || endMinutes == null || endMinutes <= startMinutes) return null;
-  return { date, start, end };
+  if ((!date && !day && !label) || startMinutes == null || endMinutes == null || endMinutes <= startMinutes) return null;
+  const res = { start, end };
+  if (date) res.date = date;
+  if (day) res.day = day;
+  if (label) res.label = label;
+  return res;
 };
 
 const normalizeAvailabilitySlots = (value) => {
@@ -76,7 +77,7 @@ const normalizeAvailabilitySlots = (value) => {
     .map(normalizeAvailabilitySlot)
     .filter((slot) => {
       if (!slot) return false;
-      const key = `${slot.date}|${slot.start}|${slot.end}`;
+      const key = `${slot.date || slot.day || ''}|${slot.start}|${slot.end}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -86,13 +87,17 @@ const normalizeAvailabilitySlots = (value) => {
 
 const sortAvailabilitySlots = (value) => (
   [...value].sort((left, right) => (
-    `${left.date}|${left.start}`.localeCompare(`${right.date}|${right.start}`)
+    `${left.date || left.day || ''}|${left.start}`.localeCompare(`${right.date || right.day || ''}|${right.start}`)
   ))
 );
 
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { showAlert } from '../utils/appAlert';
+
 export default function AvailabilityModal({ visible, onClose, availabilitySlots, onSave }) {
   const { colors: themeColors } = useTheme();
-  const styles = getStyles(themeColors);
+  const insets = useSafeAreaInsets();
+  const styles = getStyles(themeColors, insets);
   
   // Local state for editing
   const [slots, setSlots] = useState([]);
@@ -103,95 +108,69 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
   const [startTime, setStartTime] = useState(DEFAULT_START_TIME);
   const [endTime, setEndTime] = useState(DEFAULT_END_TIME);
   const [showTimePicker, setShowTimePicker] = useState(null); // 'start' or 'end'
-  const translateY = React.useRef(new Animated.Value(600)).current;
-  const fadeAnim = React.useRef(new Animated.Value(0)).current;
+  const translateY = useSharedValue(600);
+  const fadeAnim = useSharedValue(0);
+  const dragStartY = useSharedValue(0);
   const isClosingRef = React.useRef(false);
   const wasVisibleRef = React.useRef(false);
+
+  const unlockClose = React.useCallback(() => {
+    isClosingRef.current = false;
+  }, []);
+
+  const finishClose = React.useCallback(() => {
+    onClose();
+    isClosingRef.current = false;
+  }, [onClose]);
 
   const closeWithAnimation = React.useCallback(() => {
     if (!visible || isClosingRef.current) return;
     isClosingRef.current = true;
-    Animated.parallel([
-      Animated.timing(translateY, {
-        duration: 220,
-        toValue: 700,
-        useNativeDriver: true,
-      }),
-      Animated.timing(fadeAnim, {
-        duration: 200,
-        toValue: 0,
-        useNativeDriver: true,
-      }),
-    ]).start(({ finished }) => {
-      if (finished) onClose();
-      isClosingRef.current = false;
-    });
-  }, [onClose, translateY, fadeAnim, visible]);
+    translateY.set(withSpring(700, { duration: 300, dampingRatio: 0.8 }, (finished) => {
+      if (finished) scheduleOnRN(finishClose);
+      else scheduleOnRN(unlockClose);
+    }));
+    fadeAnim.set(withTiming(0, { duration: 200, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
+  }, [fadeAnim, finishClose, translateY, unlockClose, visible]);
 
-  const panResponder = React.useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onStartShouldSetPanResponderCapture: () => true,
-    onMoveShouldSetPanResponder: (_, gestureState) => (
-      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-    ),
-    onMoveShouldSetPanResponderCapture: (_, gestureState) => (
-      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-    ),
-    onPanResponderGrant: () => {
-      translateY.stopAnimation();
-    },
-    onPanResponderMove: (_, gestureState) => {
-      if (gestureState.dy > 0) {
-        translateY.setValue(gestureState.dy);
+  const panGesture = React.useMemo(() => Gesture.Pan()
+    .onStart(() => {
+      cancelAnimation(translateY);
+      dragStartY.set(translateY.get());
+      scheduleOnRN(unlockClose);
+    })
+    .onUpdate((event) => {
+      const next = dragStartY.get() + event.translationY;
+      if (next > 0) translateY.set(next);
+      else translateY.set(rubberband(next, 600));
+    })
+    .onEnd((event) => {
+      const projected = translateY.get() + project(event.velocityY);
+      if (projected > 70 || event.velocityY > 500) {
+        scheduleOnRN(closeWithAnimation);
       } else {
-        translateY.setValue(gestureState.dy * 0.15);
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8, velocity: event.velocityY }));
+        fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dy > 70 || gestureState.vy > 0.5) {
-        closeWithAnimation();
-      } else {
-        Animated.spring(translateY, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 280,
-          useNativeDriver: true,
-        }).start();
+    })
+    .onFinalize((_, success) => {
+      if (!success) {
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
+        fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    },
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderTerminate: () => {
-      Animated.spring(translateY, {
-        toValue: 0,
-        damping: 22,
-        mass: 0.8,
-        stiffness: 280,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [closeWithAnimation, translateY]);
+    }), [closeWithAnimation, dragStartY, fadeAnim, translateY, unlockClose]);
+
+  const fadeStyle = useAnimatedStyle(() => ({ opacity: fadeAnim.get() }));
+  const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.get() }] }));
 
   useEffect(() => {
     const justOpened = visible && !wasVisibleRef.current;
     if (justOpened) {
       isClosingRef.current = false;
-      translateY.setValue(600);
-      fadeAnim.setValue(0);
-      Animated.parallel([
-        Animated.spring(translateY, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 280,
-          useNativeDriver: true,
-        }),
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 180,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      translateY.set(600);
+      fadeAnim.set(0);
+      translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
+      fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       const nextDays = generateDays();
       setDays(nextDays);
       setSelectedDate(formatIsoDate(nextDays[0]));
@@ -201,7 +180,7 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
       setSlots(sortAvailabilitySlots(normalizeAvailabilitySlots(availabilitySlots)));
     }
     if (!visible) {
-      translateY.stopAnimation();
+      cancelAnimation(translateY);
       isClosingRef.current = false;
       setShowTimePicker(null);
     }
@@ -209,16 +188,32 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
   }, [availabilitySlots, fadeAnim, translateY, visible]);
 
   const handleAddSlot = () => {
+    if (!days.some((day) => formatIsoDate(day) === selectedDate)) {
+      showAlert('เลือกวันใหม่', 'กรุณาเลือกวันภายใน 14 วันจากปฏิทิน', { tone: 'warning' });
+      return;
+    }
+    if (slots.length >= 50) {
+      showAlert('เลือกครบแล้ว', 'เพิ่มได้สูงสุด 50 ช่วงเวลา กรุณาลบบางช่วงก่อนเพิ่มใหม่', { tone: 'warning' });
+      return;
+    }
     const startMinutes = timeToMinutes(startTime);
     const endMinutes = timeToMinutes(endTime);
     if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) {
-      Alert.alert('เวลาไม่ถูกต้อง', 'เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น');
+      showAlert('เวลาไม่ถูกต้อง', 'เวลาสิ้นสุดต้องมากกว่าเวลาเริ่มต้น', { tone: 'warning' });
       return;
     }
-    const newSlot = { date: selectedDate, start: startTime, end: endTime };
+    const dateObj = parseLocalIsoDate(selectedDate);
+    const dayNames = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+    const newSlot = {
+      date: selectedDate,
+      day: dateObj ? dayNames[dateObj.getDay()] : '',
+      label: dateObj ? formatDayStr(dateObj) : selectedDate,
+      start: startTime,
+      end: endTime,
+    };
     setSlots((currentSlots) => {
       if (currentSlots.some((slot) => (
-        slot.date === newSlot.date
+        (slot.date || slot.day) === (newSlot.date || newSlot.day)
         && slot.start === newSlot.start
         && slot.end === newSlot.end
       ))) {
@@ -228,8 +223,8 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
     });
   };
 
-  const handleRemoveSlot = (index) => {
-    setSlots((currentSlots) => currentSlots.filter((_, currentIndex) => currentIndex !== index));
+  const handleRemoveSlot = (key) => {
+    setSlots((currentSlots) => removeAvailabilitySlot(currentSlots, key));
   };
 
   const handleSave = () => {
@@ -245,15 +240,18 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
       statusBarTranslucent={Platform.OS === 'android'}
       transparent
     >
+      <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={styles.overlay}>
-        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', opacity: fadeAnim }]}>
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }, fadeStyle]}>
           <Pressable onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
         </Animated.View>
-        <Animated.View style={[styles.container, { transform: [{ translateY }] }]}>
-          <View {...panResponder.panHandlers} accessibilityHint="ลากลงเพื่อปิด" style={styles.header}>
+        <Animated.View style={[styles.container, sheetStyle]}>
+          <GestureDetector gesture={panGesture}>
+          <View accessibilityHint="ลากลงเพื่อปิด" style={styles.header}>
             <View style={styles.handle} />
             <Text style={styles.title}>เลือกเวลาที่สะดวก</Text>
           </View>
+          </GestureDetector>
           
           <ScrollView
             bounces={false}
@@ -264,22 +262,26 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
             style={styles.content}
             showsVerticalScrollIndicator={false}
           >
+            <AvailabilityCalendar days={days} selectedDate={selectedDate} onSelect={setSelectedDate} slots={slots} />
             {/* Added Slots */}
             {slots.length > 0 && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>เวลาที่เลือกไว้ ({slots.length})</Text>
-                {slots.map((slot, index) => {
+                {slots.map((slot) => {
                   const dateObj = parseLocalIsoDate(slot.date);
                   const displayDate = dateObj ? formatDayStr(dateObj) : slot.date;
                   return (
-                    <View key={`${slot.date}-${slot.start}-${slot.end}-${index}`} style={styles.slotItem}>
-                      <View>
+                    <View key={availabilitySlotKey(slot)} style={styles.slotItem}>
+                      <View style={styles.slotCopy}>
                         <Text style={styles.slotDate}>{displayDate}</Text>
                         <Text style={styles.slotTime}>{slot.start} - {slot.end}</Text>
                       </View>
-                      <TouchableOpacity onPress={() => handleRemoveSlot(index)} style={styles.removeBtn}>
-                        <Feather name="trash-2" size={18} color={colors.red} />
-                      </TouchableOpacity>
+                      <Pressable accessibilityRole="button" accessibilityLabel={`ลบช่วงเวลา ${displayDate} ${slot.start} ถึง ${slot.end}`}
+                        onPress={() => handleRemoveSlot(availabilitySlotKey(slot))}
+                        style={({ pressed }) => [styles.removeBtn, pressed && { opacity: 0.65 }]}>
+                        <FeatureIcon name="trash" size={18} color={themeColors.danger} />
+                        <Text style={styles.removeText}>ลบ</Text>
+                      </Pressable>
                     </View>
                   );
                 })}
@@ -292,38 +294,21 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>เพิ่มช่วงเวลาใหม่</Text>
               
-              <Text style={styles.label}>เลือกวัน (14 วันล่วงหน้า)</Text>
-              <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator={false} style={styles.daysScroll}>
-                {days.map((d) => {
-                  const iso = formatIsoDate(d);
-                  const isSelected = selectedDate === iso;
-                  return (
-                    <TouchableOpacity
-                      key={iso}
-                      style={[styles.dayBadge, isSelected && styles.dayBadgeSelected]}
-                      onPress={() => setSelectedDate(iso)}
-                    >
-                      <Text style={[styles.dayText, isSelected && styles.dayTextSelected]}>
-                        {formatDayStr(d)}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
+              <Text style={styles.selectedDay}>{formatDayStr(parseLocalIsoDate(selectedDate) || days[0])}</Text>
 
               <View style={styles.timeRow}>
                 <View style={styles.timeCol}>
                   <Text style={styles.label}>เวลาเริ่มต้น</Text>
                   <TouchableOpacity style={styles.timeSelector} onPress={() => setShowTimePicker(showTimePicker === 'start' ? null : 'start')}>
                     <Text style={styles.timeSelectorText}>{startTime}</Text>
-                    <Feather name="clock" size={16} color={themeColors.inkSoft} />
+                    <FeatureIcon name="clock" size={18} color={themeColors.inkSoft} />
                   </TouchableOpacity>
                 </View>
                 <View style={styles.timeCol}>
                   <Text style={styles.label}>เวลาสิ้นสุด</Text>
                   <TouchableOpacity style={styles.timeSelector} onPress={() => setShowTimePicker(showTimePicker === 'end' ? null : 'end')}>
                     <Text style={styles.timeSelectorText}>{endTime}</Text>
-                    <Feather name="clock" size={16} color={themeColors.inkSoft} />
+                    <FeatureIcon name="clock" size={18} color={themeColors.inkSoft} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -360,7 +345,7 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
               )}
 
               <TouchableOpacity style={styles.addButton} onPress={handleAddSlot}>
-                <Feather name="plus" size={18} color="#fff" />
+                <FeatureIcon name="plus" size={18} color={themeColors.onPrimary} />
                 <Text style={styles.addButtonText}>เพิ่มช่วงเวลานี้</Text>
               </TouchableOpacity>
             </View>
@@ -373,11 +358,12 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
           </View>
         </Animated.View>
       </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
 
-const getStyles = (themeColors) => StyleSheet.create({
+const getStyles = (themeColors, insets) => StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: 'flex-end',
@@ -386,11 +372,12 @@ const getStyles = (themeColors) => StyleSheet.create({
     backgroundColor: themeColors.canvas,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    height: '80%',
-    maxHeight: '80%',
+    height: '92%',
+    maxHeight: '92%',
     overflow: 'hidden',
-    paddingBottom: Platform.OS === 'ios' ? 34 : 0,
+    paddingBottom: Platform.OS === 'ios' ? 0 : 0, // Insets handled in footer
   },
+  // ... (keep the rest the same until footer)
   handle: {
     alignSelf: 'center',
     width: 44,
@@ -405,7 +392,7 @@ const getStyles = (themeColors) => StyleSheet.create({
     paddingVertical: spacing.sm,
     paddingHorizontal: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: themeColors.surfaceRaised,
+    borderBottomColor: themeColors.line,
   },
   title: {
     fontSize: type.h3,
@@ -432,7 +419,7 @@ const getStyles = (themeColors) => StyleSheet.create({
   },
   divider: {
     height: 1,
-    backgroundColor: themeColors.surfaceRaised,
+    backgroundColor: themeColors.line,
     marginVertical: spacing.md,
   },
   slotItem: {
@@ -444,23 +431,32 @@ const getStyles = (themeColors) => StyleSheet.create({
     borderRadius: 12,
     marginBottom: spacing.xs,
     borderWidth: 1,
-    borderColor: themeColors.surfaceRaised,
+    borderColor: themeColors.line,
   },
   slotDate: {
     fontSize: type.body,
     fontWeight: '600',
     color: themeColors.ink,
   },
+  slotCopy: { flex: 1, minWidth: 0, marginRight: 12 },
+  selectedDay: { fontSize: type.body, color: themeColors.primary, fontWeight: '700', marginBottom: 12 },
   slotTime: {
     fontSize: type.caption,
     color: themeColors.primary,
     marginTop: 2,
   },
   removeBtn: {
-    padding: spacing.sm,
-    backgroundColor: 'rgba(255, 59, 48, 0.1)',
-    borderRadius: 8,
+    minHeight: 44,
+    minWidth: 72,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: themeColors.dangerSoft,
+    borderRadius: 12,
   },
+  removeText: { color: themeColors.danger, fontSize: 14, fontWeight: '700' },
   label: {
     fontSize: type.caption,
     color: themeColors.inkMuted,
@@ -475,7 +471,7 @@ const getStyles = (themeColors) => StyleSheet.create({
     borderRadius: 20,
     backgroundColor: themeColors.surface,
     borderWidth: 1,
-    borderColor: themeColors.surfaceRaised,
+    borderColor: themeColors.line,
     marginRight: spacing.sm,
   },
   dayBadgeSelected: {
@@ -487,7 +483,7 @@ const getStyles = (themeColors) => StyleSheet.create({
     fontSize: type.caption,
   },
   dayTextSelected: {
-    color: '#fff',
+    color: themeColors.onPrimary,
     fontWeight: '600',
   },
   timeRow: {
@@ -507,7 +503,7 @@ const getStyles = (themeColors) => StyleSheet.create({
     padding: spacing.md,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: themeColors.surfaceRaised,
+    borderColor: themeColors.line,
   },
   timeSelectorText: {
     fontSize: type.body,
@@ -540,14 +536,15 @@ const getStyles = (themeColors) => StyleSheet.create({
     marginTop: spacing.sm,
   },
   addButtonText: {
-    color: '#fff',
+    color: themeColors.onPrimary,
     fontWeight: '600',
     marginLeft: 8,
   },
   footer: {
     padding: spacing.md,
+    paddingBottom: spacing.md + Math.max(insets?.bottom || (Platform.OS === 'ios' ? 34 : 0), 0),
     borderTopWidth: 1,
-    borderTopColor: themeColors.surfaceRaised,
+    borderTopColor: themeColors.line,
   },
   saveButton: {
     backgroundColor: themeColors.primaryDark,
@@ -556,7 +553,7 @@ const getStyles = (themeColors) => StyleSheet.create({
     alignItems: 'center',
   },
   saveButtonText: {
-    color: '#fff',
+    color: themeColors.onPrimary,
     fontSize: type.body,
     fontWeight: 'bold',
   },

@@ -9,7 +9,8 @@ buildscript {
         classpath 'com.google.gms:google-services:4.4.4'
     classpath('com.android.tools.build:gradle')
     classpath('com.facebook.react:react-native-gradle-plugin')
-    classpath('org.jetbrains.kotlin:kotlin-gradle-plugin')
+    def kotlinVersion = findProperty('android.kotlinVersion')
+    classpath(kotlinVersion ? "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion" : 'org.jetbrains.kotlin:kotlin-gradle-plugin')
   }
 }
 
@@ -21,17 +22,22 @@ allprojects {
   }
 }
 
-ext {
-  ndkVersion = "27.0.12077973"
-}
-
 apply plugin: "expo-root-project"
 apply plugin: "com.facebook.react.rootproject"
 
-subprojects {
-  tasks.whenTaskAdded { task ->
-    if (task.name.startsWith("lintVital")) {
-      task.enabled = false
+// Optional local build limit for machines under memory pressure. AGP invokes
+// Ninja directly, so CMAKE_BUILD_PARALLEL_LEVEL alone does not bound its jobs.
+if (rootProject.hasProperty('campusmateNativeCompileJobs')) {
+  def jobs = rootProject.property('campusmateNativeCompileJobs').toString()
+  if (!(jobs in ['1', '2', '3', '4'])) throw new GradleException('Native compile jobs must be 1-4')
+  subprojects { nativeProject ->
+    def configurePool = {
+      nativeProject.android.defaultConfig.externalNativeBuild.cmake.arguments.addAll([
+        "-DCMAKE_JOB_POOLS=campusmate_compile=${jobs}",
+        '-DCMAKE_JOB_POOL_COMPILE=campusmate_compile',
+      ])
     }
+    nativeProject.plugins.withId('com.android.library') { configurePool() }
+    nativeProject.plugins.withId('com.android.application') { configurePool() }
   }
 }

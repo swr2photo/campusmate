@@ -1,27 +1,24 @@
+import Text from './AppText';
+import { AppTextInput as TextInput } from './AppText';
 import ReplyPreview from './ReplyPreviewNative';
 import { ChatVideoCover } from './ChatVideoBubble';
 import ChatProtectedImageBubble from './ChatProtectedImageBubble';
 import { useDecryptedMedia } from '../hooks/useDecryptedMedia';
 import { getDecryptedMediaUri, getSyncCachedMediaUri } from '../services/chatMediaService';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Alert,
-  Animated,
-  Easing,
-  Image,
-  InteractionManager,
-  Modal,
-  PanResponder,
-  Platform,
-  Pressable,
-  ScrollView,
-  Share,
-  StyleSheet,
-  Text,
-  TextInput,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import { Animated, Easing, FlatList, Image, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, useWindowDimensions, View } from 'react-native';
+import Reanimated, {
+  Easing as ReanimatedEasing,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { scheduleOnRN } from 'react-native-worklets';
+import { project, rubberband } from '../utils/motion';
+import { scheduleIdleTask } from '../utils/scheduleIdleTask';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import * as Clipboard from 'expo-clipboard';
@@ -59,6 +56,8 @@ import {
   useQuickReactions,
   useDefaultMessageReaction,
 } from '../utils/messageReactions';
+import { showAlert } from '../utils/appAlert';
+import { showInAppNotification } from './InAppNotificationBanner';
 
 export const QUICK_REACTIONS = DEFAULT_QUICK_REACTIONS;
 export const DEFAULT_MESSAGE_REACTION = DEFAULT_QUICK_REACTIONS[0];
@@ -84,7 +83,7 @@ function formatTime(item) {
 }
 
 function MenuRow({ destructive = false, icon, isDark = false, label, onPress, trailing }) {
-  const iconColor = destructive ? '#FF5A5F' : (isDark ? '#FFFFFF' : '#10203A');
+  const iconColor = destructive ? '#FF5A5F' : (isDark ? '#FFFFFF' : '#25272B');
   const trailingColor = isDark ? 'rgba(255,255,255,0.42)' : 'rgba(16,32,58,0.38)';
   return (
     <Pressable
@@ -123,7 +122,7 @@ function ForwardAvatar({ conversation, fallbackColor }) {
     ));
   const cachedAvatarUri = useRemoteImage(
     avatarUri || null,
-    conversation?.participantProfiles?.[conversation?.profileId]?.updatedAt,
+    conversation?.participantProfiles?.[conversation?.profileId]?.avatarRevision,
     conversation?.profileId
   );
   // Render the remote URI immediately while the cache warms up, then switch
@@ -188,6 +187,63 @@ const CATEGORY_BAR_ITEMS = [
   { id: 'flags', icon: '🏳️', label: 'ธง' },
 ];
 
+const EASE_OUT = ReanimatedEasing.bezier(0.23, 1, 0.32, 1);
+
+function applySheetDrag(translateY, topFade, isCustomizingSV, sheetHeight, nextY) {
+  'worklet';
+  if (nextY >= 0) {
+    translateY.set(nextY);
+  } else {
+    translateY.set(rubberband(nextY, sheetHeight));
+  }
+  if (isCustomizingSV.get()) {
+    const dy = Math.max(0, translateY.get());
+    topFade.set(Math.max(0, Math.min(1, 1 - (dy / (sheetHeight * 0.6)))));
+  }
+}
+
+function settleOrDismissSheet(
+  translateY,
+  topFade,
+  isCustomizingSV,
+  isClosingSV,
+  sheetHeight,
+  dy,
+  velocityY,
+  completeClose,
+  dx,
+  dyHard,
+  dySoft,
+  vySoft,
+  vyHard,
+  tapDismiss
+) {
+  'worklet';
+  const projected = dy + project(velocityY);
+  const isTap = tapDismiss && Math.hypot(dx, dy) < 10;
+  const shouldClose = isTap
+    || dy > dyHard
+    || (dy > dySoft && velocityY > vySoft)
+    || velocityY > vyHard
+    || projected > sheetHeight * 0.4;
+  if (shouldClose) {
+    if (isClosingSV.get()) return;
+    isClosingSV.set(1);
+    translateY.set(withSpring(sheetHeight, {
+      duration: 300,
+      dampingRatio: 1,
+      velocity: velocityY,
+      overshootClamping: true,
+    }, (finished) => {
+      if (finished) scheduleOnRN(completeClose);
+    }));
+    topFade.set(withTiming(0, { duration: 150, easing: EASE_OUT }));
+    return;
+  }
+  translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8, velocity: velocityY }));
+  topFade.set(withTiming(isCustomizingSV.get() ? 1 : 0, { duration: 150, easing: EASE_OUT }));
+}
+
 const EmojiCell = React.memo(function EmojiCell({ emoji, onPress }) {
   const handlePress = useCallback(() => {
     onPress?.(emoji);
@@ -223,11 +279,19 @@ function EmojiReactionPickerSheet({
   const { height: screenHeight } = useWindowDimensions();
   const bottomSafeInset = Math.max(insets.bottom || 0, Platform.OS === 'android' ? 28 : 16);
   const sheetHeight = Math.min(620, Math.max(470, screenHeight * 0.63 + bottomSafeInset));
-  const slideAnim = useRef(new Animated.Value(sheetHeight)).current;
-  const topFadeAnim = useRef(new Animated.Value(0)).current;
+  const translateY = useSharedValue(sheetHeight);
+  const topFade = useSharedValue(0);
+  const dragStart = useSharedValue(0);
+  const scrollYSV = useSharedValue(0);
+  const isCustomizingSV = useSharedValue(0);
+  const isClosingSV = useSharedValue(0);
+  const sheetHeightSV = useSharedValue(sheetHeight);
+  const touchStartX = useSharedValue(0);
+  const touchStartY = useSharedValue(0);
   const isClosing = useRef(false);
 
   const [isReady, setIsReady] = useState(false);
+  const readyIdleTask = useRef(null);
   const [isCustomizing, setIsCustomizing] = useState(
     typeof initialEditingSlot === 'number' && initialEditingSlot >= 0
   );
@@ -276,42 +340,66 @@ function EmojiReactionPickerSheet({
   }, []);
 
   useEffect(() => {
-    if (isOpen) {
+    sheetHeightSV.set(sheetHeight);
+  }, [sheetHeight, sheetHeightSV]);
+
+  useEffect(() => {
+    isCustomizingSV.set(isCustomizing ? 1 : 0);
+  }, [isCustomizing, isCustomizingSV]);
+
+  const cancelReadyIdleTask = useCallback(() => {
+    readyIdleTask.current?.cancel?.();
+    readyIdleTask.current = null;
+  }, []);
+
+  const markReady = useCallback(() => {
+    cancelReadyIdleTask();
+    readyIdleTask.current = scheduleIdleTask(() => {
+      readyIdleTask.current = null;
+      setIsReady(true);
+    });
+  }, [cancelReadyIdleTask]);
+
+  const stopCustomizing = useCallback(() => {
+    setIsCustomizing(false);
+  }, []);
+
+  const completeClose = useCallback(() => {
+    onClose?.();
+    setTimeout(() => {
       isClosing.current = false;
+      isClosingSV.set(0);
+    }, 50);
+  }, [isClosingSV, onClose]);
+
+  useEffect(() => {
+    if (isOpen) {
+      cancelReadyIdleTask();
+      isClosing.current = false;
+      isClosingSV.set(0);
       scrollOffsetY.current = 0;
+      scrollYSV.set(0);
       setSearchQuery('');
       setActiveCategory('recent');
       setIsReady(false);
       const shouldCustomize = typeof initialEditingSlot === 'number' && initialEditingSlot >= 0;
       setIsCustomizing(shouldCustomize);
-      slideAnim.setValue(sheetHeight);
-      topFadeAnim.setValue(shouldCustomize ? 1 : 0);
-      Animated.spring(slideAnim, {
-        damping: 24,
-        mass: 0.85,
-        stiffness: 280,
-        toValue: 0,
-        useNativeDriver: true,
-      }).start(({ finished }) => {
-        if (finished) {
-          InteractionManager.runAfterInteractions(() => {
-            setIsReady(true);
-          });
-        }
-      });
-      if (shouldCustomize) {
-        Animated.timing(topFadeAnim, {
-          duration: 200,
-          easing: Easing.out(Easing.ease),
-          toValue: 1,
-          useNativeDriver: true,
-        }).start();
-      }
+      isCustomizingSV.set(shouldCustomize ? 1 : 0);
+      cancelAnimation(translateY);
+      cancelAnimation(topFade);
+      translateY.set(sheetHeight);
+      topFade.set(shouldCustomize ? 1 : 0);
+      translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }, (finished) => {
+        if (finished) scheduleOnRN(markReady);
+      }));
     } else {
+      cancelReadyIdleTask();
       setIsReady(false);
-      slideAnim.setValue(sheetHeight);
+      translateY.set(sheetHeight);
     }
-  }, [initialEditingSlot, isOpen, sheetHeight, slideAnim, topFadeAnim]);
+  }, [cancelReadyIdleTask, initialEditingSlot, isClosingSV, isCustomizingSV, isOpen, markReady, scrollYSV, sheetHeight, topFade, translateY]);
+
+  useEffect(() => () => cancelReadyIdleTask(), [cancelReadyIdleTask]);
 
   useEffect(() => {
     if (typeof initialEditingSlot === 'number' && initialEditingSlot >= 0 && initialEditingSlot < 6) {
@@ -322,304 +410,175 @@ function EmojiReactionPickerSheet({
 
   const handleStartCustomizing = useCallback(() => {
     setIsCustomizing(true);
+    isCustomizingSV.set(1);
     setActiveSlot(0);
-    topFadeAnim.setValue(0);
-    Animated.timing(topFadeAnim, {
-      duration: 220,
-      easing: Easing.out(Easing.ease),
-      toValue: 1,
-      useNativeDriver: true,
-    }).start();
-  }, [topFadeAnim]);
+    topFade.set(0);
+    topFade.set(withTiming(1, { duration: 220, easing: EASE_OUT }));
+  }, [isCustomizingSV, topFade]);
 
   const handleFinishCustomizing = useCallback(() => {
-    Animated.timing(topFadeAnim, {
-      duration: 180,
-      easing: Easing.out(Easing.ease),
-      toValue: 0,
-      useNativeDriver: true,
-    }).start(() => {
-      setIsCustomizing(false);
-    });
-  }, [topFadeAnim]);
+    topFade.set(withTiming(0, { duration: 180, easing: EASE_OUT }, (finished) => {
+      if (finished) scheduleOnRN(stopCustomizing);
+    }));
+  }, [stopCustomizing, topFade]);
 
   const handleClose = useCallback(() => {
     if (isClosing.current) return;
     isClosing.current = true;
-    Animated.parallel([
-      Animated.timing(slideAnim, {
-        duration: 180,
-        easing: Easing.out(Easing.ease),
-        toValue: sheetHeight,
-        useNativeDriver: true,
-      }),
-      Animated.timing(topFadeAnim, {
-        duration: 150,
-        easing: Easing.out(Easing.ease),
-        toValue: 0,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      onClose?.();
-      setTimeout(() => {
-        isClosing.current = false;
-      }, 50);
-    });
-  }, [onClose, sheetHeight, slideAnim, topFadeAnim]);
+    isClosingSV.set(1);
+    translateY.set(withTiming(sheetHeight, { duration: 180, easing: EASE_OUT }, (finished) => {
+      if (finished) scheduleOnRN(completeClose);
+    }));
+    topFade.set(withTiming(0, { duration: 150, easing: EASE_OUT }));
+  }, [completeClose, isClosingSV, sheetHeight, topFade, translateY]);
 
-  // 1. Direct Handle PanResponder (instant grab on touch-down)
-  const sheetHandlePanResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onStartShouldSetPanResponderCapture: () => true,
-    onMoveShouldSetPanResponder: (_, { dy }) => Math.abs(dy) > 1,
-    onMoveShouldSetPanResponderCapture: (_, { dy }) => Math.abs(dy) > 1,
-    onPanResponderTerminationRequest: () => false,
-    onShouldBlockNativeResponder: () => true,
-    onPanResponderGrant: () => {
-      slideAnim.stopAnimation();
-    },
-    onPanResponderMove: (_, { dy }) => {
-      if (dy > 0) {
-        slideAnim.setValue(dy);
-        if (isCustomizing) {
-          const progress = Math.max(0, Math.min(1, 1 - (dy / (sheetHeight * 0.6))));
-          topFadeAnim.setValue(progress);
-        }
+  const sheetHandlePan = useMemo(() => Gesture.Pan()
+    .minDistance(0)
+    .onStart(() => {
+      cancelAnimation(translateY);
+      cancelAnimation(topFade);
+      dragStart.set(translateY.get());
+    })
+    .onUpdate((event) => {
+      applySheetDrag(translateY, topFade, isCustomizingSV, sheetHeightSV.get(), dragStart.get() + event.translationY);
+    })
+    .onEnd((event) => {
+      settleOrDismissSheet(
+        translateY, topFade, isCustomizingSV, isClosingSV, sheetHeightSV.get(),
+        translateY.get(), event.velocityY, completeClose, event.translationX,
+        30, 10, 150, 300, false
+      );
+    })
+    .onFinalize((_event, success) => {
+      if (!success && !isClosingSV.get()) {
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
       }
-    },
-    onPanResponderRelease: (_, { dy, vy }) => {
-      if (dy > 30 || (dy > 10 && vy > 0.15) || vy > 0.3) {
-        handleClose();
-      } else {
-        Animated.parallel([
-          Animated.spring(slideAnim, {
-            damping: 24,
-            mass: 0.85,
-            stiffness: 280,
-            toValue: 0,
-            useNativeDriver: true,
-          }),
-          Animated.timing(topFadeAnim, {
-            duration: 150,
-            toValue: isCustomizing ? 1 : 0,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      }
-    },
-    onPanResponderTerminate: () => {
-      Animated.spring(slideAnim, {
-        damping: 24,
-        mass: 0.85,
-        stiffness: 280,
-        toValue: 0,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [handleClose, isCustomizing, sheetHeight, slideAnim, topFadeAnim]);
+    }), [completeClose, dragStart, isClosingSV, isCustomizingSV, sheetHeightSV, topFade, translateY]);
 
-  // 2. Sheet Header Area PanResponder (allows tapping search input, but downward drag moves sheet)
-  const sheetHeaderPanResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => false,
-    onStartShouldSetPanResponderCapture: () => false,
-    onMoveShouldSetPanResponder: (_, { dy, dx }) => dy > 6 && Math.abs(dy) > Math.abs(dx),
-    onMoveShouldSetPanResponderCapture: (_, { dy, dx }) => dy > 8 && Math.abs(dy) > Math.abs(dx),
-    onPanResponderTerminationRequest: () => false,
-    onShouldBlockNativeResponder: () => true,
-    onPanResponderGrant: () => {
-      slideAnim.stopAnimation();
-    },
-    onPanResponderMove: (_, { dy }) => {
-      if (dy > 0) {
-        slideAnim.setValue(dy);
-        if (isCustomizing) {
-          const progress = Math.max(0, Math.min(1, 1 - (dy / (sheetHeight * 0.6))));
-          topFadeAnim.setValue(progress);
-        }
+  const sheetHeaderPan = useMemo(() => Gesture.Pan()
+    .activeOffsetY([10000, 6])
+    .failOffsetX([-24, 24])
+    .onStart(() => {
+      cancelAnimation(translateY);
+      cancelAnimation(topFade);
+      dragStart.set(translateY.get());
+    })
+    .onUpdate((event) => {
+      applySheetDrag(translateY, topFade, isCustomizingSV, sheetHeightSV.get(), dragStart.get() + event.translationY);
+    })
+    .onEnd((event) => {
+      settleOrDismissSheet(
+        translateY, topFade, isCustomizingSV, isClosingSV, sheetHeightSV.get(),
+        translateY.get(), event.velocityY, completeClose, event.translationX,
+        35, 10, 180, 320, false
+      );
+    })
+    .onFinalize((_event, success) => {
+      if (!success && !isClosingSV.get()) {
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
       }
-    },
-    onPanResponderRelease: (_, { dy, vy }) => {
-      if (dy > 35 || (dy > 10 && vy > 0.18) || vy > 0.32) {
-        handleClose();
-      } else {
-        Animated.parallel([
-          Animated.spring(slideAnim, {
-            damping: 24,
-            mass: 0.85,
-            stiffness: 280,
-            toValue: 0,
-            useNativeDriver: true,
-          }),
-          Animated.timing(topFadeAnim, {
-            duration: 150,
-            toValue: isCustomizing ? 1 : 0,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      }
-    },
-    onPanResponderTerminate: () => {
-      Animated.spring(slideAnim, {
-        damping: 24,
-        mass: 0.85,
-        stiffness: 280,
-        toValue: 0,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [handleClose, isCustomizing, sheetHeight, slideAnim, topFadeAnim]);
+    }), [completeClose, dragStart, isClosingSV, isCustomizingSV, sheetHeightSV, topFade, translateY]);
 
-  // 3. Emoji List PanResponder (pull down when scrolled to top drags the sheet down)
-  const sheetListPanResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => false,
-    onStartShouldSetPanResponderCapture: () => false,
-    onMoveShouldSetPanResponder: (_, { dy, dx }) => {
-      return scrollOffsetY.current <= 1 && dy > 8 && Math.abs(dy) > Math.abs(dx) * 1.3;
-    },
-    onMoveShouldSetPanResponderCapture: (_, { dy, dx }) => {
-      return scrollOffsetY.current <= 1 && dy > 10 && Math.abs(dy) > Math.abs(dx) * 1.3;
-    },
-    onPanResponderTerminationRequest: () => false,
-    onShouldBlockNativeResponder: () => true,
-    onPanResponderGrant: () => {
-      slideAnim.stopAnimation();
-    },
-    onPanResponderMove: (_, { dy }) => {
-      if (dy > 0) {
-        slideAnim.setValue(dy);
-        if (isCustomizing) {
-          const progress = Math.max(0, Math.min(1, 1 - (dy / (sheetHeight * 0.6))));
-          topFadeAnim.setValue(progress);
-        }
+  const sheetListPan = useMemo(() => Gesture.Pan()
+    .manualActivation(true)
+    .onTouchesDown((event) => {
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      touchStartX.set(touch.absoluteX);
+      touchStartY.set(touch.absoluteY);
+    })
+    .onTouchesMove((event, state) => {
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const dy = touch.absoluteY - touchStartY.get();
+      const dx = touch.absoluteX - touchStartX.get();
+      if (scrollYSV.get() > 1) {
+        state.fail();
+        return;
       }
-    },
-    onPanResponderRelease: (_, { dy, vy }) => {
-      if (dy > 45 || (dy > 15 && vy > 0.2) || vy > 0.35) {
-        handleClose();
-      } else {
-        Animated.parallel([
-          Animated.spring(slideAnim, {
-            damping: 24,
-            mass: 0.85,
-            stiffness: 280,
-            toValue: 0,
-            useNativeDriver: true,
-          }),
-          Animated.timing(topFadeAnim, {
-            duration: 150,
-            toValue: isCustomizing ? 1 : 0,
-            useNativeDriver: true,
-          }),
-        ]).start();
+      if (scrollYSV.get() <= 1 && dy > 8 && Math.abs(dy) > Math.abs(dx) * 1.3) {
+        state.activate();
+        return;
       }
-    },
-    onPanResponderTerminate: () => {
-      Animated.spring(slideAnim, {
-        damping: 24,
-        mass: 0.85,
-        stiffness: 280,
-        toValue: 0,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [handleClose, isCustomizing, sheetHeight, slideAnim, topFadeAnim]);
+      if (dy < -10 || (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy))) {
+        state.fail();
+      }
+    })
+    .onStart(() => {
+      cancelAnimation(translateY);
+      cancelAnimation(topFade);
+      dragStart.set(translateY.get());
+    })
+    .onUpdate((event) => {
+      applySheetDrag(translateY, topFade, isCustomizingSV, sheetHeightSV.get(), dragStart.get() + event.translationY);
+    })
+    .onEnd((event) => {
+      settleOrDismissSheet(
+        translateY, topFade, isCustomizingSV, isClosingSV, sheetHeightSV.get(),
+        translateY.get(), event.velocityY, completeClose, event.translationX,
+        45, 15, 200, 350, false
+      );
+    })
+    .onFinalize((_event, success) => {
+      if (!success && !isClosingSV.get() && translateY.get() !== 0) {
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
+      }
+    }), [completeClose, dragStart, isClosingSV, isCustomizingSV, scrollYSV, sheetHeightSV, topFade, touchStartX, touchStartY, translateY]);
 
-  // 4. Upper Backdrop PanResponder (tap or drag down dismisses)
-  const backdropPanResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: () => true,
-    onPanResponderTerminationRequest: () => false,
-    onShouldBlockNativeResponder: () => true,
-    onPanResponderGrant: () => {
-      slideAnim.stopAnimation();
-    },
-    onPanResponderMove: (_, { dy }) => {
-      if (dy > 0) {
-        slideAnim.setValue(dy);
-        if (isCustomizing) {
-          const progress = Math.max(0, Math.min(1, 1 - (dy / (sheetHeight * 0.6))));
-          topFadeAnim.setValue(progress);
-        }
+  const backdropPan = useMemo(() => Gesture.Pan()
+    .minDistance(0)
+    .onStart(() => {
+      cancelAnimation(translateY);
+      cancelAnimation(topFade);
+      dragStart.set(translateY.get());
+    })
+    .onUpdate((event) => {
+      applySheetDrag(translateY, topFade, isCustomizingSV, sheetHeightSV.get(), dragStart.get() + event.translationY);
+    })
+    .onEnd((event) => {
+      settleOrDismissSheet(
+        translateY, topFade, isCustomizingSV, isClosingSV, sheetHeightSV.get(),
+        translateY.get(), event.velocityY, completeClose, event.translationX,
+        25, 10, 150, 300, true
+      );
+    })
+    .onFinalize((_event, success) => {
+      if (!success && !isClosingSV.get()) {
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
       }
-    },
-    onPanResponderRelease: (_, { dy, dx, vy }) => {
-      if (Math.hypot(dx, dy) < 10 || dy > 25 || (dy > 10 && vy > 0.15) || vy > 0.3) {
-        handleClose();
-      } else {
-        Animated.parallel([
-          Animated.spring(slideAnim, {
-            damping: 24,
-            mass: 0.85,
-            stiffness: 280,
-            toValue: 0,
-            useNativeDriver: true,
-          }),
-          Animated.timing(topFadeAnim, {
-            duration: 150,
-            toValue: isCustomizing ? 1 : 0,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      }
-    },
-    onPanResponderTerminate: () => {
-      Animated.spring(slideAnim, {
-        damping: 24,
-        mass: 0.85,
-        stiffness: 280,
-        toValue: 0,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [handleClose, isCustomizing, sheetHeight, slideAnim, topFadeAnim]);
+    }), [completeClose, dragStart, isClosingSV, isCustomizingSV, sheetHeightSV, topFade, translateY]);
 
-  // 5. Top Area PanResponder for Customize Mode Header
-  const topAreaPanResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => false,
-    onMoveShouldSetPanResponder: (_, { dx, dy }) => dy > 6 && Math.abs(dy) > Math.abs(dx),
-    onMoveShouldSetPanResponderCapture: (_, { dx, dy }) => dy > 8 && Math.abs(dy) > Math.abs(dx),
-    onPanResponderTerminationRequest: () => false,
-    onShouldBlockNativeResponder: () => true,
-    onPanResponderGrant: () => {
-      slideAnim.stopAnimation();
-    },
-    onPanResponderMove: (_, { dy }) => {
-      if (dy > 0) {
-        slideAnim.setValue(dy);
-        const progress = Math.max(0, Math.min(1, 1 - (dy / (sheetHeight * 0.6))));
-        topFadeAnim.setValue(progress);
+  const topAreaPan = useMemo(() => Gesture.Pan()
+    .activeOffsetY([10000, 6])
+    .failOffsetX([-24, 24])
+    .onStart(() => {
+      cancelAnimation(translateY);
+      cancelAnimation(topFade);
+      dragStart.set(translateY.get());
+    })
+    .onUpdate((event) => {
+      applySheetDrag(translateY, topFade, isCustomizingSV, sheetHeightSV.get(), dragStart.get() + event.translationY);
+    })
+    .onEnd((event) => {
+      settleOrDismissSheet(
+        translateY, topFade, isCustomizingSV, isClosingSV, sheetHeightSV.get(),
+        translateY.get(), event.velocityY, completeClose, event.translationX,
+        35, 12, 220, 380, false
+      );
+    })
+    .onFinalize((_event, success) => {
+      if (!success && !isClosingSV.get()) {
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
       }
-    },
-    onPanResponderRelease: (_, { dy, vy }) => {
-      if (dy > 35 || (dy > 12 && vy > 0.22) || vy > 0.38) {
-        handleClose();
-      } else {
-        Animated.parallel([
-          Animated.spring(slideAnim, {
-            damping: 24,
-            mass: 0.85,
-            stiffness: 280,
-            toValue: 0,
-            useNativeDriver: true,
-          }),
-          Animated.timing(topFadeAnim, {
-            duration: 150,
-            toValue: 1,
-            useNativeDriver: true,
-          }),
-        ]).start();
-      }
-    },
-    onPanResponderTerminate: () => {
-      Animated.spring(slideAnim, {
-        damping: 24,
-        mass: 0.85,
-        stiffness: 280,
-        toValue: 0,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [handleClose, sheetHeight, slideAnim, topFadeAnim]);
+    }), [completeClose, dragStart, isClosingSV, isCustomizingSV, sheetHeightSV, topFade, translateY]);
+
+  const sheetStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.get() }],
+  }));
+
+  const topAreaStyle = useAnimatedStyle(() => ({
+    opacity: topFade.get(),
+  }));
 
   const activeSlotRef = useRef(activeSlot);
   activeSlotRef.current = activeSlot;
@@ -721,6 +680,7 @@ function EmojiReactionPickerSheet({
   const handleScroll = (event) => {
     const scrollY = event.nativeEvent.contentOffset.y;
     scrollOffsetY.current = scrollY;
+    scrollYSV.set(scrollY);
     if (scrollY < -30 && !isClosing.current) {
       handleClose();
       return;
@@ -786,26 +746,25 @@ function EmojiReactionPickerSheet({
     <View pointerEvents={isOpen ? "box-none" : "none"} style={StyleSheet.absoluteFill}>
       {/* Dismiss backdrop on tap or downward drag in upper half */}
       {isOpen ? (
-        <View
-          {...backdropPanResponder.panHandlers}
-          style={[StyleSheet.absoluteFill, { bottom: sheetHeight }]}
-        />
+        <GestureDetector gesture={backdropPan}>
+          <View style={[StyleSheet.absoluteFill, { bottom: sheetHeight }]} />
+        </GestureDetector>
       ) : null}
 
       {/* 1. Upper Area: Top Nav (รีเซ็ต | ปรับแต่งความรู้สึก | เรียบร้อย) + 6-slot Pill (shown in customize mode) */}
       {isCustomizing ? (
-        <Animated.View
-          {...topAreaPanResponder.panHandlers}
-          style={[
-            styles.customizeTopArea,
-            isDark ? styles.customizeTopAreaDark : styles.customizeTopAreaLight,
-            {
-              bottom: sheetHeight - 26,
-              paddingTop: Math.max(insets.top + 6, Platform.OS === 'ios' ? 48 : 28),
-              opacity: topFadeAnim,
-            },
-          ]}
-        >
+        <GestureDetector gesture={topAreaPan}>
+          <Reanimated.View
+            style={[
+              styles.customizeTopArea,
+              isDark ? styles.customizeTopAreaDark : styles.customizeTopAreaLight,
+              {
+                bottom: sheetHeight - 26,
+                paddingTop: Math.max(insets.top + 6, Platform.OS === 'ios' ? 48 : 28),
+              },
+              topAreaStyle,
+            ]}
+          >
           {/* Top Header */}
           <View style={styles.customizeTopNav}>
             <Pressable
@@ -874,18 +833,17 @@ function EmojiReactionPickerSheet({
               แตะที่ความรู้สึก แล้วเลือกอีโมจิมาแทนความรู้สึกนั้น
             </Text>
           </View>
-        </Animated.View>
+        </Reanimated.View>
+        </GestureDetector>
       ) : null}
 
       {/* 2. Bottom Sheet: Search, Sectioned Emoji ScrollView, Docked Category Bar */}
-      <Animated.View
+      <Reanimated.View
         pointerEvents={isOpen ? 'auto' : 'none'}
         style={[
           styles.bottomSheetContainer,
-          {
-            height: sheetHeight,
-            transform: [{ translateY: slideAnim }],
-          },
+          { height: sheetHeight },
+          sheetStyle,
         ]}
       >
         <View
@@ -895,15 +853,17 @@ function EmojiReactionPickerSheet({
           ]}
         >
           {/* Header Drag Area: Handle + Search bar */}
-          <View {...sheetHeaderPanResponder.panHandlers} style={styles.sheetHeaderArea}>
+          <GestureDetector gesture={sheetHeaderPan}>
+          <View style={styles.sheetHeaderArea}>
             {/* Swipe Drag Handle */}
+            <GestureDetector gesture={sheetHandlePan}>
             <View
-              {...sheetHandlePanResponder.panHandlers}
               hitSlop={{ top: 14, bottom: 14, left: 30, right: 30 }}
               style={styles.sheetHandleTouchArea}
             >
               <View style={[styles.sheetHandleBar, isDark ? styles.sheetHandleBarDark : styles.sheetHandleBarLight]} />
             </View>
+            </GestureDetector>
 
             {/* Search Bar */}
             <View style={[styles.sheetSearchContainer, isDark ? styles.sheetSearchDark : styles.sheetSearchLight]}>
@@ -925,9 +885,9 @@ function EmojiReactionPickerSheet({
               ) : null}
             </View>
           </View>
-
-          {/* Sectioned Emoji ScrollView with Drag-to-Dismiss on Pull-Down */}
-          <View {...sheetListPanResponder.panHandlers} style={styles.sheetScrollWrapper}>
+          </GestureDetector>
+          <View style={styles.sheetScrollWrapper}>
+          <GestureDetector gesture={sheetListPan}>
             <ScrollView
               ref={scrollRef}
               contentContainerStyle={styles.sheetScrollContent}
@@ -1005,6 +965,7 @@ function EmojiReactionPickerSheet({
                 </>
               )}
             </ScrollView>
+          </GestureDetector>
           </View>
 
           {/* Docked Bottom Category Bar */}
@@ -1038,7 +999,7 @@ function EmojiReactionPickerSheet({
             })}
           </View>
         </View>
-      </Animated.View>
+      </Reanimated.View>
     </View>
   );
 }
@@ -1198,7 +1159,7 @@ const ReactionPlusButton = React.memo(function ReactionPlusButton({
       ]}
     >
       <Animated.View style={{ transform: [{ scale: enterScale }, { scale: pressScale }] }}>
-        <FeatureIcon color={isDark ? 'rgba(255,255,255,0.82)' : '#10203A'} name="plus" size={16} />
+        <FeatureIcon color={isDark ? 'rgba(255,255,255,0.82)' : '#25272B'} name="plus" size={16} />
       </Animated.View>
     </Pressable>
   );
@@ -1496,10 +1457,18 @@ export default function InstagramMessageOverlay({
     }
     const copied = await copyImageToClipboard(imageToCopy);
     if (!copied) {
-      Alert.alert('คัดลอกรูปไม่สำเร็จ', 'กรุณารอให้รูปโหลดเสร็จแล้วลองอีกครั้ง');
+      showInAppNotification({
+        title: 'คัดลอกรูปไม่สำเร็จ',
+        message: 'กรุณารอให้รูปโหลดเสร็จแล้วลองอีกครั้ง',
+        tone: 'danger',
+      });
       return;
     }
-    Alert.alert('คัดลอกรูปภาพแล้ว', 'สามารถแตะปุ่มวางรูปภาพในช่องพิมพ์ข้อความเพื่อส่งได้ทันที');
+    showInAppNotification({
+      title: 'คัดลอกรูปภาพแล้ว',
+      message: 'สามารถแตะปุ่มวางรูปภาพในช่องพิมพ์ข้อความเพื่อส่งได้ทันที',
+      tone: 'success',
+    });
     animateClose(onClose);
   };
   const saveImage = async () => {
@@ -1523,13 +1492,25 @@ export default function InstagramMessageOverlay({
     const res = await saveImageToGallery(imageToSave);
     if (!res?.success) {
       if (res?.error === 'permission_denied' || res?.error === 'permission_blocked') {
-        Alert.alert('ต้องได้รับอนุญาต', 'กรุณาอนุญาตการเข้าถึงรูปภาพในตั้งค่าเพื่อบันทึกรูปลงในเครื่อง');
+        showInAppNotification({
+          title: 'ต้องได้รับอนุญาต',
+          message: 'กรุณาอนุญาตการเข้าถึงรูปภาพในตั้งค่าเพื่อบันทึกรูปลงในเครื่อง',
+          tone: 'warning',
+        });
       } else {
-        Alert.alert('บันทึกรูปไม่สำเร็จ', 'กรุณารอให้รูปโหลดเสร็จแล้วลองอีกครั้ง');
+        showInAppNotification({
+          title: 'บันทึกรูปไม่สำเร็จ',
+          message: 'กรุณารอให้รูปโหลดเสร็จแล้วลองอีกครั้ง',
+          tone: 'danger',
+        });
       }
       return;
     }
-    Alert.alert('บันทึกรูปภาพแล้ว', 'บันทึกรูปภาพลงในอัลบั้มรูปภาพของคุณเรียบร้อยแล้ว');
+    showInAppNotification({
+      title: 'บันทึกรูปภาพแล้ว',
+      message: 'บันทึกรูปภาพลงในอัลบั้มรูปภาพของคุณเรียบร้อยแล้ว',
+      tone: 'success',
+    });
     animateClose(onClose);
   };
   const shareMessage = () => {
@@ -1547,7 +1528,7 @@ export default function InstagramMessageOverlay({
       transparent
       visible={isOpen}
     >
-      <View style={StyleSheet.absoluteFill}>
+      <GestureHandlerRootView style={StyleSheet.absoluteFill}>
         <Pressable
           accessibilityLabel="ปิดเมนูข้อความ"
           onPress={() => {
@@ -1644,7 +1625,7 @@ export default function InstagramMessageOverlay({
                       : liftAnim.interpolate({ inputRange: [0, 0.4, 1], outputRange: [1.0, 1.025, 1.01] }),
                   },
                 ],
-                shadowColor: isDark ? '#000000' : '#10203A',
+                shadowColor: isDark ? '#000000' : '#25272B',
                 shadowOffset: { width: 0, height: 10 },
                 shadowOpacity: (isImage && !hasCaptionText) ? 0 : liftAnim.interpolate({ inputRange: [0, 1], outputRange: [0.12, isDark ? 0.38 : 0.20] }),
                 shadowRadius: liftAnim.interpolate({ inputRange: [0, 1], outputRange: [4, 18] }),
@@ -1655,7 +1636,7 @@ export default function InstagramMessageOverlay({
             {item.forwarded ? <Text style={[styles.forwardedLabel, !mine && !isDark && styles.forwardedLabelLight]}>ส่งต่อ</Text> : null}
             {item.replyTo ? (
               <View style={[styles.replyQuote, !mine && !isDark && styles.replyQuoteLight]}>
-                <ReplyPreview reply={item.replyTo} conversationId={currentConversationId} color={mine || isDark ? '#FFFFFF' : '#10203A'} />
+                <ReplyPreview reply={item.replyTo} conversationId={currentConversationId} currentUserId={currentUserId} color={mine || isDark ? '#FFFFFF' : '#25272B'} />
               </View>
             ) : null}
 
@@ -1718,7 +1699,7 @@ export default function InstagramMessageOverlay({
 
             {item.mediaType === 'call' ? (
               <CallMessageBubble
-                colors={{ line: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)', ink: isDark ? '#FFFFFF' : '#10203A', inkSoft: isDark ? 'rgba(255,255,255,0.7)' : 'rgba(16,32,58,0.6)' }}
+                colors={{ line: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.1)', ink: isDark ? '#FFFFFF' : '#25272B', inkSoft: isDark ? 'rgba(255,255,255,0.7)' : 'rgba(16,32,58,0.6)' }}
                 isDark={isDark}
                 item={item}
                 mine={mine}
@@ -1808,14 +1789,18 @@ export default function InstagramMessageOverlay({
                       pressed && (isDark ? styles.menuRowPressedDark : styles.menuRowPressedLight),
                     ]}
                   >
-                    <FeatureIcon color={isDark ? '#FFFFFF' : '#10203A'} name="chevron.left" size={14} />
+                    <FeatureIcon color={isDark ? '#FFFFFF' : '#25272B'} name="chevron.left" size={14} />
                   </Pressable>
                 </View>
                 {otherConversations.length ? (
-                  <ScrollView contentContainerStyle={styles.forwardList} showsVerticalScrollIndicator={false} style={styles.forwardScroll}>
-                    {otherConversations.map((conversation) => (
+                  <FlatList
+                    contentContainerStyle={styles.forwardList}
+                    data={otherConversations}
+                    initialNumToRender={5}
+                    keyExtractor={(conversation) => conversation.id}
+                    maxToRenderPerBatch={6}
+                    renderItem={({ item: conversation }) => (
                       <Pressable
-                        key={conversation.id}
                         onPress={() => animateClose(() => onForward?.(item, conversation.id))}
                         style={({ pressed }) => [
                           styles.forwardRow,
@@ -1826,8 +1811,11 @@ export default function InstagramMessageOverlay({
                         <Text numberOfLines={1} style={[styles.forwardName, isDark ? styles.textDark : styles.textLight]}>{conversation.name || 'ห้องสนทนา'}</Text>
                         <FeatureIcon color={accent} name="paperplane.fill" size={15} />
                       </Pressable>
-                    ))}
-                  </ScrollView>
+                    )}
+                    showsVerticalScrollIndicator={false}
+                    style={styles.forwardScroll}
+                    windowSize={3}
+                  />
                 ) : (
                   <Text style={[styles.emptyForward, isDark ? styles.subtextDark : styles.subtextLight]}>ยังไม่มีห้องสนทนาอื่นสำหรับส่งต่อ</Text>
                 )}
@@ -1846,7 +1834,7 @@ export default function InstagramMessageOverlay({
                       pressed && (isDark ? styles.menuRowPressedDark : styles.menuRowPressedLight),
                     ]}
                   >
-                    <FeatureIcon color={isDark ? '#FFFFFF' : '#10203A'} name="chevron.left" size={14} />
+                    <FeatureIcon color={isDark ? '#FFFFFF' : '#25272B'} name="chevron.left" size={14} />
                   </Pressable>
                 </View>
                 {isImage && item.viewMode !== 'once' && item.viewMode !== 'replay' ? (
@@ -1882,7 +1870,7 @@ export default function InstagramMessageOverlay({
           quickReactions={quickReactions}
           selectedReaction={selectedReaction}
         />
-      </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -1938,7 +1926,7 @@ const styles = StyleSheet.create({
   actionCardLight: {
     backgroundColor: 'rgba(255,255,255,0.98)',
     borderColor: 'rgba(16,32,58,0.08)',
-    shadowColor: '#10203A',
+    shadowColor: '#25272B',
     shadowOpacity: 0.15,
   },
   animatedGroup: { gap: 9, maxWidth: 320, width: '100%' },
@@ -1966,7 +1954,7 @@ const styles = StyleSheet.create({
   forwardList: { gap: 2 },
   forwardName: { flex: 1, fontSize: 14, fontWeight: '600' },
   forwardRow: { alignItems: 'center', borderRadius: 13, flexDirection: 'row', gap: 10, minHeight: 48, paddingHorizontal: 7 },
-  forwardScroll: { maxHeight: 230 },
+  forwardScroll: { flexGrow: 0, maxHeight: 230 },
   iosCategoryIcon: { fontSize: 19, includeFontPadding: false, lineHeight: 23 },
   iosCategoryLabel: { fontSize: 10, fontWeight: '600', marginTop: 1 },
   iosCategoryLabelDark: { color: 'rgba(255,255,255,0.72)' },
@@ -2010,12 +1998,12 @@ const styles = StyleSheet.create({
   cardLight: {
     backgroundColor: 'rgba(255,255,255,0.98)',
     borderColor: 'rgba(16,32,58,0.08)',
-    shadowColor: '#10203A',
+    shadowColor: '#25272B',
     shadowOpacity: 0.15,
   },
   menuLabel: { flexShrink: 1, fontSize: 14.5, fontWeight: '500' },
   menuLabelDark: { color: '#FFFFFF' },
-  menuLabelLight: { color: '#10203A' },
+  menuLabelLight: { color: '#25272B' },
   menuRow: { alignItems: 'center', borderRadius: 11, flexDirection: 'row', justifyContent: 'space-between', minHeight: 43, paddingHorizontal: 6 },
   menuRowCopy: { alignItems: 'center', flexDirection: 'row', flexShrink: 1, gap: 13 },
   menuRowPressedDark: { backgroundColor: 'rgba(255,255,255,0.09)' },
@@ -2083,7 +2071,7 @@ const styles = StyleSheet.create({
     includeFontPadding: false,
     lineHeight: Platform.OS === 'android' ? 19 : undefined,
   },
-  messageTextLight: { color: '#10203A' },
+  messageTextLight: { color: '#25272B' },
   myBubble: { borderBottomRightRadius: 4 },
   panelHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   panelTitle: { fontSize: 15, fontWeight: '700' },
@@ -2113,11 +2101,11 @@ const styles = StyleSheet.create({
   reactionPillLight: {
     backgroundColor: 'rgba(255,255,255,0.98)',
     borderColor: 'rgba(16,32,58,0.08)',
-    shadowColor: '#10203A',
+    shadowColor: '#25272B',
     shadowOpacity: 0.12,
   },
-  replyQuote: { borderLeftColor: 'rgba(255,255,255,0.65)', borderLeftWidth: 2, marginBottom: 5, paddingLeft: 7 },
-  replyQuoteLight: { borderLeftColor: 'rgba(16,32,58,0.38)' },
+  replyQuote: { backgroundColor: 'rgba(255,255,255,0.14)', borderRadius: 10, marginBottom: 6, paddingHorizontal: 9, paddingVertical: 6 },
+  replyQuoteLight: { backgroundColor: 'rgba(16,32,58,0.08)' },
   replyQuoteText: { color: 'rgba(255,255,255,0.74)', fontSize: 11.5 },
   secondaryCard: {
     borderRadius: 20,
@@ -2136,7 +2124,7 @@ const styles = StyleSheet.create({
   secondaryCardLight: {
     backgroundColor: 'rgba(255,255,255,0.98)',
     borderColor: 'rgba(16,32,58,0.08)',
-    shadowColor: '#10203A',
+    shadowColor: '#25272B',
     shadowOpacity: 0.14,
   },
   stackContainer: { position: 'absolute' },
@@ -2151,7 +2139,7 @@ const styles = StyleSheet.create({
   timestampDark: { color: 'rgba(255,255,255,0.45)' },
   timestampLight: { color: 'rgba(16,32,58,0.45)' },
   textDark: { color: '#FFFFFF' },
-  textLight: { color: '#10203A' },
+  textLight: { color: '#25272B' },
   subtextDark: { color: 'rgba(255,255,255,0.52)' },
   subtextLight: { color: 'rgba(16,32,58,0.52)' },
   topReactionsContainer: {
@@ -2311,7 +2299,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderColor: 'rgba(16, 32, 58, 0.12)',
     elevation: 3,
-    shadowColor: '#10203A',
+    shadowColor: '#25272B',
     shadowOffset: { height: 3, width: 0 },
     shadowOpacity: 0.08,
     shadowRadius: 8,

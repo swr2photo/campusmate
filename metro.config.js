@@ -62,6 +62,18 @@ const DefaultFileStore = config.cacheStores?.[0]?.constructor;
 if (DefaultFileStore) {
   config.cacheStores = [new DefaultFileStore({ root: metroCacheDirectory })];
 }
+config.maxWorkers = 1;
+
+// Worklets must install its runtime globals before Reanimated imports use them.
+// Lazy imports avoid the Expo eager-loading initialization cycle (upstream #9445).
+const getTransformOptions = config.transformer.getTransformOptions;
+config.transformer.getTransformOptions = async (...args) => {
+  const options = await getTransformOptions?.(...args) || {};
+  return {
+    ...options,
+    transform: { ...options.transform, inlineRequires: true },
+  };
+};
 
 module.exports = config;
 

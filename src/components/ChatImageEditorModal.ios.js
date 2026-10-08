@@ -1,19 +1,7 @@
+import Text from './AppText';
+import { AppTextInput as TextInput } from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Dimensions,
-  Image as RNImage,
-  Keyboard,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Dimensions, Image as RNImage, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -31,7 +19,7 @@ import {
   resizable,
   saturation,
 } from '@expo/ui/swift-ui/modifiers';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import FeatureIcon from './FeatureIcon';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -891,7 +879,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
     gap: 12,
     justifyContent: 'center',
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 30,
   },
   processingText: {

@@ -60,6 +60,11 @@ export function likeNotification(senderProfile, senderId) {
   };
 }
 
+export function privateLikeNotification() {
+  return { title: 'มีคนกดใจคุณ', body: 'เปิด CampusMate เพื่อดูจำนวนคนที่ถูกใจคุณ', channelId: 'social',
+    data: { type: 'like', url: '/likes' } };
+}
+
 export function matchNotification(otherProfile, conversationId) {
   const otherName = profileName(otherProfile);
   const avatarUri = profileAvatarUri(otherProfile);
@@ -81,7 +86,11 @@ export function messageNotification(senderProfile, conversationId, message) {
   const senderName = profileName(senderProfile);
   const avatarUri = profileAvatarUri(senderProfile);
   const rawText = String(message?.text || message?.preview || '').trim();
-  const bodyText = rawText ? rawText.slice(0, 200) : (message?.mediaType === 'image' ? 'ส่งรูปภาพ' : 'มีข้อความใหม่');
+  const bodyText = rawText
+    ? rawText.slice(0, 200)
+    : (message?.mediaType === 'image'
+      ? 'ส่งรูปภาพ'
+      : (message?.mediaType === 'track' ? 'ส่งเพลง' : 'มีข้อความใหม่'));
   const mediaUrl = message?.mediaType === 'image' && typeof message?.mediaUrl === 'string' ? message.mediaUrl : null;
 
   return {

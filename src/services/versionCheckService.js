@@ -1,19 +1,46 @@
 import { Platform, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
-import { doc, getDoc } from 'firebase/firestore';
+import * as Application from 'expo-application';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService';
+import { evaluateVersionPolicy } from '../utils/versionUpdatePolicy';
+export { compareSemver } from '../utils/versionUpdatePolicy';
 
 const SNOOZE_STORAGE_KEY = '@campusmate:update_snoozed_at';
+const SNOOZE_META_STORAGE_KEY = '@campusmate:update_snooze_meta';
 const PLAY_STORE_PACKAGE = 'com.campusmate.app';
 const DEFAULT_MARKET_URL = `market://details?id=${PLAY_STORE_PACKAGE}`;
 const DEFAULT_WEB_URL = `https://play.google.com/store/apps/details?id=${PLAY_STORE_PACKAGE}`;
 
+async function readSnoozeMeta() {
+  try {
+    const rawMeta = await AsyncStorage.getItem(SNOOZE_META_STORAGE_KEY);
+    if (rawMeta) {
+      const parsed = JSON.parse(rawMeta);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          at: Number(parsed.at) || 0,
+          updateKey: typeof parsed.updateKey === 'string' ? parsed.updateKey : '',
+        };
+      }
+    }
+    // Old timestamps have no build identity and cannot suppress a new release.
+    const legacyAt = await AsyncStorage.getItem(SNOOZE_STORAGE_KEY);
+    if (legacyAt) {
+      return { at: parseInt(legacyAt, 10) || 0, updateKey: '' };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 function isDevelopmentRuntime() {
-  return (typeof __DEV__ !== 'undefined' && __DEV__)
-    || Constants.executionEnvironment === 'storeClient'
-    || Constants.appOwnership === 'expo';
+  // Only suppress update prompts in Expo Go. Dev clients / preview builds
+  // still need to see Play Store update prompts when testing.
+  return Constants.appOwnership === 'expo';
 }
 
 /**
@@ -35,35 +62,25 @@ export async function reportAppVersionToServer(version) {
 }
 
 /**
- * ดึงเวอร์ชันปัจจุบันของแอพจาก expoConfig หรือ fallback
+ * ดึงเวอร์ชันปัจจุบันของแอพจาก native binary (Play/App Store)
+ * ต้องไม่ใช้ expoConfig เป็นหลัก — OTA / embed อาจเป็นเวอร์ชันใหม่กว่า
+ * ทำให้ไม่ขึ้นแจ้งอัปเดตทั้งที่ยังไม่ได้อัปจากสโตร์
  */
 export function getCurrentAppVersion() {
+  // Prefer the installed store binary version over JS/OTA expoConfig.
+  const nativeVersion = Application.nativeApplicationVersion || Constants.nativeAppVersion;
+  if (nativeVersion) return String(nativeVersion);
+  if (!isDevelopmentRuntime() && Platform.OS !== 'web') return '';
   return (
     Constants.expoConfig?.version
-    || Constants.nativeAppVersion
     || Constants.manifest2?.extra?.expoClient?.version
-    || '1.1.5'
+    || '1.0.0'
   );
 }
 
-/**
- * เปรียบเทียบ semantic versions (เช่น "1.1.5" กับ "1.2.0")
- * @returns {number} 1 ถ้า v1 > v2, -1 ถ้า v1 < v2, 0 ถ้าเท่ากัน
- */
-export function compareSemver(v1, v2) {
-  if (!v1 || !v2) return 0;
-  const clean = (v) => String(v).replace(/^v/i, '').trim();
-  const parts1 = clean(v1).split('.').map((p) => parseInt(p, 10) || 0);
-  const parts2 = clean(v2).split('.').map((p) => parseInt(p, 10) || 0);
-  const maxLength = Math.max(parts1.length, parts2.length);
-
-  for (let i = 0; i < maxLength; i += 1) {
-    const num1 = parts1[i] || 0;
-    const num2 = parts2[i] || 0;
-    if (num1 > num2) return 1;
-    if (num1 < num2) return -1;
-  }
-  return 0;
+/** Read versionCode / CFBundleVersion from the installed binary, never from OTA config. */
+export function getCurrentAppBuild() {
+  return Application.nativeBuildVersion ? String(Application.nativeBuildVersion) : '';
 }
 
 /**
@@ -85,79 +102,107 @@ export async function fetchRemoteVersionConfig() {
 }
 
 /**
- * ตรวจสอบว่าเวอร์ชันปัจจุบันต้องอัปเดตหรือไม่
- * @param {boolean} ignoreSnooze ข้ามการตรวจ snooze หรือไม่ (เช่น กรณีกดเช็คแบบ manual)
+ * ประเมินจาก config ว่าควรแสดงหน้าต่างอัปเดตหรือไม่
  */
-export async function checkAppUpdate({ ignoreSnooze = false } = {}) {
-  const currentVersion = getCurrentAppVersion();
-  // Expo Go and development builds cannot be updated through the app's store listing.
-  if (isDevelopmentRuntime()) {
-    return { needsUpdate: false, currentVersion };
-  }
-
-  const config = await fetchRemoteVersionConfig();
-
-  if (!config || config.enabled === false) {
-    return { needsUpdate: false, currentVersion };
-  }
-
-  const latestVersion = config.latestVersion || config.version;
-  const minVersion = config.minVersion;
-  const forceUpdateFlag = Boolean(config.forceUpdate);
-
-  if (!latestVersion) {
-    return { needsUpdate: false, currentVersion };
-  }
-
-  // Firestore is the source of the Play Store release state. A locally
-  // installed APK/AAB must never trigger an update prompt before the release
-  // has actually been published on Google Play.
-  if (config.playStorePublished !== true) {
-    return { needsUpdate: false, currentVersion, latestVersion, playStorePublished: false };
-  }
-
-  // มีเวอร์ชันที่ใหม่กว่าเวอร์ชันในเครื่องหรือไม่
-  const isOutdated = compareSemver(latestVersion, currentVersion) > 0;
-  if (!isOutdated) {
-    return { needsUpdate: false, currentVersion, latestVersion };
-  }
-
-  // เป็นการบังคับอัปเดตหรือไม่ (ถ้าต่ำกว่า minVersion หรือตั้ง forceUpdate เป็น true)
-  const isBelowMinVersion = minVersion ? compareSemver(currentVersion, minVersion) < 0 : false;
-  const isForce = forceUpdateFlag || isBelowMinVersion;
-
-  // ถ้าไม่ใช่การบังคับ และไม่ได้สั่ง ignoreSnooze ให้เช็คว่าเคย snooze ไว้ไหม
-  if (!isForce && !ignoreSnooze) {
-    const snoozedAt = await AsyncStorage.getItem(SNOOZE_STORAGE_KEY).catch(() => null);
-    if (snoozedAt) {
-      const snoozedTime = parseInt(snoozedAt, 10);
-      const snoozeDurationMs = (Number(config.snoozeHours) || 24) * 60 * 60 * 1000;
-      if (Date.now() - snoozedTime < snoozeDurationMs) {
-        return { needsUpdate: false, snoozed: true, currentVersion, latestVersion };
+async function evaluateUpdateFromConfig(config, { ignoreSnooze = false } = {}) {
+  const result = evaluateVersionPolicy(config, {
+    platform: Platform.OS, currentVersion: getCurrentAppVersion(), currentBuild: getCurrentAppBuild(),
+    expoGo: isDevelopmentRuntime(),
+  });
+  if (!result.needsUpdate) return result;
+  if (!result.isForce && !ignoreSnooze) {
+    const snoozeMeta = await readSnoozeMeta();
+    // The same version with a newer build is a different release.
+    if (
+      snoozeMeta?.at
+      && snoozeMeta.updateKey
+      && snoozeMeta.updateKey === result.updateKey
+    ) {
+      const snoozeDurationMs = result.snoozeHours * 60 * 60 * 1000;
+      if (Date.now() - snoozeMeta.at < snoozeDurationMs) {
+        return { ...result, needsUpdate: false, snoozed: true };
       }
     }
   }
 
   return {
-    needsUpdate: true,
-    isForce,
-    currentVersion,
-    latestVersion,
-    title: config.title || 'มีเวอร์ชันใหม่พร้อมใช้งาน',
-    message: config.message || `CampusMate เวอร์ชัน ${latestVersion} พร้อมให้อัปเดตแล้ว`,
-    releaseNotes: config.releaseNotes || '• ปรับปรุงประสิทธิภาพและความเสถียรของแอพพลิเคชัน',
-    playStoreUrl: config.playStoreUrl || DEFAULT_MARKET_URL,
-    playStoreWebUrl: config.playStoreWebUrl || DEFAULT_WEB_URL,
-    appStoreUrl: config.appStoreUrl,
+    ...result,
+    playStoreUrl: result.playStoreUrl || DEFAULT_MARKET_URL,
+    playStoreWebUrl: result.playStoreWebUrl || DEFAULT_WEB_URL,
   };
 }
 
 /**
- * บันทึกการเลื่อนเวลาเตือนอัปเดต (Snooze)
+ * ตรวจสอบว่าเวอร์ชันปัจจุบันต้องอัปเดตหรือไม่
+ * @param {boolean} ignoreSnooze ข้ามการตรวจ snooze หรือไม่ (เช่น กรณีกดเช็คแบบ manual)
  */
-export async function snoozeUpdate() {
+export async function checkAppUpdate({ ignoreSnooze = false } = {}) {
+  const config = await fetchRemoteVersionConfig();
+  return evaluateUpdateFromConfig(config, { ignoreSnooze });
+}
+
+/**
+ * ฟัง app_config/version แบบ realtime — แสดงอัปเดตทันทีขณะแอพเปิดอยู่
+ * โดยไม่ต้องปิดแล้วเปิดแอพใหม่
+ * @returns {() => void} unsubscribe
+ */
+export function subscribeAppUpdate(onResult, { ignoreSnooze = false } = {}) {
+  if (typeof onResult !== 'function') {
+    return () => {};
+  }
+
+  if (isDevelopmentRuntime()) {
+    onResult({ needsUpdate: false, currentVersion: getCurrentAppVersion() });
+    return () => {};
+  }
+
+  let cancelled = false;
+  let revision = 0;
+  let unsubscribeSnapshot = () => {};
+
   try {
-    await AsyncStorage.setItem(SNOOZE_STORAGE_KEY, String(Date.now()));
+    const { db } = requireFirebase();
+    const configDocRef = doc(db, 'app_config', 'version');
+    unsubscribeSnapshot = onSnapshot(
+      configDocRef,
+      async (snapshot) => {
+        if (cancelled) return;
+        const observedRevision = ++revision;
+        try {
+          const config = snapshot.exists() ? snapshot.data() : null;
+          const result = await evaluateUpdateFromConfig(config, { ignoreSnooze });
+          if (!cancelled && observedRevision === revision) onResult(result);
+        } catch (error) {
+          console.warn('[versionCheckService] subscribeAppUpdate evaluate error:', error?.message || error);
+        }
+      },
+      (error) => {
+        console.warn('[versionCheckService] subscribeAppUpdate error:', error?.message || error);
+      }
+    );
+  } catch (error) {
+    console.warn('[versionCheckService] subscribeAppUpdate setup error:', error?.message || error);
+  }
+
+  return () => {
+    cancelled = true;
+    unsubscribeSnapshot();
+  };
+}
+
+/**
+ * บันทึกการเลื่อนเตือนแยกตาม platform/version/build
+ */
+export async function snoozeUpdate(updateKey) {
+  try {
+    const payload = {
+      at: Date.now(),
+      updateKey: typeof updateKey === 'string' ? updateKey : '',
+    };
+    await AsyncStorage.multiSet([
+      [SNOOZE_META_STORAGE_KEY, JSON.stringify(payload)],
+      [SNOOZE_STORAGE_KEY, String(payload.at)],
+    ]);
   } catch (err) {
     console.warn('[versionCheckService] snoozeUpdate error:', err);
   }
@@ -169,7 +214,8 @@ export async function snoozeUpdate() {
 export async function openAppStore(customUrl, webFallbackUrl) {
   const isAndroid = Platform.OS === 'android';
   const targetMarketUrl = customUrl || (isAndroid ? DEFAULT_MARKET_URL : '');
-  const targetWebUrl = webFallbackUrl || DEFAULT_WEB_URL;
+  const targetWebUrl = webFallbackUrl || (isAndroid ? DEFAULT_WEB_URL : customUrl);
+  if (!targetMarketUrl && !targetWebUrl) return;
 
   try {
     if (targetMarketUrl) {
@@ -185,7 +231,7 @@ export async function openAppStore(customUrl, webFallbackUrl) {
     console.error('[versionCheckService] openAppStore error:', error);
     // Fallback ครั้งสุดท้าย
     try {
-      await Linking.openURL(DEFAULT_WEB_URL);
+      if (targetWebUrl) await Linking.openURL(targetWebUrl);
     } catch (_) {}
   }
 }

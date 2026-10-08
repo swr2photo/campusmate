@@ -1,33 +1,59 @@
-import React from 'react';
-import { useColorScheme } from 'react-native';
-import { DefaultTheme, Redirect, ThemeProvider } from 'expo-router';
-import { NativeTabs } from 'expo-router/unstable-native-tabs';
-import { useAppBadges } from '../../src/context/AppContext';
+import React, { useEffect } from 'react';
+import { Redirect, ThemeProvider, DarkTheme, DefaultTheme } from 'expo-router';
+import { NativeTabs } from 'expo-router/native-tabs';
+import { useAppBadges, useAppProfile } from '../../src/context/AppContext';
 import { useAuth } from '../../src/context/AuthContext';
-import { colors } from '../../src/theme';
+import { createNavigationTheme, useTheme } from '../../src/theme';
+import { getDisplayImageUri, useRemoteImage } from '../../src/utils/useRemoteImage';
+import { isBlockedCampusAccount, needsCampusEmailMigration } from '../../src/utils/campusEmail';
+import AppSplashScreen from '../../src/components/AppSplashScreen';
 
 const LABELS = {
-  home: '\u0e2b\u0e19\u0e49\u0e32\u0e2b\u0e25\u0e31\u0e01',
-  discover: '\u0e04\u0e49\u0e19\u0e2b\u0e32\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e19',
-  chat: '\u0e41\u0e0a\u0e15',
-  meetup: '\u0e01\u0e34\u0e08\u0e01\u0e23\u0e23\u0e21',
+  home: 'หาเพื่อน',
+  discover: 'ถูกใจ',
+  chat: 'แชต',
+  meetup: 'กิจกรรม',
+  me: 'โปรไฟล์',
 };
 
 export default function NativeTabLayout() {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, user, logout } = useAuth();
+  const { profile } = useAppProfile();
   const { pendingLikeCount, totalUnreadMessages = 0 } = useAppBadges();
-  const colorScheme = useColorScheme();
-  const tabTint = colorScheme === 'dark' ? '#A9AAFF' : colors.primary;
+  const { colors, isDark } = useTheme();
   const unreadCount = totalUnreadMessages;
+  const tabTint = colors.primary;
+  const navigationTheme = createNavigationTheme(isDark ? DarkTheme : DefaultTheme, colors);
+  const cachedAvatar = useRemoteImage(profile?.avatarUri, profile?.avatarRevision, profile?.id);
+  const avatarUri = getDisplayImageUri(cachedAvatar, profile?.avatarUri);
+  const blocked = isBlockedCampusAccount(user, profile);
+
+  useEffect(() => {
+    if (!blocked) return undefined;
+    logout().catch(() => {});
+    return undefined;
+  }, [blocked, logout]);
 
   if (!isLoggedIn) return <Redirect href="/" />;
+  if (blocked) return <AppSplashScreen />;
+  if (needsCampusEmailMigration(user, profile)) return <Redirect href="/verify-campus-email" />;
+  if (!profile) return <AppSplashScreen />;
+  if (profile.isNewUser) return <Redirect href="/setup" />;
 
   return (
-    <ThemeProvider value={DefaultTheme}>
+    <ThemeProvider value={navigationTheme}>
       <NativeTabs
+        backgroundColor={colors.card}
+        blurEffect={isDark ? 'systemMaterialDark' : 'systemMaterial'}
         disableTransparentOnScrollEdge
+        iconColor={{ default: colors.inkSoft, selected: tabTint }}
+        labelStyle={{
+          default: { color: colors.inkSoft },
+          selected: { color: tabTint },
+        }}
         tintColor={tabTint}
-        badgeBackgroundColor="#FF3B30"
+        badgeBackgroundColor={isDark ? colors.coral : '#FF3B30'}
+        shadowColor={isDark ? 'transparent' : undefined}
         sidebarAdaptable={false}
         minimizeBehavior="automatic"
         unstable_nativeProps={{
@@ -37,11 +63,11 @@ export default function NativeTabLayout() {
         }}
       >
         <NativeTabs.Trigger name="home" contentStyle={{ backgroundColor: colors.canvas }}>
-          <NativeTabs.Trigger.Icon sf={{ default: 'house', selected: 'house.fill' }} />
+          <NativeTabs.Trigger.Icon sf={{ default: 'person.2', selected: 'person.2.fill' }} />
           <NativeTabs.Trigger.Label>{LABELS.home}</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
         <NativeTabs.Trigger name="discover" contentStyle={{ backgroundColor: colors.canvas }}>
-          <NativeTabs.Trigger.Icon sf={{ default: 'person.2', selected: 'person.2.fill' }} />
+          <NativeTabs.Trigger.Icon sf={{ default: 'heart', selected: 'heart.fill' }} />
           <NativeTabs.Trigger.Label>{LABELS.discover}</NativeTabs.Trigger.Label>
           {pendingLikeCount > 0 && (
             <NativeTabs.Trigger.Badge>{String(Math.min(pendingLikeCount, 99))}</NativeTabs.Trigger.Badge>
@@ -58,9 +84,15 @@ export default function NativeTabLayout() {
           <NativeTabs.Trigger.Icon sf={{ default: 'calendar', selected: 'calendar.badge.clock' }} />
           <NativeTabs.Trigger.Label>{LABELS.meetup}</NativeTabs.Trigger.Label>
         </NativeTabs.Trigger>
+        <NativeTabs.Trigger name="me" contentStyle={{ backgroundColor: colors.canvas }}>
+          {avatarUri ? (
+            <NativeTabs.Trigger.Icon renderingMode="original" src={{ uri: avatarUri }} />
+          ) : (
+            <NativeTabs.Trigger.Icon sf={{ default: 'person.crop.circle', selected: 'person.crop.circle.fill' }} />
+          )}
+          <NativeTabs.Trigger.Label>{LABELS.me}</NativeTabs.Trigger.Label>
+        </NativeTabs.Trigger>
       </NativeTabs>
     </ThemeProvider>
   );
 }
-
-

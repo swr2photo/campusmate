@@ -1,27 +1,11 @@
+import Text from '../components/AppText';
+import { AppTextInput as TextInput } from '../components/AppText';
 import React, { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Image,
-  ImageBackground,
-  Keyboard,
-  KeyboardAvoidingView,
-  NativeModules,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TurboModuleRegistry,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, NativeModules, Platform, Pressable, ScrollView, StyleSheet, TurboModuleRegistry, View } from 'react-native';
 import * as Google from 'expo-auth-session/providers/google';
-import * as WebBrowser from 'expo-web-browser';
 import { makeRedirectUri } from 'expo-auth-session';
+import * as WebBrowser from 'expo-web-browser';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { getSavedAccounts, removeSavedAccount, saveAccount, enrichSavedAccountsWithFirestore } from '../services/accountStorage';
 import {
@@ -32,14 +16,21 @@ import {
   signInWithGoogle,
   signInWithGoogleCredential,
   signOutUser,
-  resendVerificationEmail,
 } from '../services/authService';
 import FeatureIcon from '../components/FeatureIcon';
-import { showLoginAlert } from '../utils/loginAlert';
+import LegalAuthNotice from '../components/LegalAuthNotice';
+import {
+  CAMPUS_EMAIL_PLACEHOLDER,
+  isCampusEmail,
+  isCampusStudentEmail,
+  isLoginEmailAllowed,
+} from '../utils/campusEmail';
+import { getPasswordError, PASSWORD_MISMATCH_MESSAGE } from '../utils/passwordPolicy';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 
-const loginPhoto = require('../../assets/login-campus-hero.png');
+// Keep the login artwork distinct from the first onboarding illustration.
+const loginStoryset = require('../../assets/login-storyset.png');
 
 function scheduleWhenIdle(callback) {
   if (typeof globalThis.requestIdleCallback === 'function') {
@@ -48,6 +39,37 @@ function scheduleWhenIdle(callback) {
   }
   const timeoutId = setTimeout(callback, 0);
   return () => clearTimeout(timeoutId);
+}
+
+function getInlineAuthFeedback(error, { mode = 'login' } = {}) {
+  const code = String(error?.code || '').replace(/^functions\//, '');
+  if (code === 'auth/campus-email-required') return { field: 'email', message: 'ใช้อีเมล @psu.ac.th' };
+  if (code === 'auth/student-id-required') return { field: 'email', message: 'อีเมลต้องขึ้นต้นด้วยรหัสนักศึกษา 10 หลัก' };
+  if (code === 'auth/campus-email-login-only') return { field: 'email', message: 'ใช้ @psu.ac.th หรือ Gmail ที่สมัครไว้' };
+  if (code === 'auth/invalid-email' || code === 'invalid-argument') return { field: 'email', message: 'รูปแบบอีเมลไม่ถูกต้อง' };
+  if (code === 'auth/user-not-found') return { field: 'email', message: 'ไม่พบบัญชีนี้' };
+  if (code === 'auth/campus-email-not-found' || code === 'not-found') return { field: 'email', message: 'ไม่พบอีเมลนี้ใน Google Workspace' };
+  if (code === 'auth/campus-email-check-unavailable' || code === 'failed-precondition') return { field: 'email', message: 'ระบบตรวจสอบอีเมลมหาวิทยาลัยยังไม่พร้อม' };
+  if (code === 'auth/email-already-in-use' || code === 'already-exists') return { field: 'email', message: 'อีเมลนี้มีบัญชีแล้ว' };
+  if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') return { field: 'password', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' };
+  if (code === 'auth/weak-password' || code === 'auth/password-does-not-meet-requirements') return { field: 'password', message: 'รหัสผ่านไม่ตรงตามเงื่อนไข' };
+  if (code === 'auth/too-many-requests' || code === 'resource-exhausted') return { message: 'ลองใหม่อีกครั้งภายหลัง' };
+  if (code === 'auth/network-request-failed' || code === 'unavailable') return { message: 'เชื่อมต่อไม่ได้ ลองใหม่อีกครั้ง' };
+  if (code === 'auth/user-disabled') return { message: 'บัญชีนี้ถูกปิดใช้งาน' };
+  if (getFirebaseConfigurationErrorMessage(error)) return { message: 'ระบบยังตั้งค่าไม่ครบ ลองใหม่ภายหลัง' };
+  return { message: mode === 'signup' ? 'สมัครสมาชิกไม่สำเร็จ ลองใหม่' : 'เข้าสู่ระบบไม่สำเร็จ ลองใหม่' };
+}
+
+function getShortPasswordMessage(passwordError) {
+  if (passwordError === PASSWORD_MISMATCH_MESSAGE) return 'รหัสผ่านไม่ตรงกัน';
+  return '8 ตัวขึ้นไป: A-Z, a-z, 0-9 และอักขระพิเศษ';
+}
+
+function reportUnexpectedAuthError(label, error) {
+  const code = String(error?.code || '');
+  if (code === 'auth/network-request-failed' || code === 'unavailable') return;
+  const detail = code || String(error?.message || '').trim();
+  if (detail) console.warn(`${label}: ${detail}`);
 }
 
 WebBrowser.maybeCompleteAuthSession();
@@ -64,18 +86,31 @@ export default function LoginScreen({ onLoginSuccess }) {
         preferLocalhost: true,
       });
 
+  const androidClientId =
+    process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ||
+    webClientId ||
+    '865275661439-1md7lkrhld462jgfn7s1dnmbjrnl2ve4.apps.googleusercontent.com';
+  const iosClientId =
+    process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ||
+    webClientId ||
+    '865275661439-88thtqomehff31taquhc4srga14fbvav.apps.googleusercontent.com';
+
   const [authRequest, authResponse, promptAsync] = Google.useIdTokenAuthRequest({
     clientId: webClientId,
     webClientId,
-    iosClientId: isExpoGo ? undefined : process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-    androidClientId: isExpoGo ? undefined : process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    iosClientId,
+    androidClientId,
     selectAccount: true,
     redirectUri,
   });
 
   const completeGoogleCredential = async (idToken) => {
-    const result = await signInWithGoogleCredential(idToken);
-    finishAuthentication(result);
+    try {
+      const result = await signInWithGoogleCredential(idToken);
+      finishAuthentication(result);
+    } catch (loginError) {
+      showInlineError('เข้าสู่ระบบด้วย Google ไม่สำเร็จ ลองใหม่');
+    }
   };
 
   useEffect(() => {
@@ -85,21 +120,57 @@ export default function LoginScreen({ onLoginSuccess }) {
         completeGoogleCredential(id_token);
       }
     } else if (authResponse?.type === 'error') {
-      showLoginAlert('เกิดข้อผิดพลาดในการเข้าสู่ระบบด้วย Google');
+      showInlineError('เข้าสู่ระบบด้วย Google ไม่สำเร็จ ลองใหม่');
     }
   }, [authResponse]);
 
   const { colors, isDark } = useTheme();
-  const { height: screenHeight } = useWindowDimensions();
   const styles = getStyles(colors, isDark);
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [mode, setMode] = useState('google');
   const [savedAccounts, setSavedAccounts] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [unverifiedEmail, setUnverifiedEmail] = useState(null);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [inlineNotice, setInlineNotice] = useState(null);
+
+  const clearFeedback = () => {
+    setFieldErrors({});
+    setInlineNotice(null);
+  };
+
+  const clearFieldError = (field) => {
+    setFieldErrors((current) => current[field] ? { ...current, [field]: null } : current);
+    setInlineNotice(null);
+  };
+
+  const showFieldError = (field, message) => {
+    setInlineNotice(null);
+    setFieldErrors((current) => ({ ...current, [field]: message }));
+  };
+
+  const showInlineError = (message) => {
+    if (!message) return;
+    setFieldErrors({});
+    setInlineNotice({ tone: 'error', message });
+  };
+
+  const showInlineSuccess = (message) => {
+    if (!message) return;
+    setFieldErrors({});
+    setInlineNotice({ tone: 'success', message });
+  };
+
+  const showAuthError = (error, options) => {
+    const feedback = getInlineAuthFeedback(error, options);
+    if (feedback.field) showFieldError(feedback.field, feedback.message);
+    else showInlineError(feedback.message);
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -125,6 +196,9 @@ export default function LoginScreen({ onLoginSuccess }) {
   const showMode = (nextMode) => {
     setPassword('');
     setConfirmPassword('');
+    setShowPassword(false);
+    setShowConfirmPassword(false);
+    clearFeedback();
     setMode(nextMode);
   };
 
@@ -138,6 +212,9 @@ export default function LoginScreen({ onLoginSuccess }) {
     setEmail(acc.email || '');
     setPassword('');
     setConfirmPassword('');
+    setShowPassword(false);
+    setShowConfirmPassword(false);
+    clearFeedback();
     setMode('login');
   };
 
@@ -146,6 +223,7 @@ export default function LoginScreen({ onLoginSuccess }) {
     setSavedAccounts(nextList || []);
     if (!nextList || nextList.length === 0) {
       setSelectedAccount(null);
+      clearFeedback();
       setMode('login');
     }
   };
@@ -163,17 +241,11 @@ export default function LoginScreen({ onLoginSuccess }) {
         try {
           await promptAsync();
         } catch (err) {
-          showLoginAlert(
-            'Google Sign-In บน Expo Go ต้องใช้ Web Browser หรือโปรดทดสอบด้วย Email/Password แทน (หากต้องการใช้ Google Sign-In แบบเต็มรูปแบบ กรุณาสร้าง Development Build ด้วยคำสั่ง npx expo run:android)',
-            'โหมดทดสอบ Expo Go'
-          );
+          showInlineError('โหมดทดสอบ: ใช้เข้าสู่ระบบด้วยอีเมล');
         }
         return;
       }
-      showLoginAlert(
-        'แอปกำลังทำงานบน Expo Go ซึ่งไม่มีโมดูลเนทีฟสำหรับ Google Sign-In กรุณาเข้าสู่ระบบด้วยอีเมล หรือสร้าง Development Build ด้วยคำสั่ง npx expo run:android',
-        'โหมดทดสอบ Expo Go'
-      );
+      showInlineError('โหมดทดสอบ: ใช้เข้าสู่ระบบด้วยอีเมล');
       return;
     }
 
@@ -198,10 +270,10 @@ export default function LoginScreen({ onLoginSuccess }) {
     } catch (loginError) {
       if (loginError?.code === 'SIGN_IN_CANCELLED') return;
       if (loginError?.code === '10' || loginError?.code === 'DEVELOPER_ERROR') {
-        showLoginAlert('Google Sign-In ของ Android ยังไม่ตรงกับ SHA-1 ของ APK นี้ กรุณาสร้าง APK ใหม่จากโปรเจกต์นี้ หรือลงทะเบียน SHA-1 ของใบรับรองที่ใช้เซ็น APK ใน Firebase');
+        showInlineError('Google ยังตั้งค่าไม่ครบ ลองเข้าสู่ระบบด้วยอีเมล');
         return;
       }
-      showLoginAlert(getFirebaseConfigurationErrorMessage(loginError) || loginError?.message || 'ไม่สามารถเข้าสู่ระบบด้วย Google ได้ กรุณาลองใหม่อีกครั้ง');
+      showInlineError('เข้าสู่ระบบด้วย Google ไม่สำเร็จ ลองใหม่');
     } finally {
       setLoading(false);
     }
@@ -215,7 +287,7 @@ export default function LoginScreen({ onLoginSuccess }) {
         const result = await signInWithGoogle();
         finishAuthentication(result);
       } catch (loginError) {
-        showLoginAlert(getFirebaseConfigurationErrorMessage(loginError) || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+        showInlineError('เข้าสู่ระบบด้วย Google ไม่สำเร็จ ลองใหม่');
       } finally {
         setLoading(false);
       }
@@ -225,7 +297,7 @@ export default function LoginScreen({ onLoginSuccess }) {
       if (promptAsync) {
         promptAsync();
       } else {
-        showLoginAlert('Google Sign-In ยังไม่พร้อมใช้งานบนแพลตฟอร์มนี้');
+        showInlineError('Google ยังไม่พร้อมใช้งาน ใช้อีเมลแทน');
       }
     }
   };
@@ -234,66 +306,37 @@ export default function LoginScreen({ onLoginSuccess }) {
     if (loading) return;
     const cleanEmail = String(email || '').trim();
     if (!cleanEmail) {
-      showLoginAlert('กรุณากรอกอีเมลของคุณในช่องด้านบนก่อน แล้วกด "ลืมรหัสผ่าน?" อีกครั้งครับ', 'ระบุอีเมล');
+      showFieldError('email', 'กรอกอีเมลก่อน');
+      return;
+    }
+    if (!isLoginEmailAllowed(cleanEmail)) {
+      showFieldError('email', 'ใช้ @psu.ac.th หรือ Gmail ที่สมัครไว้');
       return;
     }
 
-    const performReset = async () => {
-      setLoading(true);
-      try {
-        await sendPasswordReset(cleanEmail);
-        const successMsg = 'ระบบได้ส่งลิงก์สำหรับตั้งรหัสผ่านใหม่ไปยัง ' + cleanEmail + ' เรียบร้อยแล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam';
-        if (Platform.OS === 'web') {
-          alert('ส่งลิงก์สำเร็จ: ' + successMsg);
-        } else {
-          Alert.alert('ส่งลิงก์สำเร็จ', successMsg);
-        }
-      } catch (err) {
-        console.error('Password reset error:', err);
-        const configurationError = getFirebaseConfigurationErrorMessage(err);
-        if (configurationError) {
-          showLoginAlert(configurationError, 'การตั้งค่าระบบ');
-          return;
-        }
-        if (err.code === 'auth/user-not-found') {
-          showLoginAlert('ไม่พบบัญชีผู้ใช้ที่ใช้อีเมล ' + cleanEmail + ' กรุณาตรวจสอบอีเมลอีกครั้ง หรือสมัครสมาชิกใหม่', 'ไม่พบบัญชี');
-        } else if (err.code === 'auth/invalid-email') {
-          showLoginAlert('รูปแบบอีเมลไม่ถูกต้อง กรุณาตรวจสอบความถูกต้อง เช่น example@gmail.com', 'อีเมลไม่ถูกต้อง');
-        } else if (err.code === 'auth/too-many-requests') {
-          showLoginAlert('คุณส่งคำขอรีเซ็ตรหัสผ่านบ่อยเกินไป เพื่อความปลอดภัยกรุณารอสักครู่แล้วลองใหม่อีกครั้ง', 'ส่งคำขอบ่อยเกินไป');
-        } else if (err.code === 'auth/network-request-failed') {
-          showLoginAlert('ไม่สามารถเชื่อมต่ออินเทอร์เน็ตได้ กรุณาตรวจสอบสัญญาณเน็ตแล้วลองใหม่อีกครั้ง', 'การเชื่อมต่อขัดข้อง');
-        } else {
-          const detail = err?.message ? ' (' + err.message + ')' : '';
-          showLoginAlert('ไม่สามารถส่งอีเมลรีเซ็ตรหัสผ่านได้: ' + (err?.code || 'เกิดข้อผิดพลาด') + detail, 'รีเซ็ตรหัสผ่าน');
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    if (Platform.OS === 'web') {
-      performReset();
-    } else {
-      Alert.alert(
-        'รีเซ็ตรหัสผ่าน',
-        'ต้องการให้ส่งลิงก์ตั้งรหัสผ่านใหม่ไปยัง ' + cleanEmail + ' ใช่หรือไม่?',
-        [
-          { text: 'ยกเลิก', style: 'cancel' },
-          { text: 'ส่งลิงก์', onPress: performReset },
-        ]
-      );
+    clearFieldError('email');
+    setLoading(true);
+    try {
+      await sendPasswordReset(cleanEmail);
+      showInlineSuccess('ส่งลิงก์แล้ว ตรวจ Inbox หรือ Junk/Spam');
+    } catch (err) {
+      reportUnexpectedAuthError('Password reset error', err);
+      const feedback = getInlineAuthFeedback(err);
+      if (feedback.field) showFieldError(feedback.field, feedback.message);
+      else showInlineError(feedback.message === 'เข้าสู่ระบบไม่สำเร็จ ลองใหม่' ? 'ส่งลิงก์ไม่สำเร็จ ลองใหม่' : feedback.message);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleResendVerification = async () => {
     const targetEmail = unverifiedEmail || email.trim();
     if (!targetEmail) {
-      showLoginAlert('กรุณากรอกอีเมลและรหัสผ่านเพื่อส่งอีเมลยืนยันใหม่', 'ยืนยันอีเมล');
+      showFieldError('email', 'กรอกอีเมล');
       return;
     }
     if (!password) {
-      showLoginAlert('กรุณากรอกรหัสผ่านเพื่อส่งอีเมลยืนยันใหม่', 'ยืนยันอีเมล');
+      showFieldError('password', 'กรอกรหัสผ่าน');
       return;
     }
     if (loading) return;
@@ -302,27 +345,18 @@ export default function LoginScreen({ onLoginSuccess }) {
       const { resendEmailVerification } = require('../services/authService');
       const res = await resendEmailVerification(targetEmail, password);
       if (res.alreadyVerified) {
-        const msg = 'บัญชีนี้ได้รับการยืนยันอีเมลแล้ว คุณสามารถเข้าสู่ระบบได้ทันที';
-        if (Platform.OS === 'web') alert(msg);
-        else Alert.alert('ยืนยันแล้ว', msg);
+        showInlineSuccess('อีเมลนี้ยืนยันแล้ว เข้าสู่ระบบได้');
       } else {
-        const msg = 'ระบบได้ส่งลิงก์ยืนยันไปยัง ' + targetEmail + ' ให้ใหม่เรียบร้อยแล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam';
-        if (Platform.OS === 'web') alert(msg);
-        else Alert.alert('ส่งอีเมลยืนยันแล้ว', msg);
+        showInlineSuccess('ส่งอีเมลยืนยันแล้ว ตรวจ Inbox หรือ Junk/Spam');
       }
     } catch (err) {
-      console.error('Resend verification error:', err);
-      const configurationError = getFirebaseConfigurationErrorMessage(err);
-      if (configurationError) {
-        showLoginAlert(configurationError);
-        return;
-      }
+      reportUnexpectedAuthError('Resend verification error', err);
       if (err.code === 'auth/too-many-requests') {
-        showLoginAlert('คุณส่งคำขอมากเกินไป กรุณารอสักครู่แล้วลองใหม่อีกครั้ง', 'ยืนยันอีเมล');
+        showInlineError('ส่งบ่อยเกินไป รอสักครู่แล้วลองใหม่');
       } else if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-        showLoginAlert('รหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบรหัสผ่านอีกครั้ง', 'ยืนยันอีเมล');
+        showFieldError('password', 'รหัสผ่านไม่ถูกต้อง');
       } else {
-        showLoginAlert('ไม่สามารถส่งอีเมลยืนยันได้ กรุณาลองใหม่อีกครั้ง', 'ยืนยันอีเมล');
+        showInlineError('ส่งอีเมลยืนยันไม่สำเร็จ ลองใหม่');
       }
     } finally {
       setLoading(false);
@@ -330,51 +364,59 @@ export default function LoginScreen({ onLoginSuccess }) {
   };
 
   const handleEmailAuth = async () => {
+    const errors = {};
+    const cleanEmail = email.trim();
+
+    if (!cleanEmail) {
+      errors.email = 'กรอกอีเมล';
+    } else if (mode === 'signup' && !isCampusEmail(cleanEmail)) {
+      errors.email = 'ใช้อีเมล @psu.ac.th';
+    } else if (mode === 'signup' && !isCampusStudentEmail(cleanEmail)) {
+      errors.email = 'อีเมลต้องขึ้นต้นด้วยรหัสนักศึกษา 10 หลัก';
+    } else if (mode === 'login' && !isLoginEmailAllowed(cleanEmail)) {
+      errors.email = 'ใช้ @psu.ac.th หรือ Gmail ที่สมัครไว้';
+    }
+
+    if (!password) {
+      errors.password = 'กรอกรหัสผ่าน';
+    } else if (mode === 'signup') {
+      const passwordError = getPasswordError(password, { email: cleanEmail });
+      if (passwordError) errors.password = getShortPasswordMessage(passwordError);
+    }
+
     if (mode === 'signup') {
-      if (!email.trim() || !password || !confirmPassword) {
-        showLoginAlert('กรุณากรอกข้อมูลให้ครบถ้วน');
-        return;
-      }
-      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
-      if (!passwordRegex.test(password)) {
-        showLoginAlert('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร ประกอบด้วยพิมพ์เล็ก พิมพ์ใหญ่ ตัวเลข และอักขระพิเศษ');
-        return;
-      }
-      if (password !== confirmPassword) {
-        showLoginAlert('รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน');
-        return;
-      }
-    } else {
-      if (!email.trim() || !password) {
-        showLoginAlert('กรุณากรอกอีเมลและรหัสผ่านให้ครบถ้วน');
-        return;
-      }
+      if (!confirmPassword) errors.confirmPassword = 'ยืนยันรหัสผ่าน';
+      else if (password !== confirmPassword) errors.confirmPassword = 'รหัสผ่านไม่ตรงกัน';
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setInlineNotice(null);
+      setFieldErrors(errors);
+      return;
     }
 
     if (loading) return;
+    clearFeedback();
     setLoading(true);
     try {
       const result = mode === 'signup'
-        ? await signUpWithEmail(email.trim(), password)
-        : await signInWithEmail(email.trim(), password);
+        ? await signUpWithEmail(cleanEmail, password)
+        : await signInWithEmail(cleanEmail, password);
 
       if (result.user.providerData?.some(p => p.providerId === 'password') && !result.user.emailVerified) {
-        setUnverifiedEmail(email.trim());
+        setUnverifiedEmail(cleanEmail);
         if (mode === 'signup') {
-          const msg = 'สมัครสมาชิกสำเร็จ! ระบบได้ส่งอีเมลยืนยันไปยัง ' + email.trim() + ' แล้ว กรุณาตรวจสอบกล่องจดหมาย (Inbox) หรือโฟลเดอร์ Junk/Spam';
-          if (Platform.OS === 'web') alert(msg);
-          else Alert.alert('ตรวจสอบอีเมลของคุณ', msg);
+          showInlineSuccess('สมัครสำเร็จ ตรวจอีเมลเพื่อยืนยันบัญชี');
         } else {
           let msg = '';
           if (result.verificationSent === true) {
-            msg = 'บัญชีของคุณยังไม่ได้ยืนยันอีเมล ระบบได้ส่งลิงก์ยืนยันไปยัง ' + email.trim() + ' ให้ใหม่เรียบร้อยแล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam';
+            msg = 'ส่งอีเมลยืนยันแล้ว ตรวจ Inbox หรือ Junk/Spam';
           } else if (result.verificationSent === 'throttled') {
-            msg = 'ระบบได้ส่งลิงก์ยืนยันไปก่อนหน้านี้แล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam หากไม่พบกรุณารอสักครู่แล้วลองใหม่';
+            msg = 'ส่งไปแล้ว รอสักครู่แล้วตรวจ Inbox หรือ Junk/Spam';
           } else {
-            msg = 'กรุณายืนยันอีเมลก่อนเข้าใช้งาน (ตรวจสอบกล่องข้อความหรือ Junk/Spam ของคุณ)';
+            msg = 'ยืนยันอีเมลก่อนเข้าใช้งาน';
           }
-          if (Platform.OS === 'web') alert(msg);
-          else Alert.alert('ส่งอีเมลยืนยันแล้ว', msg);
+          showInlineSuccess(msg);
         }
         await signOutUser();
         return;
@@ -382,27 +424,8 @@ export default function LoginScreen({ onLoginSuccess }) {
 
       finishAuthentication(result);
     } catch (loginError) {
-      console.error('Email auth error:', loginError);
-      const configurationError = getFirebaseConfigurationErrorMessage(loginError);
-      if (configurationError) {
-        showLoginAlert(configurationError);
-        return;
-      }
-      if (loginError.code === 'auth/user-not-found') {
-        showLoginAlert('ไม่พบบัญชีที่ใช้อีเมลนี้ กรุณาสมัครสมาชิกก่อน');
-      } else if (loginError.code === 'auth/wrong-password' || loginError.code === 'auth/invalid-credential') {
-        showLoginAlert('อีเมลหรือรหัสผ่านไม่ถูกต้อง (หากบัญชีนี้สมัครด้วย Google ให้เข้าสู่ระบบด้วย Google)');
-      } else if (loginError.code === 'auth/email-already-in-use') {
-        showLoginAlert('อีเมลนี้มีผู้ใช้งานแล้ว กรุณาเข้าสู่ระบบ');
-      } else if (loginError.code === 'auth/invalid-email') {
-        showLoginAlert('รูปแบบอีเมลไม่ถูกต้อง');
-      } else if (loginError.code === 'auth/too-many-requests') {
-        showLoginAlert('มีการพยายามเข้าสู่ระบบผิดหลายครั้ง กรุณารอสักครู่แล้วลองใหม่');
-      } else {
-        showLoginAlert(mode === 'signup'
-          ? 'สมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง'
-          : 'อีเมลหรือรหัสผ่านไม่ถูกต้อง');
-      }
+      reportUnexpectedAuthError('Email auth error', loginError);
+      showAuthError(loginError, { mode });
     } finally {
       setLoading(false);
     }
@@ -411,41 +434,48 @@ export default function LoginScreen({ onLoginSuccess }) {
   const isEmailMode = mode === 'login' || mode === 'signup';
 
   return (
-    <ImageBackground
-      source={loginPhoto}
-      style={styles.fullBackground}
-      imageStyle={styles.fullBackgroundImage}
-    >
-      <LinearGradient
-        colors={['rgba(11,13,20,0.38)', 'rgba(11,13,20,0.68)', 'rgba(11,13,20,0.92)']}
-        locations={[0, 0.42, 0.85]}
-        style={styles.gradientOverlay}
-      >
-        <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'android' ? 'height' : 'padding'}
-            keyboardVerticalOffset={0}
-            style={styles.container}
+    <View style={[styles.fullBackground, { backgroundColor: colors.canvas }]}>
+      <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'android' ? 'height' : 'padding'}
+          keyboardVerticalOffset={0}
+          style={styles.container}
+        >
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            style={styles.loginScroll}
           >
-            <ScrollView
-              contentContainerStyle={styles.scrollContent}
-              keyboardDismissMode="on-drag"
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-              style={styles.loginScroll}
-            >
-              <View style={styles.contentFrame}>
-                <View style={styles.headerSection}>
-                  <View style={styles.brandRow}>
-                    <View style={styles.brandIconCircle}>
-                      <FeatureIcon color="#FFFFFF" name="person.2.fill" size={17} />
-                    </View>
-                    <Text style={styles.heroTitle}>CampusMate</Text>
-                  </View>
-                  <Text style={styles.heroSubtitle}>พื้นที่เพื่อนใหม่ในรั้วมหาวิทยาลัย</Text>
-                </View>
+            <View style={styles.contentFrame}>
+              <View style={styles.loginHero}>
+                <View style={[styles.loginHeroBlob, { backgroundColor: colors.primarySoft }]} />
+                <Image
+                  accessibilityLabel="ภาพประกอบการเข้าสู่ระบบ"
+                  resizeMode="contain"
+                  source={loginStoryset}
+                  style={styles.loginIllustration}
+                />
+              </View>
 
-                <View style={styles.loginPanel}>
+              <View style={styles.loginPanel}>
+                  {inlineNotice ? (
+                    <View
+                      accessibilityRole="alert"
+                      style={[
+                        styles.inlineNotice,
+                        inlineNotice.tone === 'success' ? styles.inlineNoticeSuccess : styles.inlineNoticeError,
+                      ]}
+                    >
+                      <FeatureIcon
+                        color={inlineNotice.tone === 'success' ? colors.green : colors.danger}
+                        name={inlineNotice.tone === 'success' ? 'checkmark.circle.fill' : 'exclamationmark.triangle.fill'}
+                        size={16}
+                      />
+                      <Text style={styles.inlineNoticeText}>{inlineNotice.message}</Text>
+                    </View>
+                  ) : null}
                   {mode === 'saved' && savedAccounts.length > 0 ? (
                     <View style={styles.savedSection}>
                       <View style={styles.savedHeader}>
@@ -493,12 +523,31 @@ export default function LoginScreen({ onLoginSuccess }) {
                           setEmail('');
                           setPassword('');
                           setConfirmPassword('');
+                          clearFeedback();
                           setMode('login');
                         }}
                         style={({ pressed }) => [styles.otherAccountButton, pressed && styles.pressed]}
                       >
                         <FeatureIcon color={colors.ink} name="person.badge.plus" size={17} />
                         <Text style={styles.otherAccountText}>เข้าสู่ระบบด้วยบัญชีอื่น</Text>
+                      </Pressable>
+
+                      <Pressable
+                        accessibilityLabel="กลับไปหน้าเข้าสู่ระบบหลัก"
+                        accessibilityRole="button"
+                        onPress={() => {
+                          setSelectedAccount(null);
+                          setEmail('');
+                          setPassword('');
+                          setConfirmPassword('');
+                          setUnverifiedEmail(null);
+                          clearFeedback();
+                          setMode('google');
+                        }}
+                        style={({ pressed }) => [styles.backToLoginButton, pressed && styles.pressed]}
+                      >
+                        <FeatureIcon color={colors.primary} name="arrow.left.circle" size={17} />
+                        <Text style={styles.backToLoginText}>กลับไปหน้าเข้าสู่ระบบหลัก</Text>
                       </Pressable>
                     </View>
                   ) : isEmailMode ? (
@@ -512,50 +561,92 @@ export default function LoginScreen({ onLoginSuccess }) {
                         </View>
                       ) : null}
 
+                      <Text style={styles.campusHint}>
+                        {mode === 'signup' ? 'สมัครใหม่ด้วยอีเมล @psu.ac.th' : 'ใช้ @psu.ac.th หรือ Gmail เดิมที่ยืนยันแล้ว'}
+                      </Text>
                       <Text style={styles.inputLabel}>อีเมล</Text>
-                      <View style={styles.inputShell}>
+                      <View style={[styles.inputShell, fieldErrors.email && styles.inputShellError]}>
                         <FeatureIcon color={colors.inkSoft} name="envelope.fill" size={17} />
                         <TextInput
                           autoCapitalize="none"
                           autoComplete="email"
                           keyboardType="email-address"
-                          onChangeText={setEmail}
-                          placeholder="name@university.ac.th"
+                          keyboardAppearance={isDark ? 'dark' : 'light'}
+                          cursorColor={colors.primary}
+                          selectionColor={colors.primary}
+                          onChangeText={(value) => {
+                            setEmail(value);
+                            clearFieldError('email');
+                          }}
+                          placeholder={CAMPUS_EMAIL_PLACEHOLDER}
                           placeholderTextColor={colors.inkSoft}
                           style={styles.input}
                           value={email}
                         />
                       </View>
+                      {fieldErrors.email ? <Text accessibilityRole="alert" style={styles.fieldError}>{fieldErrors.email}</Text> : null}
 
                       <Text style={styles.inputLabel}>รหัสผ่าน</Text>
-                      <View style={styles.inputShell}>
+                      <View style={[styles.inputShell, fieldErrors.password && styles.inputShellError]}>
                         <FeatureIcon color={colors.inkSoft} name="lock.fill" size={17} />
                         <TextInput
                           autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-                          onChangeText={setPassword}
+                          keyboardAppearance={isDark ? 'dark' : 'light'}
+                          cursorColor={colors.primary}
+                          selectionColor={colors.primary}
+                          onChangeText={(value) => {
+                            setPassword(value);
+                            clearFieldError('password');
+                          }}
                           placeholder="อย่างน้อย 8 ตัวอักษร"
                           placeholderTextColor={colors.inkSoft}
-                          secureTextEntry
+                          secureTextEntry={!showPassword}
                           style={styles.input}
                           value={password}
                         />
+                        <Pressable
+                          accessibilityLabel={showPassword ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'}
+                          accessibilityRole="button"
+                          hitSlop={8}
+                          onPress={() => setShowPassword((visible) => !visible)}
+                          style={styles.passwordToggle}
+                        >
+                          <FeatureIcon color={colors.inkSoft} name={showPassword ? 'eye.slash.fill' : 'eye.fill'} size={18} />
+                        </Pressable>
                       </View>
+                      {fieldErrors.password ? <Text accessibilityRole="alert" style={styles.fieldError}>{fieldErrors.password}</Text> : null}
 
                       {mode === 'signup' ? (
                         <>
                           <Text style={styles.inputLabel}>ยืนยันรหัสผ่าน</Text>
-                          <View style={styles.inputShell}>
+                          <View style={[styles.inputShell, fieldErrors.confirmPassword && styles.inputShellError]}>
                             <FeatureIcon color={colors.inkSoft} name="lock.shield.fill" size={17} />
                             <TextInput
                               autoComplete="new-password"
-                              onChangeText={setConfirmPassword}
+                              keyboardAppearance={isDark ? 'dark' : 'light'}
+                              cursorColor={colors.primary}
+                              selectionColor={colors.primary}
+                              onChangeText={(value) => {
+                                setConfirmPassword(value);
+                                clearFieldError('confirmPassword');
+                              }}
                               placeholder="กรอกรหัสผ่านอีกครั้ง"
                               placeholderTextColor={colors.inkSoft}
-                              secureTextEntry
+                              secureTextEntry={!showConfirmPassword}
                               style={styles.input}
                               value={confirmPassword}
                             />
+                            <Pressable
+                              accessibilityLabel={showConfirmPassword ? 'ซ่อนรหัสผ่านที่ยืนยัน' : 'แสดงรหัสผ่านที่ยืนยัน'}
+                              accessibilityRole="button"
+                              hitSlop={8}
+                              onPress={() => setShowConfirmPassword((visible) => !visible)}
+                              style={styles.passwordToggle}
+                            >
+                              <FeatureIcon color={colors.inkSoft} name={showConfirmPassword ? 'eye.slash.fill' : 'eye.fill'} size={18} />
+                            </Pressable>
                           </View>
+                          {fieldErrors.confirmPassword ? <Text accessibilityRole="alert" style={styles.fieldError}>{fieldErrors.confirmPassword}</Text> : null}
                         </>
                       ) : (
                         <View style={styles.actionRow}>
@@ -601,6 +692,10 @@ export default function LoginScreen({ onLoginSuccess }) {
                     </View>
                   ) : (
                     <View style={styles.actions}>
+                      <View style={styles.panelIntro}>
+                        <Text style={styles.panelTitle}>เข้าสู่ CampusMate</Text>
+                        <Text style={styles.panelSubtitle}>ใช้บัญชีมหาวิทยาลัยหรือ Gmail ที่เคยสมัคร</Text>
+                      </View>
                       <PrimaryButton
                         label="เข้าสู่ระบบด้วย Google"
                         loading={loading}
@@ -639,13 +734,13 @@ export default function LoginScreen({ onLoginSuccess }) {
                       ) : null}
                     </View>
                   )}
-                </View>
               </View>
-            </ScrollView>
-          </KeyboardAvoidingView>
-        </SafeAreaView>
-      </LinearGradient>
-    </ImageBackground>
+              <LegalAuthNotice compact style={[styles.legalNotice, { paddingHorizontal: 0, paddingVertical: 4 }]} />
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </View>
   );
 }
 
@@ -673,7 +768,7 @@ function PrimaryButton({ label, loading, onPress, styles, symbol }) {
 }
 
 function SavedAccountAvatar({ account, colors, style }) {
-  const imageUri = useRemoteImage(account?.avatarUri || account?.photoURL, account?.updatedAt, account?.id);
+  const imageUri = useRemoteImage(account?.avatarUri || account?.photoURL, account?.avatarRevision, account?.id);
   return imageUri ? (
     <Image source={{ uri: imageUri }} style={style} />
   ) : (
@@ -682,9 +777,7 @@ function SavedAccountAvatar({ account, colors, style }) {
 }
 
 const getStyles = (colors, isDark) => StyleSheet.create({
-  fullBackground: { flex: 1, backgroundColor: '#0B0D14' },
-  fullBackgroundImage: { resizeMode: 'cover' },
-  gradientOverlay: { flex: 1 },
+  fullBackground: { flex: 1 },
   safeArea: { flex: 1 },
   container: { flex: 1 },
   loginScroll: { flex: 1 },
@@ -692,63 +785,79 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     flexGrow: 1,
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingBottom: Platform.OS === 'android' ? 44 : spacing.xxl,
-    paddingHorizontal: spacing.lg,
-    paddingTop: Platform.OS === 'android' ? 28 : spacing.xxl,
+    paddingBottom: Platform.OS === 'android' ? 24 : spacing.xxl,
+    paddingHorizontal: spacing.md,
+    paddingTop: Platform.OS === 'android' ? 34 : spacing.xxl,
   },
   contentFrame: {
     alignItems: 'center',
-    justifyContent: 'space-between',
-    maxWidth: 340,
+    justifyContent: 'flex-start',
+    maxWidth: 360,
     width: '100%',
     flexGrow: 1,
   },
-  headerSection: {
-    flexDirection: 'row',
+  loginHero: {
     alignItems: 'center',
+    height: 260,
     justifyContent: 'center',
-    gap: 8,
-    backgroundColor: isDark ? 'rgba(28, 32, 44, 0.85)' : 'rgba(255, 255, 255, 0.92)',
-    borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)',
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.32,
-    shadowRadius: 14,
-    elevation: 4,
-    marginBottom: spacing.lg,
+    marginBottom: spacing.md,
+    marginTop: spacing.xxl,
+    position: 'relative',
+    width: '100%',
   },
-  brandRow: {
+  loginHeroBlob: {
+    borderRadius: 120,
+    height: 190,
+    position: 'absolute',
+    transform: [{ rotate: '-8deg' }, { translateY: 20 }],
+    width: 250,
+  },
+  loginIllustration: { height: 238, transform: [{ translateY: 16 }], width: 244 },
+  inlineNotice: {
+    alignItems: 'center',
+    borderRadius: 12,
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    width: '100%',
   },
-  brandIconCircle: {
-    alignItems: 'center',
-    backgroundColor: colors.primary,
-    borderRadius: radius.pill,
-    height: 26,
-    justifyContent: 'center',
-    width: 26,
+  inlineNoticeError: { backgroundColor: colors.dangerSoft },
+  inlineNoticeSuccess: { backgroundColor: colors.greenSoft },
+  inlineNoticeText: {
+    color: colors.ink,
+    flex: 1,
+    fontSize: type.caption2,
+    fontWeight: '700',
+    lineHeight: 17,
   },
-  heroTitle: { color: isDark ? '#FFFFFF' : '#10203A', fontSize: 16, fontWeight: '800', letterSpacing: -0.3 },
-  heroSubtitle: { color: isDark ? '#A2ACB9' : '#5A687D', fontSize: 12, fontWeight: '600' },
+  campusHint: {
+    color: colors.inkMuted,
+    fontSize: type.caption2,
+    fontWeight: '600',
+    lineHeight: 18,
+    marginBottom: spacing.sm,
+    textAlign: 'center',
+  },
   loginPanel: {
     backgroundColor: isDark ? 'rgba(28, 32, 44, 0.85)' : 'rgba(255, 255, 255, 0.92)',
     borderColor: isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(255, 255, 255, 0.60)',
     borderWidth: 1,
-    borderRadius: 28,
-    paddingBottom: spacing.lg,
+    borderRadius: 24,
+    paddingBottom: spacing.md,
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
+    paddingTop: spacing.md,
     width: '100%',
-    marginBottom: Platform.OS === 'android' ? 16 : 0,
+    marginBottom: spacing.sm,
+    marginTop: spacing.xl,
     ...shadow.card,
   },
-  actions: { gap: spacing.md, marginTop: spacing.sm },
+  legalNotice: { marginTop: 'auto' },
+  actions: { gap: spacing.sm, marginTop: spacing.xs },
+  panelIntro: { alignItems: 'center', gap: 2, marginBottom: spacing.xs },
+  panelTitle: { color: colors.ink, fontSize: 19, fontWeight: '800', textAlign: 'center' },
+  panelSubtitle: { color: colors.inkMuted, fontSize: type.caption2, lineHeight: 17, textAlign: 'center' },
   primaryButton: {
     alignItems: 'center',
     backgroundColor: isDark ? colors.primary : '#111318',
@@ -756,11 +865,11 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     justifyContent: 'center',
-    minHeight: 50,
+    minHeight: 48,
     paddingHorizontal: spacing.lg,
     ...shadow.card,
   },
-  primaryButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+  primaryButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   secondaryButton: {
     alignItems: 'center',
     backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(17, 19, 24, 0.05)',
@@ -770,13 +879,13 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     justifyContent: 'center',
-    minHeight: 50,
+    minHeight: 48,
     paddingHorizontal: spacing.lg,
   },
-  secondaryButtonText: { color: colors.ink, fontSize: type.caption, fontWeight: '800' },
-  signupRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'center', minHeight: 34 },
-  signupHint: { color: colors.inkMuted, fontSize: type.caption },
-  signupLink: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
+  secondaryButtonText: { color: colors.ink, fontSize: 14, fontWeight: '800' },
+  signupRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'center', minHeight: 30 },
+  signupHint: { color: colors.inkMuted, fontSize: type.caption2 },
+  signupLink: { color: colors.primary, fontSize: type.caption2, fontWeight: '800' },
   form: { marginTop: spacing.xs },
   inputLabel: { color: colors.ink, fontSize: type.micro, fontWeight: '800', marginBottom: 5 },
   inputShell: {
@@ -790,6 +899,20 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     marginBottom: spacing.sm,
     minHeight: 48,
     paddingHorizontal: spacing.md,
+  },
+  inputShellError: { borderColor: colors.danger, borderWidth: 1.5 },
+  passwordToggle: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.xs,
+  },
+  fieldError: {
+    color: colors.danger,
+    fontSize: type.caption2,
+    fontWeight: '700',
+    lineHeight: 16,
+    marginBottom: spacing.xs,
+    marginTop: -spacing.xs,
   },
   input: { color: colors.ink, flex: 1, fontSize: type.body, minHeight: 46 },
   actionRow: {
@@ -807,8 +930,8 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     alignSelf: 'center',
     flexDirection: 'row',
     gap: 5,
-    marginTop: spacing.md,
-    minHeight: 36,
+    marginTop: spacing.sm,
+    minHeight: 32,
   },
   textButtonText: { color: colors.primary, fontSize: type.caption, fontWeight: '700' },
   savedSection: { gap: spacing.xs },
@@ -874,6 +997,19 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     minHeight: 40,
   },
   otherAccountText: { color: colors.ink, fontSize: type.caption, fontWeight: '800' },
+  backToLoginButton: {
+    alignItems: 'center',
+    borderColor: colors.line,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: spacing.xs,
+    justifyContent: 'center',
+    marginTop: spacing.xs,
+    minHeight: 40,
+    paddingHorizontal: spacing.md,
+  },
+  backToLoginText: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
   selectedAccountNotice: {
     alignItems: 'center',
     flexDirection: 'row',

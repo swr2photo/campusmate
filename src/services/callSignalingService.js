@@ -12,7 +12,7 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { requireFirebase } from './dbService';
+import { requireFirebase } from './dbService.js';
 
 export const CALL_STATUS = {
   CALLING: 'calling',
@@ -201,6 +201,7 @@ export function subscribeToCall(callId, onUpdate) {
  */
 export function subscribeToIncomingCalls(userId, onIncomingCall) {
   if (!userId) return () => {};
+  console.log('DEBUG subscribeToIncomingCalls', { requireFirebase: typeof requireFirebase, query: typeof query, collection: typeof collection, where: typeof where });
   const { db } = requireFirebase();
 
   // Query calls where receiverId === userId and status is calling or ringing
@@ -292,11 +293,4 @@ export async function getCall(callId) {
   return { id: callDoc.id, ...callDoc.data() };
 }
 
-/**
- * Format call duration as MM:SS
- */
-export function formatCallDuration(seconds) {
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
-}
+export { formatCallDuration } from '../utils/callDuration.js';

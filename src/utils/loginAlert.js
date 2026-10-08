@@ -1,4 +1,5 @@
-import { Alert, Platform } from 'react-native';
+import { Platform } from 'react-native';
+import { showAlert } from './appAlert';
 
 export function showLoginAlert(message, title = 'เกิดข้อผิดพลาด') {
   if (!message) return;
@@ -10,5 +11,5 @@ export function showLoginAlert(message, title = 'เกิดข้อผิด�
     return;
   }
 
-  Alert.alert(title, message);
+  showAlert(title, message, { tone: title === 'เกิดข้อผิดพลาด' ? 'danger' : 'warning' });
 }

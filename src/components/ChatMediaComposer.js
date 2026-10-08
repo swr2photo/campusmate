@@ -1,12 +1,15 @@
+import Text from './AppText';
+import { AppTextInput as TextInput } from './AppText';
 import ChatVideoComposer from './ChatVideoComposer';
 import React, { useRef, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VIDEO_MODES } from '../utils/chatVideoPolicy';
 import ChatImageEditorModal from './ChatImageEditorModal';
+import { showAlert } from '../utils/appAlert';
 
 const modeIcons = { once: 'radio-button-on-outline', replay: 'play-circle-outline', chat: 'chatbubble-outline' };
 const descriptions = { once: 'เปิดได้ครั้งเดียว ปิดแล้วจะเปิดซ้ำไม่ได้', replay: 'เปิดดูซ้ำได้ พร้อมป้องกันแคปหน้าจอ', chat: 'เก็บรูปหรือวิดีโอไว้ในบทสนทนา' };
@@ -35,13 +38,14 @@ function ImageMediaComposer({ asset, recipientName, recipientAvatar, onSend, onC
   const [uris, setUris] = useState(() => asset.uris?.length ? asset.uris : [asset.uri]);
   const video = asset.type === 'video';
   const close = () => { if (!sendingRef.current) onClose(); };
-  const send = async () => {
+  const send = () => {
     if (sendingRef.current) return;
     sendingRef.current = true;
-    setSending(true);
-    try { await onSend({ ...asset, ...(!video ? { uri: uris[0], uris } : {}), caption: caption.trim() }, mode); onClose(); }
-    catch (error) { Alert.alert('ส่งสื่อไม่สำเร็จ', error.message || 'กรุณาลองใหม่อีกครั้ง'); }
-    finally { sendingRef.current = false; setSending(false); }
+    const payload = { ...asset, ...(!video ? { uri: uris[0], uris } : {}), caption: caption.trim() };
+    onClose();
+    void Promise.resolve(onSend(payload, mode)).catch((error) => {
+      showAlert('ส่งสื่อไม่สำเร็จ', error.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
+    });
   };
   if (editing) return <ChatImageEditorModal visible imageUri={uris[index]} imageUris={uris}
     initialCaption={caption} confirmLabel="ใช้รูปนี้" onClose={() => setEditing(false)}
@@ -72,7 +76,6 @@ function ImageMediaComposer({ asset, recipientName, recipientAvatar, onSend, onC
         </View>}
         {showCaption && <TextInput autoFocus multiline maxLength={500} editable={!sending} value={caption} onChangeText={setCaption}
           accessibilityLabel="คำบรรยายสื่อ" placeholder="เพิ่มคำบรรยาย…" placeholderTextColor="#ccc" style={styles.caption} />}
-        {sending && <View style={styles.uploading}><ActivityIndicator color="#fff" size="large" /><Text style={styles.white}>กำลังส่ง…</Text></View>}
       </View>
       {showModes && <View style={styles.modeSheet}>
         <Text style={styles.sheetTitle}>เลือกวิธีการดู</Text>
@@ -109,7 +112,7 @@ const styles = StyleSheet.create({
   duration: { position: 'absolute', right: 16, top: 76, padding: 7, borderRadius: 10, backgroundColor: '#0008' },
   pages: { position: 'absolute', bottom: 85, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   caption: { position: 'absolute', bottom: 22, left: 18, right: 18, borderRadius: 20, padding: 15, maxHeight: 110, backgroundColor: '#181818dd', color: '#fff', fontSize: 16 },
-  white: { color: '#fff', fontSize: 14 }, uploading: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000a', alignItems: 'center', justifyContent: 'center', gap: 12 },
+  white: { color: '#fff', fontSize: 14 }, uploading: { ...StyleSheet.absoluteFill, backgroundColor: '#000a', alignItems: 'center', justifyContent: 'center', gap: 12 },
   footer: { minHeight: 90, paddingHorizontal: 20, paddingVertical: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   modeButton: { flexDirection: 'row', alignItems: 'center', gap: 9, flexShrink: 1, minHeight: 48 }, modeLabel: { color: '#fff', fontSize: 15, fontWeight: '600', flexShrink: 1 },
   send: { backgroundColor: '#fff', borderRadius: 32, height: 54, paddingHorizontal: 17, flexDirection: 'row', alignItems: 'center', gap: 9 },

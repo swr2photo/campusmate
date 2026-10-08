@@ -1,11 +1,6 @@
+import Text from './AppText';
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import {
-  Animated,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Animated, Pressable, StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import DecryptedChatImage from './DecryptedChatImage';
 import {
@@ -293,7 +288,7 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
   },
   cardBackOverlayDeep: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.28)',
   },
   cardBackMiddle: {
@@ -310,7 +305,7 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
   },
   cardBackOverlayMiddle: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.16)',
   },
   cardFront: {

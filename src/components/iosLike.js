@@ -1,14 +1,9 @@
+import Text from './AppText';
 import React from 'react';
-import {
-  Image,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Image, Pressable, StyleSheet, View } from 'react-native';
 import { BlurView } from 'expo-blur';
-import { Image as ExpoImage } from 'expo-image';
-import { useRemoteImage } from '../utils/useRemoteImage';
+import ExpoImage from './CachedImage';
+import { getImageRequestUri } from '../utils/useRemoteImage';
 import FeatureIcon from './FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 
@@ -84,8 +79,8 @@ export function IosLikePill({ children, active = false, color, onPress, style, i
   const iconIsEmoji = icon && /[^\x00-\x7F]/.test(icon) && !icon.includes('.');
   const content = (
     <View style={[styles.pill, { backgroundColor, borderColor: active ? backgroundColor : colors.line }, style]}>
-      {iconIsEmoji ? <Text style={[styles.pillIconText, { color: active ? colors.card : colors.inkMuted }]}>{icon}</Text> : icon ? <FeatureIcon color={active ? colors.card : colors.inkMuted} name={icon} size={15} style={styles.pillIcon} /> : null}
-      <Text style={[styles.pillText, { color: active ? colors.card : colors.inkMuted }]}>{children}</Text>
+      {iconIsEmoji ? <Text style={[styles.pillIconText, { color: active ? colors.onPrimary : colors.inkMuted }]}>{icon}</Text> : icon ? <FeatureIcon color={active ? colors.onPrimary : colors.inkMuted} name={icon} size={15} style={styles.pillIcon} /> : null}
+      <Text style={[styles.pillText, { color: active ? colors.onPrimary : colors.inkMuted }]}>{children}</Text>
     </View>
   );
   return onPress ? <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [pressed && styles.pressed]}>{content}</Pressable> : content;
@@ -93,18 +88,18 @@ export function IosLikePill({ children, active = false, color, onPress, style, i
 
 export function IosLikeAvatar({ uri, emoji, color, size = 56, online = false, cacheScope, cacheVersion }) {
   const { colors } = useTheme();
-  const isUrl = typeof uri === 'string' && (uri.startsWith('http') || uri.startsWith('file://') || uri.startsWith('data:'));
-  const remoteUri = useRemoteImage(isUrl ? uri : null, cacheVersion, cacheScope);
-  const displayUri = remoteUri || (isUrl ? uri : null);
+  const displayUri = getImageRequestUri(uri, cacheVersion);
   const backgroundColor = color || colors.primarySoft;
   return (
     <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor }]}>
       {displayUri ? (
         <ExpoImage
+          imageIdentity={cacheScope ? `avatar:${cacheScope}` : undefined}
           source={{ uri: displayUri }}
           style={{ width: size, height: size, borderRadius: size / 2 }}
           contentFit="cover"
           cachePolicy="memory-disk"
+          recyclingKey={`${cacheScope || ''}:${displayUri}`}
           transition={0}
         />
       ) : emoji ? (
@@ -207,10 +202,10 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: type.title1, fontWeight: '800', letterSpacing: -0.4 },
   headerSubtitle: { fontSize: type.micro, fontWeight: '600', marginTop: 3 },
   iconButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, height: 46, justifyContent: 'center', width: 46, ...shadow.card },
-  card: { borderRadius: radius.xl, borderWidth: 1, overflow: 'hidden', padding: spacing.lg, ...shadow.card },
+  card: { borderRadius: radius.xl, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden', padding: spacing.lg },
   sectionHeader: { alignItems: 'flex-start', flexDirection: 'row', justifyContent: 'space-between' },
   sectionCopy: { flex: 1, paddingRight: spacing.sm },
-  sectionTitle: { fontSize: type.section, fontWeight: '800' },
+  sectionTitle: { fontSize: type.section, fontWeight: '600' },
   sectionSubtitle: { fontSize: type.caption, lineHeight: 18, marginTop: 3 },
   sectionAction: { fontSize: type.caption, fontWeight: '800', marginTop: 2 },
   pill: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flexDirection: 'row', minHeight: 36, paddingHorizontal: spacing.md },

@@ -1,0 +1,26 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 4297f082b385a225f49b67c2828f260dbbde9e46..f4a6839e58b3640c6e904a910aea0044dfca9c69 100644
+--- a/android/build.gradle
++++ b/android/build.gradle	
+@@ -76,14 +76,21 @@ android {
+           'src/fabric',
+           'build/generated/source/codegen/java'
+         ]
++        kotlin.srcDirs += [
++          'src/fabric',
++          'build/generated/source/codegen/java'
++        ]
+       } else {
+         java.srcDirs += ['src/paper']
++        kotlin.srcDirs += ['src/paper']
+       }
+ 
+       if (project.ext.shouldUseBaseReactPackage()) {
+         java.srcDirs += ['src/base']
++        kotlin.srcDirs += ['src/base']
+       } else {
+         java.srcDirs += ['src/turbo']
++        kotlin.srcDirs += ['src/turbo']
+       }
+     }
+   }

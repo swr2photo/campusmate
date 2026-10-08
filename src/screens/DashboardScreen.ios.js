@@ -1,42 +1,19 @@
+import { Button, Text } from '../components/NativeTypography';
+import { font } from '../components/brandFont';
+import { useNativePalette } from '../theme';
+import RNText from '../components/AppText';
 import React from 'react';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import { useColorScheme } from 'react-native';
-import {
-  Button,
-  Host,
-  HStack,
-  Image,
-  ScrollView,
-  Spacer,
-  Text,
-  VStack,
-  RNHostView,
-} from '@expo/ui/swift-ui';
-import {
-  background,
-  buttonBorderShape,
-  buttonStyle,
-  controlSize,
-  font,
-  foregroundStyle,
-  frame,
-  labelStyle,
-  lineLimit,
-  padding,
-  scrollIndicators,
-  shadow,
-  shapes,
-  tint, resizable, aspectRatio, clipped, clipShape,
-} from '@expo/ui/swift-ui/modifiers';
+import { Host, HStack, Image, ScrollView, Spacer, VStack, RNHostView } from '@expo/ui/swift-ui';
+import { background, buttonBorderShape, buttonStyle, controlSize, foregroundStyle, frame, labelStyle, lineLimit, padding, scrollIndicators, shadow, shapes, tint, resizable, aspectRatio, clipped, clipShape } from '@expo/ui/swift-ui/modifiers';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Text as RNText, View } from 'react-native';
-import { useApp } from '../context/AppContext';
+import { View } from 'react-native';
+import { useAppAppointments, useAppBadges, useAppProfile } from '../context/AppContext';
 
-const darkPalette = { background: '#14171B', surface: '#20242A', surfaceRaised: '#292E35', text: '#F7F8FA', secondary: '#B6BDC8', tertiary: '#7F8896', coral: '#FF7A6B', coralSoft: 'rgba(255,122,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#62A8FF', blueSoft: 'rgba(98,168,255,0.16)', mint: '#45D1A1', mintSoft: 'rgba(69,209,161,0.16)' , purple: '#9A8CFF', card: '#20242A', white: '#FFFFFF', chip: '#292E35', circle: '#292E35'};
-const lightPalette = { background: '#F6F8FC', surface: '#FFFFFF', surfaceRaised: '#F6F8FC', text: '#10203A', secondary: '#60708A', tertiary: '#8B98AC', coral: '#F47C6B', coralSoft: 'rgba(244,124,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#3986E8', blueSoft: 'rgba(57,134,232,0.16)', mint: '#18A878', mintSoft: 'rgba(24,168,120,0.16)' , purple: '#5B5CE2', card: '#FFFFFF', white: '#FFFFFF', chip: '#EEF0FF', circle: '#E7EBF2'};
-function usePalette() { const scheme = useColorScheme(); return scheme === 'dark' ? darkPalette : lightPalette; }
+const usePalette = useNativePalette;
 
 const cardShape = shapes.roundedRectangle({
   cornerRadius: 24,
@@ -46,19 +23,17 @@ const cardShape = shapes.roundedRectangle({
 export default function DashboardScreen({ onNavigate, onOpenProfile }) {
   const palette = usePalette();
   const colorScheme = useColorScheme();
-  const { appointments, conversations, matchedProfileIds, pendingIncomingLikes, profile } = useApp();
-  const safeConversations = conversations || [];
-  const safePendingLikes = pendingIncomingLikes || [];
+  const { appointments } = useAppAppointments();
+  const { conversationCount = 0, matchedCount: matchedProfileCount = 0, pendingLikeCount = 0, totalUnreadMessages = 0 } = useAppBadges();
+  const { profile } = useAppProfile();
+  const safeConversations = { length: conversationCount };
+  const safePendingLikes = { length: pendingLikeCount };
   const safeAppointments = appointments || [];
-  const matchedCount = Math.max(matchedProfileIds?.length || 0, safeConversations.length);
-  const activeUserId = profile?.id;
-  const unreadCount = safeConversations.reduce(
-    (sum, item) => sum + (item.unreadCounts?.[activeUserId] || item.unread || 0),
-    0
-  );
+  const matchedCount = Math.max(matchedProfileCount, conversationCount);
+  const unreadCount = totalUnreadMessages;
   const activeAppointmentCount = safeAppointments.filter((appointment) => appointment.status === 'active').length;
   const displayName = profile?.name || profile?.nickname || 'เพื่อน';
-  const remoteAvatar = useRemoteImage(profile?.avatarUri, profile?.updatedAt, profile?.id);
+  const remoteAvatar = useRemoteImage(profile?.avatarUri, profile?.avatarRevision, profile?.id);
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
 
   return (

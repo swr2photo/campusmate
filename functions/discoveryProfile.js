@@ -17,11 +17,20 @@ const TEXT_LIMITS = {
   gender: 100,
 };
 
+function copyAvatarRevision(profile, source) {
+  if (Number.isSafeInteger(source.avatarRevision) && source.avatarRevision >= 0) {
+    profile.avatarRevision = source.avatarRevision;
+  }
+}
+
 const ARRAY_LIMITS = {
   activities: 30,
   tags: 50,
   interests: 50,
 };
+
+const GALLERY_LIMIT = 5;
+const GALLERY_URL_LIMIT = 5000;
 
 const MEETUP_FIELDS = [
   'id',
@@ -78,13 +87,107 @@ function copyStringList(target, source, field, maxItems) {
   if (values.length) target[field] = values;
 }
 
+function compactGallery(value) {
+  if (!Array.isArray(value)) return undefined;
+  const gallery = [...new Set(value
+    .filter((uri) => typeof uri === 'string')
+    .map((uri) => uri.trim())
+    .filter((uri) => uri.length <= GALLERY_URL_LIMIT && /^https:\/\/[^/\s?#]+(?:[/?#][^\s]*)?$/i.test(uri)))];
+  return gallery.slice(0, GALLERY_LIMIT);
+}
+
+const FAVORITE_TRACK_LIMIT = 10;
+const FAVORITE_TRACK_FIELD_LIMITS = {
+  id: 64,
+  name: 200,
+  artists: 200,
+  albumArt: 2000,
+  previewUrl: 2000,
+  externalUrl: 500,
+};
+
+function compactFavoriteTracks(value) {
+  if (!Array.isArray(value)) return undefined;
+  const tracks = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (!isObject(item)) continue;
+    const id = typeof item.id === 'string' ? item.id.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.id) : '';
+    const name = typeof item.name === 'string' ? item.name.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.name) : '';
+    if (!id || !name || seen.has(id)) continue;
+    seen.add(id);
+    const track = {
+      id,
+      name,
+      artists: typeof item.artists === 'string'
+        ? item.artists.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.artists) || 'Unknown'
+        : 'Unknown',
+      albumArt: typeof item.albumArt === 'string'
+        ? item.albumArt.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.albumArt)
+        : '',
+      externalUrl: typeof item.externalUrl === 'string' && item.externalUrl.trim()
+        ? item.externalUrl.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.externalUrl)
+        : `https://open.spotify.com/track/${id}`,
+    };
+    if (typeof item.previewUrl === 'string' && item.previewUrl.trim()) {
+      track.previewUrl = item.previewUrl.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.previewUrl);
+    }
+    if (Number.isFinite(Number(item.previewStartMs))) {
+      track.previewStartMs = Math.max(0, Math.round(Number(item.previewStartMs)));
+    }
+    if (Number.isFinite(Number(item.previewEndMs))) {
+      track.previewEndMs = Math.max(0, Math.round(Number(item.previewEndMs)));
+    }
+    if (
+      Number.isFinite(track.previewStartMs)
+      && Number.isFinite(track.previewEndMs)
+      && track.previewEndMs <= track.previewStartMs
+    ) {
+      delete track.previewStartMs;
+      delete track.previewEndMs;
+    }
+    tracks.push(track);
+    if (tracks.length >= FAVORITE_TRACK_LIMIT) break;
+  }
+  return tracks.length ? tracks : undefined;
+}
+
+// Per-activity answers from the profile form: { running: { pace: '...',
+// timeOfDay: ['เย็น'] }, ... }. Values are short strings or string lists.
+const ACTIVITY_DETAIL_LIMITS = { activities: 30, fields: 6, items: 10, text: 120 };
+
+function compactActivityDetails(value) {
+  if (!isObject(value)) return undefined;
+  const details = {};
+  Object.entries(value).slice(0, ACTIVITY_DETAIL_LIMITS.activities).forEach(([activityId, entry]) => {
+    if (!/^[a-z][a-z0-9_-]{0,49}$/.test(activityId) || !isObject(entry)) return;
+    const compact = {};
+    Object.entries(entry).slice(0, ACTIVITY_DETAIL_LIMITS.fields).forEach(([key, raw]) => {
+      if (!/^[a-zA-Z][a-zA-Z0-9_]{0,49}$/.test(key)) return;
+      if (typeof raw === 'string') {
+        const text = raw.trim().slice(0, ACTIVITY_DETAIL_LIMITS.text);
+        if (text) compact[key] = text;
+      } else if (Array.isArray(raw)) {
+        const list = raw
+          .filter((item) => typeof item === 'string')
+          .map((item) => item.trim().slice(0, ACTIVITY_DETAIL_LIMITS.text))
+          .filter(Boolean)
+          .slice(0, ACTIVITY_DETAIL_LIMITS.items);
+        if (list.length) compact[key] = list;
+      }
+    });
+    if (Object.keys(compact).length) details[activityId] = compact;
+  });
+  return Object.keys(details).length ? details : undefined;
+}
+
 function compactAvailabilitySlots(value) {
   if (!Array.isArray(value)) return undefined;
   const slots = value
     .filter(isObject)
     .map((slot) => {
       const compact = {};
-      ['day', 'start', 'end', 'label'].forEach((field) => {
+      ['date', 'day', 'start', 'end', 'label'].forEach((field) => {
         if (typeof slot[field] === 'string' && slot[field].trim()) {
           compact[field] = slot[field].trim().slice(0, 100);
         }
@@ -204,8 +307,14 @@ export function buildPublicProfile(userId, source = {}) {
   );
   if (avatarUri) profile.avatarUri = avatarUri.slice(0, TEXT_LIMITS.avatarUri);
 
+  copyAvatarRevision(profile, source);
+  const gallery = compactGallery(source.gallery);
+  if (gallery?.length) profile.gallery = gallery;
+
   copyNumber(profile, source, 'compatibility', 0, 100);
   ['tags', 'interests'].forEach((field) => copyStringList(profile, source, field, ARRAY_LIMITS[field]));
+  const favoriteTracks = compactFavoriteTracks(source.favoriteTracks);
+  if (favoriteTracks) profile.favoriteTracks = favoriteTracks;
 
   if (isVisible(privacy, 'showAge')) copyNumber(profile, source, 'age', 18, 100);
   if (isVisible(privacy, 'showGender')) copyString(profile, source, 'gender');
@@ -216,6 +325,18 @@ export function buildPublicProfile(userId, source = {}) {
   if (isVisible(privacy, 'showActivity')) {
     ['activity', 'activityLabel', 'skill', 'pace'].forEach((field) => copyString(profile, source, field));
     copyStringList(profile, source, 'activities', ARRAY_LIMITS.activities);
+    const activityDetails = compactActivityDetails(source.activityDetails) || {};
+    // Keep the legacy `pace` column and the running detail in sync in both
+    // directions so old and new clients read the same value.
+    const runsFromList = Array.isArray(profile.activities) && profile.activities.includes('running');
+    const runs = runsFromList || profile.activity === 'running';
+    if (runs && profile.pace && !activityDetails.running?.pace) {
+      activityDetails.running = { ...(activityDetails.running || {}), pace: profile.pace };
+    }
+    if (!profile.pace && typeof activityDetails.running?.pace === 'string') {
+      profile.pace = activityDetails.running.pace;
+    }
+    if (Object.keys(activityDetails).length) profile.activityDetails = activityDetails;
   }
   if (isVisible(privacy, 'showAvailability')) {
     copyString(profile, source, 'availability');
@@ -233,6 +354,13 @@ export function buildPublicProfile(userId, source = {}) {
   const encryptionDevices = compactEncryptionDevices(source.encryptionDevices);
   if (encryptionDevices) profile.encryptionDevices = encryptionDevices;
 
+  if (source.isFaceVerified === true) {
+    profile.isFaceVerified = true;
+    if (typeof source.faceMatchScore === 'number') {
+      profile.faceMatchScore = source.faceMatchScore;
+    }
+  }
+
   return profile;
 }
 
@@ -243,6 +371,9 @@ export function buildPublicProfile(userId, source = {}) {
  */
 export function buildDiscoveryProfile(userId, source = {}) {
   if (!userId || !isObject(source) || source.isDiscoverable === false || source.isNewUser === true) return null;
+  // Only face-verified owners enter discovery. Older accounts without the server-written
+  // flag are left out until they verify (see profileVisibilityPolicy.canViewProfile).
+  if (source.isFaceVerified !== true) return null;
 
   const profile = {
     id: String(userId),
@@ -261,6 +392,10 @@ export function buildDiscoveryProfile(userId, source = {}) {
   );
   if (avatarUri) profile.avatarUri = avatarUri.slice(0, TEXT_LIMITS.avatarUri);
 
+  copyAvatarRevision(profile, source);
+  const gallery = compactGallery(source.gallery);
+  if (gallery?.length) profile.gallery = gallery;
+
   Object.keys(TEXT_LIMITS).forEach((field) => {
     if (field === 'name' || field === 'avatarUri') return;
     copyString(profile, source, field);
@@ -271,13 +406,24 @@ export function buildDiscoveryProfile(userId, source = {}) {
   Object.entries(ARRAY_LIMITS).forEach(([field, maxItems]) => {
     copyStringList(profile, source, field, maxItems);
   });
+  const favoriteTracks = compactFavoriteTracks(source.favoriteTracks);
+  if (favoriteTracks) profile.favoriteTracks = favoriteTracks;
   const availabilitySlots = compactAvailabilitySlots(source.availabilitySlots);
   if (availabilitySlots) profile.availabilitySlots = availabilitySlots;
+  const activityDetails = compactActivityDetails(source.activityDetails);
+  if (activityDetails) profile.activityDetails = activityDetails;
 
   const meetup = compactMeetup(source.meetup);
   if (meetup) profile.meetup = meetup;
   const encryptionDevices = compactEncryptionDevices(source.encryptionDevices);
   if (encryptionDevices) profile.encryptionDevices = encryptionDevices;
+
+  if (source.isFaceVerified === true) {
+    profile.isFaceVerified = true;
+    if (typeof source.faceMatchScore === 'number') {
+      profile.faceMatchScore = source.faceMatchScore;
+    }
+  }
 
   return profile;
 }

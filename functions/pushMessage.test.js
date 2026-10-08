@@ -25,7 +25,7 @@ test('stringifyPushData drops empty values and stringifies the rest', () => {
   );
 });
 
-test('Android messaging-style clients get a data-only chat payload with avatar URL', () => {
+test('Android messaging-style clients get a visible chat payload plus enriched data', () => {
   const notification = messageNotif();
   notification.badge = 4;
   const message = buildExpoPushMessage({
@@ -34,13 +34,14 @@ test('Android messaging-style clients get a data-only chat payload with avatar U
     notificationMode: ANDROID_MESSAGING_NOTIFICATION_MODE,
   }, notification);
 
-  assert.equal(message.title, undefined);
-  assert.equal(message.body, undefined);
-  assert.equal(message.sound, undefined);
-  assert.equal(message.channelId, undefined);
-  assert.equal(message.richContent, undefined);
+  assert.equal(message.title, 'พัท');
+  assert.equal(message.body, 'สวัสดี');
+  assert.equal(message.sound, 'default');
+  assert.equal(message.channelId, 'messages');
+  assert.deepEqual(message.richContent, { image: avatarUrl });
   assert.equal(message.contentAvailable, true);
   assert.equal(message.collapseId, 'c-a-b');
+  assert.equal(message.badge, 4);
   assert.equal(message.data.type, 'message');
   assert.equal(message.data.conversationId, 'c-a-b');
   assert.equal(message.data.senderName, 'พัท');

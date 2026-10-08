@@ -36,7 +36,15 @@ const dependencies = {
   query: (path) => path,
   onSnapshot: (path, callback) => { listeners.set(path, callback); return () => listeners.delete(path); },
   toMillis: (value) => typeof value === 'number' ? value : 0,
-  isValidConversationEncryption: () => false,
+  isValidConversationEncryption: () => true,
+  hasCurrentDeviceEnvelope: () => true,
+  getConversationKey: () => 'key',
+  cacheConversationKey: () => {},
+  fetchInboxPreviewMessages: async (_db, id) => {
+    if (id === 'r1') await olderGate;
+    return [];
+  },
+  selectLegacyPreviewMessages: (messages) => messages || [],
   ensureConversationEncryption: async (id) => {
     if (id === 'r1') await olderGate;
     return { conversationKey: 'key', data: {}, messages: [] };
@@ -66,7 +74,7 @@ async function until(predicate) {
 root();
 await until(() => outputs.length > 0);
 assert.deepEqual(outputs[0].rooms.map(({ id }) => id), ['r6', 'r5', 'r4', 'r3', 'r2']);
-assert.equal(outputs[0].listeners, 6); // root + first five message listeners
+assert.equal(outputs[0].listeners, 1); // inbox metadata only; preview reads are one-shot
 assert.deepEqual(outputs[0].info.loadingConversationIds, ['r1', 'r0']);
 releaseOlder();
 await until(() => outputs.at(-1).rooms.length === 7);

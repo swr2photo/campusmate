@@ -1,49 +1,47 @@
+import Text from '../components/AppText';
+import { AppTextInput as TextInput } from '../components/AppText';
 import { useToast } from '../context/ToastContext';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Constants from 'expo-constants';
-import { router } from 'expo-router';
-import {
-  ActivityIndicator,
-  Alert,
-  Animated,
-  BackHandler,
-  Keyboard,
-  KeyboardAvoidingView,
-  Modal,
-  PanResponder,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Animated, BackHandler, Image, Keyboard, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Switch, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ACTIVITY_CATEGORIES } from '../data/activityCategories';
-import { useApp } from '../context/AppContext';
-import { Card, Chip, PrimaryButton, SectionTitle } from '../components/ui';
-import { IosLikeAvatar } from '../components/iosLike';
+import {
+  ACTIVITY_CATEGORIES,
+  getActivityCategory,
+  getActivityDetailFields,
+  getRunningPace,
+  sanitizeActivityDetails,
+} from '../data/activityCategories';
+import SpotifyTrackSearchSheet, { MAX_FAVORITE_TRACKS } from '../components/SpotifyTrackSearchSheet';
+import TrackPreviewButton from '../components/TrackPreviewButton';
+import SpotifyConnectCard from '../components/SpotifyConnectCard';
+import { prefetchBrowseMusicTracks } from '../services/spotifyService';
+import { isSpotifyFeatureAllowed } from '../utils/featureFlags';
+import { useAuth } from '../context/AuthContext';
+import { getStyles as getDiscoverStyles, ProfileCardView } from './DiscoverProfileScreen';
+import { useAppProfile, useAppActions } from '../context/AppContext';
+import { Card, Chip, PrimaryButton } from '../components/ui';
+import * as ImageManipulator from 'expo-image-manipulator';
 import FeatureIcon from '../components/FeatureIcon';
 import AvailabilityModal from '../components/AvailabilityModal';
+import FaceVerificationModal from '../components/FaceVerificationModal';
 import { compressProfileImage, validateImageSize, MAX_PROFILE_IMAGE_SIZE_MB } from '../utils/compressImage';
 import { radius, spacing, type, useTheme } from '../theme';
 
 import { FACULTIES } from '../data/faculties';
-const ACTIVITY_ANDROID_ICONS = {
-  running: 'figure.run',
-  gym: 'dumbbell.fill',
-  sports: 'sportscourt.fill',
-  study: 'book.closed.fill',
-  chill: 'cup.and.saucer.fill',
-  other: 'sparkles',
-};
-const YEARS = ['ชั้นปีที่ 1', 'ชั้นปีที่ 2', 'ชั้นปีที่ 3', 'ชั้นปีที่ 4', 'ปริญญาโท', 'ปริญญาเอก'];
+import {
+  ACADEMIC_YEARS,
+  getAcademicYearFromStudentId,
+  getFacultyFromStudentId,
+  getStudentAcademicProfile,
+  STUDENT_FACULTY_UNAVAILABLE_MESSAGE,
+  STUDENT_ID_REQUIRED_MESSAGE,
+  STUDENT_YEAR_UNAVAILABLE_MESSAGE,
+} from '../utils/studentId';
+import { showAlert } from '../utils/appAlert';
+const FACULTY_OPTIONS = FACULTIES.map((faculty) => ({ label: faculty, value: faculty }));
+const YEAR_OPTIONS = ACADEMIC_YEARS.map((year) => ({ label: year, value: year }));
 const AGES = Array.from({ length: 17 }, (_, i) => ({
   label: `${i + 19} ปี`,
   value: String(i + 19),
@@ -61,21 +59,9 @@ const GENDERS = [
   { label: 'เพศอื่น ๆ', value: 'other' },
   { label: 'ไม่ประสงค์ระบุ', value: 'unspecified' },
 ];
-const PACE_OPTIONS = [
-  '\u0e44\u0e21\u0e48\u0e23\u0e30\u0e1a\u0e38',
-  '\u0e40\u0e14\u0e34\u0e19 / \u0e40\u0e23\u0e34\u0e48\u0e21\u0e15\u0e49\u0e19',
-  'Pace 8:00+ \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
-  'Pace 7:00 - 8:00 \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
-  'Pace 6:00 - 7:00 \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
-  'Pace 5:00 - 6:00 \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
-  'Pace \u0e15\u0e48\u0e33\u0e01\u0e27\u0e48\u0e32 5:00 \u0e19\u0e32\u0e17\u0e35/\u0e01\u0e21.',
-];
-
 const DEFAULT_AGE = '20';
-const DEFAULT_FACULTY = FACULTIES[0];
 const DEFAULT_GENDER = 'unspecified';
 const DEFAULT_ACTIVITY = 'other';
-const DEFAULT_PACE = PACE_OPTIONS[0];
 const REQUIRED_MARK = '*';
 
 function getInitialInterests(profile) {
@@ -86,17 +72,27 @@ function getInitialInterests(profile) {
   return [DEFAULT_ACTIVITY];
 }
 
-function getProfileValidationError({ age, avatarUri, bio, faculty, gender, interests, name, pace, year, availability, availabilitySlots, requireComplete = true }) {
+function getInitialActivityDetails(profile) {
+  const details = sanitizeActivityDetails(profile?.activityDetails);
+  if (!details.running?.pace && typeof profile?.pace === 'string' && profile.pace.trim()) {
+    const seeded = sanitizeActivityDetails({ running: { pace: profile.pace.trim() } });
+    if (seeded.running) details.running = { ...(details.running || {}), ...seeded.running };
+  }
+  return details;
+}
+
+function getProfileValidationError({ age, avatarUri, bio, faculty, gender, interests, name, pace, studentId, year, availability, availabilitySlots, requireComplete = true }) {
   if (!name || name.trim().length < 2) return 'กรุณากรอกชื่อของคุณ (อย่างน้อย 2 ตัวอักษร)';
-  if (!faculty || faculty === 'all') return 'กรุณาเลือกคณะของคุณ';
   if (!gender) return 'กรุณาเลือกเพศของคุณ';
-  if (!year) return 'กรุณาเลือกชั้นปี';
+  if (!studentId) return STUDENT_ID_REQUIRED_MESSAGE;
+  if (!faculty || faculty === 'all') return STUDENT_FACULTY_UNAVAILABLE_MESSAGE;
+  if (!year) return STUDENT_YEAR_UNAVAILABLE_MESSAGE;
   if (!avatarUri) return 'กรุณาเพิ่มรูปโปรไฟล์ของคุณ';
   const parsedAge = Number(age);
   if (!age || !Number.isInteger(parsedAge) || parsedAge < 18 || parsedAge > 100) return 'กรุณาระบุอายุระหว่าง 18–100 ปี';
   if (!requireComplete) return null;
   if (!interests.length) return 'กรุณาเลือกกิจกรรมหรือความสนใจอย่างน้อย 1 รายการ';
-  if (interests.includes('running') && (!pace || pace === DEFAULT_PACE)) {
+  if (interests.includes('running') && !pace) {
     return 'กรุณาเลือกเพซวิ่งเมื่อเลือกวิ่งออกกำลังกาย';
   }
   if (!availabilitySlots.length && !availability?.trim()) return 'กรุณาเลือกช่วงเวลาที่สะดวกอย่างน้อย 1 ช่วง';
@@ -104,68 +100,158 @@ function getProfileValidationError({ age, avatarUri, bio, faculty, gender, inter
   return null;
 }
 
-export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, onToast, overrideSave }) {
+
+function ProfilePreview({ avatarUri, gallery, name, age, gender, faculty, year, bio, activities, activityDetails, skill, availabilitySlots, availability, favoriteTracks, colors }) {
+  const { isDark } = useTheme();
+  const discoverStyles = React.useMemo(() => getDiscoverStyles(colors, isDark), [colors, isDark]);
+  const insets = useSafeAreaInsets();
+  const { profile: myProfile } = useAppProfile();
+  const { getMeetupStats } = useAppActions();
+
+  const candidate = React.useMemo(() => {
+    return {
+      id: myProfile?.id || 'preview',
+      avatarUri,
+      gallery,
+      name,
+      age,
+      gender,
+      faculty,
+      year,
+      bio,
+      activities,
+      activityDetails,
+      skill,
+      availabilitySlots,
+      availability,
+      favoriteTracks,
+    };
+  }, [avatarUri, gallery, name, age, gender, faculty, year, bio, activities, activityDetails, skill, availabilitySlots, availability, favoriteTracks, myProfile]);
+
+  const previewStyles = React.useMemo(() => ({
+    ...discoverStyles,
+    scrollContent: {
+      ...discoverStyles.scrollContent,
+      paddingHorizontal: 12,
+      paddingTop: 12,
+      paddingBottom: Math.max(insets.bottom + 24, 48),
+    },
+  }), [discoverStyles, insets.bottom]);
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.canvas }}>
+      <ProfileCardView
+        candidate={candidate}
+        colors={colors}
+        insets={{ ...insets, top: -56, bottom: insets.bottom }}
+        isDark={isDark}
+        isViewOnly={true}
+        myProfile={null}
+        styles={previewStyles}
+        getMeetupStats={getMeetupStats}
+      />
+    </View>
+  );
+}
+
+export default function ProfileScreen({ initialSection = 'basic', onClose, onCloseGuardReady, onToast, overrideSave }) {
   const { showImageModeration } = useToast();
   const { colors } = useTheme();
   const styles = getStyles(colors);
   const insets = useSafeAreaInsets();
+  const { width: windowWidth } = useWindowDimensions();
   const isFirstSetup = Boolean(overrideSave);
 
-  const { profile, saveProfile, deleteAccount } = useApp();
-  const safeProfile = profile || {};
+  const { profile } = useAppProfile();
+  const { saveProfile, markFaceVerified } = useAppActions();
+  const { user } = useAuth();
+  const safeProfile = useMemo(() => ({
+    ...(profile || {}),
+    email: profile?.email || user?.email || '',
+    campusEmail: profile?.campusEmail || user?.campusEmail || user?.email || '',
+  }), [profile, user]);
+  const canUseSpotify = useMemo(() => isSpotifyFeatureAllowed(user, safeProfile), [user, safeProfile]);
+  const academicProfile = useMemo(() => getStudentAcademicProfile(safeProfile), [safeProfile]);
+  const derivedFacultyFromId = academicProfile.studentId ? getFacultyFromStudentId(academicProfile.studentId) : '';
+  const derivedYearFromId = academicProfile.studentId ? getAcademicYearFromStudentId(academicProfile.studentId) : '';
+  const studentId = academicProfile.studentId || safeProfile.studentId || '';
+  const isFacultyLocked = Boolean(derivedFacultyFromId) || Boolean(safeProfile.faculty && !isFirstSetup);
+  const isYearLocked = Boolean(derivedYearFromId) || Boolean(safeProfile.year && !isFirstSetup);
+  const facultyHelper = isFirstSetup || derivedFacultyFromId ? null : 'ล็อกตามที่ตั้งไว้ในการสร้างโปรไฟล์ครั้งแรก';
+  const yearHelper = isFirstSetup || derivedYearFromId ? null : 'ล็อกตามที่ตั้งไว้ในการสร้างโปรไฟล์ครั้งแรก';
+
   const [name, setName] = useState(safeProfile.name || '');
-  const [faculty, setFaculty] = useState(safeProfile.faculty || DEFAULT_FACULTY);
-  const [year, setYear] = useState(safeProfile.year || YEARS[0]);
+  const [faculty, setFaculty] = useState(derivedFacultyFromId || safeProfile.faculty || academicProfile.faculty || '');
+  const [year, setYear] = useState(derivedYearFromId || safeProfile.year || academicProfile.year || '');
   const [age, setAge] = useState(safeProfile.age ? String(safeProfile.age) : DEFAULT_AGE);
   const [gender, setGender] = useState(safeProfile.gender || DEFAULT_GENDER);
-  const [pace, setPace] = useState(safeProfile.pace || DEFAULT_PACE);
+  const [activityDetails, setActivityDetails] = useState(() => getInitialActivityDetails(safeProfile));
   const [skill, setSkill] = useState(safeProfile.skill || '');
   const [availability, setAvailability] = useState(safeProfile.availability || '');
-  const [availabilitySlots, setAvailabilitySlots] = useState(() => (
-    Array.isArray(safeProfile.availabilitySlots) ? safeProfile.availabilitySlots : []
-  ));
+  const [availabilitySlots, setAvailabilitySlots] = useState(() => Array.isArray(safeProfile.availabilitySlots) ? safeProfile.availabilitySlots : []);
   const [showAvailabilityModal, setShowAvailabilityModal] = useState(false);
   const [bio, setBio] = useState(safeProfile.bio || '');
   const [interests, setInterests] = useState(() => getInitialInterests(safeProfile));
   const [avatarUri, setAvatarUri] = useState(safeProfile.avatarUri || null);
+  const [gallery, setGallery] = useState(() => Array.isArray(safeProfile.gallery) ? safeProfile.gallery : []);
+  const [activeTab, setActiveTab] = useState('edit');
+  const [showSpotifySearch, setShowSpotifySearch] = useState(false);
+  const [favoriteTracks, setFavoriteTracks] = useState(() => Array.isArray(safeProfile.favoriteTracks) ? safeProfile.favoriteTracks.slice(0, MAX_FAVORITE_TRACKS) : []);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
+  const [showFaceVerificationModal, setShowFaceVerificationModal] = useState(false);
+  const isFaceVerified = Boolean(safeProfile?.isFaceVerified);
+  const faceMatchScore = safeProfile?.faceMatchScore;
   const [discoverable, setDiscoverable] = useState(safeProfile.isDiscoverable ?? true);
   const [notifications, setNotifications] = useState(safeProfile.notificationsEnabled ?? true);
   const [privacy, setPrivacy] = useState(safeProfile.privacy || {});
-  const [expandedSection, setExpandedSection] = useState('basic');
+  const [expandedSection, setExpandedSection] = useState(initialSection || 'basic');
   const [saving, setSaving] = useState(false);
+  const editorScrollRef = useRef(null);
+  const musicShortcutHandled = useRef(false);
   const isRunningSelected = interests.includes('running');
+  const pace = isRunningSelected ? getRunningPace(activityDetails) : '';
+
+  useEffect(() => {
+    if (canUseSpotify) void prefetchBrowseMusicTracks().catch(() => {});
+  }, [canUseSpotify]);
+
+  const updateActivityDetail = useCallback((activityId, fieldKey, value) => {
+    setActivityDetails((current) => {
+      const next = { ...current, [activityId]: { ...(current[activityId] || {}) } };
+      if (value == null || value === '' || (Array.isArray(value) && value.length === 0)) delete next[activityId][fieldKey];
+      else next[activityId][fieldKey] = value;
+      if (!Object.keys(next[activityId]).length) delete next[activityId];
+      return next;
+    });
+  }, []);
 
   const toggleInterest = (id) => {
     setInterests((current) => (
       current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
     ));
-    if (id === 'running' && isRunningSelected) setPace(DEFAULT_PACE);
   };
 
   React.useEffect(() => {
     if (profile) {
       setName(profile.name || '');
-      setFaculty(profile.faculty || DEFAULT_FACULTY);
-      setYear(profile.year || YEARS[0]);
+      setFaculty(derivedFacultyFromId || profile.faculty || academicProfile.faculty || '');
+      setYear(derivedYearFromId || profile.year || academicProfile.year || '');
       setAge(profile.age ? String(profile.age) : DEFAULT_AGE);
       setGender(profile.gender || DEFAULT_GENDER);
-      setPace(profile.pace || DEFAULT_PACE);
+      setActivityDetails(getInitialActivityDetails(profile));
       setSkill(profile.skill || '');
       setAvailability(profile.availability || '');
       setAvailabilitySlots(Array.isArray(profile.availabilitySlots) ? profile.availabilitySlots : []);
       setBio(profile.bio || '');
       setInterests(getInitialInterests(profile));
       setAvatarUri(profile.avatarUri || null);
+      setGallery(Array.isArray(profile.gallery) ? profile.gallery : []);
+      setFavoriteTracks(Array.isArray(profile.favoriteTracks) ? profile.favoriteTracks.slice(0, MAX_FAVORITE_TRACKS) : []);
       setDiscoverable(profile.isDiscoverable ?? true);
       setNotifications(profile.notificationsEnabled ?? true);
       setPrivacy(profile.privacy || {});
     }
-  }, [profile]);
-
-  React.useEffect(() => {
-    if (!isRunningSelected && pace !== DEFAULT_PACE) setPace(DEFAULT_PACE);
-  }, [isRunningSelected, pace]);
+  }, [profile, derivedFacultyFromId, derivedYearFromId, academicProfile.faculty, academicProfile.year]);
 
   const getValidationError = () => getProfileValidationError({
     age,
@@ -176,6 +262,7 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
     interests,
     name,
     pace,
+    studentId,
     year,
     availability,
     availabilitySlots,
@@ -195,15 +282,19 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
   React.useEffect(() => {
     onCloseGuardReady?.(handleClose);
     return () => onCloseGuardReady?.(null);
-  }, [onCloseGuardReady, age, avatarUri, bio, faculty, gender, interests, name, pace, skill, year, availability, availabilitySlots]);
+  }, [onCloseGuardReady, age, avatarUri, bio, faculty, gender, interests, name, pace, studentId, skill, year, availability, availabilitySlots]);
 
   React.useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (isFirstSetup) {
+        onToast?.('กรุณาสร้างโปรไฟล์ให้เสร็จสมบูรณ์ก่อนเข้าใช้งาน', 'info');
+        return true;
+      }
       handleClose();
       return true;
     });
     return () => subscription.remove();
-  }, [age, avatarUri, bio, faculty, gender, interests, name, onClose, onToast, pace, skill, year, availability, availabilitySlots]);
+  }, [isFirstSetup, age, avatarUri, bio, faculty, gender, interests, name, onClose, onToast, pace, studentId, skill, year, availability, availabilitySlots]);
 
   const pickImage = async () => {
     if (isProcessingImage) return;
@@ -226,7 +317,7 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
       // Validate image size (must not exceed 30 MB)
       const sizeValidation = await validateImageSize(asset.uri, asset.fileSize, MAX_PROFILE_IMAGE_SIZE_MB);
       if (!sizeValidation.valid) {
-        Alert.alert('รูปภาพมีขนาดใหญ่เกินไป', sizeValidation.error);
+        showAlert('รูปภาพมีขนาดใหญ่เกินไป', sizeValidation.error, { tone: 'warning' });
         onToast?.(sizeValidation.error, 'error');
         return;
       }
@@ -236,15 +327,16 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
         setAvatarUri(compressedUri);
       } catch (compressionError) {
         console.warn('[Profile] Image compression failed:', compressionError);
-        Alert.alert(
+        showAlert(
           'ไม่สามารถประมวลผลรูปภาพได้',
-          compressionError.message || 'เกิดข้อผิดพลาดในการปรับขนาดรูปภาพ กรุณาลองเลือกรูปภาพใหม่อีกครั้ง'
+          compressionError.message || 'เกิดข้อผิดพลาดในการปรับขนาดรูปภาพ กรุณาลองเลือกรูปภาพใหม่อีกครั้ง',
+          { tone: 'danger' }
         );
         onToast?.(compressionError.message || 'ไม่สามารถประมวลผลรูปภาพได้', 'error');
       }
     } catch (error) {
       console.error('[Profile] Image picking error:', error);
-      Alert.alert('เกิดข้อผิดพลาด', 'ไม่สามารถเปิดเลือกรูปภาพได้ กรุณาลองใหม่อีกครั้ง');
+      showAlert('เกิดข้อผิดพลาด', 'ไม่สามารถเปิดเลือกรูปภาพได้ กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     } finally {
       setIsProcessingImage(false);
     }
@@ -267,22 +359,27 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
         (id) => ACTIVITY_CATEGORIES.find((item) => item.id === id)?.label || id
       );
       const activityLabel = activityLabels.join(', ');
+      const cleanActivityDetails = sanitizeActivityDetails(activityDetails, activities);
       const profileData = {
         name,
         faculty,
+        studentId,
         year,
         age: age ? parsedAge : null,
         gender,
         activity,
         activities,
         activityLabel,
-        pace: isRunningSelected && pace !== DEFAULT_PACE ? pace : '',
+        activityDetails: cleanActivityDetails,
+        pace: getRunningPace(cleanActivityDetails),
         skill,
         availability,
         availabilitySlots,
         bio,
         interests: activities,
+        favoriteTracks,
         avatarUri,
+        gallery,
         isDiscoverable: discoverable,
         notificationsEnabled: notifications,
         privacy,
@@ -300,6 +397,7 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
         onToast?.(successMessage);
       }
     } catch (error) {
+      console.error('[ProfileScreen handleSave error]', error?.message || error, error?.code, error?.stack);
       if (error.isModerationViolation || error.isModerationUnavailable) {
         showImageModeration(error);
       } else {
@@ -310,67 +408,318 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
     }
   };
 
-  const handleDeleteAccount = () => {
-    Alert.alert(
-      'ยืนยันการลบบัญชี',
-      'คุณแน่ใจหรือไม่ว่าต้องการลบบัญชี? ข้อมูลทั้งหมดของคุณรวมถึงโปรไฟล์ ข้อความแชท และการจับคู่จะถูกลบอย่างถาวรและไม่สามารถกู้คืนได้',
-      [
-        { text: 'ยกเลิก', style: 'cancel' },
-        { 
-          text: 'ลบบัญชี', 
-          style: 'destructive', 
-          onPress: async () => {
-            try {
-              onToast?.('กำลังลบบัญชี...', 'info');
-              await deleteAccount();
-              // When successful, the AppContext will be unmounted because auth state changes.
-            } catch (error) {
-              onToast?.(error.message || 'ลบบัญชีไม่สำเร็จ', 'info');
-            }
-          }
-        },
-      ]
-    );
-  };
-
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'android' ? 'height' : 'padding'}
       keyboardVerticalOffset={0}
       style={styles.container}
     >
-      <ScrollView
-        contentContainerStyle={[styles.content, styles.contentWithStickySave]}
-        keyboardDismissMode="on-drag"
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
+      {/* Sticky Tab Switcher */}
+      <View style={styles.stickyTabBarContainer}>
+        <View style={styles.tabSwitcher}>
+          <TouchableOpacity
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === 'edit' }}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            onPress={() => {
+              Keyboard.dismiss();
+              setActiveTab('edit');
+            }}
+            style={[styles.tabButton, activeTab === 'edit' && styles.tabButtonActive]}
+          >
+            <Text
+              style={[
+                styles.tabButtonText,
+                activeTab === 'edit' ? styles.tabButtonTextActive : styles.tabButtonTextInactive,
+              ]}
+            >
+              แก้ไขโปรไฟล์
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            accessibilityRole="tab"
+            accessibilityState={{ selected: activeTab === 'preview' }}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            onPress={() => {
+              Keyboard.dismiss();
+              setActiveTab('preview');
+            }}
+            style={[styles.tabButton, activeTab === 'preview' && styles.tabButtonActive]}
+          >
+            <Text
+              style={[
+                styles.tabButtonText,
+                activeTab === 'preview' ? styles.tabButtonTextActive : styles.tabButtonTextInactive,
+              ]}
+            >
+              ตัวอย่าง
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
 
-        <Card style={styles.identityCard}>
-          <FormLabel label="รูปโปรไฟล์" required styles={styles} />
-          <View style={styles.avatarContainer}>
-            <IosLikeAvatar cacheScope={profile?.id} cacheVersion={profile?.updatedAt} color={colors.primarySoft} size={74} uri={avatarUri} />
-            {isProcessingImage && (
-              <View style={[StyleSheet.absoluteFill, styles.avatarLoadingOverlay]}>
-                <ActivityIndicator color="#FFFFFF" size="small" />
+      {activeTab === 'preview' ? (
+        <View style={{ flex: 1, backgroundColor: colors.canvas }}>
+          <ProfilePreview
+            avatarUri={avatarUri}
+            gallery={gallery}
+            name={name}
+            age={age}
+            gender={gender}
+            faculty={faculty}
+            year={year}
+            bio={bio}
+            activities={interests}
+            activityDetails={activityDetails}
+            skill={skill}
+            availabilitySlots={availabilitySlots}
+            availability={availability}
+            favoriteTracks={favoriteTracks}
+            colors={colors}
+          />
+        </View>
+      ) : (
+        <ScrollView
+          ref={editorScrollRef}
+          contentContainerStyle={[styles.content, styles.contentWithStickySave]}
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* --- Photo Section Header & Details --- */}
+          <View style={{ marginBottom: 12, marginTop: 4 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={{ fontSize: 18, fontWeight: '800', color: colors.ink }}>รูปภาพ</Text>
+                <FeatureIcon name="lightbulb.fill" size={16} color={colors.amber || '#D8901B'} />
+                {((avatarUri ? 1 : 0) + gallery.filter(Boolean).length) < 3 && (
+                  <FeatureIcon name="exclamationmark.circle.fill" size={15} color={colors.coral || '#F47C6B'} />
+                )}
               </View>
-            )}
-            <Pressable disabled={isProcessingImage} onPress={pickImage} style={[styles.cameraButton, isProcessingImage && { opacity: 0.6 }]}>
-              <FeatureIcon color={colors.ink} name="camera.fill" size={16} />
-            </Pressable>
+              <View style={{ backgroundColor: colors.surfaceRaised, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: colors.line }}>
+                <Text style={{ fontSize: 12, fontWeight: '700', color: colors.inkMuted }}>
+                  {(avatarUri ? 1 : 0) + gallery.filter(Boolean).length}/6 รูป
+                </Text>
+              </View>
+            </View>
+            <Text style={{ fontSize: 13, color: colors.inkMuted, lineHeight: 18 }}>
+              โปรไฟล์ที่มีรูปภาพตั้งแต่ 3 รูปขึ้นไปจะแสดงแก่ผู้คนจำนวนมากขึ้น (รูปแรกคือรูปหลัก)
+            </Text>
           </View>
-          <View style={styles.identityCopy}>
-            <Text style={styles.identityName}>{name || 'ชื่อของคุณ'}</Text>
-            <Text style={styles.identityEmail}>{safeProfile.email || ''}</Text>
-            <View style={styles.verifiedPill}><Text style={styles.verifiedText}>✓ ยืนยันอีเมลแล้ว</Text></View>
+
+          {/* --- Photo Grid --- */}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: ((avatarUri ? 1 : 0) + gallery.filter(Boolean).length) < 3 ? 10 : 16 }}>
+            {[0, 1, 2, 3, 4, 5].map((index) => {
+              const slotWidth = (windowWidth - 84) / 3;
+              const slotHeight = slotWidth * 1.5;
+
+              const isHero = index === 0;
+              const uri = index === 0 ? avatarUri : gallery[index - 1];
+
+              return (
+                <Pressable
+                  accessibilityLabel={isHero
+                    ? (uri ? 'เปลี่ยนรูปโปรไฟล์หลัก' : 'เพิ่มรูปโปรไฟล์หลัก')
+                    : (uri ? `เปลี่ยนรูปที่ ${index + 1}` : `เพิ่มรูปที่ ${index + 1}`)}
+                  accessibilityRole="button"
+                  key={index}
+                  disabled={isProcessingImage}
+                  onPress={async () => {
+                    if (isProcessingImage) return;
+                    if (isHero) {
+                      await pickImage();
+                      return;
+                    }
+                    try {
+                      const result = await ImagePicker.launchImageLibraryAsync({
+                        mediaTypes: ['images'],
+                        allowsEditing: true,
+                        aspect: [2, 3],
+                        quality: 0.8,
+                      });
+                      if (result.canceled || !result.assets?.[0]) return;
+                      setIsProcessingImage(true);
+                      const asset = result.assets[0];
+                      const sizeValidation = await validateImageSize(asset.uri, asset.fileSize, MAX_PROFILE_IMAGE_SIZE_MB);
+                      if (!sizeValidation.valid) throw new Error(sizeValidation.error);
+                      const manipulated = await ImageManipulator.manipulateAsync(
+                        asset.uri,
+                        [{ resize: { width: 800 } }],
+                        { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+                      );
+                      setGallery((current) => {
+                        const next = [...current];
+                        next[index - 1] = manipulated.uri;
+                        return next.filter(Boolean);
+                      });
+                    } catch (error) {
+                      onToast?.(error?.message || 'เพิ่มรูปภาพไม่สำเร็จ', 'info');
+                    } finally {
+                      setIsProcessingImage(false);
+                    }
+                  }}
+                  style={{
+                    width: slotWidth,
+                    height: slotHeight,
+                    backgroundColor: colors.surfaceRaised,
+                    borderRadius: 16,
+                    overflow: 'hidden',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    borderWidth: uri ? 0 : 2,
+                    borderColor: colors.line,
+                    borderStyle: uri ? 'solid' : 'dashed',
+                  }}
+                >
+                  {uri ? (
+                    <>
+                      <Image source={{ uri }} style={{ width: '100%', height: '100%' }} />
+                      {isHero && (
+                        <View style={{ position: 'absolute', top: 6, left: 6, backgroundColor: colors.primary, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 }}>
+                          <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>รูปหลัก</Text>
+                        </View>
+                      )}
+                      <Pressable
+                        accessibilityLabel={`ลบรูป${isHero ? 'หลัก' : `ที่ ${index + 1}`}`}
+                        accessibilityRole="button"
+                        hitSlop={8}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          if (isHero) {
+                            setAvatarUri(null);
+                          } else {
+                            setGallery((current) => current.filter((_, i) => i !== index - 1));
+                          }
+                        }}
+                        style={{
+                          position: 'absolute',
+                          top: 6,
+                          right: 6,
+                          width: 22,
+                          height: 22,
+                          borderRadius: 11,
+                          backgroundColor: 'rgba(0,0,0,0.6)',
+                          justifyContent: 'center',
+                          alignItems: 'center',
+                        }}
+                      >
+                        <FeatureIcon name="xmark" size={11} color="#FFF" />
+                      </Pressable>
+                      <View style={{ position: 'absolute', bottom: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 10, padding: 4 }}>
+                        <FeatureIcon name="pencil" size={11} color="#FFF" />
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      <FeatureIcon name="plus" size={24} color={colors.inkMuted} />
+                      <Text style={{ color: colors.inkMuted, fontSize: 11, marginTop: 4, fontWeight: '700' }}>
+                        {isHero ? 'รูปหลัก' : `รูปที่ ${index + 1}`}
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
+              );
+            })}
           </View>
-        </Card>
+          {((avatarUri ? 1 : 0) + gallery.filter(Boolean).length) < 3 && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.coralSoft || '#FFF0ED', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, marginBottom: 16 }}>
+              <FeatureIcon name="info.circle.fill" size={15} color={colors.coral || '#F47C6B'} />
+              <Text style={{ fontSize: 12, color: colors.coral || '#F47C6B', flex: 1, fontWeight: '600' }}>
+                เพิ่มอีกอย่างน้อย {3 - ((avatarUri ? 1 : 0) + gallery.filter(Boolean).length)} รูป เพื่อให้โปรไฟล์โดดเด่นและมีโอกาสแมตช์มากขึ้น
+              </Text>
+            </View>
+          )}
+          {isProcessingImage ? (
+            <View style={{ alignItems: 'center', flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
+              <ActivityIndicator color={colors.primary} size="small" />
+              <Text style={{ color: colors.inkMuted, fontSize: type.caption }}>กำลังประมวลผลรูปภาพ...</Text>
+            </View>
+          ) : null}
 
-        <Text style={styles.requiredLegend}>
-          <Text style={styles.requiredMark}>{REQUIRED_MARK}</Text> ต้องกรอกข้อมูล
-        </Text>
+          {/* --- Face Verification Card --- */}
+          <View
+            style={{
+              backgroundColor: colors.surfaceRaised,
+              borderRadius: radius.lg || 16,
+              padding: spacing.md || 14,
+              borderWidth: 1,
+              borderColor: isFaceVerified ? '#10B98144' : colors.line,
+              marginBottom: 16,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                <View
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 20,
+                    backgroundColor: isFaceVerified ? '#10B9811A' : '#2869C71A',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <FeatureIcon
+                    color={isFaceVerified ? '#10B981' : '#2869C7'}
+                    name={isFaceVerified ? 'checkmark.seal.fill' : 'lock.shield.fill'}
+                    size={22}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={{ fontSize: 15, fontWeight: '700', color: colors.ink }}>
+                      {isFaceVerified ? 'ยืนยันใบหน้าจริงแล้ว' : 'ยืนยันใบหน้า'}
+                    </Text>
+                    {isFaceVerified && (
+                      <View style={{ backgroundColor: '#10B98122', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                        <Text style={{ color: '#10B981', fontSize: 11, fontWeight: '800' }}>
+                          {faceMatchScore ? `${faceMatchScore}%` : 'ผ่าน'}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={{ fontSize: 12, color: colors.inkMuted, marginTop: 2 }}>
+                    {isFaceVerified
+                      ? 'โปรไฟล์ของคุณได้รับตราสีฟ้า ยืนยันว่าตรงกับรูปหลัก'
+                      : 'สแกนใบหน้าสดเพื่อรับตราสัญลักษณ์ความถูกต้อง ป้องกันการแอบอ้าง'}
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => {
+                  if (!avatarUri) {
+                    showAlert('กรุณาตั้งรูปโปรไฟล์หลัก', 'ต้องตั้งรูปโปรไฟล์หลักก่อนทำการยืนยันใบหน้า', { tone: 'warning' });
+                    return;
+                  }
+                  setShowFaceVerificationModal(true);
+                }}
+                style={{
+                  backgroundColor: isFaceVerified ? colors.surface : '#2869C7',
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  borderRadius: 10,
+                  borderWidth: isFaceVerified ? 1 : 0,
+                  borderColor: colors.line,
+                  marginLeft: 8,
+                }}
+              >
+                <Text
+                  style={{
+                    color: isFaceVerified ? colors.ink : '#FFFFFF',
+                    fontSize: 13,
+                    fontWeight: '700',
+                  }}
+                >
+                  {isFaceVerified ? 'สแกนใหม่' : 'เริ่มยืนยัน'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
 
-        <Card style={styles.formCard}>
+          <Card style={styles.formCard}>
           <SectionToggleHeader
             colors={colors}
             expanded={expandedSection === 'basic'}
@@ -389,24 +738,32 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
               required
               value={name}
             />
-            <AndroidSelectionRow
-              icon="building.columns.fill"
-              label="คณะ"
-              onSelect={setFaculty}
-              options={FACULTIES}
-              placeholder="เลือกคณะ"
-              required
-              value={faculty}
-            />
-            <AndroidSelectionRow
-              icon="graduationcap.fill"
-              label="ชั้นปี"
-              onSelect={setYear}
-              options={YEARS}
-              placeholder="เลือกชั้นปี"
-              required
-              value={year}
-            />
+            {isFacultyLocked ? (
+              <AndroidReadOnlyRow helper={facultyHelper} icon="building.columns.fill" label="คณะ" value={faculty || 'ไม่พบข้อมูล'} />
+            ) : (
+              <AndroidSelectionRow
+                icon="building.columns.fill"
+                label="คณะ"
+                onSelect={setFaculty}
+                options={FACULTY_OPTIONS}
+                placeholder="เลือกคณะ"
+                required
+                value={faculty}
+              />
+            )}
+            {isYearLocked ? (
+              <AndroidReadOnlyRow helper={yearHelper} icon="graduationcap.fill" label="ชั้นปี" value={year || 'ไม่พบข้อมูล'} />
+            ) : (
+              <AndroidSelectionRow
+                icon="graduationcap.fill"
+                label="ชั้นปี"
+                onSelect={setYear}
+                options={YEAR_OPTIONS}
+                placeholder="เลือกชั้นปี"
+                required
+                value={year}
+              />
+            )}
             <AndroidSelectionRow
               icon="calendar"
               label="อายุ"
@@ -425,6 +782,38 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
               required
               value={gender}
             />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="เลือกช่วงเวลาว่างสะดวก"
+              onPress={() => setShowAvailabilityModal(true)}
+              style={styles.fullRowDropdownButton}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <FeatureIcon color={colors.primary} name="clock.fill" size={18} style={styles.fullRowDropdownIcon} />
+                <View style={styles.fullRowDropdownCopy}>
+                  <Text style={styles.fullRowDropdownLabel}>
+                    ช่วงเวลาว่างสะดวก{isFirstSetup ? <Text style={styles.requiredMark}> {REQUIRED_MARK}</Text> : null}
+                  </Text>
+                  <Text style={availabilitySlots.length > 0 ? styles.fullRowDropdownValue : styles.fullRowDropdownPlaceholder}>
+                    {availabilitySlots.length > 0 ? `เลือกไว้ ${availabilitySlots.length} ช่วงเวลา` : 'เลือกหลายวันและเวลา'}
+                  </Text>
+                </View>
+                <Feather name="chevron-down" size={18} color={colors.inkSoft} />
+              </View>
+            </Pressable>
+            <View style={{ marginTop: spacing.xs }}>
+              <Field
+                colors={colors}
+                styles={styles}
+                label="คำแนะนำตัวสั้น ๆ"
+                required={isFirstSetup}
+                value={bio}
+                onChangeText={setBio}
+                multiline
+                inputStyle={styles.bioInput}
+                placeholder="เล่าให้เพื่อนรู้จักคุณมากขึ้น"
+              />
+            </View>
           </View>
           )}
         </Card>
@@ -447,7 +836,7 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
                 <Chip
                   active={interests.includes(category.id)}
                   color={category.color}
-                  iconName={ACTIVITY_ANDROID_ICONS[category.id]}
+                  iconName={category.symbol}
                   label={category.label}
                   onPress={() => toggleInterest(category.id)}
                   style={styles.uniformInterestChip}
@@ -456,57 +845,99 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
             ))}
           </View>
 
-          <View style={styles.pickerContainer}>
-            <FormLabel label="เพซวิ่ง" required={isFirstSetup && isRunningSelected} styles={styles} />
-            <CustomDropdown
-              colors={colors}
-              disabled={!isRunningSelected}
-              onSelect={setPace}
-              options={PACE_OPTIONS}
-              placeholder={isRunningSelected ? 'เลือกเพซวิ่ง' : 'ไม่ต้องระบุ หากไม่ได้เลือกวิ่งออกกำลังกาย'}
-              styles={styles}
-              value={isRunningSelected ? pace : DEFAULT_PACE}
-            />
-          </View>
+
+            {ACTIVITY_CATEGORIES.map((option) => option.id).filter((id) => interests.includes(id)).map((activityId) => (
+              <ActivityDetailSection
+                activityId={activityId}
+                key={activityId}
+                onChange={updateActivityDetail}
+                colors={colors}
+                styles={styles}
+                values={activityDetails[activityId] || {}}
+              />
+            ))}
+
           <Field colors={colors} styles={styles} label="ทักษะเพิ่มเติม (ไม่บังคับ)" value={skill} onChangeText={setSkill} placeholder="เช่น โค้ชวิ่ง ถ่ายรูป เล่นดนตรี" />
-          <View style={styles.fieldContainer}>
-            <FormLabel label="ช่วงเวลาว่างสะดวก" required={isFirstSetup} styles={styles} />
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel="เลือกช่วงเวลาว่างสะดวก"
-              style={[styles.input, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }]}
-              onPress={() => setShowAvailabilityModal(true)}
-            >
-              <Text style={{ color: availabilitySlots.length > 0 ? colors.ink : colors.inkSoft }}>
-                {availabilitySlots.length > 0 ? `เลือกไว้ ${availabilitySlots.length} ช่วงเวลา` : 'เลือกหลายวันและเวลา'}
-              </Text>
-              <Feather name="chevron-down" size={20} color={colors.inkSoft} />
-            </TouchableOpacity>
-          </View>
-          <Field colors={colors} styles={styles} label="คำแนะนำตัวสั้น ๆ" required={isFirstSetup} value={bio} onChangeText={setBio} multiline inputStyle={styles.bioInput} placeholder="เล่าให้เพื่อนรู้จักคุณมากขึ้น" />
           </View>
           )}
         </Card>
 
-        <Pressable accessibilityRole="button" onPress={() => router.push('/profile-visibility')} style={styles.visibilityEntry}>
-          <FeatureIcon color={colors.primary} name="eye.fill" size={20} />
-          <View style={styles.visibilityEntryCopy}>
-            <Text style={styles.visibilityEntryTitle}>การแสดงโปรไฟล์</Text>
-            <Text style={styles.visibilityEntrySubtitle}>ตั้งค่าข้อมูลที่ผู้ใช้อื่นมองเห็น</Text>
+        {canUseSpotify ? (
+          <View onLayout={({ nativeEvent }) => {
+            if (initialSection !== 'music' || musicShortcutHandled.current) return;
+            musicShortcutHandled.current = true;
+            editorScrollRef.current?.scrollTo({ y: nativeEvent.layout.y, animated: true });
+          }}>
+          <Card style={styles.formCard}>
+            <SectionToggleHeader
+              colors={colors}
+              expanded={expandedSection === 'music'}
+              icon="music.note"
+              onPress={() => setExpandedSection((current) => current === 'music' ? null : 'music')}
+              subtitle={favoriteTracks.length > 0 ? `เลือกไว้ ${favoriteTracks.length}/${MAX_FAVORITE_TRACKS} เพลง` : 'เชื่อมต่อ Spotify และเลือกเพลงโปรด'}
+              title="การตั้งค่าเพลงโปรด"
+            />
+            {expandedSection === 'music' && (
+              <View style={styles.formSectionSpacing}>
+                <View style={styles.fieldContainer}>
+                  <SpotifyConnectCard />
+                </View>
+                <View style={styles.fieldContainer}>
+                  <FormLabel label={`เพลงโปรด (${favoriteTracks.length}/${MAX_FAVORITE_TRACKS})`} styles={styles} />
+                  {favoriteTracks.map((track) => (
+                    <View key={track.id} style={styles.favoriteTrackRow}>
+                      {track.albumArt ? (
+                        <Image source={{ uri: track.albumArt }} style={styles.favoriteTrackArt} />
+                      ) : (
+                        <View style={[styles.favoriteTrackArt, styles.favoriteTrackArtPlaceholder]}>
+                          <FeatureIcon color={colors.inkSoft} name="music.note" size={16} />
+                        </View>
+                      )}
+                      <View style={styles.favoriteTrackMeta}>
+                        <Text numberOfLines={1} style={styles.favoriteTrackName}>{track.name}</Text>
+                        <Text numberOfLines={1} style={styles.favoriteTrackArtists}>{track.artists}</Text>
+                      </View>
+                      <TrackPreviewButton
+                        backgroundColor={colors.primarySoft}
+                        color={colors.primary}
+                        previewEndMs={track.previewEndMs}
+                        previewStartMs={track.previewStartMs}
+                        previewUrl={track.previewUrl}
+                        size={34}
+                        track={track}
+                        trackArtists={track.artists}
+                        trackName={track.name}
+                        youtubeVideoId={track.youtubeVideoId}
+                      />
+                      <Pressable
+                        accessibilityLabel={`ลบ ${track.name}`}
+                        hitSlop={8}
+                        onPress={() => setFavoriteTracks((current) => current.filter((item) => item.id !== track.id))}
+                      >
+                        <FeatureIcon color={colors.danger} name="xmark.circle.fill" size={20} />
+                      </Pressable>
+                    </View>
+                  ))}
+                  {favoriteTracks.length < MAX_FAVORITE_TRACKS ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => setShowSpotifySearch(true)}
+                      style={styles.addTrackButton}
+                    >
+                      <FeatureIcon color={colors.primary} name="music.note" size={16} />
+                      <Text style={styles.addTrackButtonText}>ค้นหาและเพิ่มเพลงจาก Spotify</Text>
+                    </Pressable>
+                  ) : (
+                    <Text style={styles.favoriteTracksHint}>เพิ่มได้สูงสุด {MAX_FAVORITE_TRACKS} เพลง</Text>
+                  )}
+                </View>
+              </View>
+            )}
+          </Card>
           </View>
-          <FeatureIcon color={colors.inkSoft} name="chevron.right" size={19} />
-        </Pressable>
-
-        <Card style={styles.aboutSettingsCard}>
-          <SettingsListRow icon="info.circle.fill" label={'\u0e40\u0e01\u0e35\u0e48\u0e22\u0e27\u0e01\u0e31\u0e1a CampusMate'} onPress={() => router.push('/about')} last />
-        </Card>
-
-        <Card style={styles.accountSettingsCard}>
-          <Text style={styles.accountSettingsTitle}>ตั้งค่าบัญชี</Text>
-          <SettingsListRow danger icon="trash.fill" label="ลบบัญชีอย่างถาวร" onPress={handleDeleteAccount} />
-          <SettingsListRow danger icon="arrowshape.turn.up.left" label="ออกจากระบบ" onPress={onLogout} last />
-        </Card>
-      </ScrollView>
+        ) : null}
+        </ScrollView>
+      )}
       <AvailabilityModal
         visible={showAvailabilityModal}
         onClose={() => setShowAvailabilityModal(false)}
@@ -517,11 +948,34 @@ export default function ProfileScreen({ onClose, onCloseGuardReady, onLogout, on
           setAvailability(slots.length > 0 ? `ระบุ ${slots.length} ช่วงเวลา` : '');
         }}
       />
-      {(
+      <FaceVerificationModal
+        avatarUri={avatarUri}
+        onClose={() => setShowFaceVerificationModal(false)}
+        onSuccess={(result) => {
+          markFaceVerified?.(result.similarity);
+          onToast?.(`ยืนยันใบหน้าสำเร็จ ความตรงกัน ${result.similarity}%`, 'success');
+        }}
+        visible={showFaceVerificationModal}
+      />
+      {showSpotifySearch ? (
+        <SpotifyTrackSearchSheet
+          excludeIds={favoriteTracks.map((track) => track.id)}
+          onClose={() => setShowSpotifySearch(false)}
+          onSelect={(track) => {
+            setFavoriteTracks((current) => {
+              if (current.some((item) => item.id === track.id) || current.length >= MAX_FAVORITE_TRACKS) return current;
+              return [...current, track];
+            });
+            setShowSpotifySearch(false);
+          }}
+          visible
+        />
+      ) : null}
+      {activeTab === 'edit' && (
         <View style={[styles.stickySaveBar, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
           <PrimaryButton
             iconName="checkmark.circle.fill"
-            label="บันทึกโปรไฟล์"
+            label={isFirstSetup ? 'สร้างโปรไฟล์' : 'บันทึกโปรไฟล์'}
             loading={saving}
             onPress={handleSave}
             style={styles.stickySaveButton}
@@ -618,12 +1072,31 @@ function AndroidInputField({ icon, label, onChangeText, placeholder, required = 
   );
 }
 
-function AndroidSelectionRow({ icon, label, onSelect, options, placeholder, required = false, value }) {
+function AndroidReadOnlyRow({ helper, icon, label, value }) {
+  const { colors } = useTheme();
+  const styles = getStyles(colors);
+  return (
+    <View style={styles.fullRowInputContainer}>
+      <FeatureIcon color={colors.primary} name={icon} size={18} style={styles.fullRowDropdownIcon} />
+      <View style={styles.fullRowDropdownCopy}>
+        <Text style={styles.fullRowDropdownLabel}>{label}</Text>
+        <Text numberOfLines={1} style={value ? styles.fullRowDropdownValue : styles.fullRowDropdownPlaceholder}>
+          {value || 'ไม่ระบุ'}
+        </Text>
+        {helper ? <Text style={styles.fullRowReadOnlyHint}>{helper}</Text> : null}
+      </View>
+      <FeatureIcon color={colors.inkSoft} name="lock.fill" size={15} />
+    </View>
+  );
+}
+
+function AndroidSelectionRow({ icon, label, onSelect, options, placeholder, required = false, value, disabled = false }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
   return (
     <CustomDropdown
       colors={colors}
+      disabled={disabled}
       fullRow
       icon={icon}
       label={label}
@@ -760,7 +1233,7 @@ function CustomDropdown({ colors, styles, value, onSelect, options, placeholder,
         ) : (
           <Text style={value ? styles.dropdownButtonText : styles.dropdownButtonPlaceholder}>{displayValue}</Text>
         )}
-        <FeatureIcon color={colors.inkSoft} name="chevron.down" size={15} />
+        {!disabled && <FeatureIcon color={colors.inkSoft} name="chevron.down" size={15} />}
       </Pressable>
       <Modal
         animationType="none"
@@ -835,7 +1308,70 @@ function ToggleRow({ colors, styles, label, onChange, value, last = false }) {
 }
 
 const getStyles = (colors) => StyleSheet.create({
+    activityDetailSection: { backgroundColor: colors.surfaceRaised, borderRadius: 18, padding: 12, marginBottom: 16, width: '100%' },
+    activityDetailHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+    activityDetailIcon: { marginRight: 8 },
+    activityDetailTitle: { color: colors.ink, fontSize: 15, fontWeight: '700', flex: 1 },
+    activityDetailSubtitle: { color: colors.tertiary || colors.inkSoft, fontSize: 11, fontWeight: '600' },
+    activityDetailField: { marginBottom: 12 },
+    activityDetailFieldLabel: { color: colors.inkSoft, fontSize: 12, fontWeight: '800', marginBottom: 6 },
+    activityDetailTextInput: { backgroundColor: colors.canvas, borderColor: colors.line, borderRadius: 12, borderWidth: 1, color: colors.ink, minHeight: 44, paddingHorizontal: 12, fontSize: 15 },
+    optionPillRows: { gap: 8 },
+    optionPillRow: { flexDirection: 'row', gap: 8 },
+    optionPill: { flex: 1, backgroundColor: colors.card, borderRadius: 20, paddingVertical: 8, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
+    optionPillSelected: { backgroundColor: colors.primary },
+    optionPillText: { color: colors.ink, fontSize: 13, fontWeight: '600' },
+    optionPillTextSelected: { color: colors.card },
   container: { flex: 1, backgroundColor: colors.canvas },
+  stickyTabBarContainer: {
+    backgroundColor: colors.canvas,
+    borderBottomColor: colors.line,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    zIndex: 999,
+    elevation: 8,
+  },
+  tabSwitcher: {
+    backgroundColor: colors.card,
+    borderColor: colors.line,
+    borderRadius: 20,
+    borderWidth: 1,
+    elevation: 1,
+    flexDirection: 'row',
+    padding: 4,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+  },
+  tabButton: {
+    alignItems: 'center',
+    backgroundColor: 'transparent',
+    borderRadius: 16,
+    flex: 1,
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  tabButtonActive: {
+    backgroundColor: colors.canvas,
+    elevation: 1,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 2,
+  },
+  tabButtonText: {
+    color: colors.inkMuted,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  tabButtonTextActive: {
+    color: colors.primary,
+  },
+  tabButtonTextInactive: {
+    color: colors.inkMuted,
+  },
   content: { padding: spacing.md, paddingBottom: spacing.xxxl },
   contentWithStickySave: { paddingBottom: spacing.lg },
   eyebrow: { color: colors.primary, fontSize: type.micro, fontWeight: '800', letterSpacing: 1, marginBottom: spacing.xs, textTransform: 'uppercase' },
@@ -873,6 +1409,7 @@ const getStyles = (colors) => StyleSheet.create({
   fullRowDropdownLabel: { color: colors.inkSoft, fontSize: type.caption2, fontWeight: '600', marginBottom: 2 },
   fullRowDropdownValue: { color: colors.ink, fontSize: type.body, fontWeight: '700' },
   fullRowDropdownPlaceholder: { color: colors.inkSoft, fontSize: type.body, fontWeight: '700' },
+  fullRowReadOnlyHint: { color: colors.inkSoft, fontSize: type.caption2, marginTop: 2 },
   dropdownButtonText: { color: colors.ink, fontSize: type.body },
   dropdownButtonPlaceholder: { color: colors.inkSoft, fontSize: type.body },
   modalOverlay: { flex: 1, justifyContent: 'flex-end' },
@@ -892,6 +1429,16 @@ const getStyles = (colors) => StyleSheet.create({
   interestGridItem: { width: '50%', paddingHorizontal: 4, marginBottom: 8 },
   uniformInterestChip: { width: '100%', height: 46, justifyContent: 'center', alignItems: 'center' },
   formSectionSpacing: { marginTop: spacing.md },
+  fieldContainer: { marginBottom: spacing.md },
+  favoriteTrackRow: { alignItems: 'center', backgroundColor: colors.surfaceRaised, borderCurve: 'continuous', borderRadius: radius.md, flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm, padding: spacing.sm },
+  favoriteTrackArt: { backgroundColor: colors.canvas, borderRadius: radius.sm, height: 44, width: 44 },
+  favoriteTrackArtPlaceholder: { alignItems: 'center', justifyContent: 'center' },
+  favoriteTrackMeta: { flex: 1, minWidth: 0 },
+  favoriteTrackName: { color: colors.ink, fontSize: type.body, fontWeight: '700' },
+  favoriteTrackArtists: { color: colors.inkSoft, fontSize: type.caption, marginTop: 2 },
+  addTrackButton: { alignItems: 'center', borderColor: colors.primary, borderCurve: 'continuous', borderRadius: radius.md, borderStyle: 'dashed', borderWidth: 1, flexDirection: 'row', gap: spacing.sm, justifyContent: 'center', minHeight: 44, paddingHorizontal: spacing.md },
+  addTrackButtonText: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
+  favoriteTracksHint: { color: colors.inkSoft, fontSize: type.caption2, marginTop: spacing.xs },
   field: { marginBottom: spacing.md },
   label: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '800', marginBottom: 6 },
   input: { backgroundColor: colors.canvas, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.md, borderWidth: 1, color: colors.ink, fontSize: type.body, minHeight: 48, paddingHorizontal: spacing.md, paddingVertical: 10 },
@@ -930,3 +1477,102 @@ const getStyles = (colors) => StyleSheet.create({
   visibilityEntryTitle: { color: colors.ink, fontSize: type.body, fontWeight: '900' },
   visibilityEntrySubtitle: { color: colors.inkMuted, fontSize: type.caption, marginTop: 2 },
 });
+
+function OptionPillRows({ onToggle, options, colors, styles, selected }) {
+  const rows = [];
+  for (let i = 0; i < options.length; i += 2) rows.push(options.slice(i, i + 2));
+  return (
+    <View style={styles.optionPillRows}>
+      {rows.map((pair, index) => (
+        <View key={index} style={styles.optionPillRow}>
+          {pair.map((option) => {
+            const isSelected = selected.includes(option);
+            return (
+              <Pressable
+                key={option}
+                onPress={() => onToggle(option)}
+                style={[
+                  styles.optionPill,
+                  isSelected && styles.optionPillSelected,
+                ]}
+              >
+                <Text style={[styles.optionPillText, isSelected && styles.optionPillTextSelected]}>
+                  {option}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function ActivityDetailSection({ activityId, onChange, colors, styles, values }) {
+  const category = getActivityCategory(activityId);
+  const fields = getActivityDetailFields(activityId);
+  if (!category || !fields.length) return null;
+
+  return (
+    <View style={styles.activityDetailSection}>
+      <View style={styles.activityDetailHeader}>
+        <FeatureIcon color={category.color} name={category.symbol} size={15} style={styles.activityDetailIcon} />
+        <Text style={styles.activityDetailTitle}>{category.label}</Text>
+        <Text style={styles.activityDetailSubtitle}>รายละเอียดเพิ่มเติม</Text>
+      </View>
+      {fields.map((field) => {
+        const value = values[field.key];
+
+        if (field.type === 'multi') {
+          const selected = Array.isArray(value) ? value : [];
+          return (
+            <View key={field.key} style={styles.activityDetailField}>
+              <Text style={styles.activityDetailFieldLabel}>{field.label}</Text>
+              <OptionPillRows
+                onToggle={(option) => onChange(
+                  activityId,
+                  field.key,
+                  selected.includes(option) ? selected.filter((item) => item !== option) : [...selected, option]
+                )}
+                options={field.options}
+                colors={colors}
+                styles={styles}
+                selected={selected}
+              />
+            </View>
+          );
+        }
+
+        if (field.type === 'text') {
+          return (
+            <View key={field.key} style={styles.activityDetailField}>
+               <Text style={styles.activityDetailFieldLabel}>{field.label}</Text>
+               <TextInput
+                  placeholder={field.label}
+                  value={typeof value === 'string' ? value : ''}
+                  onChangeText={(text) => onChange(activityId, field.key, text)}
+                  style={styles.activityDetailTextInput}
+                  placeholderTextColor={colors.inkSoft}
+               />
+            </View>
+          );
+        }
+
+        return (
+          <View key={field.key} style={styles.activityDetailField}>
+             <FormLabel label={field.label} styles={styles} />
+             <CustomDropdown
+                colors={colors}
+                onSelect={(next) => onChange(activityId, field.key, next)}
+                options={[{ label: 'ไม่ระบุ', value: '' }, ...field.options.map(o => typeof o === 'string' ? { label: o, value: o } : o)]}
+                placeholder="เลือก"
+                styles={styles}
+                value={typeof value === 'string' ? value : ''}
+                fullRow={false}
+             />
+          </View>
+        );
+      })}
+    </View>
+  );
+}

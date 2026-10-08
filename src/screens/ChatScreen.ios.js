@@ -1,41 +1,34 @@
+import { Button, Text } from '../components/NativeTypography';
+import { font } from '../components/brandFont';
+import RNText from '../components/AppText';
 import { compareConversationsByActivity } from '../utils/conversationOrder';
 import { chatPreviewText } from '../utils/chatPreviewText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, PanResponder, Pressable, useColorScheme, View, Text as RNText } from 'react-native';
+import { Animated, Pressable, useColorScheme, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import {
-  Button,
-  Host,
-  HStack,
-  Image,
-  Spacer,
-  Text,
-  TextField,
-  useNativeState,
-  VStack,
-} from '@expo/ui/swift-ui';
-import {
-  accessibilityLabel,
-  background,
-  buttonBorderShape,
-  buttonStyle,
-  controlSize,
-  font,
-  foregroundStyle,
-  frame,
-  labelStyle,
-  padding,
-  shapes,
-  textFieldStyle,
-  tint,
-} from '@expo/ui/swift-ui/modifiers';
-import { router, useLocalSearchParams } from 'expo-router';
+import { Host, HStack, Image, Spacer, TextField, useNativeState, VStack } from '@expo/ui/swift-ui';
+import { accessibilityLabel, background, buttonBorderShape, buttonStyle, controlSize, foregroundStyle, frame, labelStyle, padding, shapes, textFieldStyle, tint } from '@expo/ui/swift-ui/modifiers';
+import { useLocalSearchParams, usePathname } from 'expo-router';
+import { openChatRoom } from '../utils/openChatRoom';
 import { SymbolView } from 'expo-symbols';
-import { useApp } from '../context/AppContext';
+import { useAppActions, useAppConversations, useAppProfile } from '../context/AppContext';
+import { useConfirm } from '../context/ConfirmContext';
 import ChatPreviewModal from '../components/ChatPreviewModal';
+import { warmChatPreviewMedia } from '../services/chatPreviewMedia';
+import { GroupChatRow, GroupChatInboxStatus } from '../components/GroupChatListSection';
+import useGroupChatInbox from '../hooks/useGroupChatInbox';
 import { IosLikeAvatar } from '../components/iosLike';
+import Reanimated, {
+  Extrapolation,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { project, rubberband } from '../utils/motion';
 
 const darkPalette = {
   background: '#0D0F12',
@@ -164,6 +157,8 @@ function formatConversationTime(conversation, currentUserId, unreadCount = 0) {
   }
 
   // Current user sent the last message
+  if (lastMsg?.sendStatus === 'failed') return 'ส่งไม่สำเร็จ';
+  if (lastMsg?.pendingSync) return 'รอส่ง';
   const otherUserId = (conversation.participants || []).find((id) => id !== currentUserId);
   const otherUnread = otherUserId ? (conversation.unreadCounts?.[otherUserId] || 0) : 0;
 
@@ -186,20 +181,18 @@ function formatConversationTime(conversation, currentUserId, unreadCount = 0) {
 export default function ChatScreen() {
   const palette = usePalette();
   const colorScheme = useColorScheme();
-  const { conversations, profile, removeConversation } = useApp();
+  const { conversations } = useAppConversations();
+  const { profile } = useAppProfile();
+  const { removeConversation } = useAppActions();
+  const { confirm } = useConfirm();
   const params = useLocalSearchParams();
+  const pathname = usePathname();
   const [query, setQuery] = useState('');
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [previewConversationId, setPreviewConversationId] = useState(null);
   const searchState = useNativeState('');
   const searchInputRef = useRef(null);
   const deletePromptTimerRef = useRef(null);
-  const [, setTick] = useState(0);
-
-  useEffect(() => {
-    const timer = setInterval(() => setTick((t) => t + 1), 30000);
-    return () => clearInterval(timer);
-  }, []);
 
   useEffect(() => () => {
     if (deletePromptTimerRef.current) {
@@ -209,11 +202,12 @@ export default function ChatScreen() {
   
   useEffect(() => {
     if (params?.chatId) {
-      router.push({ pathname: '/chat-room', params: { chatId: params.chatId } });
+      openChatRoom(params.chatId, { pathname });
     }
-  }, [params?.chatId]);
+  }, [params?.chatId, pathname]);
 
   const currentUserId = profile?.id;
+  const groupInbox = useGroupChatInbox(currentUserId, query, unreadOnly);
   const previewConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === previewConversationId) || null,
     [conversations, previewConversationId]
@@ -221,7 +215,7 @@ export default function ChatScreen() {
   const visibleConversations = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return conversations.filter((conversation) => {
-      if (unreadOnly && !(conversation.unreadCounts?.[currentUserId] > 0)) return false;
+      if (unreadOnly && !((conversation.unreadCounts?.[currentUserId] || conversation.unread || 0) > 0)) return false;
       if (!normalized) return true;
       return `${conversation.name || ''} ${conversation.lastMessage || ''}`.toLowerCase().includes(normalized);
     }).sort(compareConversationsByActivity);
@@ -237,30 +231,26 @@ export default function ChatScreen() {
       clearTimeout(deletePromptTimerRef.current);
     }
 
-    // Let the native swipe action finish closing before presenting Alert.
+    // Let the native swipe action finish closing before presenting the confirm sheet.
     // Otherwise SwiftUI can animate the List row away underneath the popup.
     deletePromptTimerRef.current = setTimeout(() => {
       deletePromptTimerRef.current = null;
-      Alert.alert(
-        'ลบห้องสนทนา?',
-        `การจับคู่และห้องสนทนากับ ${conversation.name || 'เพื่อน'} จะถูกนำออกจากรายการ`,
-        [
-          { text: 'ยกเลิก', style: 'cancel' },
-          {
-            text: 'ลบห้องสนทนา',
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                await removeConversation(conversation.id, otherUserId);
-              } catch (err) {
-                console.error('Failed to remove conversation:', err);
-              }
-            },
-          },
-        ]
-      );
+      void (async () => {
+        const ok = await confirm({
+          title: 'ลบห้องสนทนา?',
+          body: `การจับคู่และห้องสนทนากับ ${conversation.name || 'เพื่อน'} จะถูกนำออกจากรายการ`,
+          confirmLabel: 'ลบห้องสนทนา',
+          icon: 'trash.fill',
+        });
+        if (!ok) return;
+        try {
+          await removeConversation(conversation.id, otherUserId);
+        } catch (err) {
+          console.error('Failed to remove conversation:', err);
+        }
+      })();
     }, DELETE_CONFIRM_DELAY_MS);
-  }, [currentUserId, removeConversation]);
+  }, [confirm, currentUserId, removeConversation]);
 
   const handlePreviewConversation = useCallback((conversation) => {
     if (conversation?.id) setPreviewConversationId(conversation.id);
@@ -268,14 +258,14 @@ export default function ChatScreen() {
 
   const handleOpenConversation = useCallback((conversation) => {
     if (conversation?.id) {
-      router.push({ pathname: '/chat-room', params: { chatId: conversation.id } });
+      openChatRoom(conversation.id, { pathname });
     }
-  }, []);
+  }, [pathname]);
 
   const handleOpenPreviewChat = () => {
     const chatId = previewConversation?.id;
     setPreviewConversationId(null);
-    if (chatId) router.push({ pathname: '/chat-room', params: { chatId, entryAnimation: 'popup' } });
+    if (chatId) openChatRoom(chatId, { pathname, entryAnimation: 'popup' });
   };
 
   const renderConversation = useCallback(({ item }) => (
@@ -290,6 +280,7 @@ export default function ChatScreen() {
   ), [colorScheme, currentUserId, handleDeleteConversation, handleOpenConversation, handlePreviewConversation]);
 
   const renderListHeader = useCallback(() => (
+    <View>
     <View style={{ width: '100%', height: 124 }}>
       <Host colorScheme={colorScheme} seedColor={palette.accent} style={{ width: '100%', height: 124 }}>
         <VStack
@@ -327,13 +318,15 @@ export default function ChatScreen() {
         </VStack>
       </Host>
     </View>
-  ), [colorScheme, palette, query, searchState, unreadOnly]);
+
+    </View>
+  ), [colorScheme, currentUserId, palette, query, searchState, unreadOnly]);
 
   const renderListEmpty = useCallback(() => (
     <View style={{ width: '100%', height: 250, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 }}>
       <SymbolView name={query || unreadOnly ? 'magnifyingglass' : 'message.fill'} size={54} tintColor={palette.secondary} />
       <RNText style={{ color: palette.text, fontSize: 22, fontWeight: '700', marginTop: 12, textAlign: 'center' }}>
-        {query || unreadOnly ? 'ไม่พบข้อความ' : 'ยังไม่มีห้องสนทนา'}
+        {query || unreadOnly ? 'ไม่พบข้อความ' : 'ยังไม่มีแชตคู่'}
       </RNText>
       <RNText style={{ color: palette.secondary, fontSize: 15, fontWeight: '500', marginTop: 8, textAlign: 'center' }}>
         {query || unreadOnly ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรอง' : 'เมื่อคุณรับคำขอถูกใจ ห้องสนทนาจะปรากฏที่นี่'}
@@ -409,8 +402,8 @@ export default function ChatScreen() {
         contentContainerStyle={{ paddingBottom: 36, paddingHorizontal: 20, paddingTop: 124 }}
         initialNumToRender={8}
         maxToRenderPerBatch={5}
-        data={visibleConversations}
-        keyExtractor={(item) => item.id}
+        data={[...groupInbox.items, ...visibleConversations].sort(compareConversationsByActivity)}
+        keyExtractor={(item) => `${item.kind === 'group' ? 'group' : 'direct'}:${item.id}`}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         ListEmptyComponent={renderListEmpty}
@@ -419,7 +412,8 @@ export default function ChatScreen() {
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
           { useNativeDriver: true }
         )}
-        renderItem={renderConversation}
+        renderItem={(props) => props.item.kind === 'group' ? <GroupChatRow group={props.item} /> : renderConversation(props)}
+        ListFooterComponent={<GroupChatInboxStatus inbox={groupInbox} />}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
         style={{ flex: 1 }}
@@ -450,68 +444,62 @@ function FilterButton({ active, label, onPress, systemImage }) {
 }
 
 function SwipeableConversationRow({ children, contentBackgroundColor, onDelete }) {
-  const translateX = useRef(new Animated.Value(0)).current;
-  const offsetRef = useRef(0);
-  const gestureStartOffsetRef = useRef(0);
-  const gestureOffsetRef = useRef(0);
+  const translateX = useSharedValue(0);
+  const context = useSharedValue(0);
 
   const settle = (open) => {
-    const nextOffset = open ? -SWIPE_DELETE_WIDTH : 0;
-    offsetRef.current = nextOffset;
-    gestureOffsetRef.current = nextOffset;
-    Animated.spring(translateX, {
-      toValue: nextOffset,
-      damping: 22,
-      mass: 0.8,
+    translateX.set(withSpring(open ? -SWIPE_DELETE_WIDTH : 0, {
+      duration: 400,
+      dampingRatio: 0.8,
       overshootClamping: true,
-      stiffness: 220,
-      useNativeDriver: true,
-    }).start();
+    }));
   };
 
-  const panResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponderCapture: (_, gestureState) => (
-      Math.abs(gestureState.dx) > 8
-        && Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
-    ),
-    onMoveShouldSetPanResponder: (_, gestureState) => (
-      Math.abs(gestureState.dx) > 8
-        && Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
-    ),
-    onPanResponderGrant: () => {
-      gestureStartOffsetRef.current = offsetRef.current;
-      gestureOffsetRef.current = offsetRef.current;
-      translateX.stopAnimation();
-    },
-    onPanResponderMove: (_, gestureState) => {
-      const nextOffset = Math.max(
-        -SWIPE_DELETE_WIDTH,
-        Math.min(0, gestureStartOffsetRef.current + gestureState.dx)
-      );
-      gestureOffsetRef.current = nextOffset;
-      translateX.setValue(nextOffset);
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      const nextOffset = Math.max(
-        -SWIPE_DELETE_WIDTH,
-        Math.min(0, gestureStartOffsetRef.current + gestureState.dx)
-      );
-      gestureOffsetRef.current = nextOffset;
-      settle(nextOffset <= -(SWIPE_DELETE_WIDTH * 0.45) || gestureState.vx < -0.45);
-    },
-    onPanResponderTerminate: () => settle(gestureOffsetRef.current <= -(SWIPE_DELETE_WIDTH * 0.45)),
-    onPanResponderTerminationRequest: () => false,
-  }), [translateX]);
+  const pan = useMemo(() => Gesture.Pan()
+    .activeOffsetX([-8, 8])
+    .failOffsetY([-8, 8])
+    .onStart(() => {
+      context.set(translateX.get());
+    })
+    .onUpdate((e) => {
+      const next = context.get() + e.translationX;
+      if (next > 0) {
+        translateX.set(0);
+      } else if (next < -SWIPE_DELETE_WIDTH) {
+        translateX.set(-SWIPE_DELETE_WIDTH + rubberband(next + SWIPE_DELETE_WIDTH, SWIPE_DELETE_WIDTH));
+      } else {
+        translateX.set(next);
+      }
+    })
+    .onEnd((e, success) => {
+      const projected = success
+        ? translateX.get() + project(e.velocityX)
+        : translateX.get();
+      const shouldOpen = projected < -(SWIPE_DELETE_WIDTH * 0.45);
+      translateX.set(withSpring(shouldOpen ? -SWIPE_DELETE_WIDTH : 0, {
+        duration: 400,
+        dampingRatio: 0.8,
+        velocity: success ? e.velocityX : 0,
+        overshootClamping: true,
+      }));
+    }), [context, translateX]);
 
-  const deleteActionOpacity = translateX.interpolate({
-    inputRange: [-SWIPE_DELETE_WIDTH, -16, 0],
-    outputRange: [1, 0.5, 0],
-    extrapolate: 'clamp',
-  });
+  const rowStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.get() }],
+  }));
+
+  const deleteActionStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(
+      translateX.get(),
+      [-SWIPE_DELETE_WIDTH, -16, 0],
+      [1, 0.5, 0],
+      Extrapolation.CLAMP,
+    ),
+  }));
 
   return (
     <View style={{ overflow: 'hidden', position: 'relative', width: '100%' }}>
-      <Animated.View style={{ alignItems: 'stretch', backgroundColor: '#D92D3F', bottom: 0, justifyContent: 'center', opacity: deleteActionOpacity, position: 'absolute', right: 0, top: 0, width: SWIPE_DELETE_WIDTH }}>
+      <Reanimated.View style={[{ alignItems: 'stretch', backgroundColor: '#D92D3F', bottom: 0, justifyContent: 'center', position: 'absolute', right: 0, top: 0, width: SWIPE_DELETE_WIDTH }, deleteActionStyle]}>
         <Pressable
           accessibilityLabel="ลบห้องสนทนา"
           accessibilityRole="button"
@@ -524,17 +512,24 @@ function SwipeableConversationRow({ children, contentBackgroundColor, onDelete }
           <SymbolView name="trash.fill" size={20} tintColor="#FFFFFF" />
           <RNText style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '800', marginTop: 3 }}>ลบ</RNText>
         </Pressable>
-      </Animated.View>
-      <Animated.View style={{ backgroundColor: contentBackgroundColor, transform: [{ translateX }], width: '100%' }} {...panResponder.panHandlers}>
-        {children}
-      </Animated.View>
+      </Reanimated.View>
+      <GestureDetector gesture={pan}>
+        <Reanimated.View style={[{ backgroundColor: contentBackgroundColor, width: '100%' }, rowStyle]}>
+          {children}
+        </Reanimated.View>
+      </GestureDetector>
     </View>
   );
 }
 
 function ConversationRow({ conversation, currentUserId, onDelete, onPreview, onPress }) {
   const palette = usePalette();
-  const unreadCount = conversation.unreadCounts?.[currentUserId] || 0;
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick((value) => value + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+  const unreadCount = conversation.unreadCounts?.[currentUserId] || conversation.unread || 0;
   const timeLabel = formatConversationTime(conversation, currentUserId, unreadCount);
   const isHighlight = unreadCount > 0 || timeLabel.startsWith('ส่ง') || timeLabel.startsWith('อ่าน');
   const longPressAtRef = useRef(0);
@@ -560,6 +555,7 @@ function ConversationRow({ conversation, currentUserId, onDelete, onPreview, onP
         accessibilityRole="button"
         delayLongPress={220}
         onLongPress={handleLongPress}
+        onPressIn={() => { void warmChatPreviewMedia(conversation, currentUserId).catch(() => {}); }}
         onPress={handlePress}
         style={({ pressed }) => [{
           alignItems: 'center',
@@ -575,7 +571,7 @@ function ConversationRow({ conversation, currentUserId, onDelete, onPreview, onP
       >
         <IosLikeAvatar
           cacheScope={conversation.profileId}
-          cacheVersion={conversation.participantProfiles?.[conversation.profileId]?.updatedAt}
+          cacheVersion={conversation.participantProfiles?.[conversation.profileId]?.avatarRevision}
           color={conversation.avatarColor}
           emoji={conversation.avatar}
           size={62}

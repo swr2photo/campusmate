@@ -1,19 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  AppState,
-  Image,
-  ImageBackground,
-  Modal,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import Text from './AppText';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, Image, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import FeatureIcon from './FeatureIcon';
-import { checkAppUpdate, openAppStore, snoozeUpdate } from '../services/versionCheckService';
+import { useOverlayGate } from '../utils/overlayGate';
+import { checkAppUpdate, openAppStore, snoozeUpdate, subscribeAppUpdate } from '../services/versionCheckService';
 
 const heroImage = require('../../assets/login-campus-hero.png');
 const appIcon = require('../../assets/icon.png');
@@ -21,54 +13,77 @@ const appIcon = require('../../assets/icon.png');
 export default function AppUpdateModal() {
   const [updateInfo, setUpdateInfo] = useState(null);
   const [visible, setVisible] = useState(false);
+  const snoozedVersionRef = useRef({ version: '', until: 0 });
 
-  const runCheck = useCallback(async () => {
-    try {
-      // Always check the remote version on launch/foreground. A snooze may
-      // dismiss this session, but must not hide the prompt on the next launch.
-      const result = await checkAppUpdate({ ignoreSnooze: true });
-      if (result?.needsUpdate) {
-        setUpdateInfo(result);
-        setVisible(true);
-      } else {
-        setUpdateInfo(null);
-        setVisible(false);
-      }
-    } catch (error) {
-      console.warn('[AppUpdateModal] Check update failed:', error);
+  const applyResult = useCallback((result) => {
+    if (
+      result?.needsUpdate
+      && !result.isForce
+      && result.updateKey === snoozedVersionRef.current.version
+      && Date.now() < snoozedVersionRef.current.until
+    ) {
+      return;
+    }
+    if (result?.needsUpdate) {
+      setUpdateInfo(result);
+      setVisible(true);
+    } else {
+      setUpdateInfo(null);
+      setVisible(false);
     }
   }, []);
 
   useEffect(() => {
-    // Let the first app screen render before querying Firestore.
-    const timer = setTimeout(runCheck, 1200);
+    let active = true;
+    let receivedSnapshot = false;
+    const unsubscribe = subscribeAppUpdate((result) => {
+      receivedSnapshot = true;
+      applyResult(result);
+    });
 
-    // Check again whenever the app returns from the background.
+    // A single read covers startup only when the live listener never responds.
+    const fallbackCheck = setTimeout(() => {
+      if (receivedSnapshot) return;
+      void checkAppUpdate().then((result) => {
+        if (active && !receivedSnapshot) applyResult(result);
+      }).catch(() => {});
+    }, 4000);
+
+    let previousAppState = AppState.currentState;
     const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (nextAppState === 'active') {
-        runCheck();
+      if (nextAppState === 'active' && previousAppState !== 'active') {
+        void checkAppUpdate().then((result) => {
+          if (active) applyResult(result);
+        }).catch(() => {});
       }
+      previousAppState = nextAppState;
     });
 
     return () => {
-      clearTimeout(timer);
+      active = false;
+      clearTimeout(fallbackCheck);
+      unsubscribe?.();
       subscription?.remove?.();
     };
-  }, [runCheck]);
+  }, [applyResult]);
 
   const handleUpdate = () => {
     if (!updateInfo) return;
     const targetUrl = Platform.OS === 'ios' ? updateInfo.appStoreUrl : updateInfo.playStoreUrl;
-    openAppStore(targetUrl, updateInfo.playStoreWebUrl);
+    openAppStore(targetUrl, Platform.OS === 'ios' ? updateInfo.appStoreUrl : updateInfo.playStoreWebUrl);
   };
 
   const handleLater = async () => {
     if (updateInfo?.isForce) return;
-    await snoozeUpdate();
+    // Ignore any update result that was already in flight before this write.
+    snoozedVersionRef.current = { version: updateInfo?.updateKey || '', until: Date.now() + 60_000 };
     setVisible(false);
+    await snoozeUpdate(updateInfo?.updateKey);
   };
 
   const styles = useMemo(() => getStyles(Boolean(updateInfo?.isForce)), [updateInfo?.isForce]);
+  // Lets the first-run tour and the Plus upsell wait while the update prompt is open.
+  useOverlayGate('appUpdate', visible && Boolean(updateInfo));
 
   if (!visible || !updateInfo) {
     return null;
@@ -87,11 +102,13 @@ export default function AppUpdateModal() {
       visible={visible}
       onRequestClose={isForce ? () => {} : handleLater}
     >
-      <ImageBackground
-        source={heroImage}
-        style={styles.screen}
-        imageStyle={styles.backgroundImage}
-      >
+      <View style={styles.screen}>
+        <Image
+          pointerEvents="none"
+          resizeMode="cover"
+          source={heroImage}
+          style={[StyleSheet.absoluteFill, styles.backgroundImage]}
+        />
         <LinearGradient
           colors={['rgba(9,12,18,0.42)', 'rgba(9,12,18,0.78)', 'rgba(9,12,18,0.98)']}
           locations={[0, 0.48, 1]}
@@ -119,7 +136,7 @@ export default function AppUpdateModal() {
 
               <Text style={styles.title}>{updateInfo.title || 'ถึงเวลาอัปเดต CampusMate'}</Text>
               <Text style={styles.versionText}>
-                เวอร์ชัน {updateInfo.latestVersion} พร้อมใช้งานแล้ว
+                เวอร์ชัน {updateInfo.latestVersion}{updateInfo.latestBuild ? ` (${updateInfo.latestBuild})` : ''} พร้อมใช้งานแล้ว
               </Text>
               <Text style={styles.message}>
                 {updateInfo.message || `อัปเดต CampusMate ผ่าน ${storeLabel} เพื่อใช้งานฟีเจอร์ล่าสุด`}
@@ -144,7 +161,7 @@ export default function AppUpdateModal() {
                 <FeatureIcon color="#1A1D25" name="arrow.right" size={16} />
               </Pressable>
 
-              <Text style={styles.currentVersion}>ติดตั้งอยู่: v{updateInfo.currentVersion}</Text>
+              <Text style={styles.currentVersion}>ติดตั้งอยู่: v{updateInfo.currentVersion}{updateInfo.currentBuild ? ` (${updateInfo.currentBuild})` : ''}</Text>
 
               {!isForce ? (
                 <Pressable
@@ -161,7 +178,7 @@ export default function AppUpdateModal() {
             </View>
           </SafeAreaView>
         </LinearGradient>
-      </ImageBackground>
+      </View>
     </Modal>
   );
 }
@@ -173,7 +190,6 @@ const getStyles = (isForce) => StyleSheet.create({
   },
   backgroundImage: {
     opacity: 0.38,
-    resizeMode: 'cover',
   },
   gradient: {
     flex: 1,

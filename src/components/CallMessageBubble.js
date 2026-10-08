@@ -1,5 +1,6 @@
+import Text from './AppText';
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import { formatCallDuration } from '../services/callSignalingService';
 import { useTheme } from '../theme';
@@ -17,6 +18,8 @@ export default function CallMessageBubble({
   const isVideo = item?.callType === 'video' || item?.text?.includes('วิดีโอคอล');
   const isMissed = item?.callStatus === 'missed' || item?.text?.includes('ไม่ได้รับสาย');
   const isRejected = item?.callStatus === 'rejected' || item?.text?.includes('สายถูกปฏิเสธ');
+  const isBusy = item?.callStatus === 'busy' || item?.text?.includes('สายไม่ว่าง');
+  const isCanceled = item?.callStatus === 'canceled' || item?.text?.includes('ยกเลิก');
   const duration = typeof item?.callDuration === 'number' ? item.callDuration : 0;
 
   // Format time of the call in Thailand timezone (UTC+7)
@@ -41,6 +44,10 @@ export default function CallMessageBubble({
     title = isVideo ? 'ไม่ได้รับสาย (วิดีโอคอล)' : 'ไม่ได้รับสาย';
   } else if (isRejected) {
     title = isVideo ? 'สายถูกปฏิเสธ (วิดีโอคอล)' : 'สายถูกปฏิเสธ';
+  } else if (isBusy) {
+    title = isVideo ? 'สายไม่ว่าง (วิดีโอคอล)' : 'สายไม่ว่าง';
+  } else if (isCanceled) {
+    title = isVideo ? 'ยกเลิกการโทร (วิดีโอคอล)' : 'ยกเลิกการโทร';
   } else if (duration > 0 || item?.text?.includes('สิ้นสุด')) {
     title = isVideo ? 'วิดีโอคอลสิ้นสุดลงแล้ว' : 'การโทรด้วยเสียงสิ้นสุดลงแล้ว';
   }
@@ -51,13 +58,15 @@ export default function CallMessageBubble({
     subtitle = timeLabel ? `${timeLabel} • ${formatCallDuration(duration)}` : formatCallDuration(duration);
   }
 
-  const iconName = isMissed || isRejected
+  const iconName = isMissed || isRejected || isBusy || isCanceled
     ? 'phone.down.fill'
     : (isVideo ? 'video.fill' : 'phone.fill');
 
-  const iconBg = isMissed || isRejected
-    ? (isDark ? '#EF4444' : '#E53935')
-    : (isDark ? '#10B981' : '#00BA51');
+  const iconBg = isCanceled
+    ? (isDark ? '#6B7280' : '#9CA3AF')
+    : (isMissed || isRejected || isBusy)
+      ? (isDark ? '#EF4444' : '#E53935')
+      : (isDark ? '#10B981' : '#00BA51');
 
   // Dynamic label: "เข้าร่วม" only when call is actively ongoing, "โทรกลับ" when ended/missed
   const isOngoing = item?.callStatus === 'calling' || item?.callStatus === 'ringing' || item?.callStatus === 'connected';
@@ -66,13 +75,13 @@ export default function CallMessageBubble({
   // Dynamic light / dark theme styling
   const cardBg = isDark ? '#20242A' : '#FFFFFF';
   const cardBorder = isDark ? 'rgba(255, 255, 255, 0.08)' : (colors?.line || '#E8ECF2');
-  const titleColor = isDark ? '#F7F8FA' : (colors?.ink || '#10203A');
+  const titleColor = isDark ? '#F7F8FA' : (colors?.ink || '#25272B');
   const timeColor = isDark ? '#7F8896' : (colors?.inkSoft || '#8B98AC');
   const btnBg = isDark ? '#2A2F37' : (colors?.surfaceRaised || '#F2F4F7');
   const btnBorder = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.06)';
-  const btnTextColor = isDark ? '#F7F8FA' : (colors?.ink || '#10203A');
+  const btnTextColor = isDark ? '#F7F8FA' : (colors?.ink || '#25272B');
   const btnPressedBg = isDark ? '#353B45' : '#E4E7EC';
-  const shadowColor = isDark ? '#000000' : '#10203A';
+  const shadowColor = isDark ? '#000000' : '#25272B';
   const shadowOpacity = isDark ? 0.3 : 0.07;
 
   return (

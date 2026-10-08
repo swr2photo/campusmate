@@ -1,9 +1,11 @@
+import Text from './AppText';
 import React, { useState, useEffect, useRef } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import FeatureIcon from './FeatureIcon';
 import { useDecryptedMedia } from '../hooks/useDecryptedMedia';
 import { getChatImageBubbleSize, measureImageAspectRatio, getCachedAspectRatio, cacheAspectRatio } from '../utils/chatImageUtils';
+import { isRemoteImageUrl } from '../utils/imagePolicy';
 
 /**
  * Drop-in image bubble for chat messages.
@@ -25,13 +27,14 @@ export default function DecryptedChatImage({
   onAspectRatioMeasured,
   accessibilityLabel = 'ดูรูปภาพขนาดใหญ่',
 }) {
-  const { uri, loading } = useDecryptedMedia(mediaUrl, {
+  const { uri, loading, retry } = useDecryptedMedia(mediaUrl, {
     conversationId,
     currentUserId,
     conversationKey,
     mediaType: 'image',
   });
   const [loadError, setLoadError] = useState(false);
+  const [imageAttempt, setImageAttempt] = useState(0);
 
   const isDirectImage = Boolean(
     mediaUrl && (
@@ -58,6 +61,10 @@ export default function DecryptedChatImage({
 
   useEffect(() => {
     if (!displayUri) return;
+    setLoadError(false);
+    // Remote images report dimensions through onLoad. Image.getSize would
+    // otherwise start a second download alongside expo-image.
+    if (isRemoteImageUrl(displayUri)) return;
     if (lastMeasuredUriRef.current === displayUri) return;
     lastMeasuredUriRef.current = displayUri;
 
@@ -76,6 +83,12 @@ export default function DecryptedChatImage({
   }, [displayUri, mediaUrl]);
 
   const handlePress = () => {
+    if (isUnavailable && !isUploading) {
+      setLoadError(false);
+      setImageAttempt((value) => value + 1);
+      retry();
+      return;
+    }
     if (onPress && !isUnavailable && !isUploading) {
       onPress(displayUri || mediaUrl);
     }
@@ -87,9 +100,9 @@ export default function DecryptedChatImage({
 
   return (
     <Pressable
-      accessibilityLabel={accessibilityLabel}
+      accessibilityLabel={isUnavailable ? 'โหลดรูปภาพอีกครั้ง' : accessibilityLabel}
       delayLongPress={220}
-      disabled={isUnavailable || isUploading}
+      disabled={isUploading}
       onLongPress={onLongPress}
       onPress={handlePress}
       style={[styles.container, dynamicContainerStyle, style]}
@@ -101,17 +114,28 @@ export default function DecryptedChatImage({
       ) : isUnavailable ? (
         <View style={styles.unavailableContainer}>
           <FeatureIcon color="#98A2B3" name="exclamationmark.triangle.fill" size={20} />
-          <Text style={styles.unavailableText}>รูปภาพหมดอายุหรือไม่สามารถเข้าถึงได้</Text>
+          <Text style={styles.unavailableText}>โหลดรูปภาพไม่สำเร็จ แตะเพื่อลองอีกครั้ง</Text>
         </View>
       ) : (
         <ExpoImage
+          key={imageAttempt}
           cachePolicy="memory-disk"
           contentFit={resizeMode === 'contain' ? 'contain' : 'cover'}
           onError={() => setLoadError(true)}
+          onLoad={({ source }) => {
+            if (!source?.width || !source?.height) return;
+            const ratio = source.width / source.height;
+            const size = getChatImageBubbleSize(ratio);
+            cacheAspectRatio(displayUri, ratio);
+            if (mediaUrl) cacheAspectRatio(mediaUrl, ratio);
+            setBubbleSize(size);
+            onAspectRatioMeasuredRef.current?.(ratio, size);
+          }}
           recyclingKey={displayUri}
+          priority="high"
           source={{ uri: displayUri }}
           style={styles.image}
-          transition={150}
+          transition={0}
         />
       )}
 
@@ -176,7 +200,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   uploadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
     alignItems: 'center',
     justifyContent: 'center',

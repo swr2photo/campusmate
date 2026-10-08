@@ -48,6 +48,16 @@ if (fs.existsSync(buildGradlePath)) {
   fs.writeFileSync(buildGradlePath, gradleContent);
 }
 
+const stringsPath = path.join(root, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml');
+if (fs.existsSync(stringsPath)) {
+  let stringsContent = fs.readFileSync(stringsPath, 'utf8');
+  stringsContent = stringsContent.replace(
+    /(<string name="expo_runtime_version">)[^<]+(<\/string>)/,
+    `$1${nextVersion}$2`,
+  );
+  fs.writeFileSync(stringsPath, stringsContent);
+}
+
 console.log(`Version updated: ${currentVersion} -> ${nextVersion} (versionCode: ${appConfig.expo?.android?.versionCode || 'auto'})`);
 console.log('EAS will auto-increment Android versionCode during the next production build.');
 
@@ -66,11 +76,16 @@ try {
     // A release is not eligible for update prompts until it is published on
     // Google Play and `version:set ... --published` is run.
     playStorePublished: false,
+    platforms: { android: {
+      enabled: true, latestVersion: nextVersion, latestBuild: null,
+      minVersion: null, minBuild: null, forceUpdate: false,
+      storePublished: false, playStorePublished: false,
+    } },
     updatedAt: FieldValue.serverTimestamp(),
     title: 'มีเวอร์ชันใหม่พร้อมใช้งาน',
     message: `CampusMate เวอร์ชัน ${nextVersion} พร้อมให้อัปเดตแล้วบน Google Play Store เพื่อประสบการณ์การใช้งานที่ดีที่สุด`,
   }, { merge: true });
   console.log(`✅ Firestore app_config/version staged at ${nextVersion}; waiting for Google Play publication.`);
 } catch (e) {
-  console.log(`ℹ️ Note: Could not auto-sync Firestore (${e.message}). Will sync automatically on first app launch.`);
+  console.log(`ℹ️ Could not stage Firestore (${e.message}). Use version:set explicitly after verifying the published native build.`);
 }

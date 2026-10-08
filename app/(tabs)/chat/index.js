@@ -1,14 +1,13 @@
 import React from 'react';
-import ChatScreen from '../../../src/screens/ChatScreen';
-
+import { Platform } from 'react-native';
 import { Stack } from 'expo-router';
+import ChatScreen from '../../../src/screens/ChatScreen';
 
 export default function ChatRoute() {
   return (
     <>
-      <Stack.Screen options={{ title: 'ข้อความ' }} />
+      <Stack.Screen options={{ headerRight: () => null, headerShown: Platform.OS !== 'android', title: 'ข้อความ' }} />
       <ChatScreen />
     </>
   );
 }
-

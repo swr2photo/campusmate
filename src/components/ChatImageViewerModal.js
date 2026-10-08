@@ -1,27 +1,30 @@
+import Text from './AppText';
+import { AppTextInput as TextInput } from './AppText';
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Animated,
-  Dimensions,
-  Keyboard,
-  Modal,
-  PanResponder,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Dimensions, Keyboard, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import Animated, {
+  Easing,
+  cancelAnimation,
+  interpolate,
+  useAnimatedReaction,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { scheduleOnRN } from 'react-native-worklets';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import FeatureIcon from './FeatureIcon';
 import DecryptedChatImage from './DecryptedChatImage';
 import { getDecryptedMediaUri, getSyncCachedMediaUri } from '../services/chatMediaService';
 import { measureImageAspectRatio, getCachedAspectRatio, copyImageToClipboard, saveImageToGallery } from '../utils/chatImageUtils';
+import { project, rubberband } from '../utils/motion';
+import { showAlert } from '../utils/appAlert';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const EASE_OUT = Easing.bezier(0.23, 1, 0.32, 1);
 
 /**
  * ChatImageViewerModal
@@ -54,7 +57,28 @@ export default function ChatImageViewerModal({
   const [isSaving, setIsSaving] = useState(false);
   const isKeyboardOpenRef = useRef(false);
   const wasVisibleRef = useRef(false);
-  const keyboardTranslateY = useRef(new Animated.Value(0)).current;
+  const keyboardTranslateY = useSharedValue(0);
+  const keyboardOpenSV = useSharedValue(0);
+  const scale = useSharedValue(1);
+  const translateX = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const controlsOpacity = useSharedValue(1);
+  const pinchActive = useSharedValue(0);
+  /** 1 = double-tap zoom stays until reset; pinch never sets this. */
+  const lockedZoom = useSharedValue(0);
+  const pinchStartScale = useSharedValue(1);
+  const pinchStartX = useSharedValue(0);
+  const pinchStartY = useSharedValue(0);
+  const pinchFocalX = useSharedValue(0);
+  const pinchFocalY = useSharedValue(0);
+  const panStartX = useSharedValue(0);
+  const panStartY = useSharedValue(0);
+  const totalSV = useSharedValue(0);
+  const currentIndexSV = useSharedValue(initialIndex);
+  const cardWidthSV = useSharedValue(0);
+  const cardHeightSV = useSharedValue(0);
+  const controlsVisible = useRef(true);
+  const [controlsShown, setControlsShown] = useState(true);
 
   useEffect(() => {
     if (!visible) return;
@@ -62,57 +86,32 @@ export default function ChatImageViewerModal({
       Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
       (e) => {
         isKeyboardOpenRef.current = true;
+        keyboardOpenSV.set(1);
         const keyboardHeight = e?.endCoordinates?.height || 0;
         const bottomPadding = Math.max(insets.bottom, 12);
-        // Translate up by keyboardHeight minus bottom safe area padding already present
         const targetOffset = keyboardHeight > 0
           ? -(keyboardHeight - bottomPadding + 6)
           : 0;
-        Animated.timing(keyboardTranslateY, {
-          toValue: targetOffset,
+        keyboardTranslateY.set(withTiming(targetOffset, {
           duration: Platform.OS === 'ios' ? (e?.duration || 250) : 0,
-          useNativeDriver: true,
-        }).start();
+        }));
       }
     );
     const hideSub = Keyboard.addListener(
       Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
       (e) => {
         isKeyboardOpenRef.current = false;
-        Animated.timing(keyboardTranslateY, {
-          toValue: 0,
+        keyboardOpenSV.set(0);
+        keyboardTranslateY.set(withTiming(0, {
           duration: Platform.OS === 'ios' ? (e?.duration || 250) : 0,
-          useNativeDriver: true,
-        }).start();
+        }));
       }
     );
     return () => {
       showSub.remove();
       hideSub.remove();
     };
-  }, [visible, keyboardTranslateY, insets.bottom]);
-
-  // Animation values for zoom & pan
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-  const translateXAnim = useRef(new Animated.Value(0)).current;
-  const translateYAnim = useRef(new Animated.Value(0)).current;
-
-  // Animation values for header & bottom input visibility
-  const controlsOpacityAnim = useRef(new Animated.Value(1)).current;
-  const controlsVisible = useRef(true);
-
-  // Gesture tracking refs
-  const currentScale = useRef(1);
-  const baseScale = useRef(1);
-  const initialDistance = useRef(0);
-  const initialCenter = useRef(null);
-  const isPinching = useRef(false);
-  const currentTranslateX = useRef(0);
-  const currentTranslateY = useRef(0);
-  const lastPanX = useRef(0);
-  const lastPanY = useRef(0);
-  const lastTapTime = useRef(0);
-  const singleTapTimer = useRef(null);
+  }, [visible, keyboardTranslateY, keyboardOpenSV, insets.bottom]);
 
   const total = images.length;
   const currentImageUri = images[currentIndex] || null;
@@ -178,9 +177,9 @@ export default function ChatImageViewerModal({
       setSaveToast(true);
       setTimeout(() => setSaveToast(false), 2200);
     } else if (res?.error === 'permission_denied' || res?.error === 'permission_blocked') {
-      Alert.alert('ต้องได้รับอนุญาต', 'กรุณาอนุญาตการเข้าถึงรูปภาพในตั้งค่าเพื่อบันทึกรูปลงในเครื่อง');
+      showAlert('ต้องได้รับอนุญาต', 'กรุณาอนุญาตการเข้าถึงรูปภาพในตั้งค่าเพื่อบันทึกรูปลงในเครื่อง', { tone: 'warning' });
     } else {
-      Alert.alert('บันทึกรูปไม่สำเร็จ', 'เกิดข้อผิดพลาดในการบันทึกรูปภาพ กรุณาลองใหม่อีกครั้ง');
+      showAlert('บันทึกรูปไม่สำเร็จ', 'เกิดข้อผิดพลาดในการบันทึกรูปภาพ กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     }
   }, [currentImageUri, conversationId, currentUserId, isSaving, protectedMedia]);
 
@@ -206,34 +205,68 @@ export default function ChatImageViewerModal({
     }
   }, [imageRatio, maxCardWidth, maxCardHeight]);
 
-  // Reset zoom & pan when image changes or modal opens
-  const resetZoom = useCallback((immediate = false) => {
-    currentScale.current = 1;
-    baseScale.current = 1;
-    initialDistance.current = 0;
-    initialCenter.current = null;
-    isPinching.current = false;
-    currentTranslateX.current = 0;
-    currentTranslateY.current = 0;
-    lastPanX.current = 0;
-    lastPanY.current = 0;
+  useEffect(() => {
+    totalSV.set(total);
+  }, [total, totalSV]);
 
+  useEffect(() => {
+    currentIndexSV.set(currentIndex);
+  }, [currentIndex, currentIndexSV]);
+
+  useEffect(() => {
+    cardWidthSV.set(cardDimensions.width);
+    cardHeightSV.set(cardDimensions.height);
+  }, [cardDimensions.height, cardDimensions.width, cardHeightSV, cardWidthSV]);
+
+  const resetZoom = useCallback((immediate = false) => {
+    cancelAnimation(scale);
+    cancelAnimation(translateX);
+    cancelAnimation(translateY);
+    pinchActive.set(0);
+    lockedZoom.set(0);
     if (immediate) {
-      scaleAnim.setValue(1);
-      translateXAnim.setValue(0);
-      translateYAnim.setValue(0);
+      scale.set(1);
+      translateX.set(0);
+      translateY.set(0);
       return;
     }
+    scale.set(withSpring(1, { duration: 400, dampingRatio: 0.8 }));
+    translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+    translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+  }, [lockedZoom, pinchActive, scale, translateX, translateY]);
 
-    Animated.parallel([
-      Animated.spring(scaleAnim, { toValue: 1, friction: 7, tension: 200, useNativeDriver: true }),
-      Animated.spring(translateXAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }),
-      Animated.spring(translateYAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }),
-    ]).start();
-  }, [scaleAnim, translateXAnim, translateYAnim]);
+  const hideControls = useCallback(() => {
+    Keyboard.dismiss();
+    controlsVisible.current = false;
+    setControlsShown(false);
+    cancelAnimation(controlsOpacity);
+    controlsOpacity.set(withTiming(0, { duration: 160, easing: EASE_OUT }));
+  }, [controlsOpacity]);
 
-  // Parents may pass a fresh images array on every keystroke. Only reset for
-  // an actual opening/selection change, never for array identity alone.
+  const showControls = useCallback(() => {
+    controlsVisible.current = true;
+    setControlsShown(true);
+    cancelAnimation(controlsOpacity);
+    controlsOpacity.set(withTiming(1, { duration: 180, easing: EASE_OUT }));
+  }, [controlsOpacity]);
+
+  const resetZoomAndControls = useCallback((immediate = false) => {
+    resetZoom(immediate);
+    showControls();
+  }, [resetZoom, showControls]);
+
+  const toggleControls = useCallback(() => {
+    if (controlsVisible.current) {
+      hideControls();
+    } else {
+      showControls();
+    }
+  }, [hideControls, showControls]);
+
+  const dismissKeyboard = useCallback(() => {
+    Keyboard.dismiss();
+  }, []);
+
   const openingIndex = initialIndex >= 0 && initialIndex < images.length ? initialIndex : 0;
   const openingImage = images[openingIndex];
   useEffect(() => {
@@ -244,49 +277,33 @@ export default function ChatImageViewerModal({
       setImageRatio(getCachedAspectRatio(openingImage) || null);
       setReplyText('');
       setJustSent(false);
-      keyboardTranslateY.setValue(0);
+      keyboardTranslateY.set(0);
+      keyboardOpenSV.set(0);
       isKeyboardOpenRef.current = false;
       resetZoom(true);
+      controlsVisible.current = false;
       showControls();
     } else if (wasVisible) {
       Keyboard.dismiss();
-      keyboardTranslateY.setValue(0);
+      keyboardTranslateY.set(0);
+      keyboardOpenSV.set(0);
       isKeyboardOpenRef.current = false;
-      if (singleTapTimer.current) clearTimeout(singleTapTimer.current);
+      resetZoomAndControls(true);
     }
-  }, [visible, openingIndex, openingImage, resetZoom, keyboardTranslateY]);
+  }, [keyboardOpenSV, keyboardTranslateY, openingImage, openingIndex, resetZoom, resetZoomAndControls, showControls, visible]);
 
-  // Controls visibility functions
-  const hideControls = useCallback(() => {
-    Keyboard.dismiss();
-    if (!controlsVisible.current) return;
-    controlsVisible.current = false;
-    Animated.timing(controlsOpacityAnim, {
-      toValue: 0,
-      duration: 160,
-      useNativeDriver: true,
-    }).start();
-  }, [controlsOpacityAnim]);
-
-  const showControls = useCallback(() => {
-    if (controlsVisible.current) return;
-    controlsVisible.current = true;
-    Animated.timing(controlsOpacityAnim, {
-      toValue: 1,
-      duration: 180,
-      useNativeDriver: true,
-    }).start();
-  }, [controlsOpacityAnim]);
-
-  const toggleControls = useCallback(() => {
-    if (controlsVisible.current) {
-      hideControls();
-    } else {
-      showControls();
-    }
-  }, [hideControls, showControls]);
-
-  const hasZoomed = useRef(false);
+  useAnimatedReaction(
+    () => scale.get() > 1.05,
+    (zoomed, previous) => {
+      if (zoomed === previous) return;
+      if (zoomed) {
+        scheduleOnRN(hideControls);
+      } else {
+        scheduleOnRN(showControls);
+      }
+    },
+    [hideControls, showControls]
+  );
 
   const currentIndexRef = useRef(currentIndex);
   currentIndexRef.current = currentIndex;
@@ -294,289 +311,275 @@ export default function ChatImageViewerModal({
   totalRef.current = total;
   const imagesRef = useRef(images);
   imagesRef.current = images;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
-  // Next / Previous Image Navigation with smooth slide animation
-  const handlePrevImage = useCallback(() => {
-    const cur = currentIndexRef.current;
-    const imgs = imagesRef.current;
-    if (cur > 0) {
-      const prevIdx = cur - 1;
-      Animated.timing(translateXAnim, {
-        toValue: SCREEN_WIDTH * 0.9,
-        duration: 160,
-        useNativeDriver: true,
-      }).start(() => {
-        setCurrentIndex(prevIdx);
-        setImageRatio(getCachedAspectRatio(imgs[prevIdx]) || null);
-        resetZoom();
-        translateXAnim.setValue(-SCREEN_WIDTH * 0.7);
-        Animated.spring(translateXAnim, {
-          toValue: 0,
-          friction: 8,
-          tension: 190,
-          useNativeDriver: true,
-        }).start();
-      });
-    } else {
-      Animated.spring(translateXAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }).start();
-    }
-  }, [resetZoom, translateXAnim]);
-
-  const handleNextImage = useCallback(() => {
+  const commitIndex = useCallback((dir) => {
     const cur = currentIndexRef.current;
     const tot = totalRef.current;
     const imgs = imagesRef.current;
-    if (cur < tot - 1) {
-      const nextIdx = cur + 1;
-      Animated.timing(translateXAnim, {
-        toValue: -SCREEN_WIDTH * 0.9,
-        duration: 160,
-        useNativeDriver: true,
-      }).start(() => {
-        setCurrentIndex(nextIdx);
-        setImageRatio(getCachedAspectRatio(imgs[nextIdx]) || null);
-        resetZoom();
-        translateXAnim.setValue(SCREEN_WIDTH * 0.7);
-        Animated.spring(translateXAnim, {
-          toValue: 0,
-          friction: 8,
-          tension: 190,
-          useNativeDriver: true,
-        }).start();
-      });
-    } else {
-      Animated.spring(translateXAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }).start();
+    const nextIdx = cur + dir;
+    if (nextIdx < 0 || nextIdx >= tot) {
+      translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+      return;
     }
-  }, [resetZoom, translateXAnim]);
+    setCurrentIndex(nextIdx);
+    setImageRatio(getCachedAspectRatio(imgs[nextIdx]) || null);
+    scale.set(1);
+    translateY.set(0);
+    lockedZoom.set(0);
+    pinchActive.set(0);
+    translateX.set(-dir * SCREEN_WIDTH * 0.7);
+    translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+    showControls();
+  }, [lockedZoom, pinchActive, scale, showControls, translateX, translateY]);
 
-  const handlePrevImageRef = useRef(handlePrevImage);
-  handlePrevImageRef.current = handlePrevImage;
-  const handleNextImageRef = useRef(handleNextImage);
-  handleNextImageRef.current = handleNextImage;
+  const closeViewer = useCallback(() => {
+    translateY.set(0);
+    translateX.set(0);
+    scale.set(1);
+    lockedZoom.set(0);
+    pinchActive.set(0);
+    showControls();
+    onCloseRef.current?.();
+  }, [lockedZoom, pinchActive, scale, showControls, translateX, translateY]);
 
-  // PanResponder for 2-finger pinch to zoom, vertical dismiss, and horizontal swipe navigation
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => {
-        // When keyboard is open, do NOT claim touches on start (allows input focus and text selection)
-        if (isKeyboardOpenRef.current) {
-          return false;
-        }
-        return true;
-      },
-      onMoveShouldSetPanResponder: (evt, gestureState) => {
-        // Intercept if 2 touches (pinch)
-        if (evt.nativeEvent.touches.length === 2) {
-          return true;
-        }
-        // When keyboard is open, do NOT intercept 1-finger drags (allows text selection / cursor dragging)
-        if (isKeyboardOpenRef.current) {
-          return false;
-        }
-        // If somehow still scaled and 1 finger moves, intercept so we can reset immediately
-        if (currentScale.current > 1.02) {
-          return true;
-        }
-        // When not zoomed, intercept vertical slide (dismiss) or horizontal slide (swipe between images)
-        const isVertical = Math.abs(gestureState.dy) > 8 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx);
-        const isHorizontal = totalRef.current > 1 && Math.abs(gestureState.dx) > 8 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
-        return isVertical || isHorizontal;
-      },
-      onPanResponderGrant: (evt) => {
-        const touches = evt.nativeEvent.touches;
-        if (touches.length === 2) {
-          // 2-finger pinch start
-          isPinching.current = true;
-          hasZoomed.current = true;
-          initialDistance.current = Math.hypot(
-            touches[0].pageX - touches[1].pageX,
-            touches[0].pageY - touches[1].pageY
-          );
-          initialCenter.current = {
-            x: (touches[0].pageX + touches[1].pageX) / 2,
-            y: (touches[0].pageY + touches[1].pageY) / 2,
-          };
-          baseScale.current = currentScale.current;
-        } else if (touches.length === 1) {
-          lastPanX.current = currentTranslateX.current;
-          lastPanY.current = currentTranslateY.current;
-          // If 1 finger touches while zoomed, immediately snap back to 1x
-          if (currentScale.current > 1.02 || isPinching.current || hasZoomed.current) {
-            isPinching.current = false;
-            hasZoomed.current = false;
-            resetZoom();
-            showControls();
-          }
-        }
-      },
-      onPanResponderMove: (evt, gestureState) => {
-        const touches = evt.nativeEvent.touches;
+  const imageGestures = useMemo(() => {
+    const springFit = (velocity = 0) => {
+      'worklet';
+      cancelAnimation(scale);
+      cancelAnimation(translateX);
+      cancelAnimation(translateY);
+      lockedZoom.set(0);
+      // Keep pinchActive until the spring settles so Simultaneous pan cannot fight the reset.
+      pinchActive.set(1);
+      scale.set(withSpring(1, { duration: 400, dampingRatio: 0.8, velocity }, (finished) => {
+        if (finished) pinchActive.set(0);
+      }));
+      translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+      translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+      scheduleOnRN(showControls);
+    };
 
-        if (touches.length === 2 && initialDistance.current > 0) {
-          isPinching.current = true;
-          hasZoomed.current = true;
-          // 2-finger pinch gesture
-          const currentDistance = Math.hypot(
-            touches[0].pageX - touches[1].pageX,
-            touches[0].pageY - touches[1].pageY
-          );
-          const ratio = currentDistance / (initialDistance.current || 1);
-          let nextScale = baseScale.current * ratio;
-          nextScale = Math.min(Math.max(nextScale, 0.75), 4.5);
-          currentScale.current = nextScale;
-          scaleAnim.setValue(nextScale);
-
-          // Follow 2-finger center point movement
-          if (initialCenter.current) {
-            const currentCenterX = (touches[0].pageX + touches[1].pageX) / 2;
-            const currentCenterY = (touches[0].pageY + touches[1].pageY) / 2;
-            const nextX = currentCenterX - initialCenter.current.x;
-            const nextY = currentCenterY - initialCenter.current.y;
-            currentTranslateX.current = nextX;
-            currentTranslateY.current = nextY;
-            translateXAnim.setValue(nextX);
-            translateYAnim.setValue(nextY);
-          }
-
-          // Hide header & input bar when zooming in
-          if (nextScale > 1.05) {
-            hideControls();
-          }
-        } else if (touches.length < 2 && (isPinching.current || hasZoomed.current || currentScale.current > 1.02)) {
-          // One finger lifted while zooming: immediately spring back to initial scale (1x)
-          isPinching.current = false;
-          hasZoomed.current = false;
-          initialDistance.current = 0;
-          initialCenter.current = null;
-          resetZoom();
-          showControls();
-        } else if (touches.length === 1 && currentScale.current <= 1.05 && !isPinching.current) {
-          const isMostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
-          if (isMostlyHorizontal && totalRef.current > 1) {
-            const cur = currentIndexRef.current;
-            const tot = totalRef.current;
-            // Rubber band resistance when at the first or last image
-            if ((cur === 0 && gestureState.dx > 0) || (cur === tot - 1 && gestureState.dx < 0)) {
-              translateXAnim.setValue(gestureState.dx * 0.28);
-            } else {
-              translateXAnim.setValue(gestureState.dx);
-            }
+    const pinch = Gesture.Pinch()
+      .onTouchesDown((_e, state) => {
+        if (keyboardOpenSV.get()) state.fail();
+      })
+      .onStart((event) => {
+        cancelAnimation(scale);
+        cancelAnimation(translateX);
+        cancelAnimation(translateY);
+        lockedZoom.set(0);
+        pinchActive.set(1);
+        pinchStartScale.set(scale.get());
+        pinchStartX.set(translateX.get());
+        pinchStartY.set(translateY.get());
+        pinchFocalX.set(event.focalX);
+        pinchFocalY.set(event.focalY);
+        scheduleOnRN(hideControls);
+      })
+      .onUpdate((event) => {
+        const nextScale = Math.min(Math.max(pinchStartScale.get() * event.scale, 0.75), 4.5);
+        scale.set(nextScale);
+        translateX.set(pinchStartX.get() + (event.focalX - pinchFocalX.get()));
+        translateY.set(pinchStartY.get() + (event.focalY - pinchFocalY.get()));
+      })
+      .onEnd((event) => {
+        // Pinch is temporary: always return to the original fit when fingers lift.
+        springFit(event.velocity || 0);
+      })
+      .onFinalize((_event, success) => {
+        // Interrupted / cancelled pinch must still restore fit + chrome.
+        // Do not clear pinchActive on success — springFit owns it until scale settles.
+        if (!success) {
+          if (scale.get() > 1.02 || scale.get() < 0.98 || translateX.get() !== 0 || translateY.get() !== 0) {
+            springFit(0);
           } else {
-            // 1-finger vertical slide when not zoomed (rubber-band drag)
-            translateYAnim.setValue(gestureState.dy);
+            pinchActive.set(0);
           }
         }
-      },
-      onPanResponderRelease: (evt, gestureState) => {
-        initialDistance.current = 0;
-        initialCenter.current = null;
+      });
 
-        // User released gesture: if scaled or was pinching, ALWAYS spring back to 1x and show controls!
-        if (isPinching.current || hasZoomed.current || currentScale.current > 1.02) {
-          isPinching.current = false;
-          hasZoomed.current = false;
-          resetZoom();
-          showControls();
+    const pan = Gesture.Pan()
+      .maxPointers(1)
+      .minDistance(8)
+      .onTouchesDown((_e, state) => {
+        if (keyboardOpenSV.get()) state.fail();
+      })
+      .onStart(() => {
+        cancelAnimation(translateX);
+        cancelAnimation(translateY);
+        panStartX.set(translateX.get());
+        panStartY.set(translateY.get());
+      })
+      .onUpdate((event) => {
+        if (pinchActive.get()) return;
+        const currentScale = scale.get();
+        // Pan-while-zoomed only for double-tap lock — never during/after pinch.
+        if (lockedZoom.get() && currentScale > 1.02) {
+          const maxX = Math.max(0, (cardWidthSV.get() * (currentScale - 1)) / 2);
+          const maxY = Math.max(0, (cardHeightSV.get() * (currentScale - 1)) / 2);
+          let nextX = panStartX.get() + event.translationX;
+          let nextY = panStartY.get() + event.translationY;
+          if (nextX > maxX) nextX = maxX + rubberband(nextX - maxX, cardWidthSV.get() || SCREEN_WIDTH);
+          else if (nextX < -maxX) nextX = -maxX - rubberband(-maxX - nextX, cardWidthSV.get() || SCREEN_WIDTH);
+          if (nextY > maxY) nextY = maxY + rubberband(nextY - maxY, cardHeightSV.get() || SCREEN_HEIGHT);
+          else if (nextY < -maxY) nextY = -maxY - rubberband(-maxY - nextY, cardHeightSV.get() || SCREEN_HEIGHT);
+          translateX.set(nextX);
+          translateY.set(nextY);
           return;
         }
-
-        // Check for Tap gesture (minimal move)
-        const isTap = Math.abs(gestureState.dx) < 6 && Math.abs(gestureState.dy) < 6;
-
-        if (isTap && evt.nativeEvent.touches.length === 0) {
-          const now = Date.now();
-          if (now - lastTapTime.current < 280) {
-            // Double Tap: toggle zoom
-            if (singleTapTimer.current) {
-              clearTimeout(singleTapTimer.current);
-              singleTapTimer.current = null;
-            }
-            lastTapTime.current = 0;
-            if (currentScale.current > 1.1) {
-              // Zoom out to 1x
-              resetZoom();
-              showControls();
-            } else {
-              // Zoom in to 2.2x
-              currentScale.current = 2.2;
-              baseScale.current = 2.2;
-              Animated.spring(scaleAnim, { toValue: 2.2, friction: 6, tension: 180, useNativeDriver: true }).start();
-              hideControls();
-            }
-            return;
-          }
-
-          // If keyboard is open, single tap on photo dismisses the keyboard immediately
-          if (isKeyboardOpenRef.current) {
-            Keyboard.dismiss();
-            return;
-          }
-
-          lastTapTime.current = now;
-          singleTapTimer.current = setTimeout(() => {
-            lastTapTime.current = 0;
-            // Single Tap: toggle controls if not zoomed
-            if (currentScale.current <= 1.05) {
-              toggleControls();
-            }
-          }, 280);
+        if (currentScale > 1.02) return;
+        const absX = Math.abs(event.translationX);
+        const absY = Math.abs(event.translationY);
+        if (absX > absY && totalSV.get() > 1) {
+          const atStart = currentIndexSV.get() === 0 && event.translationX > 0;
+          const atEnd = currentIndexSV.get() >= totalSV.get() - 1 && event.translationX < 0;
+          translateX.set((atStart || atEnd) ? rubberband(event.translationX, SCREEN_WIDTH) : event.translationX);
+          translateY.set(0);
+        } else {
+          translateY.set(event.translationY);
+          translateX.set(0);
+        }
+      })
+      .onEnd((event) => {
+        if (pinchActive.get()) return;
+        const currentScale = scale.get();
+        if (lockedZoom.get() && currentScale > 1.02) {
+          const maxX = Math.max(0, (cardWidthSV.get() * (currentScale - 1)) / 2);
+          const maxY = Math.max(0, (cardHeightSV.get() * (currentScale - 1)) / 2);
+          const nextX = Math.min(maxX, Math.max(-maxX, translateX.get()));
+          const nextY = Math.min(maxY, Math.max(-maxY, translateY.get()));
+          translateX.set(withSpring(nextX, { duration: 400, dampingRatio: 0.8, velocity: event.velocityX }));
+          translateY.set(withSpring(nextY, { duration: 400, dampingRatio: 0.8, velocity: event.velocityY }));
           return;
         }
-
-        const isMostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
-
-        // Horizontal swipe navigation between multiple images
-        if (isMostlyHorizontal && totalRef.current > 1 && currentScale.current <= 1.05) {
-          if (gestureState.dx < -50 || gestureState.vx < -0.35) {
-            handleNextImageRef.current?.();
-            return;
-          } else if (gestureState.dx > 50 || gestureState.vx > 0.35) {
-            handlePrevImageRef.current?.();
-            return;
-          } else {
-            Animated.spring(translateXAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }).start();
-            return;
-          }
-        }
-
-        // Vertical slide up/down dismiss when not zoomed
-        if (currentScale.current <= 1.05 && Math.abs(gestureState.dy) > 10) {
-          if (Math.abs(gestureState.dy) > 110 || Math.abs(gestureState.vy) > 0.6) {
-            // Dragged or flicked far enough: animate off-screen and dismiss
-            Animated.timing(translateYAnim, {
-              toValue: gestureState.dy > 0 ? SCREEN_HEIGHT : -SCREEN_HEIGHT,
-              duration: 200,
-              useNativeDriver: true,
-            }).start(() => {
-              onClose?.();
-              translateYAnim.setValue(0);
-            });
-            return;
-          } else {
-            // Snap back to center
-            Animated.spring(translateYAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }).start();
+        // Mid pinch-reset: do not swipe/dismiss from residual pan.
+        if (currentScale > 1.02) return;
+        const dx = event.translationX;
+        const dy = event.translationY;
+        const vx = event.velocityX;
+        const vy = event.velocityY;
+        const isMostlyHorizontal = Math.abs(dx) > Math.abs(dy);
+        if (isMostlyHorizontal && totalSV.get() > 1) {
+          const projected = dx + project(vx);
+          if (dx < -50 || vx < -350 || projected < -50) {
+            translateX.set(withTiming(-SCREEN_WIDTH * 0.9, { duration: 160, easing: EASE_OUT }, (finished) => {
+              if (finished) scheduleOnRN(commitIndex, 1);
+            }));
             return;
           }
+          if (dx > 50 || vx > 350 || projected > 50) {
+            translateX.set(withTiming(SCREEN_WIDTH * 0.9, { duration: 160, easing: EASE_OUT }, (finished) => {
+              if (finished) scheduleOnRN(commitIndex, -1);
+            }));
+            return;
+          }
+          translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8, velocity: vx }));
+          return;
         }
+        if (Math.abs(dy) > 10) {
+          const projected = dy + project(vy);
+          if (Math.abs(dy) > 110 || Math.abs(vy) > 600 || Math.abs(projected) > SCREEN_HEIGHT * 0.28) {
+            const to = dy > 0 || vy > 0 ? SCREEN_HEIGHT : -SCREEN_HEIGHT;
+            translateY.set(withSpring(to, {
+              duration: 300,
+              dampingRatio: 1,
+              velocity: vy,
+              overshootClamping: true,
+            }, (finished) => {
+              if (finished) scheduleOnRN(closeViewer);
+            }));
+            return;
+          }
+          translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8, velocity: vy }));
+          return;
+        }
+        translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8, velocity: vx }));
+        translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8, velocity: vy }));
+      })
+      .onFinalize((_event, success) => {
+        if (success || pinchActive.get() || lockedZoom.get() || scale.get() > 1.02) return;
+        translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+        translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+      });
 
-        // Always ensure clean snap back to 1x and reset positions
-        Animated.spring(translateXAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }).start();
-        Animated.spring(translateYAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }).start();
-        resetZoom();
-        showControls();
-      },
-      onPanResponderTerminate: () => {
-        initialDistance.current = 0;
-        initialCenter.current = null;
-        isPinching.current = false;
-        hasZoomed.current = false;
-        Animated.spring(translateXAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }).start();
-        Animated.spring(translateYAnim, { toValue: 0, friction: 7, tension: 200, useNativeDriver: true }).start();
-        resetZoom();
-        showControls();
-      },
-    })
-  ).current;
+    const doubleTap = Gesture.Tap()
+      .numberOfTaps(2)
+      .onEnd(() => {
+        if (scale.get() > 1.1 || lockedZoom.get()) {
+          springFit(0);
+        } else {
+          cancelAnimation(scale);
+          cancelAnimation(translateX);
+          cancelAnimation(translateY);
+          lockedZoom.set(1);
+          pinchActive.set(0);
+          scale.set(withSpring(2.2, { duration: 400, dampingRatio: 0.8 }));
+          translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+          translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+          scheduleOnRN(hideControls);
+        }
+      });
+
+    const tap = Gesture.Tap()
+      .maxDuration(250)
+      .onEnd(() => {
+        if (keyboardOpenSV.get()) {
+          scheduleOnRN(dismissKeyboard);
+          return;
+        }
+        if (scale.get() <= 1.05) {
+          scheduleOnRN(toggleControls);
+        }
+      });
+
+    return Gesture.Simultaneous(pinch, pan, Gesture.Exclusive(doubleTap, tap));
+  }, [
+    cardHeightSV,
+    cardWidthSV,
+    closeViewer,
+    commitIndex,
+    currentIndexSV,
+    dismissKeyboard,
+    hideControls,
+    keyboardOpenSV,
+    lockedZoom,
+    panStartX,
+    panStartY,
+    pinchActive,
+    pinchFocalX,
+    pinchFocalY,
+    pinchStartScale,
+    pinchStartX,
+    pinchStartY,
+    scale,
+    showControls,
+    toggleControls,
+    totalSV,
+    translateX,
+    translateY,
+  ]);
+
+  const imageStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.get() },
+      { translateY: translateY.get() },
+      { scale: scale.get() },
+    ],
+  }));
+
+  const headerStyle = useAnimatedStyle(() => ({
+    opacity: controlsOpacity.get(),
+    transform: [{ translateY: interpolate(controlsOpacity.get(), [0, 1], [-30, 0]) }],
+  }));
+
+  const bottomBarStyle = useAnimatedStyle(() => ({
+    opacity: controlsOpacity.get(),
+    transform: [{
+      translateY: interpolate(controlsOpacity.get(), [0, 1], [40, 0]) + keyboardTranslateY.get(),
+    }],
+  }));
 
   // Handle Send Reply from Bottom Input Bar
   const handleSend = useCallback(async () => {
@@ -608,21 +611,11 @@ export default function ChatImageViewerModal({
       transparent
       visible={visible}
     >
-      <View style={styles.container}>
+      <GestureHandlerRootView style={styles.container}>
         {/* Zoomable Image Container */}
-        <View style={styles.imageLayer} {...panResponder.panHandlers}>
-          <Animated.View
-            style={[
-              styles.imageTransformWrapper,
-              {
-                transform: [
-                  { translateX: translateXAnim },
-                  { translateY: translateYAnim },
-                  { scale: scaleAnim },
-                ],
-              },
-            ]}
-          >
+        <GestureDetector gesture={imageGestures}>
+          <Animated.View style={styles.imageLayer}>
+            <Animated.View style={[styles.imageTransformWrapper, imageStyle]}>
             {currentImageUri ? (
               <View style={[styles.cardWrapper, cardDimensions]}>
                 <DecryptedChatImage
@@ -639,28 +632,19 @@ export default function ChatImageViewerModal({
                 />
               </View>
             ) : null}
+            </Animated.View>
           </Animated.View>
-        </View>
+        </GestureDetector>
 
 
 
         {/* Top Header Bar (disappears when zoomed) */}
         <Animated.View
-          pointerEvents={controlsVisible.current ? 'box-none' : 'none'}
+          pointerEvents={controlsShown ? 'box-none' : 'none'}
           style={[
             styles.headerBar,
-            {
-              paddingTop: Math.max(insets.top, 24) + 6,
-              opacity: controlsOpacityAnim,
-              transform: [
-                {
-                  translateY: controlsOpacityAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [-30, 0],
-                  }),
-                },
-              ],
-            },
+            { paddingTop: Math.max(insets.top, 24) + 6 },
+            headerStyle,
           ]}
         >
           <Pressable
@@ -729,24 +713,8 @@ export default function ChatImageViewerModal({
 
         {/* Bottom Input Box Bar (disappears when zoomed, smoothly slides up with keyboard) */}
         <Animated.View
-          pointerEvents={controlsVisible.current ? 'box-none' : 'none'}
-          style={[
-            styles.bottomBarContainer,
-            {
-              opacity: controlsOpacityAnim,
-              transform: [
-                {
-                  translateY: Animated.add(
-                    controlsOpacityAnim.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [40, 0],
-                    }),
-                    keyboardTranslateY
-                  ),
-                },
-              ],
-            },
-          ]}
+          pointerEvents={controlsShown ? 'box-none' : 'none'}
+          style={[styles.bottomBarContainer, bottomBarStyle]}
         >
           {justSent && (
             <View style={styles.sentToast}>
@@ -816,7 +784,7 @@ export default function ChatImageViewerModal({
             </View>
           </View>
         </Animated.View>
-      </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }

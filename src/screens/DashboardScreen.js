@@ -1,12 +1,7 @@
+import Text from '../components/AppText';
 import React from 'react';
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import { useApp } from '../context/AppContext';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useAppAppointments, useAppBadges, useAppProfile } from '../context/AppContext';
 import { IosLikeAvatar, IosLikeCard, IosLikeScreen, IosLikeSectionTitle } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
@@ -21,13 +16,11 @@ const SHORTCUTS = [
 
 export default function DashboardScreen({ onNavigate, onOpenProfile }) {
   const { colors } = useTheme();
-  const { appointments = [], conversations = [], matchedProfileIds = [], pendingIncomingLikes = [], profile } = useApp();
-  const activeUserId = profile?.id;
-  const unreadCount = conversations.reduce(
-    (sum, item) => sum + (item.unreadCounts?.[activeUserId] || item.unread || 0),
-    0
-  );
-  const matchedCount = Math.max(matchedProfileIds.length, conversations.length);
+  const { appointments = [] } = useAppAppointments();
+  const { conversationCount = 0, matchedCount: matchedProfileCount = 0, pendingLikeCount = 0, totalUnreadMessages = 0 } = useAppBadges();
+  const { profile } = useAppProfile();
+  const unreadCount = totalUnreadMessages;
+  const matchedCount = Math.max(matchedProfileCount, conversationCount);
   const displayName = profile?.name || profile?.nickname || 'เพื่อน';
   const activeAppointmentCount = appointments.filter((appointment) => appointment.status === 'active').length;
 
@@ -39,7 +32,7 @@ export default function DashboardScreen({ onNavigate, onOpenProfile }) {
         </View>
         <View style={styles.headerActions}>
           <Pressable accessibilityLabel="เปิดโปรไฟล์" accessibilityRole="button" onPress={onOpenProfile} style={({ pressed }) => [pressed && styles.pressed]}>
-            <IosLikeAvatar cacheScope={profile?.id} cacheVersion={profile?.updatedAt} color={colors.primarySoft} emoji={profile?.avatar} size={44} uri={profile?.avatarUri} />
+            <IosLikeAvatar cacheScope={profile?.id} cacheVersion={profile?.avatarRevision} color={colors.primarySoft} emoji={profile?.avatar} size={44} uri={profile?.avatarUri} />
           </Pressable>
         </View>
       </View>
@@ -58,7 +51,7 @@ export default function DashboardScreen({ onNavigate, onOpenProfile }) {
           {SHORTCUTS.map((shortcut) => (
             <ShortcutCard
               badge={shortcut.id === 'likes'
-                ? pendingIncomingLikes.length
+                ? pendingLikeCount
                 : shortcut.id === 'chat'
                   ? unreadCount
                   : shortcut.id === 'appointments'
@@ -73,9 +66,9 @@ export default function DashboardScreen({ onNavigate, onOpenProfile }) {
         </View>
 
         <MatchStatsCard
-          conversationsCount={conversations.length}
+          conversationsCount={conversationCount}
           matchedCount={matchedCount}
-          pendingCount={pendingIncomingLikes.length}
+          pendingCount={pendingLikeCount}
           unreadCount={unreadCount}
         />
       </ScrollView>

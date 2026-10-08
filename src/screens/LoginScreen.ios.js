@@ -1,53 +1,14 @@
+import { Button, Text } from '../components/NativeTypography';
+import { font } from '../components/brandFont';
 import React, { useState } from 'react';
 import { useAssets } from 'expo-asset';
-import { Keyboard, Platform, Pressable, useColorScheme, useWindowDimensions, View, Alert } from 'react-native';
-import {
-  Button,
-  HStack,
-  Host,
-  Image,
-  ScrollView,
-  SecureField,
-  Spacer,
-  Text,
-  TextField,
-  useNativeState,
-  VStack,
-  ZStack,
-} from '@expo/ui/swift-ui';
-import {
-  accessibilityHint,
-  accessibilityLabel,
-  aspectRatio,
-  autocorrectionDisabled,
-  background,
-  blur,
-  buttonBorderShape,
-  buttonStyle,
-  clipShape,
-  clipped,
-  controlSize,
-  disabled,
-  font,
-  foregroundStyle,
-  frame,
-  keyboardType,
-  lineLimit,
-  offset,
-  padding,
-  resizable,
-  scrollDismissesKeyboard,
-  scrollIndicators,
-  shadow,
-  shapes,
-  textContentType,
-  textFieldStyle,
-  textInputAutocapitalization,
-  tint,
-} from '@expo/ui/swift-ui/modifiers';
+import { Keyboard, Platform, Pressable, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { HStack, Host, Image, ScrollView, SecureField, Spacer, TextField, useNativeState, VStack, ZStack } from '@expo/ui/swift-ui';
+import { accessibilityHint, accessibilityLabel, aspectRatio, autocorrectionDisabled, background, blur, buttonBorderShape, buttonStyle, clipShape, clipped, controlSize, disabled, foregroundStyle, frame, keyboardType, lineLimit, offset, padding, resizable, scrollDismissesKeyboard, scrollIndicators, shadow, shapes, textContentType, textFieldStyle, textInputAutocapitalization, tint } from '@expo/ui/swift-ui/modifiers';
 import { getSavedAccounts, removeSavedAccount, saveAccount, enrichSavedAccountsWithFirestore } from '../services/accountStorage';
 import {
   getFirebaseConfigurationErrorMessage,
+  getSignInErrorMessage,
   sendPasswordReset,
   signInWithEmail,
   signUpWithEmail,
@@ -57,11 +18,23 @@ import {
   resendVerificationEmail,
 } from '../services/authService';
 import { showLoginAlert } from '../utils/loginAlert';
+import {
+  CAMPUS_EMAIL_PLACEHOLDER,
+  CAMPUS_LOGIN_HINT,
+  CAMPUS_SIGNUP_HINT,
+  getCampusEmailErrorMessage,
+  getPasswordResetErrorMessage,
+  getPasswordResetSentMessage,
+} from '../utils/campusEmail';
+import { getPasswordError, PASSWORD_MISMATCH_MESSAGE } from '../utils/passwordPolicy';
+import { useConfirm } from '../context/ConfirmContext';
+import { router } from 'expo-router';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
 import { makeRedirectUri } from 'expo-auth-session';
 import Constants from 'expo-constants';
+import { showAlert } from '../utils/appAlert';
 
 WebBrowser.maybeCompleteAuthSession();
 const loginPhoto = require('../../assets/login-campus-hero.png');
@@ -77,6 +50,13 @@ function scheduleWhenIdle(callback) {
   return () => clearTimeout(timeoutId);
 }
 
+function reportUnexpectedAuthError(label, error) {
+  const code = String(error?.code || '');
+  if (code === 'auth/network-request-failed' || code === 'unavailable') return;
+  const detail = code || String(error?.message || '').trim();
+  if (detail) console.warn(`${label}: ${detail}`);
+}
+
 const darkPalette = {
   background: '#101216',
   surface: '#1B1E26',
@@ -84,8 +64,10 @@ const darkPalette = {
   text: '#F7F8FA',
   secondary: '#A2ACB9',
   tertiary: '#737D8D',
-  purple: '#6C63FF',
-  purpleSoft: 'rgba(108,99,255,0.18)',
+  purple: '#88B5F2',
+  purpleSoft: 'rgba(112,178,255,0.18)',
+  coral: '#FF7A6B',
+  coralSoft: 'rgba(255,122,107,0.16)',
   danger: '#FF6B6B',
   dangerSoft: 'rgba(255,107,107,0.14)',
   green: '#45D1A1',
@@ -95,11 +77,13 @@ const lightPalette = {
   background: '#F5F7FB',
   surface: '#FFFFFF',
   inputBackground: '#F0F3F9',
-  text: '#10203A',
+  text: '#25272B',
   secondary: '#5A687D',
   tertiary: '#8895A7',
-  purple: '#5B5CE2',
-  purpleSoft: 'rgba(91,92,226,0.12)',
+  purple: '#2869C7',
+  purpleSoft: 'rgba(35,123,231,0.12)',
+  coral: '#F47C6B',
+  coralSoft: '#FFF0ED',
   danger: '#D65454',
   dangerSoft: '#FFF0F0',
   green: '#18A878',
@@ -119,11 +103,20 @@ export default function LoginScreen({ onLoginSuccess }) {
         preferLocalhost: true,
       });
 
+  const androidClientId =
+    process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID ||
+    webClientId ||
+    '865275661439-1md7lkrhld462jgfn7s1dnmbjrnl2ve4.apps.googleusercontent.com';
+  const iosClientId =
+    process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ||
+    webClientId ||
+    '865275661439-88thtqomehff31taquhc4srga14fbvav.apps.googleusercontent.com';
+
   const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
     clientId: webClientId,
     webClientId,
-    iosClientId: isExpoGo ? undefined : process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-    androidClientId: isExpoGo ? undefined : process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    iosClientId,
+    androidClientId,
     selectAccount: true,
     redirectUri,
   });
@@ -152,17 +145,21 @@ export default function LoginScreen({ onLoginSuccess }) {
     if (loading) return;
     setLoading(true);
     try {
-      const { signInWithGoogleCredential } = require('../services/authService');
       const result = await signInWithGoogleCredential(id_token);
       finishAuthentication(result);
     } catch (err) {
-      showLoginAlert(getFirebaseConfigurationErrorMessage(err) || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+      showLoginAlert(
+        getSignInErrorMessage(err)
+          || getCampusEmailErrorMessage(err)
+          || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง'
+      );
     } finally {
       setLoading(false);
     }
   };
 
   const colorScheme = useColorScheme();
+  const { confirm } = useConfirm();
   const { height: screenHeight } = useWindowDimensions();
   const palette = usePalette();
   const [assets] = useAssets([loginPhoto]);
@@ -241,7 +238,11 @@ export default function LoginScreen({ onLoginSuccess }) {
         const result = await signInWithGoogle();
         finishAuthentication(result);
       } catch (loginError) {
-        showLoginAlert(getFirebaseConfigurationErrorMessage(loginError) || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง');
+        showLoginAlert(
+          getSignInErrorMessage(loginError)
+            || getCampusEmailErrorMessage(loginError)
+            || 'ไม่สามารถเข้าสู่ระบบได้ กรุณาลองใหม่อีกครั้ง'
+        );
       } finally {
         setLoading(false);
       }
@@ -262,31 +263,21 @@ export default function LoginScreen({ onLoginSuccess }) {
       setLoading(true);
       try {
         await sendPasswordReset(cleanEmail);
-        const successMsg = 'ระบบได้ส่งลิงก์สำหรับตั้งรหัสผ่านใหม่ไปยัง ' + cleanEmail + ' เรียบร้อยแล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam';
+        const successMsg = getPasswordResetSentMessage(cleanEmail);
         if (Platform.OS === 'web') {
-          alert('ส่งลิงก์สำเร็จ: ' + successMsg);
+          alert(successMsg);
         } else {
-          Alert.alert('ส่งลิงก์สำเร็จ', successMsg);
+          showAlert('ส่งคำขอแล้ว', successMsg, { tone: 'success' });
         }
       } catch (err) {
-        console.error('Password reset error:', err);
+        reportUnexpectedAuthError('Password reset error', err);
         const configurationError = getFirebaseConfigurationErrorMessage(err);
+        const resetError = getPasswordResetErrorMessage(err);
         if (configurationError) {
           showLoginAlert(configurationError, 'การตั้งค่าระบบ');
           return;
         }
-        if (err.code === 'auth/user-not-found') {
-          showLoginAlert('ไม่พบบัญชีผู้ใช้ที่ใช้อีเมล ' + cleanEmail + ' กรุณาตรวจสอบอีเมลอีกครั้ง หรือสมัครสมาชิกใหม่', 'ไม่พบบัญชี');
-        } else if (err.code === 'auth/invalid-email') {
-          showLoginAlert('รูปแบบอีเมลไม่ถูกต้อง กรุณาตรวจสอบความถูกต้อง เช่น example@gmail.com', 'อีเมลไม่ถูกต้อง');
-        } else if (err.code === 'auth/too-many-requests') {
-          showLoginAlert('คุณส่งคำขอรีเซ็ตรหัสผ่านบ่อยเกินไป เพื่อความปลอดภัยกรุณารอสักครู่แล้วลองใหม่อีกครั้ง', 'ส่งคำขอบ่อยเกินไป');
-        } else if (err.code === 'auth/network-request-failed') {
-          showLoginAlert('ไม่สามารถเชื่อมต่ออินเทอร์เน็ตได้ กรุณาตรวจสอบสัญญาณเน็ตแล้วลองใหม่อีกครั้ง', 'การเชื่อมต่อขัดข้อง');
-        } else {
-          const detail = err?.message ? ' (' + err.message + ')' : '';
-          showLoginAlert('ไม่สามารถส่งอีเมลรีเซ็ตรหัสผ่านได้: ' + (err?.code || 'เกิดข้อผิดพลาด') + detail, 'รีเซ็ตรหัสผ่าน');
-        }
+        showLoginAlert(resetError || 'ไม่สามารถส่งอีเมลตั้งรหัสผ่านใหม่ได้ กรุณาลองใหม่', 'รีเซ็ตรหัสผ่าน');
       } finally {
         setLoading(false);
       }
@@ -295,14 +286,14 @@ export default function LoginScreen({ onLoginSuccess }) {
     if (Platform.OS === 'web') {
       performReset();
     } else {
-      Alert.alert(
-        'รีเซ็ตรหัสผ่าน',
-        'ต้องการให้ส่งลิงก์ตั้งรหัสผ่านใหม่ไปยัง ' + cleanEmail + ' ใช่หรือไม่?',
-        [
-          { text: 'ยกเลิก', style: 'cancel' },
-          { text: 'ส่งลิงก์', onPress: performReset },
-        ]
-      );
+      const ok = await confirm({
+        title: 'รีเซ็ตรหัสผ่าน',
+        body: 'ต้องการให้ส่งลิงก์ตั้งรหัสผ่านใหม่ไปยัง ' + cleanEmail + ' ใช่หรือไม่?',
+        confirmLabel: 'ส่งลิงก์',
+        icon: 'lock.fill',
+        destructive: false,
+      });
+      if (ok) performReset();
     }
   };
 
@@ -322,13 +313,13 @@ export default function LoginScreen({ onLoginSuccess }) {
       const { resendEmailVerification } = require('../services/authService');
       const res = await resendEmailVerification(targetEmail, password);
       if (res.alreadyVerified) {
-        Alert.alert('ยืนยันแล้ว', 'บัญชีนี้ได้รับการยืนยันอีเมลแล้ว คุณสามารถเข้าสู่ระบบได้ทันที');
+        showAlert('ยืนยันแล้ว', 'บัญชีนี้ได้รับการยืนยันอีเมลแล้ว คุณสามารถเข้าสู่ระบบได้ทันที', { tone: 'success' });
       } else {
-        const msg = 'ระบบได้ส่งลิงก์ยืนยันไปยัง ' + targetEmail + ' ให้ใหม่เรียบร้อยแล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam';
-        Alert.alert('ส่งอีเมลยืนยันแล้ว', msg);
+        const msg = 'ระบบได้ส่งลิงก์ยืนยันไปยัง ' + targetEmail + ' ให้ใหม่เรียบร้อยแล้ว กรุณาตรวจ Inbox, Junk/Spam และ Quarantine ของ Outlook';
+        showAlert('ส่งอีเมลยืนยันแล้ว', msg, { tone: 'success' });
       }
     } catch (err) {
-      console.error('Resend verification error (iOS):', err);
+      reportUnexpectedAuthError('Resend verification error (iOS)', err);
       const configurationError = getFirebaseConfigurationErrorMessage(err);
       if (configurationError) {
         showLoginAlert(configurationError);
@@ -352,13 +343,13 @@ export default function LoginScreen({ onLoginSuccess }) {
         showLoginAlert('กรุณากรอกข้อมูลให้ครบถ้วน');
         return;
       }
-      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
-      if (!passwordRegex.test(password)) {
-        showLoginAlert('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร ประกอบด้วยพิมพ์เล็ก พิมพ์ใหญ่ ตัวเลข และอักขระพิเศษ');
+      const passwordError = getPasswordError(password, { email, confirmPassword });
+      if (passwordError) {
+        showLoginAlert(passwordError);
         return;
       }
       if (password !== confirmPassword) {
-        showLoginAlert('รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน');
+        showLoginAlert(PASSWORD_MISMATCH_MESSAGE);
         return;
       }
     } else {
@@ -378,18 +369,18 @@ export default function LoginScreen({ onLoginSuccess }) {
       if (result.user.providerData?.some(p => p.providerId === 'password') && !result.user.emailVerified) {
         setUnverifiedEmail(email.trim());
         if (mode === 'signup') {
-          const msg = 'สมัครสมาชิกสำเร็จ! ระบบได้ส่งอีเมลยืนยันไปยัง ' + email.trim() + ' แล้ว กรุณาตรวจสอบกล่องจดหมาย (Inbox) หรือโฟลเดอร์ Junk/Spam';
-          Alert.alert('ตรวจสอบอีเมลของคุณ', msg);
+          const msg = 'สมัครสมาชิกสำเร็จ! ระบบได้ส่งอีเมลยืนยันไปยัง ' + email.trim() + ' แล้ว กรุณาตรวจ Inbox, Junk/Spam และ Quarantine ของ Outlook';
+          showAlert('ตรวจสอบอีเมลของคุณ', msg, { tone: 'info' });
         } else {
           let msg = '';
           if (result.verificationSent === true) {
-            msg = 'บัญชีของคุณยังไม่ได้ยืนยันอีเมล ระบบได้ส่งลิงก์ยืนยันไปยัง ' + email.trim() + ' ให้ใหม่เรียบร้อยแล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam';
+            msg = 'บัญชีของคุณยังไม่ได้ยืนยันอีเมล ระบบได้ส่งลิงก์ยืนยันไปยัง ' + email.trim() + ' ให้ใหม่เรียบร้อยแล้ว กรุณาตรวจ Inbox, Junk/Spam และ Quarantine ของ Outlook';
           } else if (result.verificationSent === 'throttled') {
-            msg = 'ระบบได้ส่งลิงก์ยืนยันไปก่อนหน้านี้แล้ว กรุณาตรวจสอบกล่องข้อความ (Inbox) หรือโฟลเดอร์ Junk/Spam หากไม่พบกรุณารอสักครู่แล้วลองใหม่';
+            msg = 'ระบบได้ส่งลิงก์ยืนยันไปก่อนหน้านี้แล้ว กรุณาตรวจ Inbox, Junk/Spam และ Quarantine ของ Outlook หากไม่พบกรุณารอสักครู่แล้วลองใหม่';
           } else {
             msg = 'กรุณายืนยันอีเมลก่อนเข้าใช้งาน (ตรวจสอบกล่องข้อความหรือ Junk/Spam ของคุณ)';
           }
-          Alert.alert('ส่งอีเมลยืนยันแล้ว', msg);
+          showAlert('ส่งอีเมลยืนยันแล้ว', msg, { tone: 'success' });
         }
         await signOutUser();
         return;
@@ -397,25 +388,11 @@ export default function LoginScreen({ onLoginSuccess }) {
 
       finishAuthentication(result);
     } catch (loginError) {
-      console.error('Email auth error (iOS):', loginError);
-      const configurationError = getFirebaseConfigurationErrorMessage(loginError);
-      if (configurationError) {
-        showLoginAlert(configurationError);
-        return;
-      }
-      if (loginError.code === 'auth/user-not-found') {
-        showLoginAlert('ไม่พบบัญชีที่ใช้อีเมลนี้ กรุณาสมัครสมาชิกก่อน');
-      } else if (loginError.code === 'auth/wrong-password' || loginError.code === 'auth/invalid-credential') {
-        showLoginAlert('อีเมลหรือรหัสผ่านไม่ถูกต้อง (หากบัญชีนี้สมัครด้วย Google ให้เข้าสู่ระบบด้วย Google)');
-      } else if (loginError.code === 'auth/email-already-in-use') {
-        showLoginAlert('อีเมลนี้มีผู้ใช้งานแล้ว กรุณาเข้าสู่ระบบ');
-      } else if (loginError.code === 'auth/invalid-email') {
-        showLoginAlert('รูปแบบอีเมลไม่ถูกต้อง');
-      } else if (loginError.code === 'auth/too-many-requests') {
-        showLoginAlert('มีการพยายามเข้าสู่ระบบผิดหลายครั้ง กรุณารอสักครู่แล้วลองใหม่');
-      } else {
-        showLoginAlert(mode === 'signup' ? 'สมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' : 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
-      }
+      reportUnexpectedAuthError('Email auth error (iOS)', loginError);
+      showLoginAlert(
+        getSignInErrorMessage(loginError, { mode })
+          || (mode === 'signup' ? 'สมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' : 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')
+      );
     } finally {
       setLoading(false);
     }
@@ -493,7 +470,7 @@ export default function LoginScreen({ onLoginSuccess }) {
               <Text
                 modifiers={[
                   font({ textStyle: 'headline', weight: 'heavy', design: 'rounded' }),
-                  foregroundStyle(colorScheme === 'dark' ? '#FFFFFF' : '#10203A'),
+                  foregroundStyle(colorScheme === 'dark' ? '#FFFFFF' : '#25272B'),
                 ]}
               >
                 CampusMate
@@ -558,6 +535,9 @@ export default function LoginScreen({ onLoginSuccess }) {
                   </VStack>
                 ) : mode === 'google' ? (
                   <VStack spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
+                    <Text modifiers={[font({ textStyle: 'caption2' }), foregroundStyle(palette.tertiary), lineLimit(4)]}>
+                      {CAMPUS_LOGIN_HINT}
+                    </Text>
                     <AuthButton
                       label="เข้าสู่ระบบด้วย Google"
                       loading={loading}
@@ -614,14 +594,18 @@ export default function LoginScreen({ onLoginSuccess }) {
                           เข้าสู่ระบบในชื่อ {selectedAccount.displayName || selectedAccount.email}
                         </Text>
                       </HStack>
-                    ) : null}
+                    ) : (
+                      <Text modifiers={[font({ textStyle: 'caption2' }), foregroundStyle(palette.tertiary), lineLimit(3)]}>
+                        {mode === 'signup' ? CAMPUS_SIGNUP_HINT : CAMPUS_LOGIN_HINT}
+                      </Text>
+                    )}
 
                     <NativeInput
                       label="อีเมล"
                       nativeValue={nativeEmail}
                       onChange={setEmail}
                       palette={palette}
-                      placeholder="name@university.ac.th"
+                      placeholder={CAMPUS_EMAIL_PLACEHOLDER}
                       systemImage="envelope.fill"
                       type="email"
                     />
@@ -691,6 +675,21 @@ export default function LoginScreen({ onLoginSuccess }) {
                     />
                   </VStack>
                 )}
+                <Text modifiers={[font({ textStyle: 'caption2' }), foregroundStyle(palette.tertiary), lineLimit(4)]}>
+                  การสมัครหรือเข้าสู่ระบบ หมายความว่าคุณมีอายุอย่างน้อย 18 ปี และยอมรับเงื่อนไขการให้บริการกับนโยบายความเป็นส่วนตัวตาม PDPA
+                </Text>
+                <HStack spacing={12}>
+                  <Button
+                    label="นโยบายความเป็นส่วนตัว"
+                    onPress={() => router.push('/privacy-policy')}
+                    modifiers={[buttonStyle('plain'), tint(palette.purple), controlSize('small')]}
+                  />
+                  <Button
+                    label="เงื่อนไขการใช้บริการ"
+                    onPress={() => router.push('/terms')}
+                    modifiers={[buttonStyle('plain'), tint(palette.purple), controlSize('small')]}
+                  />
+                </HStack>
               </VStack>
           </VStack>
         </ZStack>
@@ -771,7 +770,7 @@ function AuthButton({ label, loading, onPress, palette, systemImage }) {
 }
 
 function SavedAccountRow({ acc, cardShape, onRemove, onSelect, palette }) {
-  const remoteAvatar = useRemoteImage(acc.avatarUri || acc.photoURL, acc.updatedAt, acc.id);
+  const remoteAvatar = useRemoteImage(acc.avatarUri || acc.photoURL, acc.avatarRevision, acc.id);
 
   return (
     <HStack

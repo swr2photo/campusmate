@@ -3,6 +3,14 @@ export const MAX_VIDEO_DURATION_MS = 60000;
 export const MAX_VIDEO_BYTES = 24 * 1024 * 1024;
 export const VIDEO_MODES = { once: 'ดูครั้งเดียว', replay: 'ดูซ้ำ', chat: 'เก็บไว้ในแชต' };
 
+export function isProtectedViewMode(mode) {
+  return mode === 'once' || mode === 'replay';
+}
+
+export function isProtectedMedia(item) {
+  return isProtectedViewMode(item?.viewMode) || isProtectedViewMode(item?.videoMode);
+}
+
 export function validateChatVideo(asset, mode = 'chat') {
   if (!Object.hasOwn(VIDEO_MODES, mode)) throw new Error('รูปแบบการส่งวิดีโอไม่ถูกต้อง');
   if (!asset?.uri || !Number.isFinite(asset.duration) || asset.duration <= 0) {

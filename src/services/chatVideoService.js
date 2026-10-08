@@ -21,9 +21,18 @@ export async function pickChatVideo() {
   return { ...asset, fileSize: info.size || asset.fileSize };
 }
 
+function isProtectedMediaData(data) {
+  return data?.videoMode === 'once' || data?.videoMode === 'replay'
+    || data?.viewMode === 'once' || data?.viewMode === 'replay';
+}
+
+function isOnceMediaData(data) {
+  return data?.videoMode === 'once' || data?.viewMode === 'once';
+}
+
 // A transaction requires an online server response and only one device can win.
 // Receipts cannot be modified or deleted by clients (see firestore.rules).
-export async function claimOnceVideo(conversationId, messageId, userId) {
+export async function recordMediaView(conversationId, messageId, userId, { exclusive = false } = {}) {
   const { db } = requireFirebase();
   const messageRef = doc(db, 'conversations', conversationId, 'messages', messageId);
   const receiptRef = doc(messageRef, 'videoViews', userId);
@@ -31,15 +40,29 @@ export async function claimOnceVideo(conversationId, messageId, userId) {
     const message = await transaction.get(messageRef);
     const receipt = await transaction.get(receiptRef);
     const data = message.exists() ? message.data() : {};
-    if (!message.exists() || (data.videoMode !== 'once' && data.viewMode !== 'once')) throw new Error('สื่อนี้ไม่พร้อมใช้งาน');
-    if (receipt.exists()) throw new Error('วิดีโอนี้ถูกเปิดดูแล้ว');
+    if (!message.exists() || !isProtectedMediaData(data)) throw new Error('สื่อนี้ไม่พร้อมใช้งาน');
+    if (receipt.exists()) {
+      if (exclusive || isOnceMediaData(data)) throw new Error('สื่อนี้ถูกเปิดดูแล้ว');
+      return;
+    }
     transaction.set(receiptRef, { viewedAt: serverTimestamp() });
   });
 }
 
-export function watchOnceVideo(conversationId, messageId, userId, onViewed) {
+export async function claimOnceVideo(conversationId, messageId, userId) {
+  return recordMediaView(conversationId, messageId, userId, { exclusive: true });
+}
+
+export function watchMediaView(conversationId, messageId, viewerId, onViewed) {
+  if (!conversationId || !messageId || !viewerId) return () => {};
   const { db } = requireFirebase();
-  return onSnapshot(doc(db, 'conversations', conversationId, 'messages', messageId, 'videoViews', userId),
-    snapshot => { if (snapshot.exists()) onViewed(); },
-    () => {}); // Opening still requires a successful online transaction.
+  return onSnapshot(
+    doc(db, 'conversations', conversationId, 'messages', messageId, 'videoViews', viewerId),
+    (snapshot) => { if (snapshot.exists()) onViewed(snapshot.data() || {}); },
+    () => {},
+  );
+}
+
+export function watchOnceVideo(conversationId, messageId, userId, onViewed) {
+  return watchMediaView(conversationId, messageId, userId, () => onViewed());
 }

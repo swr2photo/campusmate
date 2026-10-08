@@ -49,6 +49,7 @@ export async function saveAccount(account) {
       avatarUri: photoURL,
       faculty: account.faculty || prev?.faculty || '',
       avatarColor: account.avatarColor || prev?.avatarColor || null,
+      avatarRevision: Number.isSafeInteger(account.avatarRevision) ? account.avatarRevision : (prev?.avatarRevision ?? 0),
       updatedAt: timestampToMillis(account.updatedAt) || prev?.updatedAt || Date.now(),
       lastUsedAt: Date.now(),
     };
@@ -118,5 +119,13 @@ export async function getActiveUser() {
     return JSON.parse(raw);
   } catch (error) {
     return null;
+  }
+}
+
+export async function clearActiveUser() {
+  try {
+    await Storage.removeItem(ACTIVE_USER_KEY);
+  } catch (error) {
+    console.warn('Failed to clear active user:', error);
   }
 }

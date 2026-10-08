@@ -1,29 +1,34 @@
+import Text from '../components/AppText';
+import { AppTextInput as TextInput } from '../components/AppText';
+import PlacePhoto from '../components/PlacePhoto';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Alert,
-  Animated,
-  FlatList,
-  Image,
-  KeyboardAvoidingView,
-  Modal,
-  PanResponder,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableWithoutFeedback,
-  useWindowDimensions,
-  View,
-} from 'react-native';
-import { DatePickerDialog, Host, TimePickerDialog } from '../components/Pickers';
+import { FlatList, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, TouchableWithoutFeedback, useWindowDimensions, View } from 'react-native';
+import Image from '../components/CachedImage';
+import Animated, {
+  cancelAnimation,
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { scheduleOnRN } from 'react-native-worklets';
+import { project, rubberband } from '../utils/motion';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useApp } from '../context/AppContext';
+import { DatePickerDialog, Host, TimePickerDialog } from '../components/Pickers';
+import { useRouter } from 'expo-router';
+import { useAppActions, useAppFeed, useAppProfile } from '../context/AppContext';
+import PartyFinderSection, { sortAndRefitMeetups } from '../components/PartyFinderSection';
+import PartyFinderEntry from '../components/PartyFinderEntry';
+import usePartyFeed from '../hooks/usePartyFeed';
+import { approvePartyRequest, cancelParty, createParty, rejectPartyRequest, requestJoinParty, withdrawPartyRequest } from '../services/partyService';
+import { preparePartyApproval } from '../services/groupChatEncryption';
+import { useConfirm } from '../context/ConfirmContext';
 import CampusMapView from '../components/CampusMapView';
+import AppointmentPlacePicker from '../components/AppointmentPlacePicker';
 import {
   IosLikeCard,
-  IosLikeHeader,
   IosLikePill,
   IosLikeScreen,
   IosLikeSectionTitle,
@@ -31,6 +36,7 @@ import {
 } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';
 import { radius, spacing, type, useTheme } from '../theme';
+import { TourTarget } from '../context/AppTourContext';
 
 const SPOT_CATEGORIES = [
   { id: 'all', label: 'ทั้งหมด', icon: 'square.grid.2x2.fill', color: '#5B5CE2' },
@@ -79,11 +85,12 @@ function minutesToTimeValue(minutes) {
 }
 
 const CAMPUS_PHOTOS = [
-  require('../assets/images/campus/DSC_3614.jpg'),
   require('../assets/images/campus/DSC_5070.jpg'),
+  require('../assets/images/campus/DSC_3614.jpg'),
   require('../assets/images/campus/DSC_5071.jpg'),
   require('../assets/images/campus/DSC_8697.jpg'),
 ];
+
 
 function getNextDays(count = 7) {
   const days = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
@@ -103,7 +110,7 @@ function getNextDays(count = 7) {
 
 function matchesSpotQuery(spot, query) {
   if (!query) return true;
-  return [spot.name, spot.description, spot.categoryLabel, spot.busyTime, spot.group]
+  return [spot.name, spot.description, spot.categoryLabel, spot.group]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(query));
 }
@@ -127,14 +134,28 @@ function activityColor(category, colors) {
   return { color: colors.primary, soft: colors.primarySoft };
 }
 
-export default function MeetupScreen({ onToast }) {
-  const { colors } = useTheme();
-  const { campusSpots = [], chooseMeetup, updateMeetupSchedule, clearMeetup, selectedMeetup } = useApp();
+export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId = null }) {
+  const { colors, isDark } = useTheme();
+  const router = useRouter();
+  const { confirm } = useConfirm();
+  const { campusSpots = [], selectedMeetup } = useAppFeed();
+  const { profile: myProfile } = useAppProfile();
+  const { chooseMeetup, updateMeetupSchedule, clearMeetup } = useAppActions();
+  const { parties: feedParties, loading: partiesLoading, error: partiesError, retryLegacyActivation, loadMore: loadMoreParties, loadMoreRequests, hasMore: hasMoreParties, loadingMore: loadingMoreParties, retry: retryParties } = usePartyFeed(partyOnly ? myProfile : null, campusSpots, null, targetPartyId);
+  const [partyClock, setPartyClock] = useState(Date.now());
+  useEffect(() => {
+    if (!partyOnly) return undefined;
+    const timer = setInterval(() => setPartyClock(Date.now()), 30000);
+    return () => clearInterval(timer);
+  }, [partyOnly]);
+  const parties = useMemo(() => sortAndRefitMeetups(feedParties || [], new Date(partyClock)), [feedParties, partyClock]);
+  const [busyPartyId, setBusyPartyId] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [mapTargetSpot, setMapTargetSpot] = useState(null);
   const [mapModal, setMapModal] = useState(false);
   const [scheduleModal, setScheduleModal] = useState(false);
+  const [placePickerVisible, setPlacePickerVisible] = useState(false);
   const [pendingSpot, setPendingSpot] = useState(null);
   const [schedDate, setSchedDate] = useState(null);
   const [schedStart, setSchedStart] = useState('14:00');
@@ -143,6 +164,56 @@ export default function MeetupScreen({ onToast }) {
   const [message, setMessage] = useState('');
 
   const nextDays = useMemo(() => getNextDays(7), []);
+
+  const handleJoinParty = useCallback(async (party) => {
+    if (!party) return;
+    setBusyPartyId(party.id);
+    try {
+      await requestJoinParty(party.id);
+      onToast?.('ส่งคำขอเข้าร่วมแล้ว รอเจ้าของตี้อนุมัติ');
+    } catch (err) {
+      onToast?.('ส่งคำขอเข้าร่วมตี้ไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    } finally {
+      setBusyPartyId(null);
+    }
+  }, [onToast]);
+
+  const handleApprove = useCallback(async (party, entry) => {
+    setBusyPartyId(party.id);
+    try {
+      const grants = await preparePartyApproval(party, entry.requesterId);
+      await approvePartyRequest(party.id, entry.requesterId, grants);
+      onToast?.('อนุมัติแล้ว แชตกลุ่มพร้อมใช้งาน');
+    } catch (error) {
+      onToast?.(error?.message || 'อนุมัติไม่สำเร็จ กรุณาลองอีกครั้ง', 'info');
+    } finally { setBusyPartyId(null); }
+  }, [onToast]);
+
+  const handleReject = useCallback(async (party, entry) => {
+    setBusyPartyId(party.id);
+    try { await rejectPartyRequest(party.id, entry.requesterId); }
+    catch { onToast?.('ปฏิเสธคำขอไม่สำเร็จ', 'info'); }
+    finally { setBusyPartyId(null); }
+  }, [onToast]);
+
+  const handleWithdraw = useCallback(async (party) => {
+    setBusyPartyId(party.id);
+    try { await withdrawPartyRequest(party.id); }
+    catch { onToast?.('ถอนคำขอไม่สำเร็จ', 'info'); }
+    finally { setBusyPartyId(null); }
+  }, [onToast]);
+
+  const handleCancelParty = useCallback(async (party) => {
+    const accepted = await confirm({
+      title: 'ยกเลิกตี้', body: 'สมาชิกจะไม่สามารถส่งคำขอเข้าร่วมตี้นี้ได้อีก',
+      cancelLabel: 'กลับ', confirmLabel: 'ยกเลิกตี้', icon: 'xmark.circle.fill',
+    });
+    if (!accepted) return;
+    setBusyPartyId(party.id);
+    try { await cancelParty(party.id); onToast?.('ยกเลิกตี้แล้ว'); }
+    catch (reason) { onToast?.(reason?.message || 'ยกเลิกตี้ไม่สำเร็จ', 'info'); }
+    finally { setBusyPartyId(null); }
+  }, [confirm, onToast]);
   const visibleSpots = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
     return campusSpots.filter((spot) => (
@@ -168,7 +239,11 @@ export default function MeetupScreen({ onToast }) {
   }, [nextDays, selectedMeetup]);
 
   const confirmSchedule = async () => {
-    if (!pendingSpot || !schedDate) return;
+    console.log('[MeetupScreen] confirmSchedule called', { pendingSpotName: pendingSpot?.name, schedDate, schedStart, schedEnd, maxPeople });
+    if (!pendingSpot || !schedDate) {
+      console.warn('[MeetupScreen] confirmSchedule missing pendingSpot or schedDate', { pendingSpot, schedDate });
+      return;
+    }
     if (timeValueToMinutes(schedEnd) <= timeValueToMinutes(schedStart)) {
       onToast?.('เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม', 'info');
       return;
@@ -181,17 +256,19 @@ export default function MeetupScreen({ onToast }) {
       message: message.trim(),
     };
     try {
-      if (selectedMeetup?.id === pendingSpot.id && updateMeetupSchedule) {
-        await updateMeetupSchedule(schedule);
-      } else {
-        await chooseMeetup(pendingSpot, schedule);
-      }
-      const successMessage = `ปักหมุด ${pendingSpot.name} แล้ว`;
+      const location = pendingSpot?.location?.kind === 'google'
+        ? { kind: 'google', placeId: pendingSpot.location.placeId }
+        : { kind: 'pin', latitude: Number(pendingSpot.latitude), longitude: Number(pendingSpot.longitude), name: pendingSpot.name };
+      console.log('[MeetupScreen] calling createParty with:', { location, schedule, maxPeople: schedule.maxPeople });
+      const res = await createParty({ location, schedule, maxPeople: schedule.maxPeople });
+      console.log('[MeetupScreen] createParty success:', res);
+      const successMessage = `สร้างตี้ที่ ${pendingSpot.name} แล้ว`;
       setScheduleModal(false);
       setPendingSpot(null);
       setTimeout(() => onToast?.(successMessage), 350);
     } catch (error) {
-      onToast?.('บันทึกเวลานัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+      console.error('[MeetupScreen] createParty error:', error);
+      onToast?.(error?.message || 'สร้างตี้ไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
     }
   };
 
@@ -204,31 +281,23 @@ export default function MeetupScreen({ onToast }) {
     }
   }, [chooseMeetup, onToast]);
 
-  const handleClear = () => {
+  const handleClear = async () => {
     const spotName = selectedMeetup?.name ? ` "${selectedMeetup.name}"` : '';
-    Alert.alert(
-      'ยืนยันยกเลิกจุดนัดหมาย',
-      `คุณต้องการยกเลิกจุดนัดหมาย${spotName} ใช่หรือไม่?`,
-      [
-        {
-          text: 'ไม่ยกเลิก',
-          style: 'cancel',
-        },
-        {
-          text: 'ยืนยันยกเลิก',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await clearMeetup();
-              onToast?.('ยกเลิกจุดนัดหมายแล้ว', 'info');
-            } catch (error) {
-              console.error('[Meetup] clearMeetup error:', error);
-              onToast?.('ยกเลิกจุดนัดหมายไม่สำเร็จ', 'info');
-            }
-          },
-        },
-      ]
-    );
+    const ok = await confirm({
+      title: 'ยืนยันยกเลิกจุดนัดหมาย',
+      body: `คุณต้องการยกเลิกจุดนัดหมาย${spotName} ใช่หรือไม่?`,
+      cancelLabel: 'ไม่ยกเลิก',
+      confirmLabel: 'ยืนยันยกเลิก',
+      icon: 'mappin.slash.circle.fill',
+    });
+    if (!ok) return;
+    try {
+      await clearMeetup();
+      onToast?.('ยกเลิกจุดนัดหมายแล้ว', 'info');
+    } catch (error) {
+      console.error('[Meetup] clearMeetup error:', error);
+      onToast?.('ยกเลิกจุดนัดหมายไม่สำเร็จ', 'info');
+    }
   };
 
   const renderSpot = useCallback(({ item }) => (
@@ -241,25 +310,43 @@ export default function MeetupScreen({ onToast }) {
     />
   ), [handleQuickChoose, openMapForSpot, openScheduleFor, selectedMeetup?.id]);
 
+  // Lets the first-run tour scroll the hero / party finder into view.
+  const listRef = useRef(null);
+  const tourScrollRef = useRef({
+    scrollTo: ({ y = 0, animated = true } = {}) => listRef.current?.scrollToOffset?.({ animated, offset: y }),
+  });
+
   const header = (
     <View>
-      <CampusHero onOpenMap={() => openMapForSpot(selectedMeetup || visibleSpots[0])} selectedMeetup={selectedMeetup} />
+      {!partyOnly && <TourTarget id="meetup.hero" scrollRef={tourScrollRef} scrollOffset={0}>
+        <CampusHero onOpenMap={() => openMapForSpot(selectedMeetup || visibleSpots[0])} selectedMeetup={selectedMeetup} />
+      </TourTarget>}
 
-      <View style={[styles.searchBar, { backgroundColor: colors.card, borderColor: colors.line }]}>
-        <FeatureIcon color={colors.inkSoft} name="magnifyingglass" size={18} />
-        <TextInput
-          accessibilityLabel="ค้นหาสถานที่หรือกิจกรรม"
-          autoCapitalize="none"
-          onChangeText={setSearchQuery}
-          placeholder="ค้นหาสถานที่หรือกิจกรรม"
-          placeholderTextColor={colors.inkSoft}
-          returnKeyType="search"
-          style={[styles.searchInput, { color: colors.ink }]}
-          value={searchQuery}
-        />
-        {searchQuery ? <IconButton accessibilityLabel="ล้างคำค้นหา" icon="xmark.circle.fill" onPress={() => setSearchQuery('')} size={18} style={styles.clearButton} tintColor={colors.inkSoft} /> : null}
-      </View>
+      <TourTarget id={partyOnly ? 'party-finder.list' : 'meetup.party'} scrollRef={tourScrollRef} scrollOffset={24}>
+      {partyOnly ? <PartyFinderSection
+        targetPartyId={targetPartyId}
+        onLoadMore={loadMoreParties}
+        onLoadMoreRequests={loadMoreRequests}
+        hasMore={hasMoreParties}
+        loadingMore={loadingMoreParties}
+        onRetry={retryParties}
+        parties={parties}
+        loading={partiesLoading && !parties?.length}
+        error={partiesError}
+        busyPartyId={busyPartyId}
+        onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
+        onJoinParty={handleJoinParty}
+        onWithdrawRequest={handleWithdraw}
+        onApproveRequest={handleApprove}
+        onRejectRequest={handleReject}
+        onCancelParty={handleCancelParty}
+        onRetryActivation={(party) => retryLegacyActivation(party.id)}
+        onOpenChat={(party) => router.push({ pathname: '/group-chat', params: { partyId: party.id } })}
+        onOpenMap={openMapForSpot}
+      /> : <PartyFinderEntry />}
+      </TourTarget>
 
+      {!partyOnly && <>
       {selectedMeetup ? <SelectedMeetup meetup={selectedMeetup} onChangeTime={() => openScheduleFor(selectedMeetup)} onClear={handleClear} onOpenMap={() => openMapForSpot(selectedMeetup)} /> : null}
 
       <IosLikeSectionTitle subtitle="สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล" title="เลือกกิจกรรมที่สนใจ" />
@@ -280,22 +367,40 @@ export default function MeetupScreen({ onToast }) {
         <Text style={[styles.resultTitle, { color: colors.ink }]}>จุดนัดพบแนะนำ</Text>
         <Text style={[styles.resultCount, { color: colors.coral }]}>{visibleSpots.length} แห่ง · ใกล้สุดก่อน</Text>
       </View>
+      </>}
     </View>
   );
 
   return (
     <IosLikeScreen>
-      <IosLikeHeader
-        onRightPress={() => openMapForSpot(selectedMeetup || visibleSpots[0])}
-        rightIcon="map.fill"
-        subtitle="เลือกสถานที่และนัดหมายกับเพื่อน"
-        title="กิจกรรม"
-      />
+      {!partyOnly && <View style={[styles.searchSticky, { backgroundColor: colors.canvas, borderBottomColor: colors.line }]}>
+        <View style={[styles.searchBar, { backgroundColor: colors.card, borderColor: colors.line }]}>
+          <FeatureIcon color={colors.inkSoft} name="magnifyingglass" size={18} />
+          <TextInput
+            accessibilityLabel="ค้นหาสถานที่หรือกิจกรรม"
+            autoCapitalize="none"
+            keyboardAppearance={isDark ? 'dark' : 'light'}
+            cursorColor={colors.primary}
+            selectionColor={colors.primary}
+            onChangeText={setSearchQuery}
+            placeholder="ค้นหาสถานที่หรือกิจกรรม"
+            placeholderTextColor={colors.inkSoft}
+            returnKeyType="search"
+            style={[styles.searchInput, { color: colors.ink }]}
+            value={searchQuery}
+          />
+          {searchQuery ? <IconButton accessibilityLabel="ล้างคำค้นหา" icon="xmark.circle.fill" onPress={() => setSearchQuery('')} size={18} style={styles.clearButton} tintColor={colors.inkSoft} /> : null}
+        </View>
+      </View>}
       <FlatList
+        ref={listRef}
         contentContainerStyle={styles.listContent}
-        data={visibleSpots}
+        contentInsetAdjustmentBehavior="automatic"
+        data={partyOnly ? [] : visibleSpots}
         keyExtractor={(item) => item.id}
-        ListEmptyComponent={<EmptySpots query={searchQuery} />}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        ListEmptyComponent={partyOnly ? null : <EmptySpots query={searchQuery} />}
         ListHeaderComponent={header}
         initialNumToRender={6}
         removeClippedSubviews={Platform.OS === 'android'}
@@ -337,11 +442,21 @@ export default function MeetupScreen({ onToast }) {
             setSchedEnd(minutesToTimeValue(startMinutes + 60));
           }
         }}
+        onSelectSpot={setPendingSpot}
+        onPickPlace={() => { setScheduleModal(false); setPlacePickerVisible(true); }}
         pendingSpot={pendingSpot}
         schedDate={schedDate}
         schedEnd={schedEnd}
         schedStart={schedStart}
+        spots={campusSpots}
         visible={scheduleModal}
+      />
+      <AppointmentPlacePicker
+        visible={placePickerVisible}
+        spots={campusSpots}
+        initialSpot={pendingSpot}
+        onClose={() => { setPlacePickerVisible(false); setScheduleModal(true); }}
+        onSelect={(spot) => { setPendingSpot(spot); setPlacePickerVisible(false); setScheduleModal(true); }}
       />
     </IosLikeScreen>
   );
@@ -356,13 +471,24 @@ function CampusHero({ onOpenMap, selectedMeetup }) {
   const maxContentWidth = isTablet ? Math.min(windowWidth - 64, 620) : layoutWidth;
   const heroWidth = maxContentWidth - (spacing.lg * 2);
   const heroHeight = Platform.OS === 'android' && windowWidth < 600 ? 156 : 200;
+
+
   
   return (
     <View style={[styles.hero, { backgroundColor: colors.card, borderColor: colors.line, width: heroWidth, height: heroHeight, alignSelf: 'center' }]}>
-      <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} style={{ width: heroWidth, height: heroHeight }}>
-        {CAMPUS_PHOTOS.map((photo, index) => <Image key={String(index)} source={photo} style={{ width: heroWidth, height: heroHeight }} resizeMode="cover" />)}
+      <ScrollView
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        style={{ width: heroWidth, height: heroHeight }}
+      >
+        {CAMPUS_PHOTOS.map((photo, index) => (
+          <View key={String(index)} style={{ width: heroWidth, height: heroHeight }}>
+            <Image source={photo} style={{ width: heroWidth, height: heroHeight }} contentFit="cover" />
+          </View>
+        ))}
       </ScrollView>
-      <LinearGradient colors={['transparent', 'rgba(8,16,30,0.86)']} style={[styles.heroGradient, { height: Math.min(130, heroHeight * 0.6) }]} />
+      <LinearGradient colors={['transparent', 'rgba(8,16,30,0.55)']} style={[styles.heroGradient, { height: Math.min(90, heroHeight * 0.45) }]} />
       <View style={styles.heroCopy}>
         <View style={styles.heroTopRow}>
           <View style={[styles.heroPin, { backgroundColor: colors.coral }]}><FeatureIcon color="#FFFFFF" name="mappin.and.ellipse" size={18} /></View>
@@ -379,25 +505,68 @@ function CampusHero({ onOpenMap, selectedMeetup }) {
 }
 
 function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
+
   return (
-    <IosLikeCard style={[styles.selectedCard, { backgroundColor: colors.mintSoft, borderColor: colors.mintSoft }]}>
-      <View style={styles.selectedHeader}>
-        <View style={styles.selectedIdentity}>
-          <FeatureIcon color={colors.mint} name="checkmark.circle.fill" size={19} />
-          <View style={styles.selectedCopy}>
-            <Text style={[styles.selectedEyebrow, { color: colors.mint }]}>เลือกไว้แล้ว</Text>
-            <Text numberOfLines={1} style={[styles.selectedTitle, { color: colors.ink }]}>{meetup.name}</Text>
+    <IosLikeCard
+      style={[
+        styles.selectedCard,
+        {
+          backgroundColor: isDark ? 'rgba(32, 201, 151, 0.14)' : colors.mintSoft,
+          borderColor: isDark ? 'rgba(32, 201, 151, 0.32)' : 'rgba(32, 201, 151, 0.28)',
+        },
+      ]}
+    >
+      <View style={styles.selectedMainRow}>
+        <View style={[styles.selectedPhotoWrap, { backgroundColor: colors.surfaceRaised }]}>
+          <PlacePhoto
+            contentFit="cover"
+            recyclingKey={`selected-${meetup.id}`}
+            spot={meetup}
+            style={StyleSheet.absoluteFill}
+            transition={0}
+          />
+          <View style={[styles.selectedCheckBadge, { backgroundColor: colors.mint }]}>
+            <FeatureIcon color="#FFFFFF" name="checkmark" size={11} />
           </View>
         </View>
-        <IconButton accessibilityLabel="ยกเลิกจุดนัดหมาย" icon="xmark" onPress={onClear} size={16} style={styles.smallIconButton} tintColor={colors.inkMuted} />
+
+        <View style={styles.selectedCopy}>
+          <View style={styles.selectedHeader}>
+            <Text style={[styles.selectedEyebrow, { color: colors.mint }]}>จุดนัดหมายของคุณ</Text>
+            <IconButton
+              accessibilityLabel="ยกเลิกจุดนัดหมาย"
+              icon="xmark"
+              onPress={onClear}
+              size={14}
+              style={styles.smallIconButton}
+              tintColor={colors.inkMuted}
+            />
+          </View>
+          <Text numberOfLines={1} style={[styles.selectedTitle, { color: colors.ink }]}>{meetup.name}</Text>
+          <View style={styles.selectedMetaRow}>
+            {meetup.distance ? (
+              <View style={styles.selectedMetaChip}>
+                <FeatureIcon color={colors.coral} name="location.fill" size={11} />
+                <Text style={[styles.selectedMetaText, { color: colors.coral }]}>{meetup.distance}</Text>
+              </View>
+            ) : null}
+            {meetup.scheduledAt ? (
+              <View style={styles.selectedMetaChip}>
+                <FeatureIcon color={colors.inkMuted} name="clock.fill" size={11} />
+                <Text numberOfLines={1} style={[styles.selectedMetaText, { color: colors.inkMuted }]}>{meetup.scheduledAt}</Text>
+              </View>
+            ) : null}
+          </View>
+          {meetup.schedule?.date ? (
+            <View style={styles.selectedScheduleRow}>
+              <Tag icon="calendar" text={meetup.schedule.date} />
+              <Tag icon="clock.fill" text={`${meetup.schedule.startTime}–${meetup.schedule.endTime}`} />
+            </View>
+          ) : null}
+        </View>
       </View>
-      <View style={styles.metaRow}>
-        <Meta icon="location.fill" text={meetup.distance} />
-        <Meta icon="clock.fill" text={meetup.scheduledAt} />
-      </View>
-      {meetup.schedule?.date ? <View style={styles.scheduleRow}><Tag icon="calendar" text={meetup.schedule.date} /><Tag icon="clock.fill" text={`${meetup.schedule.startTime}–${meetup.schedule.endTime}`} /></View> : null}
-      <View style={styles.selectedActions}>
+      <View style={[styles.selectedActions, { borderTopColor: isDark ? 'rgba(32, 201, 151, 0.22)' : 'rgba(32, 201, 151, 0.25)' }]}>
         <ActionButton icon="calendar.badge.clock" label="เปลี่ยนเวลา" onPress={onChangeTime} tintColor={colors.mint} />
         <ActionButton icon="map.fill" label="ดูแผนที่" onPress={onOpenMap} tintColor={colors.blue} />
       </View>
@@ -406,30 +575,90 @@ function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
 }
 
 const SpotCard = React.memo(function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const accent = activityColor(spot.category, colors);
+
   const handleChoose = () => { void onChoose?.(spot); };
   const handleOpenMap = () => onOpenMap?.(spot);
   const handleSchedule = () => onSchedule?.(spot);
+
   return (
-    <IosLikeCard style={styles.spotCard}>
-      <View style={styles.spotTopRow}>
-        <View style={[styles.spotIcon, { backgroundColor: accent.soft }]}><FeatureIcon color={accent.color} name={activitySymbol(spot.category)} size={21} /></View>
-        <View style={styles.spotCopy}>
-          <Text numberOfLines={2} style={[styles.spotName, { color: colors.ink }]}>{spot.name}</Text>
-          <Text numberOfLines={1} style={[styles.spotCategory, { color: accent.color }]}>{spot.categoryLabel}</Text>
+    <IosLikeCard
+      style={[
+        styles.spotCard,
+        selected && {
+          backgroundColor: isDark ? 'rgba(32, 201, 151, 0.12)' : 'rgba(32, 201, 151, 0.08)',
+          borderColor: colors.mint,
+        },
+      ]}
+    >
+      {/* รูปสถานที่ในมหาวิทยาลัยทางซ้าย + รายละเอียดทางขวา */}
+      <View style={styles.spotMainRow}>
+        {/* ทางซ้าย: รูปสถานที่ */}
+        <View style={[styles.spotPhotoContainer, { backgroundColor: colors.surfaceRaised }]}>
+          <PlacePhoto
+            contentFit="cover"
+            recyclingKey={`spot-${spot.id}`}
+            spot={spot}
+            style={styles.spotPhotoImage}
+            transition={0}
+          />
+          <View style={[styles.photoIconBadge, { backgroundColor: accent.color }]}>
+            <FeatureIcon color="#FFFFFF" name={activitySymbol(spot.category)} size={11} />
+          </View>
         </View>
-        <View style={[styles.rating, { backgroundColor: colors.amberSoft }]}><FeatureIcon color={colors.amber} name="star.fill" size={12} /><Text style={[styles.ratingText, { color: colors.amber }]}>{spot.rating}</Text></View>
+
+        {/* ทางขวา: รายละเอียดสถานที่ */}
+        <View style={styles.spotDetailsColumn}>
+          <View style={styles.spotMetaTop}>
+            <View style={[styles.spotCategoryTag, { backgroundColor: accent.soft }]}>
+              <Text numberOfLines={1} style={[styles.spotCategoryText, { color: accent.color }]}>
+                {spot.categoryLabel}
+              </Text>
+            </View>
+            {spot.distance ? (
+              <View style={styles.spotDistanceTag}>
+                <FeatureIcon color={colors.coral} name="location.fill" size={10} />
+                <Text numberOfLines={1} style={[styles.spotDistanceText, { color: colors.coral }]}>
+                  {spot.distance}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          <Text numberOfLines={2} style={[styles.spotName, { color: colors.ink }]}>
+            {spot.name}
+          </Text>
+
+          {spot.description ? (
+            <Text numberOfLines={2} style={[styles.spotDescription, { color: colors.inkMuted }]}>
+              {spot.description}
+            </Text>
+          ) : null}
+
+        </View>
       </View>
-      <View style={[styles.spotDetails, { backgroundColor: colors.surfaceRaised }]}>
-        <Meta icon="info.circle.fill" text={spot.description} />
-        <Meta icon="person.2.fill" text={spot.busyTime} />
-        <Meta accent icon="location.fill" text={spot.distance} />
-      </View>
-      <View style={styles.spotButtonRow}>
-        <ActionButton emphasized icon="calendar.badge.clock" label="นัดหมาย" onPress={handleSchedule} tintColor={colors.coral} />
-        <ActionButton icon={selected ? 'checkmark.circle.fill' : 'mappin.circle.fill'} label={selected ? 'เลือกแล้ว' : 'ปักหมุด'} onPress={handleChoose} tintColor={selected ? colors.mint : colors.inkMuted} />
-        <ActionButton icon="map.fill" label="แผนที่" onPress={handleOpenMap} tintColor={colors.blue} />
+
+      <View style={[styles.spotButtonRow, { borderTopColor: colors.line }]}>
+        <ActionButton
+          emphasized
+          icon="calendar.badge.clock"
+          label="นัดหมาย"
+          onPress={handleSchedule}
+          tintColor={colors.coral}
+        />
+        <ActionButton
+          icon={selected ? 'checkmark.circle.fill' : 'mappin.circle.fill'}
+          label={selected ? 'เลือกแล้ว' : 'ปักหมุด'}
+          onPress={handleChoose}
+          tintColor={selected ? colors.mint : colors.inkMuted}
+        />
+        <ActionButton
+          icon="map.fill"
+          label="แผนที่"
+          onPress={handleOpenMap}
+          tintColor={colors.blue}
+        />
       </View>
     </IosLikeCard>
   );
@@ -455,7 +684,7 @@ function ActionButton({ disabled = false, emphasized = false, icon, label, onPre
   return (
     <Pressable accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.actionButton, { backgroundColor: emphasized ? tintColor : colors.surfaceRaised, borderColor: emphasized ? tintColor : colors.line }, pressed && styles.pressed, disabled && styles.disabled]}>
       <FeatureIcon color={emphasized ? '#FFFFFF' : tintColor} name={icon} size={14} />
-      <Text adjustsFontSizeToFit minimumFontScale={0.75} numberOfLines={1} style={[styles.actionText, { color: emphasized ? '#FFFFFF' : tintColor }]}>{label}</Text>
+      <Text style={[styles.actionText, { color: emphasized ? '#FFFFFF' : tintColor }]}>{label}</Text>
     </Pressable>
   );
 }
@@ -473,97 +702,71 @@ function EmptySpots({ query }) {
 
 function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedMeetup, spots, visible }) {
   const { colors } = useTheme();
-  const translateY = useRef(new Animated.Value(600)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const translateY = useSharedValue(600);
+  const fadeAnim = useSharedValue(0);
+  const dragStartY = useSharedValue(0);
   const isClosingRef = useRef(false);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
 
+  const unlockClose = useCallback(() => {
+    isClosingRef.current = false;
+  }, []);
+
+  const finishClose = useCallback(() => {
+    closeRef.current?.();
+    isClosingRef.current = false;
+  }, []);
+
   const closeWithAnimation = useCallback(() => {
     if (isClosingRef.current) return;
     isClosingRef.current = true;
-    Animated.parallel([
-      Animated.timing(translateY, {
-        toValue: 700,
-        duration: 220,
-        useNativeDriver: true,
-      }),
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      closeRef.current?.();
-      isClosingRef.current = false;
-    });
-  }, [translateY, fadeAnim]);
+    translateY.set(withSpring(700, { duration: 300, dampingRatio: 0.8 }, (finished) => {
+      if (finished) scheduleOnRN(finishClose);
+      else scheduleOnRN(unlockClose);
+    }));
+    fadeAnim.set(withTiming(0, { duration: 200, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
+  }, [fadeAnim, finishClose, translateY, unlockClose]);
 
   useEffect(() => {
     if (visible) {
       isClosingRef.current = false;
-      translateY.setValue(600);
-      fadeAnim.setValue(0);
-      Animated.parallel([
-        Animated.spring(translateY, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 280,
-          useNativeDriver: true,
-        }),
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 180,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      translateY.set(600);
+      fadeAnim.set(0);
+      translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
+      fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
     }
-  }, [visible, translateY, fadeAnim]);
+  }, [fadeAnim, translateY, visible]);
 
-  const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onStartShouldSetPanResponderCapture: () => true,
-    onMoveShouldSetPanResponder: (_, gestureState) => (
-      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-    ),
-    onMoveShouldSetPanResponderCapture: (_, gestureState) => (
-      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-    ),
-    onPanResponderGrant: () => {
-      translateY.stopAnimation();
-    },
-    onPanResponderMove: (_, gestureState) => {
-      if (gestureState.dy > 0) {
-        translateY.setValue(gestureState.dy);
+  const panGesture = useMemo(() => Gesture.Pan()
+    .onStart(() => {
+      cancelAnimation(translateY);
+      dragStartY.set(translateY.get());
+      scheduleOnRN(unlockClose);
+    })
+    .onUpdate((event) => {
+      const next = dragStartY.get() + event.translationY;
+      if (next > 0) translateY.set(next);
+      else translateY.set(rubberband(next, 600));
+    })
+    .onEnd((event) => {
+      const projected = translateY.get() + project(event.velocityY);
+      if (projected > 70 || event.velocityY > 500) {
+        scheduleOnRN(closeWithAnimation);
       } else {
-        translateY.setValue(gestureState.dy * 0.15);
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8, velocity: event.velocityY }));
+        fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dy > 70 || gestureState.vy > 0.5) {
-        closeWithAnimation();
-      } else {
-        Animated.spring(translateY, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 280,
-          useNativeDriver: true,
-        }).start();
+    })
+    .onFinalize((_, success) => {
+      if (!success) {
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
+        fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    },
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderTerminate: () => {
-      Animated.spring(translateY, {
-        toValue: 0,
-        damping: 22,
-        mass: 0.8,
-        stiffness: 280,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [closeWithAnimation, translateY]);
+    }), [closeWithAnimation, dragStartY, fadeAnim, translateY, unlockClose]);
+
+  const fadeStyle = useAnimatedStyle(() => ({ opacity: fadeAnim.get() }));
+  const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.get() }] }));
 
   // RN Modal keeps its children mounted while hidden, which would leave the
   // map WebView running in the background.
@@ -571,8 +774,9 @@ function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedM
 
   return (
     <Modal animationType="none" transparent visible={visible} onRequestClose={closeWithAnimation}>
+      <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={styles.modalOverlay}>
-        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.45)', opacity: fadeAnim }]}>
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.45)' }, fadeStyle]}>
           <Pressable accessibilityLabel="ปิดแผนที่" onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
         </Animated.View>
         <Animated.View
@@ -580,12 +784,12 @@ function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedM
             styles.mapModalContent,
             {
               backgroundColor: colors.card,
-              transform: [{ translateY }],
             },
+            sheetStyle,
           ]}
         >
+          <GestureDetector gesture={panGesture}>
           <View
-            {...panResponder.panHandlers}
             accessibilityHint="ลากลงเพื่อปิดแผนที่"
             style={styles.sheetHeaderDraggable}
           >
@@ -595,6 +799,7 @@ function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedM
               <Text numberOfLines={1} style={[styles.modalTitle, { color: colors.ink }]}>แผนที่วิทยาเขต ม.อ. หาดใหญ่</Text>
             </View>
           </View>
+          </GestureDetector>
           <View style={styles.mapFrame}>
             <CampusMapView
               spots={spots}
@@ -606,13 +811,15 @@ function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedM
           </View>
         </Animated.View>
       </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
 
-function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDate, onEnd, onMaxPeople, onMessage, onStart, pendingSpot, schedDate, schedEnd, schedStart, visible }) {
-  const { colors } = useTheme();
+function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDate, onEnd, onMaxPeople, onMessage, onPickPlace, onSelectSpot, onStart, pendingSpot, schedDate, schedEnd, schedStart, spots = [], visible }) {
+  const { colors, isDark } = useTheme();
   const [activePicker, setActivePicker] = useState(null);
+  const [keyboardOffset, setKeyboardOffset] = useState(0);
   const selectedDay = nextDays.find((day) => day.value === schedDate);
   const validTimeRange = timeValueToMinutes(schedEnd) > timeValueToMinutes(schedStart);
   const selectableDates = {
@@ -620,121 +827,112 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
     end: dateValueToDate(nextDays[nextDays.length - 1]?.value),
   };
 
-  const translateY = useRef(new Animated.Value(600)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const translateY = useSharedValue(600);
+  const fadeAnim = useSharedValue(0);
+  const dragStartY = useSharedValue(0);
   const isClosingRef = useRef(false);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+
+  const unlockClose = useCallback(() => {
+    isClosingRef.current = false;
+  }, []);
+
+  const finishClose = useCallback(() => {
+    closeRef.current?.();
+    isClosingRef.current = false;
+  }, []);
 
   const closeWithAnimation = useCallback(() => {
     if (isClosingRef.current) return;
     isClosingRef.current = true;
     setActivePicker(null);
-    Animated.parallel([
-      Animated.timing(translateY, {
-        toValue: 700,
-        duration: 220,
-        useNativeDriver: true,
-      }),
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      closeRef.current?.();
-      isClosingRef.current = false;
-    });
-  }, [translateY, fadeAnim]);
+    Keyboard.dismiss();
+    translateY.set(withSpring(700, { duration: 300, dampingRatio: 0.8 }, (finished) => {
+      if (finished) scheduleOnRN(finishClose);
+      else scheduleOnRN(unlockClose);
+    }));
+    fadeAnim.set(withTiming(0, { duration: 200, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
+  }, [fadeAnim, finishClose, translateY, unlockClose]);
 
   useEffect(() => {
     if (visible) {
       isClosingRef.current = false;
-      translateY.setValue(600);
-      fadeAnim.setValue(0);
-      Animated.parallel([
-        Animated.spring(translateY, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 280,
-          useNativeDriver: true,
-        }),
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 180,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      translateY.set(600);
+      fadeAnim.set(0);
+      translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
+      fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
+    } else {
+      setKeyboardOffset(0);
     }
-  }, [visible, translateY, fadeAnim]);
+  }, [fadeAnim, translateY, visible]);
 
-  const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onStartShouldSetPanResponderCapture: () => true,
-    onMoveShouldSetPanResponder: (_, gestureState) => (
-      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-    ),
-    onMoveShouldSetPanResponderCapture: (_, gestureState) => (
-      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-    ),
-    onPanResponderGrant: () => {
-      translateY.stopAnimation();
-    },
-    onPanResponderMove: (_, gestureState) => {
-      if (gestureState.dy > 0) {
-        translateY.setValue(gestureState.dy);
+  // Lift the sheet with keyboard height instead of shrinking the container
+  // (KeyboardAvoidingView behavior="height" made the top edge slide down).
+  useEffect(() => {
+    if (!visible) return undefined;
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, (event) => {
+      setKeyboardOffset(Math.max(0, event?.endCoordinates?.height || 0));
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardOffset(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [visible]);
+
+  const panGesture = useMemo(() => Gesture.Pan()
+    .enabled(keyboardOffset <= 0)
+    .onStart(() => {
+      cancelAnimation(translateY);
+      dragStartY.set(translateY.get());
+      scheduleOnRN(unlockClose);
+    })
+    .onUpdate((event) => {
+      const next = dragStartY.get() + event.translationY;
+      if (next > 0) translateY.set(next);
+      else translateY.set(rubberband(next, 600));
+    })
+    .onEnd((event) => {
+      const projected = translateY.get() + project(event.velocityY);
+      if (projected > 70 || event.velocityY > 500) {
+        scheduleOnRN(closeWithAnimation);
       } else {
-        translateY.setValue(gestureState.dy * 0.15);
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8, velocity: event.velocityY }));
+        fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dy > 70 || gestureState.vy > 0.5) {
-        closeWithAnimation();
-      } else {
-        Animated.spring(translateY, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 280,
-          useNativeDriver: true,
-        }).start();
+    })
+    .onFinalize((_, success) => {
+      if (!success) {
+        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
+        fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    },
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderTerminate: () => {
-      Animated.spring(translateY, {
-        toValue: 0,
-        damping: 22,
-        mass: 0.8,
-        stiffness: 280,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [closeWithAnimation, translateY]);
+    }), [closeWithAnimation, dragStartY, fadeAnim, keyboardOffset, translateY, unlockClose]);
+
+  const fadeStyle = useAnimatedStyle(() => ({ opacity: fadeAnim.get() }));
+  const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.get() }] }));
 
   return (
-    <Modal animationType="none" statusBarTranslucent transparent visible={visible} onRequestClose={closeWithAnimation}>
+    <Modal animationType="none" transparent visible={visible} onRequestClose={closeWithAnimation}>
+      <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={styles.modalOverlay}>
-        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.45)', opacity: fadeAnim }]}>
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.45)' }, fadeStyle]}>
           <Pressable accessibilityLabel="ปิดหน้าต่างนัดหมาย" onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
         </Animated.View>
-        <KeyboardAvoidingView
-          behavior="height"
-          keyboardVerticalOffset={0}
-          style={styles.scheduleKeyboardAvoiding}
-        >
+        <View style={[styles.scheduleKeyboardAvoiding, { paddingBottom: keyboardOffset }]}>
           <Animated.View
             style={[
               styles.scheduleModalContent,
               {
                 backgroundColor: colors.card,
-                transform: [{ translateY }],
               },
+              sheetStyle,
             ]}
           >
+            <GestureDetector gesture={panGesture}>
             <View
-              {...panResponder.panHandlers}
               accessibilityHint="ลากลงเพื่อปิดหน้านัดหมาย"
               style={styles.sheetHeaderDraggable}
             >
@@ -747,12 +945,42 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
                 </View>
               ) : null}
             </View>
+            </GestureDetector>
             <ScrollView
               contentContainerStyle={styles.scheduleScroll}
+              keyboardDismissMode="on-drag"
               keyboardShouldPersistTaps="handled"
               nestedScrollEnabled
               showsVerticalScrollIndicator={false}
             >
+              <PickerLabel icon="mappin.and.ellipse" label="สถานที่นัดหมาย" />
+              <PickerField icon="map.fill" label="ค้นหาหรือปักหมุดบนแผนที่" onPress={onPickPlace} value={pendingSpot?.name || 'เลือกสถานที่'} />
+              {spots && spots.length > 0 ? (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalSpotSelectorScroll}>
+                  {spots.slice(0, 10).map((spot) => {
+                    const isSelected = pendingSpot?.id === spot.id;
+                    return (
+                      <Pressable
+                        key={spot.id}
+                        onPress={() => onSelectSpot?.(spot)}
+                        style={[
+                          styles.modalSpotChip,
+                          {
+                            backgroundColor: isSelected ? colors.primarySoft : colors.surfaceRaised,
+                            borderColor: isSelected ? colors.primary : colors.line,
+                          },
+                        ]}
+                      >
+                        <FeatureIcon name="mappin.circle.fill" size={13} color={isSelected ? colors.primary : colors.inkMuted} />
+                        <Text style={[styles.modalSpotChipText, { color: isSelected ? colors.primary : colors.ink }]} numberOfLines={1}>
+                          {spot.name}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              ) : null}
+
               <PickerLabel icon="calendar" label="เลือกวัน" />
               <PickerField icon="calendar" label="วันที่นัดหมาย" onPress={() => setActivePicker('date')} value={selectedDay?.label || schedDate || 'เลือกวัน'} />
 
@@ -764,9 +992,9 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
               {!validTimeRange ? <View style={[styles.timeError, { backgroundColor: colors.dangerSoft }]}><FeatureIcon color={colors.danger} name="exclamationmark.circle.fill" size={14} /><Text style={[styles.timeErrorText, { color: colors.danger }]}>เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม</Text></View> : null}
 
               <PickerLabel icon="person.2.fill" label="จำนวนคน (รวมตัวเอง)" />
-              <TextInput keyboardType="number-pad" onChangeText={onMaxPeople} placeholder="เช่น 2, 4" placeholderTextColor={colors.inkSoft} style={[styles.textInput, { backgroundColor: colors.surfaceRaised, borderColor: colors.line, color: colors.ink }]} value={maxPeople} />
+              <TextInput keyboardAppearance={isDark ? 'dark' : 'light'} cursorColor={colors.primary} selectionColor={colors.primary} keyboardType="number-pad" onChangeText={onMaxPeople} placeholder="เช่น 2, 4" placeholderTextColor={colors.inkSoft} style={[styles.textInput, { backgroundColor: colors.surfaceRaised, borderColor: colors.line, color: colors.ink }]} value={maxPeople} />
               <PickerLabel icon="text.bubble.fill" label="ประกาศ/รายละเอียด" />
-              <TextInput multiline numberOfLines={3} onChangeText={onMessage} placeholder="เช่น หาเพื่อนไปวิ่งครับ" placeholderTextColor={colors.inkSoft} style={[styles.textInput, styles.textArea, { backgroundColor: colors.surfaceRaised, borderColor: colors.line, color: colors.ink }]} textAlignVertical="top" value={message} />
+              <TextInput keyboardAppearance={isDark ? 'dark' : 'light'} cursorColor={colors.primary} selectionColor={colors.primary} multiline numberOfLines={3} onChangeText={onMessage} placeholder="เช่น หาเพื่อนไปวิ่งครับ" placeholderTextColor={colors.inkSoft} style={[styles.textInput, styles.textArea, { backgroundColor: colors.surfaceRaised, borderColor: colors.line, color: colors.ink }]} textAlignVertical="top" value={message} />
               <View style={[styles.summaryBox, { backgroundColor: validTimeRange ? colors.coralSoft : colors.dangerSoft }]}><Text style={[styles.summaryText, { color: validTimeRange ? colors.coral : colors.danger }]}>{selectedDay?.label || '—'} · {schedStart}–{schedEnd}</Text></View>
             </ScrollView>
             <View style={styles.modalActions}>
@@ -776,10 +1004,10 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
               </Pressable>
             </View>
           </Animated.View>
-        </KeyboardAvoidingView>
+        </View>
       </View>
       {visible && activePicker === 'date' ? (
-        <Host>
+        <Host colorScheme={isDark ? 'dark' : 'light'}>
           <DatePickerDialog
             color={colors.coral}
             confirmButtonLabel="ตกลง"
@@ -797,7 +1025,7 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
         </Host>
       ) : null}
       {visible && activePicker === 'start' ? (
-        <Host>
+        <Host colorScheme={isDark ? 'dark' : 'light'}>
           <TimePickerDialog
             color={colors.coral}
             confirmButtonLabel="ตกลง"
@@ -813,7 +1041,7 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
         </Host>
       ) : null}
       {visible && activePicker === 'end' ? (
-        <Host>
+        <Host colorScheme={isDark ? 'dark' : 'light'}>
           <TimePickerDialog
             color={colors.coral}
             confirmButtonLabel="ตกลง"
@@ -828,6 +1056,7 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
           />
         </Host>
       ) : null}
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -854,7 +1083,7 @@ function PickerLabel({ icon, label }) {
 }
 
 const styles = StyleSheet.create({
-  listContent: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg, width: '100%', maxWidth: 620, alignSelf: 'center' },
+  listContent: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, width: '100%', maxWidth: 620, alignSelf: 'center' },
   hero: { borderRadius: radius.xl, borderWidth: 1, height: 156, marginBottom: spacing.md, overflow: 'hidden', position: 'relative' },
   heroImage: { height: 156 },
   heroGradient: { bottom: 0, height: 130, left: 0, position: 'absolute', right: 0 },
@@ -865,39 +1094,54 @@ const styles = StyleSheet.create({
   heroMapText: { color: '#FFFFFF', fontSize: type.caption2, fontWeight: '800' },
   heroTitle: { color: '#FFFFFF', fontSize: type.headline, fontWeight: '900' },
   heroSubtitle: { color: 'rgba(255,255,255,0.86)', fontSize: type.caption2, lineHeight: 16, marginTop: 3 },
-  searchBar: { alignItems: 'center', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md, minHeight: 50, paddingHorizontal: spacing.md },
+  searchSticky: { alignSelf: 'center', borderBottomWidth: StyleSheet.hairlineWidth, paddingBottom: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, width: '100%', maxWidth: 620, zIndex: 2 },
+  searchBar: { alignItems: 'center', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, minHeight: 50, paddingHorizontal: spacing.md },
   searchInput: { flex: 1, fontSize: type.body, minWidth: 0, paddingVertical: 0 },
   clearButton: { elevation: 0, height: 30, shadowOpacity: 0, width: 30 },
   selectedCard: { marginBottom: spacing.lg, marginTop: 0, padding: spacing.md },
+  selectedMainRow: { alignItems: 'stretch', flexDirection: 'row', gap: 12 },
+  selectedPhotoWrap: { borderRadius: radius.md, height: 104, overflow: 'hidden', position: 'relative', width: 94 },
+  selectedCheckBadge: { alignItems: 'center', borderRadius: radius.pill, height: 20, justifyContent: 'center', left: 6, position: 'absolute', top: 6, width: 20 },
   selectedHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  selectedIdentity: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: spacing.sm },
-  selectedCopy: { flex: 1 },
+  selectedCopy: { flex: 1, justifyContent: 'space-between', minWidth: 0 },
   selectedEyebrow: { fontSize: type.caption2, fontWeight: '800' },
-  selectedTitle: { fontSize: type.body, fontWeight: '900', marginTop: 2 },
-  smallIconButton: { elevation: 0, height: 34, shadowOpacity: 0, width: 34 },
+  selectedTitle: { fontSize: type.body, fontWeight: '900', marginTop: 1 },
+  selectedMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
+  selectedMetaChip: { alignItems: 'center', flexDirection: 'row', gap: 3 },
+  selectedMetaText: { fontSize: type.caption2, fontWeight: '700' },
+  selectedScheduleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+  smallIconButton: { elevation: 0, height: 28, shadowOpacity: 0, width: 28 },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
   metaItem: { alignItems: 'flex-start', flexDirection: 'row', flexShrink: 1, gap: 6, maxWidth: '100%' },
   metaText: { flexShrink: 1, fontSize: type.caption2, lineHeight: 17 },
   scheduleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
   tag: { alignItems: 'center', borderRadius: radius.sm, flexDirection: 'row', gap: 5, maxWidth: '100%', paddingHorizontal: 9, paddingVertical: 5 },
   tagText: { flexShrink: 1, fontSize: type.caption2, fontWeight: '800' },
-  selectedActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
+  selectedActions: { borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, paddingTop: spacing.sm },
   categoryRow: { gap: spacing.sm, paddingBottom: spacing.lg, paddingTop: spacing.sm, paddingRight: spacing.md },
   resultMeta: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.md, marginTop: spacing.xs },
   resultTitle: { fontSize: type.headline, fontWeight: '900' },
   resultCount: { flexShrink: 1, fontSize: type.caption2, fontWeight: '800', marginLeft: spacing.sm, textAlign: 'right' },
   spotCard: { marginBottom: spacing.md, padding: spacing.md },
-  spotTopRow: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
-  spotIcon: { alignItems: 'center', borderRadius: radius.lg, height: 44, justifyContent: 'center', width: 44 },
-  spotCopy: { flex: 1, minWidth: 0 },
-  spotName: { fontSize: type.body, fontWeight: '900', lineHeight: 18 },
-  spotCategory: { fontSize: type.caption2, fontWeight: '700', marginTop: 3 },
-  rating: { alignItems: 'center', borderRadius: radius.sm, flexDirection: 'row', gap: 3, paddingHorizontal: 6, paddingVertical: 5 },
-  ratingText: { fontSize: type.caption2, fontWeight: '900' },
-  spotDetails: { borderRadius: radius.md, gap: 6, marginTop: spacing.sm, padding: spacing.md },
-  spotButtonRow: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm },
-  actionButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 4, justifyContent: 'center', minHeight: 38, paddingHorizontal: spacing.sm },
-  actionText: { fontSize: type.caption2, fontWeight: '800' },
+  spotMainRow: { alignItems: 'stretch', flexDirection: 'row', gap: 12 },
+  spotPhotoContainer: { borderRadius: radius.md, height: 118, overflow: 'hidden', position: 'relative', width: 104 },
+  spotPhotoImage: { height: 118, width: 104 },
+  photoIconBadge: { alignItems: 'center', borderRadius: radius.pill, height: 22, justifyContent: 'center', left: 6, position: 'absolute', top: 6, width: 22 },
+  photoRatingBadge: { alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.64)', borderRadius: radius.pill, bottom: 6, flexDirection: 'row', gap: 3, left: 6, paddingHorizontal: 6, paddingVertical: 2, position: 'absolute' },
+  photoRatingText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
+  spotDetailsColumn: { flex: 1, justifyContent: 'space-between', minWidth: 0 },
+  spotMetaTop: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', gap: 6, marginBottom: 2 },
+  spotCategoryTag: { borderRadius: radius.xs, paddingHorizontal: 7, paddingVertical: 2.5 },
+  spotCategoryText: { fontSize: 11, fontWeight: '800' },
+  spotDistanceTag: { alignItems: 'center', flexDirection: 'row', gap: 3 },
+  spotDistanceText: { fontSize: 11, fontWeight: '800' },
+  spotName: { fontSize: 15, fontWeight: '900', lineHeight: 19, marginBottom: 3 },
+  spotDescription: { fontSize: 12, lineHeight: 16, marginBottom: 4 },
+  spotBusyRow: { alignItems: 'center', flexDirection: 'row', gap: 4, marginTop: 'auto' },
+  spotBusyText: { fontSize: 11, lineHeight: 14 },
+  spotButtonRow: { borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, paddingTop: spacing.sm },
+  actionButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 4, justifyContent: 'center', minHeight: 48, paddingHorizontal: spacing.sm, paddingVertical: 10 },
+  actionText: { fontSize: type.caption2, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
   emptySpots: { alignItems: 'center', marginTop: spacing.sm, padding: spacing.xxl },
   emptyTitle: { fontSize: type.headline, fontWeight: '900', marginTop: spacing.md, textAlign: 'center' },
   emptyText: { fontSize: type.caption, lineHeight: 18, marginTop: spacing.sm, textAlign: 'center' },
@@ -912,7 +1156,17 @@ const styles = StyleSheet.create({
   mapFrame: { borderRadius: radius.lg, flex: 1, overflow: 'hidden' },
   modalSpot: { alignItems: 'center', flexDirection: 'row', gap: 5, justifyContent: 'center', marginBottom: spacing.sm },
   modalSpotName: { flexShrink: 1, fontSize: type.caption, fontWeight: '800' },
-  scheduleScroll: { paddingBottom: spacing.md },
+  modalSpotSelectorScroll: { gap: 8, paddingVertical: 4, paddingBottom: 8 },
+  modalSpotChip: {
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  modalSpotChipText: { fontSize: 12, fontWeight: '700' },
   pickerLabel: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm, marginTop: spacing.md },
   pickerField: { alignItems: 'center', borderRadius: radius.md, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, minHeight: 62, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   pickerFieldCompact: { flex: 1, minWidth: 0 },

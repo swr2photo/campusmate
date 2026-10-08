@@ -1,5 +1,7 @@
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
+import { Image } from 'react-native';
+import { imageResizeActions } from './imagePolicy';
 
 export const MAX_PROFILE_IMAGE_SIZE_MB = 30;
 export const MAX_PROFILE_IMAGE_SIZE_BYTES = MAX_PROFILE_IMAGE_SIZE_MB * 1024 * 1024;
@@ -54,7 +56,7 @@ export async function validateImageSize(uri, knownSizeBytes = null, maxMb = MAX_
 }
 
 /**
- * Compresses and resizes a profile image to a standardized format (1024x1024 JPEG).
+ * Compresses a profile image to JPEG with a longest side of at most 1024px.
  * Checks size before manipulation to prevent freezing or OOM crashes on huge files.
  *
  * @param {string} uri - Local image file URI
@@ -69,14 +71,26 @@ export async function compressProfileImage(uri) {
     throw new Error(validation.error);
   }
 
-  if (uri.startsWith('data:')) return uri;
-
-  const result = await manipulateAsync(
-    uri,
-    [{ resize: { width: 1024, height: 1024 } }],
-    { compress: 0.7, format: SaveFormat.JPEG }
-  );
-
+  const result = await compressUploadImage(uri, { maxDimension: 1024, quality: 0.7, targetBytes: 350 * 1024 });
   return result.uri;
+}
+
+export async function compressUploadImage(uri, {
+  width, height, maxDimension = 1440, quality = 0.72, targetBytes = 600 * 1024,
+} = {}) {
+  const validation = await validateImageSize(uri);
+  if (!validation.valid) throw new Error(validation.error);
+  if (!width || !height) {
+    const dimensions = await new Promise((resolve, reject) => Image.getSize(uri, (w, h) => resolve({ width: w, height: h }), reject));
+    width = dimensions.width;
+    height = dimensions.height;
+  }
+  const actions = imageResizeActions(width, height, maxDimension);
+  let result = await manipulateAsync(uri, actions, { compress: quality, format: SaveFormat.JPEG });
+  const info = await FileSystem.getInfoAsync(result.uri).catch(() => null);
+  if (info?.size > targetBytes) {
+    result = await manipulateAsync(result.uri, [], { compress: 0.55, format: SaveFormat.JPEG });
+  }
+  return result;
 }
 

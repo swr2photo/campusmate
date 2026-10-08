@@ -1,5 +1,6 @@
+import Text from './AppText';
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppActions, useAppSync } from '../context/AppContext';
 import FeatureIcon from './FeatureIcon';

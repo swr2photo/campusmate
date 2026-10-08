@@ -1,48 +1,64 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { StyleSheet, View } from 'react-native';
+import { BlurTargetView } from 'expo-blur';
 import { Redirect, Tabs } from 'expo-router';
+import { PlatformPressable } from 'expo-router/react-navigation';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppBadges, useAppProfile } from '../../src/context/AppContext';
 import { useAuth } from '../../src/context/AuthContext';
 import FeatureIcon from '../../src/components/FeatureIcon';
+import ProfileTabIcon from '../../src/components/ProfileTabIcon';
 import AppSplashScreen from '../../src/components/AppSplashScreen';
+import TabsBlurTargetContext from '../../src/context/TabsBlurTargetContext';
 import { spacing, type, useTheme } from '../../src/theme';
+import { isBlockedCampusAccount, needsCampusEmailMigration } from '../../src/utils/campusEmail';
 
-const TAB_BAR_CONTENT_HEIGHT = 78;
+const TAB_BAR_CONTENT_HEIGHT = 68;
 
 const LABELS = {
-  home: '\u0e2b\u0e19\u0e49\u0e32\u0e2b\u0e25\u0e31\u0e01',
-  discover: '\u0e04\u0e49\u0e19\u0e2b\u0e32\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e19',
-  chat: '\u0e41\u0e0a\u0e15',
-  meetup: '\u0e01\u0e34\u0e08\u0e01\u0e23\u0e23\u0e21',
+  home: 'หาเพื่อน',
+  discover: 'ถูกใจ',
+  chat: 'แชต',
+  meetup: 'กิจกรรม',
+  me: 'โปรไฟล์',
 };
 
 const SYMBOLS = {
-  home: { ios: 'house.fill', android: 'home', web: 'home' },
-  discover: { ios: 'line.3.horizontal', android: 'group', web: 'group' },
+  home: { ios: 'person.2.fill', android: 'group', web: 'group' },
+  discover: { ios: 'heart.fill', android: 'favorite', web: 'favorite' },
   chat: { ios: 'message.fill', android: 'chat_bubble', web: 'chat_bubble' },
   meetup: { ios: 'calendar', android: 'event', web: 'event' },
 };
 
-// Defined once: a new function identity here makes the navigator treat the icon
-// as a different component and remount it on every render.
 const TAB_ICONS = {
-  home: ({ color }) => <FeatureIcon color={color} name={SYMBOLS.home} size={22} />,
   discover: ({ color }) => <FeatureIcon color={color} name={SYMBOLS.discover} size={22} />,
   chat: ({ color }) => <FeatureIcon color={color} name={SYMBOLS.chat} size={22} />,
   meetup: ({ color }) => <FeatureIcon color={color} name={SYMBOLS.meetup} size={22} />,
 };
 
-const HOME_OPTIONS = { title: LABELS.home, tabBarIcon: TAB_ICONS.home };
 const MEETUP_OPTIONS = { title: LABELS.meetup, tabBarIcon: TAB_ICONS.meetup };
+const ME_OPTIONS = { title: LABELS.me, tabBarIcon: ProfileTabIcon };
+
+function SilentTabBarButton(props) {
+  return <PlatformPressable {...props} android_ripple={{ borderless: true, color: 'transparent' }} />;
+}
 
 export default function FallbackTabLayout() {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, user, logout } = useAuth();
   const { profile } = useAppProfile();
   const { pendingLikeCount, totalUnreadMessages = 0 } = useAppBadges();
   const unreadCount = totalUnreadMessages;
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
+  const tabsBlurTargetRef = useRef(null);
   const tabBarBottomInset = Math.max(insets.bottom, spacing.sm);
+  const blocked = isBlockedCampusAccount(user, profile);
+
+  useEffect(() => {
+    if (!blocked) return undefined;
+    logout().catch(() => {});
+    return undefined;
+  }, [blocked, logout]);
 
   const screenOptions = useMemo(() => ({
     headerShown: false,
@@ -50,18 +66,21 @@ export default function FallbackTabLayout() {
     tabBarActiveTintColor: colors.primary,
     tabBarInactiveTintColor: colors.inkSoft,
     tabBarHideOnKeyboard: true,
-    tabBarLabelStyle: { fontSize: type.micro, fontWeight: '700' },
-    tabBarItemStyle: { borderRadius: 18, marginHorizontal: 2, marginVertical: 5 },
+    tabBarButton: SilentTabBarButton,
+    tabBarLabelStyle: { color: colors.inkSoft, fontSize: type.micro, fontWeight: '600' },
+    tabBarItemStyle: { paddingVertical: 2 },
+    tabBarBadgeStyle: {
+      backgroundColor: colors.coral,
+      color: colors.onPrimary,
+    },
     tabBarStyle: {
       backgroundColor: colors.card,
-      borderColor: colors.line,
-      borderTopLeftRadius: 24,
-      borderTopRightRadius: 24,
-      borderTopWidth: 1,
+      borderTopColor: colors.line,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      elevation: 0,
       height: TAB_BAR_CONTENT_HEIGHT + tabBarBottomInset,
       paddingBottom: tabBarBottomInset,
       paddingTop: spacing.xs,
-      ...({ elevation: 10, shadowColor: '#000000', shadowOpacity: 0.08, shadowRadius: 14, shadowOffset: { height: -4, width: 0 } }),
     },
   }), [colors, tabBarBottomInset]);
 
@@ -75,15 +94,66 @@ export default function FallbackTabLayout() {
     [unreadCount],
   );
 
+  const homeOptions = useMemo(
+    () => ({
+      title: LABELS.home,
+      tabBarIcon: () => <CenterFindFriendsIcon colors={colors} />,
+    }),
+    [colors],
+  );
+
   if (!isLoggedIn) return <Redirect href="/" />;
+  if (blocked) return <AppSplashScreen />;
+  if (needsCampusEmailMigration(user, profile)) return <Redirect href="/verify-campus-email" />;
   if (!profile) return <AppSplashScreen />;
+  if (profile.isNewUser) return <Redirect href="/setup" />;
 
   return (
-    <Tabs initialRouteName="home" screenOptions={screenOptions}>
-      <Tabs.Screen name="home" options={HOME_OPTIONS} />
-      <Tabs.Screen name="discover" options={discoverOptions} />
-      <Tabs.Screen name="chat" options={chatOptions} />
-      <Tabs.Screen name="meetup" options={MEETUP_OPTIONS} />
-    </Tabs>
+    <TabsBlurTargetContext.Provider value={tabsBlurTargetRef}>
+      <BlurTargetView ref={tabsBlurTargetRef} style={styles.tabsBlurTarget}>
+        <Tabs initialRouteName="home" screenOptions={screenOptions}>
+          <Tabs.Screen name="discover" options={discoverOptions} />
+          <Tabs.Screen name="chat" options={chatOptions} />
+          <Tabs.Screen name="home" options={homeOptions} />
+          <Tabs.Screen name="meetup" options={MEETUP_OPTIONS} />
+          <Tabs.Screen name="me" options={ME_OPTIONS} />
+        </Tabs>
+      </BlurTargetView>
+    </TabsBlurTargetContext.Provider>
   );
 }
+
+function CenterFindFriendsIcon({ colors }) {
+  return (
+    <View
+      style={[
+        styles.centerAction,
+        {
+          backgroundColor: colors.primary,
+          borderColor: colors.card,
+        },
+      ]}
+    >
+      <FeatureIcon color={colors.onPrimary} name={SYMBOLS.home} size={24} />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  tabsBlurTarget: { flex: 1 },
+  centerAction: {
+    alignItems: 'center',
+    borderRadius: 28,
+    borderWidth: 4,
+    elevation: 5,
+    height: 54,
+    justifyContent: 'center',
+    marginBottom: 6,
+    marginTop: -16,
+    shadowColor: '#25272B',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.2,
+    shadowRadius: 5,
+    width: 54,
+  },
+});

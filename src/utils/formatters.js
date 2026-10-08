@@ -1,10 +1,10 @@
+import { formatPersonDistance } from './distance';
+import { SELECTABLE_ACTIVITY_CATEGORIES } from '../data/activityCategories';
+
 export const ACTIVITY_LABELS = {
+  ...Object.fromEntries(SELECTABLE_ACTIVITY_CATEGORIES.map((category) => [category.id, category.label])),
   running: 'วิ่ง',
-  gym: 'เข้ายิม / ฟิตเนส',
-  sports: 'เล่นกีฬา',
   study: 'อ่านหนังสือ / ติวสอบ',
-  chill: 'คุยเล่น / คาเฟ่',
-  other: 'กิจกรรมอื่น ๆ',
 };
 
 export function getActivityLabel(activity, activityLabel, activities) {
@@ -36,11 +36,7 @@ export function genderLabel(gender) {
 }
 
 export function formatDistance(distKm) {
-  if (distKm == null) return '';
-  if (distKm < 1) {
-    return Math.round(distKm * 1000) + ' เมตร';
-  }
-  return distKm.toFixed(1) + ' กม.';
+  return formatPersonDistance(distKm);
 }
 
 export function formatAvailabilitySlots(slots, options = {}) {
@@ -102,6 +98,33 @@ export function formatAvailabilitySlots(slots, options = {}) {
       }
       if (!dateLabel) {
         dateLabel = rawDate;
+      }
+    }
+
+    if (!dateLabel) {
+      if (slot.label && typeof slot.label === 'string' && slot.label.trim()) {
+        dateLabel = slot.label.trim();
+      } else if (slot.day && typeof slot.day === 'string' && slot.day.trim()) {
+        const d = slot.day.trim().toLowerCase();
+        const dayMap = {
+          '0': 'วันอาทิตย์', 'sun': 'วันอาทิตย์', 'sunday': 'วันอาทิตย์', 'อาทิตย์': 'วันอาทิตย์',
+          '1': 'วันจันทร์', 'mon': 'วันจันทร์', 'monday': 'วันจันทร์', 'จันทร์': 'วันจันทร์',
+          '2': 'วันอังคาร', 'tue': 'วันอังคาร', 'tuesday': 'วันอังคาร', 'อังคาร': 'วันอังคาร',
+          '3': 'วันพุธ', 'wed': 'วันพุธ', 'wednesday': 'วันพุธ', 'พุธ': 'วันพุธ',
+          '4': 'วันพฤหัสบดี', 'thu': 'วันพฤหัสบดี', 'thursday': 'วันพฤหัสบดี', 'พฤหัสบดี': 'วันพฤหัสบดี', 'พฤหัส': 'วันพฤหัสบดี',
+          '5': 'วันศุกร์', 'fri': 'วันศุกร์', 'friday': 'วันศุกร์', 'ศุกร์': 'วันศุกร์',
+          '6': 'วันเสาร์', 'sat': 'วันเสาร์', 'saturday': 'วันเสาร์', 'เสาร์': 'วันเสาร์',
+        };
+        const dayMapShort = {
+          '0': 'อา.', 'sun': 'อา.', 'sunday': 'อา.', 'อาทิตย์': 'อา.',
+          '1': 'จ.', 'mon': 'จ.', 'monday': 'จ.', 'จันทร์': 'จ.',
+          '2': 'อ.', 'tue': 'อ.', 'tuesday': 'อ.', 'อังคาร': 'อ.',
+          '3': 'พ.', 'wed': 'พ.', 'wednesday': 'พ.', 'พุธ': 'พ.',
+          '4': 'พฤ.', 'thu': 'พฤ.', 'thursday': 'พฤ.', 'พฤหัสบดี': 'พฤ.', 'พฤหัส': 'พฤ.',
+          '5': 'ศ.', 'fri': 'ศ.', 'friday': 'ศ.', 'ศุกร์': 'ศ.',
+          '6': 'ส.', 'sat': 'ส.', 'saturday': 'ส.', 'เสาร์': 'ส.',
+        };
+        dateLabel = (compact ? dayMapShort[d] : dayMap[d]) || slot.day.trim();
       }
     }
 

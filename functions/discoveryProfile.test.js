@@ -5,6 +5,7 @@ import { buildDiscoveryProfile, buildPublicProfile } from './discoveryProfile.js
 test('buildDiscoveryProfile keeps only bounded public discovery fields', () => {
   const profile = buildDiscoveryProfile('user-1', {
     isDiscoverable: true,
+    isFaceVerified: true,
     name: '  Alice  ',
     email: 'alice@example.com',
     latitude: 7.1,
@@ -39,9 +40,23 @@ test('buildDiscoveryProfile removes profiles that are still new users completing
   assert.equal(buildDiscoveryProfile('user-new', { isNewUser: true }), null);
 });
 
-test('buildDiscoveryProfile keeps legacy profiles discoverable by default', () => {
-  const profile = buildDiscoveryProfile('user-3', {});
+test('buildDiscoveryProfile keeps legacy face-verified profiles discoverable by default', () => {
+  const profile = buildDiscoveryProfile('user-3', { isFaceVerified: true });
   assert.equal(profile.isDiscoverable, true);
+  assert.equal(profile.isFaceVerified, true);
+});
+
+test('buildDiscoveryProfile leaves out owners who have not passed face verification', () => {
+  // Accounts created before the requirement have no flag at all.
+  assert.equal(buildDiscoveryProfile('legacy', { name: 'Legacy', avatarUri: 'https://example.com/a.jpg' }), null);
+  for (const value of [false, 'true', 1, null]) {
+    assert.equal(buildDiscoveryProfile('user-x', { name: 'X', isFaceVerified: value }), null);
+  }
+  // The public projection keeps the server-written flag so discovery can be rebuilt from it.
+  const verified = buildPublicProfile('user-v', { name: 'Verified', isFaceVerified: true, faceMatchScore: 97 });
+  assert.equal(verified.isFaceVerified, true);
+  assert.equal(buildDiscoveryProfile('user-v', verified).isFaceVerified, true);
+  assert.equal(buildPublicProfile('user-u', { name: 'Unverified' }).isFaceVerified, undefined);
 });
 
 test('buildPublicProfile rebuilds an owner document without private fields', () => {
@@ -81,6 +96,76 @@ test('buildPublicProfile rebuilds an owner document without private fields', () 
   assert.equal(profile.matchingPreferences, undefined);
 });
 
+test('gallery image URLs survive public and discovery projections within the five-photo limit', () => {
+  const photos = Array.from({ length: 6 }, (_, index) => `https://cdn.example.test/gallery/${index}.jpg`);
+  const gallery = [
+    `  ${photos[0]}  `,
+    'file:///local/photo.jpg',
+    'data:image/jpeg;base64,abc',
+    'http://cdn.example.test/insecure.jpg',
+    null,
+    ...photos.slice(1),
+    photos[0],
+  ];
+
+  const publicProfile = buildPublicProfile('user-gallery', {
+    name: 'Gallery User',
+    isFaceVerified: true,
+    gallery,
+    privacy: { showActivity: false, showFaculty: false },
+  });
+  assert.deepEqual(publicProfile.gallery, photos.slice(0, 5));
+
+  const discoveryProfile = buildDiscoveryProfile('user-gallery', publicProfile);
+  assert.deepEqual(discoveryProfile.gallery, photos.slice(0, 5));
+  assert.equal(buildPublicProfile('user-empty', { gallery: ['file:///local/photo.jpg'] }).gallery, undefined);
+  assert.equal(buildDiscoveryProfile('user-empty', { isFaceVerified: true, gallery: ['file:///local/photo.jpg'] }).gallery, undefined);
+});
+
+test('activityDetails survive both projections and respect showActivity', () => {
+  const source = {
+    isDiscoverable: true,
+    isFaceVerified: true,
+    name: 'Bee',
+    activities: ['running', 'sports'],
+    activityDetails: {
+      running: { pace: 'Pace 6:00 - 7:00 นาที/กม.', timeOfDay: ['เย็น', '', 7] },
+      sports: { sports: ['แบดมินตัน'], level: '  จริงจัง / แข่งขัน ' },
+      'Bad Key!': { x: 'y' },
+      empty: {},
+    },
+  };
+
+  const publicProfile = buildPublicProfile('user-5', source);
+  assert.deepEqual(publicProfile.activityDetails, {
+    running: { pace: 'Pace 6:00 - 7:00 นาที/กม.', timeOfDay: ['เย็น'] },
+    sports: { sports: ['แบดมินตัน'], level: 'จริงจัง / แข่งขัน' },
+  });
+
+  const discoveryProfile = buildDiscoveryProfile('user-5', publicProfile);
+  assert.deepEqual(discoveryProfile.activityDetails, publicProfile.activityDetails);
+
+  const hidden = buildPublicProfile('user-5', { ...source, privacy: { showActivity: false } });
+  assert.equal(hidden.activityDetails, undefined);
+});
+
+test('legacy pace is mirrored into the running detail and back', () => {
+  const fromLegacy = buildPublicProfile('user-6', {
+    activities: ['running'],
+    pace: 'Pace 8:00+ นาที/กม.',
+  });
+  assert.deepEqual(fromLegacy.activityDetails, { running: { pace: 'Pace 8:00+ นาที/กม.' } });
+
+  const fromDetail = buildPublicProfile('user-7', {
+    activities: ['running'],
+    activityDetails: { running: { pace: 'เดิน / เริ่มต้น' } },
+  });
+  assert.equal(fromDetail.pace, 'เดิน / เริ่มต้น');
+
+  const notRunning = buildPublicProfile('user-8', { activities: ['gym'], pace: 'เดิน / เริ่มต้น' });
+  assert.equal(notRunning.activityDetails, undefined);
+});
+
 test('buildPublicProfile treats a missing visibility flag as discoverable', () => {
   const profile = buildPublicProfile('legacy-user', {
     name: 'Legacy User',
@@ -88,4 +173,31 @@ test('buildPublicProfile treats a missing visibility flag as discoverable', () =
   });
 
   assert.equal(profile.isDiscoverable, true);
+});
+
+test('avatar revision is preserved while unrelated profile timestamps change', () => {
+  const source = { name: 'Avatar', isFaceVerified: true, avatarUri: 'https://example.com/avatar.jpg', avatarRevision: 123, updatedAt: 900 };
+  const first = buildPublicProfile('avatar-owner', source);
+  const edited = buildPublicProfile('avatar-owner', { ...source, bio: 'New bio', updatedAt: 1000 });
+  assert.equal(edited.avatarRevision, first.avatarRevision);
+  assert.equal(buildDiscoveryProfile('avatar-owner', edited).avatarRevision, 123);
+  assert.equal(buildPublicProfile('avatar-owner', { ...source, avatarRevision: -1 }).avatarRevision, undefined);
+});
+
+test('availabilitySlots preserves date, day, start, end, label in projections', () => {
+  const slots = [
+    { date: '2026-09-27', day: 'sun', start: '00:00', end: '00:30', label: 'อา. 27 ก.ย.' },
+    { date: '2026-09-27', day: 'sun', start: '00:00', end: '24:00', label: 'อา. 27 ก.ย.' },
+  ];
+  const source = {
+    isDiscoverable: true,
+    isFaceVerified: true,
+    name: 'SlotTester',
+    availabilitySlots: slots,
+  };
+  const publicProfile = buildPublicProfile('user-slots', source);
+  assert.deepEqual(publicProfile.availabilitySlots, slots);
+
+  const discoveryProfile = buildDiscoveryProfile('user-slots', publicProfile);
+  assert.deepEqual(discoveryProfile.availabilitySlots, slots);
 });

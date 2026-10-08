@@ -1,49 +1,72 @@
+import Text from '../components/AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Animated,
-  Modal,
-  PanResponder,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import { Picker as NativePicker } from '@react-native-picker/picker';
-import { BlurView } from 'expo-blur';
-import { Image } from 'expo-image';
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import Image from '../components/CachedImage';
 import { LinearGradient } from 'expo-linear-gradient';
-import MaskedView from '@react-native-masked-view/masked-view';
 import { router } from 'expo-router';
-import { FACULTIES } from '../data/faculties';
 import {
   MATCHING_ACTIVITY_OPTIONS,
-  MATCHING_AGE_MAX,
   MATCHING_AGE_MIN,
-  MATCHING_AGE_VALUES,
   MATCHING_AVAILABILITY_OPTIONS,
   MATCHING_DEFAULT_AGE_MAX,
   MATCHING_GENDER_OPTIONS,
   MATCHING_PACE_OPTIONS,
+  MATCHING_WEEKDAY_OPTIONS,
   MATCHING_YEAR_OPTIONS,
   createMatchingOptionState,
   getSelectedMatchingValues,
+  matchesActivityDetailFilters,
   matchesAvailabilityPeriods,
+  matchesAvailabilityWeekdays,
   normalizeMatchingAge,
+  profileHasAvailability,
+  profileHasPhoto,
+  pruneActivityDetailFilters,
 } from '../data/matchingFilters';
-import { useApp } from '../context/AppContext';
-import {
-  IosLikeCard,
-  IosLikePill,
-  IosLikeScreen,
-  IconButton,
-} from '../components/iosLike';
+import { useAppActions, useAppBadges, useAppConversations, useAppFeed, useAppProfile } from '../context/AppContext';
+import { IosLikeScreen } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';
-import { useRemoteImage } from '../utils/useRemoteImage';
-import { formatReadableDate, getActivityLabel } from '../utils/formatters';
+import NativeAdCard from '../components/NativeAdCard';
+import { isDiscoveryAdDue } from '../utils/adPolicy';
+import { useEntitlement } from '../context/MembershipContext';
+import { FEATURE_ADVANCED_FILTERS, FEATURE_UNLIMITED_REWIND } from '../data/plans';
+import { allowedMatchingPreferences } from '../services/secureDiscoveryService';
+import { TourTarget } from '../context/AppTourContext';
+import { HomeCardSkeleton } from '../components/LikesSkeleton';
+import { useDiscoveryDeckState } from '../hooks/useDiscoveryDeckState';
+import { getImageRequestUri, useProfileImagePrefetch } from '../utils/useRemoteImage';
+import { ACTIVITY_CATEGORY_BY_ID } from '../data/activityCategories';
+import { ACTIVITY_LABELS, formatDistance, formatReadableDate, getActivityLabel } from '../utils/formatters';
+import { dailyPick, getDailySeed, pickDailyProfile } from '../utils/dailyPick';
 import { radius, spacing, type, useTheme } from '../theme';
 
-const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
+function getTagDisplayLabel(tag) {
+  if (!tag) return '';
+  const cat = ACTIVITY_CATEGORY_BY_ID[tag];
+  if (cat?.shortLabel) return cat.shortLabel;
+  if (cat?.label) return cat.label;
+  if (ACTIVITY_LABELS[tag]) return ACTIVITY_LABELS[tag];
+  return getActivityLabel(tag);
+}
+
+// Quick activity categories with vector icons (100% Zero-Emoji)
+const QUICK_ACTIVITIES = [
+  { id: 'all', label: 'ทั้งหมด', symbol: 'sparkles' },
+  { id: 'study', label: 'ติวสอบ', symbol: 'book.closed.fill' },
+  { id: 'food', label: 'ทานอาหาร', symbol: 'fork.knife' },
+  { id: 'gym', label: 'ฟิตเนส', symbol: 'dumbbell.fill' },
+  { id: 'chill', label: 'คาเฟ่ & ชิล', symbol: 'cup.and.saucer.fill' },
+  { id: 'gaming', label: 'บอร์ดเกม', symbol: 'gamecontroller.fill' },
+  { id: 'running', label: 'วิ่ง', symbol: 'figure.run' },
+  { id: 'sports', label: 'กีฬา', symbol: 'sportscourt.fill' },
+];
+
+function stripEmojis(text) {
+  if (typeof text !== 'string') return text;
+  return text
+    .replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}]/gu, '')
+    .trim();
+}
 
 function getRemainingTime() {
   const now = new Date();
@@ -59,811 +82,1290 @@ function formatRemainingTime(milliseconds) {
   return `${hours}:${minutes}:${seconds}`;
 }
 
-function getDailySeed() {
-  const now = new Date();
-  return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
-}
-
-function dailyPick(items, seed) {
-  if (items.length <= 1) return items;
-  let hash = 0;
-  for (let index = 0; index < seed.length; index += 1) {
-    hash = (Math.imul(31, hash) + seed.charCodeAt(index)) | 0;
-  }
-  hash ^= hash << 13;
-  hash ^= hash >>> 17;
-  hash ^= hash << 5;
-  return [items[(hash >>> 0) % items.length]];
-}
-
 export default function HomeScreen({ onOpenLikes }) {
   const { colors, isDark } = useTheme();
+  const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
+  const rewind = useEntitlement(FEATURE_UNLIMITED_REWIND);
   const {
     availableProfiles = [],
-    conversations = [],
-    getMeetupStats,
+    hasMoreProfiles = false,
+    isLoadingMoreProfiles = false,
+    isResolvingDistances = false,
+    isDiscoveryReady = false,
+    discoveryError = null,
     matchedProfileIds = [],
-    pendingIncomingLikes = [],
-    profile,
-    recycleSkippedProfiles,
-    saveMatchingPreferences,
     selectedMeetup,
-  } = useApp();
-  const [showSettings, setShowSettings] = useState(false);
+    discoveryActionCount = 0,
+  } = useAppFeed();
+  const { conversationCount = 0, matchedCount = 0 } = useAppBadges();
+  const {
+    dismissProfile,
+    getMeetupStats,
+    loadMoreProfiles,
+    matchProfile,
+    recycleSkippedProfiles,
+    retryDiscovery,
+  } = useAppActions();
+  const { profile } = useAppProfile();
+  const { conversations = [] } = useAppConversations();
+
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [faculty, setFaculty] = useState('all');
-  const [sameFacultyOnly, setSameFacultyOnly] = useState(false);
-  const [distance, setDistance] = useState(25);
-  const [ageMin, setAgeMin] = useState(MATCHING_AGE_MIN);
-  const [ageMax, setAgeMax] = useState(MATCHING_DEFAULT_AGE_MAX);
-  const [years, setYears] = useState(() => createMatchingOptionState(MATCHING_YEAR_OPTIONS));
-  const [genders, setGenders] = useState(() => createMatchingOptionState(MATCHING_GENDER_OPTIONS));
-  const [activities, setActivities] = useState(() => createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
-  const [paces, setPaces] = useState(() => createMatchingOptionState(MATCHING_PACE_OPTIONS));
-  const [availabilityPeriods, setAvailabilityPeriods] = useState(() => createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
-  const [availabilityFilterActive, setAvailabilityFilterActive] = useState(false);
-  const [facultySaving, setFacultySaving] = useState(false);
-  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [actionInProgress, setActionInProgress] = useState(false);
+
   const recycleLock = useRef(false);
+  const pinnedDailyRef = useRef({ day: getDailySeed(), id: null });
   const openLikes = onOpenLikes || (() => router.push('/likes'));
+  const preferences = allowedMatchingPreferences(profile?.matchingPreferences, advancedFilters.allowed);
 
-  useEffect(() => {
-    const preferences = profile?.matchingPreferences || {};
-    const selectedActivities = preferences.activities || [];
-    const selectedYears = preferences.years || [];
-    const selectedGenders = preferences.genders || [];
-    const selectedPaces = preferences.paces || [];
-    const selectedAvailabilityPeriods = preferences.availabilityPeriods || [];
-    const normalizedAgeMin = normalizeMatchingAge(preferences.ageMin, MATCHING_AGE_MIN);
-    const normalizedAgeMax = Math.max(
-      normalizedAgeMin,
-      normalizeMatchingAge(preferences.ageMax, MATCHING_DEFAULT_AGE_MAX)
-    );
-    setFaculty(preferences.faculty || 'all');
-    setSameFacultyOnly(preferences.sameFacultyOnly === true);
-    setDistance(Number(preferences.maxDistance) || 25);
-    setAgeMin(normalizedAgeMin);
-    setAgeMax(normalizedAgeMax);
-    setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS, selectedActivities));
-    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS, selectedYears));
-    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS, selectedGenders));
-    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS, selectedPaces));
-    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS, selectedAvailabilityPeriods));
-    setAvailabilityFilterActive(
-      selectedAvailabilityPeriods.length > 0
-      && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
-    );
-  }, [
-    profile?.id,
-    profile?.matchingPreferences?.activities,
-    profile?.matchingPreferences?.ageMax,
-    profile?.matchingPreferences?.ageMin,
-    profile?.matchingPreferences?.availabilityPeriods,
-    profile?.matchingPreferences?.faculty,
-    profile?.matchingPreferences?.genders,
-    profile?.matchingPreferences?.maxDistance,
-    profile?.matchingPreferences?.paces,
-    profile?.matchingPreferences?.sameFacultyOnly,
-    profile?.matchingPreferences?.years,
-  ]);
-
-  const persistFacultyMatching = async (nextFaculty, nextSameFaculty) => {
-    if (facultySaving) return;
-    const previousFaculty = faculty;
-    const previousSameFaculty = sameFacultyOnly;
-    const normalizedSameFaculty = nextSameFaculty === true && Boolean(profile?.faculty);
-    const normalizedFaculty = normalizedSameFaculty ? 'all' : (nextFaculty || 'all');
-    setFaculty(normalizedFaculty);
-    setSameFacultyOnly(normalizedSameFaculty);
-    setFacultySaving(true);
-    try {
-      await saveMatchingPreferences({
-        ...(profile?.matchingPreferences || {}),
-        faculty: normalizedFaculty,
-        sameFacultyOnly: normalizedSameFaculty,
-      });
-    } catch (error) {
-      setFaculty(previousFaculty);
-      setSameFacultyOnly(previousSameFaculty);
-      console.error('[HomeScreen] Failed to save faculty matching:', error);
-    } finally {
-      setFacultySaving(false);
-    }
-  };
-
-  const toggleAvailabilityPeriod = (value) => {
-    const nextAvailabilityPeriods = {
-      ...availabilityPeriods,
-      [value]: !availabilityPeriods[value],
-    };
-    const selectedPeriods = MATCHING_AVAILABILITY_OPTIONS
-      .filter(({ value: optionValue }) => nextAvailabilityPeriods[optionValue])
-      .map(({ value: optionValue }) => optionValue);
-    setAvailabilityPeriods(
-      selectedPeriods.length === 0
-      || selectedPeriods.length === MATCHING_AVAILABILITY_OPTIONS.length
-        ? createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS)
-        : nextAvailabilityPeriods
-    );
-    setAvailabilityFilterActive(
-      selectedPeriods.length > 0
-      && selectedPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
-    );
-  };
-
-  const saveSearchSettings = async () => {
-    setSettingsSaving(true);
-    try {
-      const selectedActivities = getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities);
-      const selectedYears = getSelectedMatchingValues(MATCHING_YEAR_OPTIONS, years);
-      const selectedGenders = getSelectedMatchingValues(MATCHING_GENDER_OPTIONS, genders);
-      const selectedPaces = getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces);
-      const selectedAvailabilityPeriods = getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods);
-      const normalizedAgeMin = Math.min(
-        MATCHING_AGE_MAX,
-        Math.max(MATCHING_AGE_MIN, Math.round(ageMin))
-      );
-      const normalizedAgeMax = Math.max(
-        normalizedAgeMin,
-        Math.min(MATCHING_AGE_MAX, Math.max(MATCHING_AGE_MIN, Math.round(ageMax)))
-      );
-      await saveMatchingPreferences({
-        ...(profile?.matchingPreferences || {}),
-        activities: selectedActivities,
-        ageMin: normalizedAgeMin,
-        ageMax: normalizedAgeMax,
-        availabilityPeriods: selectedAvailabilityPeriods,
-        faculty: sameFacultyOnly ? 'all' : faculty,
-        genders: selectedGenders,
-        maxDistance: Math.round(distance),
-        paces: selectedPaces,
-        sameFacultyOnly,
-        years: selectedYears,
-      });
-      setAgeMin(normalizedAgeMin);
-      setAgeMax(normalizedAgeMax);
-      setAvailabilityFilterActive(
-        selectedAvailabilityPeriods.length > 0
-        && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
-      );
-      setShowSettings(false);
-    } catch (error) {
-      console.error('[HomeScreen] Failed to save search settings:', error);
-    } finally {
-      setSettingsSaving(false);
-    }
-  };
-
-  const activeFacultyFilter = sameFacultyOnly
-    ? (profile?.faculty || 'all')
-    : (faculty || 'all');
-
-  const selectedAvailabilityPeriods = useMemo(
-    () => (availabilityFilterActive
-      ? getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods)
-      : []),
-    [availabilityFilterActive, availabilityPeriods]
+  const faculty = preferences.sameFacultyOnly === true ? 'all' : (preferences.faculty || 'all');
+  const sameFacultyOnly = preferences.sameFacultyOnly === true;
+  const ageMin = normalizeMatchingAge(preferences.ageMin, MATCHING_AGE_MIN);
+  const ageMax = Math.max(ageMin, normalizeMatchingAge(preferences.ageMax, MATCHING_DEFAULT_AGE_MAX));
+  const years = createMatchingOptionState(MATCHING_YEAR_OPTIONS, preferences.years || []);
+  const genders = createMatchingOptionState(MATCHING_GENDER_OPTIONS, preferences.genders || []);
+  const activities = createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS, preferences.activities || []);
+  const paces = createMatchingOptionState(MATCHING_PACE_OPTIONS, preferences.paces || []);
+  const activityDetailFilters = useMemo(
+    () => pruneActivityDetailFilters(preferences.activityDetails, preferences.activities || []),
+    [preferences.activityDetails, preferences.activities]
   );
+  const availabilityPeriods = createMatchingOptionState(
+    MATCHING_AVAILABILITY_OPTIONS,
+    preferences.availabilityPeriods || []
+  );
+  const weekdays = createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS, preferences.weekdays || []);
+  const selectedAvailabilityPeriods = getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods);
+  const selectedWeekdays = getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays);
+  const availabilityFilterActive = selectedAvailabilityPeriods.length > 0
+    && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length;
+  const activeFacultyFilter = sameFacultyOnly ? (profile?.faculty || 'all') : faculty;
+  const maxDistance = Number(preferences.maxDistance);
+  const requirePhoto = preferences.requirePhoto === true;
+  const requireAvailability = preferences.requireAvailability === true;
+  const meetupStats = selectedMeetup && profile ? getMeetupStats(profile) : null;
 
   const filteredProfiles = useMemo(() => {
     const filtered = availableProfiles.filter((candidate) => {
-      if (selectedCategory !== 'all' && candidate.activity !== selectedCategory && !candidate.activities?.includes(selectedCategory)) return false;
       if (activeFacultyFilter !== 'all' && candidate.faculty !== activeFacultyFilter) return false;
       if (sameFacultyOnly && candidate.faculty !== profile?.faculty) return false;
-      if (availabilityFilterActive) {
-        if (
-          selectedAvailabilityPeriods.length > 0
-          && !matchesAvailabilityPeriods(candidate, selectedAvailabilityPeriods)
-        ) {
+      const candidateAge = Number(candidate.age);
+      if (Number.isFinite(candidateAge) && (candidateAge < ageMin || candidateAge > ageMax)) return false;
+      const selectedYears = getSelectedMatchingValues(MATCHING_YEAR_OPTIONS, years);
+      if (selectedYears.length && candidate.year && !selectedYears.includes(candidate.year)) return false;
+      const selectedGenders = getSelectedMatchingValues(MATCHING_GENDER_OPTIONS, genders);
+      if (selectedGenders.length && candidate.gender && !selectedGenders.includes(candidate.gender)) return false;
+
+      // Quick Category Filter from Top Carousel
+      if (selectedCategory !== 'all') {
+        const candidateActs = candidate.activities || [candidate.activity].filter(Boolean);
+        if (!candidateActs.includes(selectedCategory) && candidate.activity !== selectedCategory) {
           return false;
         }
       }
+
+      const selectedActivities = getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities);
+      if (selectedActivities.length) {
+        const candidateActivities = candidate.activities || [candidate.activity].filter(Boolean);
+        if (!selectedActivities.some((item) => candidateActivities.includes(item) || candidate.activity === item)) {
+          return false;
+        }
+      }
+      const selectedPaces = getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces);
+      if (selectedPaces.length && candidate.pace && !selectedPaces.includes(candidate.pace)) return false;
+      if (!matchesActivityDetailFilters(candidate, activityDetailFilters)) return false;
+      if (availabilityFilterActive && !matchesAvailabilityPeriods(candidate, selectedAvailabilityPeriods)) {
+        return false;
+      }
+      if (selectedWeekdays.length && !matchesAvailabilityWeekdays(candidate, selectedWeekdays)) return false;
+      if (requirePhoto && !profileHasPhoto(candidate)) return false;
+      if (requireAvailability && !profileHasAvailability(candidate)) return false;
+      if (
+        Number.isFinite(maxDistance)
+        && maxDistance > 0
+        && typeof candidate.distance === 'number'
+        && candidate.distance > maxDistance
+      ) {
+        return false;
+      }
       return true;
     });
-    return dailyPick(filtered, getDailySeed() + (profile?.id || ''));
-  }, [activeFacultyFilter, availabilityFilterActive, availableProfiles, profile?.faculty, profile?.id, sameFacultyOnly, selectedAvailabilityPeriods, selectedCategory]);
+    const today = getDailySeed();
+    if (pinnedDailyRef.current.day !== today) {
+      pinnedDailyRef.current = { day: today, id: null };
+    }
+    const seed = `${today}:${profile?.id || ''}`;
+    const picked = pinnedDailyRef.current.id
+      ? pickDailyProfile(filtered, seed, pinnedDailyRef.current.id)
+      : dailyPick(filtered, seed);
+    pinnedDailyRef.current.id = picked[0]?.id || null;
+    return picked;
+  }, [
+    activeFacultyFilter,
+    activityDetailFilters,
+    ageMax,
+    ageMin,
+    availabilityFilterActive,
+    activities,
+    availableProfiles,
+    genders,
+    paces,
+    maxDistance,
+    profile?.faculty,
+    profile?.id,
+    requireAvailability,
+    requirePhoto,
+    sameFacultyOnly,
+    selectedAvailabilityPeriods,
+    selectedCategory,
+    selectedWeekdays,
+    years,
+  ]);
 
   const currentProfile = filteredProfiles[0] || null;
-  const meetupStats = profile && getMeetupStats ? getMeetupStats(profile) : null;
+  useProfileImagePrefetch(filteredProfiles.slice(1, 4));
+  const deck = useDiscoveryDeckState({
+    hasCandidate: isDiscoveryReady && Boolean(currentProfile),
+    isDiscoveryReady,
+    isLoadingMoreProfiles,
+    isResolvingDistances,
+    discoveryError,
+    retryDiscovery,
+  });
 
   useEffect(() => {
-    if (!availableProfiles || !availableProfiles.length) return;
-    const upcoming = availableProfiles.slice(0, 6);
-    upcoming.forEach((item) => {
-      const uri = item?.avatarUri || item?.photoURL;
-      if (uri && typeof uri === 'string' && uri.startsWith('http')) {
-        Image.prefetch(uri, 'memory-disk').catch(() => {});
-      }
-    });
-  }, [availableProfiles]);
-
-  useEffect(() => {
-    if (currentProfile || !availableProfiles.length || filteredProfiles.length) {
+    if (currentProfile || isLoadingMoreProfiles || isResolvingDistances || !hasMoreProfiles) {
       recycleLock.current = false;
       return undefined;
     }
     if (recycleLock.current) return undefined;
     recycleLock.current = true;
     const timer = setTimeout(() => {
-      void recycleSkippedProfiles()?.catch?.((error) => {
-        console.warn('[HomeScreen] recycleSkippedProfiles error:', error?.message || error);
+      void loadMoreProfiles()?.catch?.((error) => {
+        console.warn('[HomeScreen] loadMoreProfiles error:', error?.message || error);
       });
-    }, 900);
+    }, 400);
     return () => clearTimeout(timer);
-  }, [availableProfiles.length, currentProfile, filteredProfiles.length, recycleSkippedProfiles]);
+  }, [currentProfile, hasMoreProfiles, isLoadingMoreProfiles, isResolvingDistances, loadMoreProfiles]);
 
-  const resetFilters = () => {
+  const restartDeck = useCallback(() => {
+    // Bringing skipped people back is CampusMate Plus (unlimited rewind).
+    if (!rewind.guard()) return;
+    pinnedDailyRef.current.id = null;
     void recycleSkippedProfiles()?.catch?.((error) => {
-      console.warn('[HomeScreen] resetFilters recycle error:', error?.message || error);
+      console.warn('[HomeScreen] restartDeck recycle error:', error?.message || error);
     });
-    setSelectedCategory('all');
-    setDistance(25);
-    setAgeMin(MATCHING_AGE_MIN);
-    setAgeMax(MATCHING_DEFAULT_AGE_MAX);
-    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS));
-    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS));
-    setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
-    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS));
-    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
-    setAvailabilityFilterActive(false);
-    void saveMatchingPreferences({
-      ...(profile?.matchingPreferences || {}),
-      activities: [],
-      ageMin: MATCHING_AGE_MIN,
-      ageMax: MATCHING_DEFAULT_AGE_MAX,
-      availabilityPeriods: [],
-      faculty: 'all',
-      genders: [],
-      maxDistance: 25,
-      paces: [],
-      sameFacultyOnly: false,
-      years: [],
-    }).catch((error) => console.error('[HomeScreen] Failed to reset filters:', error));
-    setFaculty('all');
-    setSameFacultyOnly(false);
-  };
+    if (hasMoreProfiles && !isLoadingMoreProfiles) {
+      void loadMoreProfiles()?.catch?.((error) => {
+        console.warn('[HomeScreen] restartDeck loadMore error:', error?.message || error);
+      });
+    }
+  }, [hasMoreProfiles, isLoadingMoreProfiles, loadMoreProfiles, recycleSkippedProfiles, rewind.guard]);
+
+  const handlePass = useCallback(async () => {
+    if (!currentProfile || actionInProgress) return;
+    setActionInProgress(true);
+    try {
+      await dismissProfile(currentProfile.id);
+    } catch (error) {
+      console.warn('[HomeScreen] dismissProfile error:', error?.message || error);
+    } finally {
+      setActionInProgress(false);
+    }
+  }, [actionInProgress, currentProfile, dismissProfile]);
+
+  const handleMatch = useCallback(async () => {
+    if (!currentProfile || actionInProgress) return;
+    setActionInProgress(true);
+    try {
+      const result = await matchProfile(currentProfile);
+      if (result?.matched && result?.conversationId) {
+        router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
+      }
+    } catch (error) {
+      console.warn('[HomeScreen] matchProfile error:', error?.message || error);
+    } finally {
+      setActionInProgress(false);
+    }
+  }, [actionInProgress, currentProfile, matchProfile]);
+
+  const handleSuperLike = useCallback(async () => {
+    if (!currentProfile || actionInProgress) return;
+    setActionInProgress(true);
+    try {
+      const result = await matchProfile(currentProfile);
+      if (result?.matched && result?.conversationId) {
+        router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
+      }
+    } catch (error) {
+      console.warn('[HomeScreen] superLike error:', error?.message || error);
+    } finally {
+      setActionInProgress(false);
+    }
+  }, [actionInProgress, currentProfile, matchProfile]);
+
+  const handleDirectChat = useCallback(async () => {
+    if (!currentProfile || actionInProgress) return;
+    if (isCurrentMatched) {
+      const convo = conversations?.find((c) =>
+        c?.participants?.includes?.(currentProfile.id) || c?.otherUser?.id === currentProfile.id
+      );
+      if (convo?.id) {
+        router.push({ pathname: '/chat-room', params: { chatId: convo.id } });
+        return;
+      }
+    }
+    setActionInProgress(true);
+    try {
+      const result = await matchProfile(currentProfile);
+      if (result?.conversationId) {
+        router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
+      } else {
+        router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } });
+      }
+    } catch (error) {
+      router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } });
+    } finally {
+      setActionInProgress(false);
+    }
+  }, [actionInProgress, conversations, currentProfile, isCurrentMatched, matchProfile]);
+
+  const tourScrollRef = useRef(null);
+
+  const handleOpenProfile = useCallback(() => {
+    if (!currentProfile) return;
+    router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } });
+  }, [currentProfile]);
+
+  const isCurrentMatched = Boolean(
+    currentProfile?.isMatched || (currentProfile?.id && matchedProfileIds.includes(currentProfile.id))
+  );
 
   return (
     <IosLikeScreen>
-      <MatchingHeader onSettings={() => setShowSettings(true)} />
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {selectedMeetup ? <MeetupBanner meetup={selectedMeetup} stats={meetupStats} /> : null}
+      <ScrollView
+        ref={tourScrollRef}
+        contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+      >
 
-        <View style={styles.quickFilterRow}>
-          <QuickFilterButton
-            badge={pendingIncomingLikes.length}
-            label="ถูกใจ & จับคู่"
-            onPress={openLikes}
-          />
-          <QuickFilterButton
-            label="เริ่มใหม่"
-            onPress={resetFilters}
-          />
-        </View>
 
-        {currentProfile ? (
+        {/* 1. Collegiate Campus Context Header */}
+        <CampusContextBar
+          faculty={profile?.faculty}
+          matchedCount={Math.max(matchedCount, conversationCount)}
+          onOpenLikes={openLikes}
+        />
+
+        {/* Unverified users: their profile stays hidden until face verification. */}
+
+
+        {/* 2. Activity Filter Carousel */}
+        <TourTarget id="home.activities" scrollRef={tourScrollRef}>
+          <ActivityFilterStrip
+            categories={QUICK_ACTIVITIES}
+            onSelect={setSelectedCategory}
+            selected={selectedCategory}
+          />
+        </TourTarget>
+
+        {/* 3. Daily Pick Spotlight Banner (Redesigned) */}
+        <TourTarget id="home.dailyPick" scrollRef={tourScrollRef}>
+          <DailyPickBanner
+            candidate={deck.state === 'card' ? currentProfile : null}
+            onOpenCandidate={handleOpenProfile}
+          />
+        </TourTarget>
+
+        {/* 4. Main Profile Card or Empty State */}
+        {isDiscoveryAdDue(discoveryActionCount) ? <NativeAdCard key={`discovery-ad-${discoveryActionCount}`} /> : null}
+        {deck.state === 'card' ? (
           <>
-            <DiscoverProfileCard
-              candidate={currentProfile}
-              onPress={() => router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } })}
-            />
-            <View style={styles.shortcutRow}>
-              <ResetCountdownPill />
-              <ShortcutPill accent icon="flame.fill" label="สถิติแมตช์" value={String(Math.max(matchedProfileIds.length, conversations.length))} />
-            </View>
+            <TourTarget id="home.deck" scrollRef={tourScrollRef}>
+              <DiscoverProfileCard
+                key={currentProfile.id}
+                candidate={currentProfile}
+                isMatched={isCurrentMatched}
+                onPress={handleOpenProfile}
+              />
+            </TourTarget>
+
+            {/* 5. 5-Button Tactile Action Bar */}
+            <TourTarget id="home.actions" scrollRef={tourScrollRef} scrollOffset={360}>
+              <DiscoveryActionBar
+                disabled={actionInProgress}
+                isMatched={isCurrentMatched}
+                onChat={handleDirectChat}
+                onMatch={handleMatch}
+                onPass={handlePass}
+                onRestart={restartDeck}
+                onSuperLike={handleSuperLike}
+              />
+            </TourTarget>
           </>
+        ) : deck.state === 'loading' ? (
+          <TourTarget id="home.deck" scrollRef={tourScrollRef}>
+            <HomeCardSkeleton />
+          </TourTarget>
+        ) : deck.state === 'error' ? (
+          <TourTarget id="home.deck" scrollRef={tourScrollRef}>
+            <DiscoveryErrorState offline={deck.offline} onRetry={deck.retry} stalled={deck.stalled} />
+          </TourTarget>
         ) : (
-          <EmptyState onReset={resetFilters} />
+          <TourTarget id="home.deck" scrollRef={tourScrollRef}>
+            <EmptyState loading={false} onReset={restartDeck} />
+          </TourTarget>
         )}
       </ScrollView>
-
-      <SettingsModal
-        activities={activities}
-        ageMax={ageMax}
-        ageMin={ageMin}
-        availabilityPeriods={availabilityPeriods}
-        distance={distance}
-        faculty={faculty}
-        facultySaving={facultySaving}
-        genders={genders}
-        onAgeMax={(value) => {
-          const nextMax = normalizeMatchingAge(value, ageMax);
-          setAgeMax(nextMax);
-          if (nextMax < ageMin) {
-            setAgeMin(nextMax);
-          }
-        }}
-        onAgeMin={(value) => {
-          const nextMin = normalizeMatchingAge(value, ageMin);
-          setAgeMin(nextMin);
-          if (nextMin > ageMax) {
-            setAgeMax(nextMin);
-          }
-        }}
-        onActivities={(id) => setActivities((current) => ({ ...current, [id]: !current[id] }))}
-        onAvailability={toggleAvailabilityPeriod}
-        onClose={() => setShowSettings(false)}
-        onDistance={setDistance}
-        onFaculty={(nextFaculty) => {
-          setFaculty(nextFaculty);
-          setSameFacultyOnly(false);
-        }}
-        onSave={saveSearchSettings}
-         onGenders={(key) => setGenders((current) => ({ ...current, [key]: !current[key] }))}
-         onPaces={(value) => setPaces((current) => ({ ...current, [value]: !current[value] }))}
-         onSameFaculty={() => {
-           setSameFacultyOnly((current) => !current);
-           setFaculty('all');
-         }}
-         onYears={(key) => setYears((current) => ({ ...current, [key]: !current[key] }))}
-         paces={paces}
-         saving={settingsSaving}
-        sameFacultyOnly={sameFacultyOnly}
-        visible={showSettings}
-        years={years}
-      />
     </IosLikeScreen>
   );
 }
 
-function MatchingHeader({ onSettings }) {
+function CampusContextBar({ faculty, matchedCount, onOpenLikes }) {
   const { colors, isDark } = useTheme();
   return (
-    <View pointerEvents="box-none" style={[styles.matchingHeader, { backgroundColor: colors.canvas }]}>
-      <BlurView intensity={isDark ? 30 : 40} pointerEvents="none" tint={isDark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
-      <View
-        pointerEvents="none"
-        style={[styles.matchingHeaderSurface, { backgroundColor: isDark ? 'rgba(20,23,27,0.96)' : 'rgba(246,248,252,0.98)' }]}
-      />
-      <View style={styles.matchingHeaderContent}>
-        <Text style={[styles.matchingHeaderTitle, { color: colors.ink }]}>หาเพื่อน</Text>
-        <View style={styles.matchingHeaderActions}>
-          <IconButton accessibilityLabel="เปิดการตั้งค่าการจับคู่" icon="gearshape.fill" onPress={onSettings} size={20} style={[styles.matchingHeaderButton, { backgroundColor: colors.glass, borderColor: colors.glassBorder }]} tintColor={colors.ink} />
+    <View style={[styles.campusBar, { backgroundColor: isDark ? colors.surfaceRaised : colors.surface, borderColor: colors.line }]}>
+      <View style={styles.campusInfo}>
+        <View style={[styles.campusBadgeIcon, { backgroundColor: colors.primarySoft }]}>
+          <FeatureIcon color={colors.primary} name="building.columns.fill" size={16} />
+        </View>
+        <View style={styles.campusTexts}>
+          <Text numberOfLines={1} style={[styles.campusTitle, { color: colors.ink }]}>
+            มหาวิทยาลัยสงขลานครินทร์
+          </Text>
+          <Text numberOfLines={1} style={[styles.campusSubtitle, { color: colors.inkMuted }]}>
+            {faculty ? `คณะ${faculty.replace(/^คณะ/, '')}` : 'วิทยาเขตหาดใหญ่'}
+          </Text>
         </View>
       </View>
+      <Pressable
+        accessibilityLabel="ดูรายการถูกใจและการแมตช์"
+        accessibilityRole="button"
+        onPress={onOpenLikes}
+        style={({ pressed }) => [
+          styles.campusLikesChip,
+          { backgroundColor: colors.primarySoft, borderColor: colors.line },
+          pressed && styles.pressed,
+        ]}
+      >
+        <FeatureIcon color={colors.primary} name="heart.fill" size={13} />
+        <Text style={[styles.campusLikesText, { color: colors.primary }]}>{matchedCount}</Text>
+      </Pressable>
     </View>
   );
 }
 
-function QuickFilterButton({ badge = 0, label, onPress }) {
+function ActivityFilterStrip({ categories, selected, onSelect }) {
   const { colors, isDark } = useTheme();
   return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.quickFilter, { backgroundColor: isDark ? colors.surfaceRaised : colors.primarySoft, borderColor: 'transparent' }, pressed && styles.pressed]}>
-      <Text style={[styles.quickFilterText, { color: colors.ink }]}>{label}</Text>
-      {badge > 0 ? <View style={[styles.quickBadgeDot, { backgroundColor: colors.primary }]} /> : null}
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.filterStripContainer}
+    >
+      {categories.map((cat) => {
+        const active = selected === cat.id;
+        return (
+          <Pressable
+            key={cat.id}
+            accessibilityRole="button"
+            onPress={() => onSelect(cat.id)}
+            style={({ pressed }) => [
+              styles.filterChip,
+              {
+                backgroundColor: active
+                  ? colors.primary
+                  : (isDark ? colors.surfaceRaised : colors.surface),
+                borderColor: active ? colors.primary : colors.line,
+              },
+              pressed && styles.pressed,
+            ]}
+          >
+            <FeatureIcon
+              color={active ? colors.onPrimary : (isDark ? colors.inkSoft : colors.inkMuted)}
+              name={cat.symbol}
+              size={13}
+            />
+            <Text
+              style={[
+                styles.filterChipText,
+                { color: active ? colors.onPrimary : colors.ink },
+              ]}
+            >
+              {cat.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+function DailyPickBanner({ candidate, onOpenCandidate }) {
+  const { colors, isDark } = useTheme();
+  const [timeLeft, setTimeLeft] = useState(() => formatRemainingTime(getRemainingTime()));
+  useEffect(() => {
+    const timer = setInterval(() => setTimeLeft(formatRemainingTime(getRemainingTime())), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <Pressable
+      accessibilityLabel={candidate ? 'การ์ดแนะนำประจำวัน แตะเพื่อดูโปรไฟล์' : 'แนะนำประจำวัน ยังไม่มีคนที่ตรงกันวันนี้'}
+      accessibilityRole={candidate ? 'button' : 'text'}
+      disabled={!candidate}
+      onPress={onOpenCandidate}
+      style={({ pressed }) => [
+        styles.dailyPickCard,
+        {
+          backgroundColor: isDark ? 'rgba(30,41,59,0.7)' : '#FFFFFF',
+          borderColor: isDark ? 'rgba(59,130,246,0.25)' : 'rgba(37,99,235,0.16)',
+        },
+        pressed && styles.pressed,
+      ]}
+    >
+      <LinearGradient
+        colors={
+          isDark
+            ? ['rgba(37,99,235,0.18)', 'rgba(30,41,59,0.4)', 'rgba(99,102,241,0.15)']
+            : ['rgba(238,244,255,0.95)', 'rgba(248,250,252,0.85)', 'rgba(240,245,255,0.95)']
+        }
+        end={{ x: 1, y: 0.5 }}
+        start={{ x: 0, y: 0.5 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <View style={styles.dailyPickBody}>
+        {/* Star Icon Badge */}
+        <View style={[styles.dailyPickStarBadge, { backgroundColor: isDark ? 'rgba(245,158,11,0.2)' : '#FEF3C7' }]}>
+          <FeatureIcon color="#D97706" name="star.fill" size={17} />
+        </View>
+
+        {/* Center: Info */}
+        <View style={styles.dailyPickCenter}>
+          <View style={styles.dailyPickTitleRow}>
+            <Text numberOfLines={1} style={[styles.dailyPickTitle, { color: colors.ink }]}>
+              แนะนำประจำวัน
+            </Text>
+            {candidate ? (
+              <View style={[styles.matchScoreBadge, { backgroundColor: isDark ? 'rgba(59,130,246,0.25)' : '#DBEAFE' }]}>
+                <Text style={[styles.matchScoreText, { color: colors.primary }]}>ตรงกัน 98%</Text>
+              </View>
+            ) : null}
+          </View>
+          <Text numberOfLines={1} style={[styles.dailyPickDesc, { color: colors.inkMuted }]}>
+            {candidate ? `ตรงกับตารางและเป้าหมายของ ${stripEmojis(candidate.name)}` : 'ยังไม่มีคนที่ตรงกันวันนี้ ลองปรับตัวกรองดูนะ'}
+          </Text>
+          <View style={styles.dailyPickTimerRow}>
+            <FeatureIcon color={colors.inkMuted} name="clock" size={11} />
+            <Text style={[styles.dailyPickTimeText, { color: colors.inkMuted }]}>
+              รีเซ็ตใน {timeLeft}
+            </Text>
+          </View>
+        </View>
+
+        {/* Right: CTA Button (only when there is someone to open) */}
+        {candidate ? (
+          <View style={styles.dailyPickActionCol}>
+            <View style={styles.dailyPickActionBtn}>
+              <Text style={[styles.dailyPickActionText, { color: colors.primary }]}>ดูทันที</Text>
+              <FeatureIcon color={colors.primary} name="chevron.right" size={14} />
+            </View>
+          </View>
+        ) : null}
+      </View>
     </Pressable>
+  );
+}
+
+function DiscoverProfileCard({ candidate, isMatched, onPress }) {
+  const { colors } = useTheme();
+  const imageUri = getImageRequestUri(candidate.avatarUri, candidate.avatarRevision);
+
+  const rawTags = candidate.activities || [candidate.activity].filter(Boolean);
+  const displayTags = rawTags.map(stripEmojis).filter(Boolean);
+  const bioText = stripEmojis(candidate.bio);
+  const trackName = stripEmojis(candidate.favoriteTracks?.[0]?.name || candidate.favoriteTracks?.[0]?.title);
+  const trackArtist = stripEmojis(candidate.favoriteTracks?.[0]?.artist);
+
+  return (
+    <Pressable
+      accessibilityLabel={`เปิดโปรไฟล์ ${candidate.name}`}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => [styles.profileCardWrapper, pressed && styles.cardPressed]}
+    >
+      <View style={[styles.profileCard, { backgroundColor: candidate.avatarColor || colors.card, borderColor: colors.line }]}>
+        {imageUri ? (
+          <Image
+            cachePolicy="memory-disk"
+            contentFit="cover"
+            recyclingKey={candidate.id}
+            source={{ uri: imageUri }}
+            style={StyleSheet.absoluteFill}
+            transition={0}
+          />
+        ) : (
+          <View style={styles.profilePlaceholder}>
+            <FeatureIcon color={colors.inkMuted} name="person.crop.square.fill" size={84} />
+          </View>
+        )}
+
+        {/* Top Badges (Verified, Location, Match) */}
+        <View style={styles.cardTopBadges}>
+          <View style={styles.cardTopLeftBadges}>
+            {candidate.isFaceVerified ? (
+              <View style={[styles.glassBadge, { borderColor: 'rgba(35, 123, 231, 0.4)' }]}>
+                <FeatureIcon color="#2869C7" name="checkmark.seal.fill" size={11} />
+                <Text style={[styles.glassBadgeText, { color: '#2869C7', fontWeight: '700' }]}>ยืนยันใบหน้าแล้ว</Text>
+              </View>
+            ) : (
+              <View style={styles.glassBadge}>
+                <FeatureIcon color="#2869C7" name="lock.shield.fill" size={11} />
+                <Text style={styles.glassBadgeText}>ยืนยันตัวตนแล้ว</Text>
+              </View>
+            )}
+            <View style={styles.glassBadge}>
+              <FeatureIcon color="#FFFFFF" name="mappin.and.ellipse" size={11} />
+              <Text style={styles.glassBadgeText}>
+                {typeof candidate.distance === 'number' && candidate.distance > 100
+                  ? 'ในวิทยาเขต'
+                  : (formatDistance(candidate.distance) || 'ในวิทยาเขต')}
+              </Text>
+            </View>
+          </View>
+
+          {isMatched ? (
+            <View style={[styles.glassBadge, styles.matchedBadge]}>
+              <FeatureIcon color="#10B981" name="checkmark.circle.fill" size={11} />
+              <Text style={[styles.glassBadgeText, { color: '#10B981', fontWeight: '700' }]}>แมตช์แล้ว</Text>
+            </View>
+          ) : (
+            <View style={styles.glassBadge}>
+              <FeatureIcon color="#F59E0B" name="sparkles" size={11} />
+              <Text style={styles.glassBadgeText}>ตรงกัน 96%</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Bottom Gradient Overlay */}
+        <LinearGradient
+          colors={['transparent', 'rgba(10,18,32,0.25)', 'rgba(10,18,32,0.85)', '#0B132B']}
+          locations={[0, 0.38, 0.72, 1.0]}
+          style={styles.cardBottomOverlay}
+        >
+          <View style={styles.nameRow}>
+            <View style={styles.onlineDot} />
+            <Text numberOfLines={1} style={styles.heroName}>
+              {stripEmojis(candidate.name)}{candidate.age ? `, ${candidate.age}` : ''}
+            </Text>
+          </View>
+
+          <Text numberOfLines={1} style={styles.heroFaculty}>
+            {[
+              candidate.faculty ? `คณะ${candidate.faculty.replace(/^คณะ/, '')}` : null,
+              candidate.year || 'นักศึกษา',
+            ].filter(Boolean).join(' · ')}
+          </Text>
+
+          {bioText ? (
+            <Text numberOfLines={2} style={styles.heroBio}>
+              {bioText}
+            </Text>
+          ) : null}
+
+          {/* Tags */}
+          {displayTags.length > 0 ? (
+            <View style={styles.tagsContainer}>
+              {displayTags.slice(0, 3).map((tag, idx) => (
+                <View key={idx} style={styles.tagPill}>
+                  <Text style={styles.tagText}>{getTagDisplayLabel(tag)}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          {/* Favorite Track Mini Widget */}
+          {trackName ? (
+            <View style={styles.trackPill}>
+              <FeatureIcon color="#10B981" name="music.note" size={11} />
+              <Text numberOfLines={1} style={styles.trackText}>
+                {trackName}{trackArtist ? ` - ${trackArtist}` : ''}
+              </Text>
+            </View>
+          ) : null}
+        </LinearGradient>
+      </View>
+    </Pressable>
+  );
+}
+
+function DiscoveryActionBar({ disabled, isMatched, onRestart, onPass, onSuperLike, onMatch, onChat }) {
+  const { colors, isDark } = useTheme();
+  return (
+    <View style={styles.actionBar}>
+      {/* 1. Undo / Rewind */}
+      <Pressable
+        accessibilityLabel="เริ่มใหม่ นำคนที่เคยข้ามกลับมา"
+        accessibilityRole="button"
+        disabled={disabled}
+        onPress={onRestart}
+        style={({ pressed }) => [
+          styles.actionBtnSmall,
+          {
+            backgroundColor: isDark ? 'rgba(30,41,59,0.7)' : colors.surface,
+            borderColor: isDark ? 'rgba(100,116,139,0.3)' : colors.line,
+          },
+          pressed && styles.pressed,
+        ]}
+      >
+        <FeatureIcon color={colors.inkMuted || '#64748B'} name="arrow.counterclockwise" size={19} />
+      </Pressable>
+
+      {/* 2. Pass / Skip */}
+      <Pressable
+        accessibilityLabel="ข้ามคนนี้"
+        accessibilityRole="button"
+        disabled={disabled}
+        onPress={onPass}
+        style={({ pressed }) => [
+          styles.actionBtnMedium,
+          {
+            backgroundColor: isDark ? 'rgba(239,68,68,0.15)' : '#FFF1F2',
+            borderColor: isDark ? 'rgba(239,68,68,0.35)' : 'rgba(239,68,68,0.25)',
+          },
+          pressed && styles.pressed,
+        ]}
+      >
+        <FeatureIcon color="#EF4444" name="xmark" size={24} />
+      </Pressable>
+
+      {/* 3. Super Like */}
+      <Pressable
+        accessibilityLabel="ถูกใจเป็นพิเศษ"
+        accessibilityRole="button"
+        disabled={disabled}
+        onPress={onSuperLike}
+        style={({ pressed }) => [
+          styles.actionBtnSmall,
+          {
+            backgroundColor: isDark ? 'rgba(14,165,233,0.15)' : '#F0F9FF',
+            borderColor: isDark ? 'rgba(14,165,233,0.35)' : 'rgba(14,165,233,0.3)',
+          },
+          pressed && styles.pressed,
+        ]}
+      >
+        <FeatureIcon color="#0EA5E9" name="star.fill" size={20} />
+      </Pressable>
+
+      {/* 4. Connect / Match (Hero Button) */}
+      <Pressable
+        accessibilityLabel="ถูกใจและขอเชื่อมต่อเป็นเพื่อน"
+        accessibilityRole="button"
+        disabled={disabled}
+        onPress={onMatch}
+        style={({ pressed }) => [
+          styles.actionBtnLarge,
+          { backgroundColor: colors.primary },
+          pressed && styles.pressed,
+        ]}
+      >
+        <FeatureIcon color={colors.onPrimary || '#FFFFFF'} name="heart.fill" size={28} />
+      </Pressable>
+
+      {/* 5. Direct Message / Send */}
+      <Pressable
+        accessibilityLabel="ส่งข้อความทักทาย"
+        accessibilityRole="button"
+        disabled={disabled}
+        onPress={onChat}
+        style={({ pressed }) => [
+          styles.actionBtnSmall,
+          {
+            backgroundColor: isDark ? 'rgba(37,99,235,0.15)' : '#EFF6FF',
+            borderColor: isDark ? 'rgba(37,99,235,0.35)' : 'rgba(37,99,235,0.25)',
+          },
+          pressed && styles.pressed,
+        ]}
+      >
+        <FeatureIcon color={colors.primary || '#2563EB'} name="paperplane.fill" size={19} />
+      </Pressable>
+    </View>
   );
 }
 
 function MeetupBanner({ meetup, stats }) {
   const { colors, isDark } = useTheme();
   const meetupColor = colors.primaryDark;
-  const fullColor = colors.danger;
   const meetupSoft = colors.primarySoft;
-  const meetupBorder = isDark ? 'rgba(154,140,255,0.28)' : 'rgba(91,92,226,0.16)';
+  const meetupBorder = isDark ? 'rgba(112,178,255,0.28)' : 'rgba(35,123,231,0.16)';
   return (
-    <View style={[styles.meetupBanner, { backgroundColor: meetupSoft, borderColor: meetupBorder, shadowColor: meetupColor }]}>
-      <Pressable accessibilityRole="button" onPress={() => router.push('/meetup')} style={({ pressed }) => [styles.meetupBannerMain, pressed && styles.pressed]}>
-        <View style={[styles.meetupIcon, { backgroundColor: meetupColor }]}><FeatureIcon color="#FFFFFF" name="mappin.and.ellipse" size={13} /></View>
+    <View style={[styles.meetupBanner, { backgroundColor: meetupSoft, borderColor: meetupBorder }]}>
+      <Pressable accessibilityRole="button" onPress={() => router.navigate('/meetup')} style={({ pressed }) => [styles.meetupBannerMain, pressed && styles.pressed]}>
+        <View style={[styles.meetupIcon, { backgroundColor: meetupColor }]}>
+          <FeatureIcon color={colors.onPrimary} name="mappin.and.ellipse" size={13} />
+        </View>
         <View style={styles.meetupCopy}>
           <View style={styles.meetupTitleRow}>
-            <Text numberOfLines={1} style={[styles.meetupEyebrow, { color: colors.ink }]}>{'จุดนัดพบ'}</Text>
-            <Text style={[styles.meetupStatus, { color: stats?.isFull ? fullColor : meetupColor }]}>{stats ? (stats.isFull ? 'เต็มแล้ว' : `ร่วม ${stats.acceptedCount}/${stats.maxPeople}`) : 'พร้อม'}</Text>
+            <Text numberOfLines={1} style={[styles.meetupEyebrow, { color: colors.ink }]}>จุดนัดพบ</Text>
+            <Text style={[styles.meetupStatus, { color: stats?.isFull ? colors.danger : meetupColor }]}>
+              {stats ? (stats.isFull ? 'เต็มแล้ว' : `ร่วม ${stats.acceptedCount}/${stats.maxPeople}`) : 'พร้อม'}
+            </Text>
           </View>
           <Text numberOfLines={1} style={[styles.meetupName, { color: colors.ink }]}>{meetup.name}</Text>
-          <Text numberOfLines={1} style={[styles.meetupMeta, { color: colors.inkMuted }]}>{meetup.schedule?.date ? formatReadableDate(meetup.schedule.date) : 'แตะเพื่อจัดการจุดนัดพบ'}</Text>
+          <Text numberOfLines={1} style={[styles.meetupMeta, { color: colors.inkMuted }]}>
+            {meetup.schedule?.date ? formatReadableDate(meetup.schedule.date) : 'แตะเพื่อจัดการจุดนัดพบ'}
+          </Text>
         </View>
       </Pressable>
-      <Pressable accessibilityRole="button" accessibilityLabel="จัดการจุดนัดพบ" onPress={() => router.push('/meetup')} style={({ pressed }) => [styles.meetupManage, { backgroundColor: meetupColor }, pressed && styles.pressed]}>
-        <Text style={styles.meetupManageText}>จัดการ</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="จัดการจุดนัดพบ"
+        onPress={() => router.navigate('/meetup')}
+        style={({ pressed }) => [styles.meetupManage, { backgroundColor: meetupColor }, pressed && styles.pressed]}
+      >
+        <Text style={[styles.meetupManageText, { color: colors.onPrimary }]}>จัดการ</Text>
       </Pressable>
     </View>
   );
 }
 
-function DiscoverProfileCard({ candidate, onPress }) {
-  const { colors, isDark } = useTheme();
-  const imageUri = useRemoteImage(candidate.avatarUri, candidate.updatedAt, candidate.id);
-  const gradientColors = isDark
-    ? ['rgba(20,23,27,0)', 'rgba(20,23,27,0.42)', 'rgba(20,23,27,0.9)']
-    : ['rgba(16,32,58,0)', 'rgba(16,32,58,0.28)', 'rgba(16,32,58,0.82)'];
-  return (
-    <Pressable accessibilityLabel={`เปิดโปรไฟล์ ${candidate.name}`} accessibilityRole="button" onPress={onPress} style={({ pressed }) => [pressed && styles.pressed]}>
-      <IosLikeCard style={styles.profileCard}>
-        <View style={[styles.profileHero, { backgroundColor: candidate.avatarColor || colors.primarySoft }]}>
-          {imageUri ? <Image cachePolicy="memory-disk" contentFit="cover" recyclingKey={candidate.id} source={{ uri: imageUri }} style={[StyleSheet.absoluteFill, { borderRadius: 24 }]} /> : <View style={styles.profilePlaceholder}><FeatureIcon color={colors.inkMuted} name="person.crop.square.fill" size={84} /></View>}
-          <MaskedView
-            pointerEvents="none"
-            style={styles.profileBlur}
-            maskElement={<LinearGradient colors={['transparent', '#FFFFFF', '#FFFFFF']} locations={[0, 0.48, 1]} style={StyleSheet.absoluteFill} />}
-          >
-            <BlurView intensity={isDark ? 38 : 48} tint={isDark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
-            <LinearGradient colors={gradientColors} locations={[0, 0.45, 1]} style={StyleSheet.absoluteFill} />
-          </MaskedView>
-          <View style={styles.profileHeroCopy}>
-            {candidate.isMatched ? <View style={styles.matchedBadge}><FeatureIcon color="#FFFFFF" name="person.2.fill" size={12} /><Text style={styles.matchedBadgeText}>เพื่อนที่คุณแมตช์แล้ว 💬</Text></View> : null}
-            <Text numberOfLines={1} style={styles.profileHeroName}>{candidate.name}{candidate.age ? `, ${candidate.age}` : ''}</Text>
-            <Text numberOfLines={1} style={styles.profileHeroMeta}>{[getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities), candidate.faculty].filter(Boolean).join(' · ') || 'แตะเพื่อดูโปรไฟล์'}</Text>
-          </View>
-
-        </View>
-      </IosLikeCard>
-    </Pressable>
-  );
-}
-
-function ShortcutPill({ accent = false, icon, label, value }) {
-  const { colors, isDark } = useTheme();
-  const backgroundColor = accent && !isDark ? '#E7EBF2' : colors.surfaceRaised;
-  return (
-    <View style={[styles.shortcutPill, { backgroundColor }]}>
-      <FeatureIcon color={accent ? colors.coral : colors.primary} name={icon} size={12} />
-      <Text adjustsFontSizeToFit minimumFontScale={0.78} numberOfLines={1} style={[styles.shortcutLabel, { color: colors.ink }]}>{label}</Text>
-      {value ? <Text numberOfLines={1} style={[styles.shortcutValue, { color: colors.ink }]}>{value}</Text> : null}
-    </View>
-  );
-}
-
-function ResetCountdownPill() {
-  const [timeLeft, setTimeLeft] = useState(getRemainingTime());
-
-  useEffect(() => {
-    const updateCountdown = () => setTimeLeft(getRemainingTime());
-    updateCountdown();
-    const timer = setInterval(updateCountdown, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  return <ShortcutPill icon="clock.arrow.2.circlepath" label={`รีเซ็ตใน ${formatRemainingTime(timeLeft)}`} />;
-}
-
-function EmptyState({ onReset }) {
+function DiscoveryErrorState({ offline = false, stalled = false, onRetry }) {
   const { colors } = useTheme();
+  const title = offline ? 'ไม่ได้เชื่อมต่ออินเทอร์เน็ต' : stalled ? 'โหลดโปรไฟล์นานกว่าปกติ' : 'โหลดโปรไฟล์ไม่สำเร็จ';
+  const body = offline
+    ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
+    : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่';
   return (
-    <IosLikeCard style={styles.emptyState}>
-      <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}><FeatureIcon color={colors.primary} name="person.2.slash" size={28} /></View>
-      <Text style={[styles.emptyTitle, { color: colors.ink }]}>ยังไม่มีโปรไฟล์ที่ตรงกัน</Text>
-      <Text style={[styles.emptyText, { color: colors.inkMuted }]}>ระบบจะค้นหาโปรไฟล์ใหม่โดยอัตโนมัติ หากตัวกรองไม่มีคนที่ตรงกัน</Text>
-      <Pressable accessibilityRole="button" onPress={onReset} style={({ pressed }) => [styles.resetButton, { backgroundColor: colors.primary }, pressed && styles.pressed]}>
-        <FeatureIcon color="#FFFFFF" name="arrow.triangle.2.circlepath" size={17} />
-        <Text style={styles.resetButtonText}>เริ่มใหม่</Text>
-      </Pressable>
-    </IosLikeCard>
-  );
-}
-
-function SettingsModal({ activities, ageMax, ageMin, availabilityPeriods, distance, faculty, facultySaving, genders, onActivities, onAgeMax, onAgeMin, onAvailability, onClose, onDistance, onFaculty, onGenders, onPaces, onSave, onSameFaculty, onYears, paces, saving, sameFacultyOnly, visible, years }) {
-  const { colors } = useTheme();
-  const sheetOffset = useRef(new Animated.Value(600)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const isClosingRef = useRef(false);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-
-  const closeWithAnimation = useCallback(() => {
-    if (isClosingRef.current) return;
-    isClosingRef.current = true;
-    Animated.parallel([
-      Animated.timing(sheetOffset, {
-        toValue: 700,
-        duration: 220,
-        useNativeDriver: true,
-      }),
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      closeRef.current?.();
-      isClosingRef.current = false;
-    });
-  }, [sheetOffset, fadeAnim]);
-
-  useEffect(() => {
-    if (visible) {
-      isClosingRef.current = false;
-      sheetOffset.setValue(600);
-      fadeAnim.setValue(0);
-      Animated.parallel([
-        Animated.spring(sheetOffset, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 280,
-          useNativeDriver: true,
-        }),
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 180,
-          useNativeDriver: true,
-        }),
-      ]).start();
-    }
-  }, [visible, sheetOffset, fadeAnim]);
-
-  const sheetPan = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: (evt) => {
-      // Immediate response when pressing anywhere on the top handle / header area (top 85px)
-      return evt.nativeEvent.locationY <= 85;
-    },
-    onStartShouldSetPanResponderCapture: (evt) => {
-      return evt.nativeEvent.locationY <= 85;
-    },
-    onMoveShouldSetPanResponder: (_, gestureState) => (
-      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-    ),
-    onMoveShouldSetPanResponderCapture: (_, gestureState) => (
-      // Intercept downward drag from anywhere on the header area so children don't block dragging
-      gestureState.dy > 4 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-    ),
-    onPanResponderGrant: () => {
-      sheetOffset.stopAnimation();
-    },
-    onPanResponderMove: (_, gestureState) => {
-      if (gestureState.dy > 0) {
-        sheetOffset.setValue(gestureState.dy);
-      } else {
-        sheetOffset.setValue(gestureState.dy * 0.15);
-      }
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dy > 70 || gestureState.vy > 0.5) {
-        closeWithAnimation();
-      } else {
-        Animated.spring(sheetOffset, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 280,
-          useNativeDriver: true,
-        }).start();
-      }
-    },
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderTerminate: () => {
-      Animated.spring(sheetOffset, {
-        toValue: 0,
-        damping: 22,
-        mass: 0.8,
-        stiffness: 280,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [closeWithAnimation, sheetOffset]);
-
-  return (
-    <Modal animationType="none" transparent visible={visible} onRequestClose={closeWithAnimation}>
-      <View style={styles.modalBackdrop}>
-        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.45)', opacity: fadeAnim }]}>
-          <Pressable accessibilityLabel="ปิดการตั้งค่าตัวกรอง" onPress={closeWithAnimation} style={{ flex: 1 }} />
-        </Animated.View>
-        <Animated.View
-          style={[
-            styles.settingsSheet,
-            {
-              backgroundColor: colors.card,
-              zIndex: 10,
-              elevation: 20,
-              transform: [{ translateY: sheetOffset }],
-            },
-          ]}
-        >
-          {/* Header Draggable Area */}
-          <View
-            {...sheetPan.panHandlers}
-            accessibilityHint="ลากลงเพื่อปิดตัวกรอง"
-            onAccessibilityEscape={closeWithAnimation}
-            style={{ width: '100%', paddingTop: 4, paddingBottom: 6 }}
-          >
-            <View style={{ alignItems: 'center', justifyContent: 'center', width: '100%', paddingTop: 4, paddingBottom: 12 }}>
-              <View style={[styles.sheetHandle, { backgroundColor: colors.inkSoft, opacity: 0.45 }]} />
-            </View>
-            <View style={styles.sheetHeader}>
-              <View>
-                <Text style={[styles.sheetTitle, { color: colors.ink }]}>ตั้งค่าการจับคู่</Text>
-                <Text style={[styles.sheetSubtitle, { color: colors.inkMuted }]}>ตัวกรองจะใช้กับการค้นหาเพื่อนของคุณ</Text>
-              </View>
-            </View>
-          </View>
-           <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsContent} showsVerticalScrollIndicator={false}>
-             <FilterSectionLabel label="ช่วงอายุ" />
-             <View style={styles.agePickerRow}>
-               <AgePicker label="อายุต่ำสุด" onValueChange={onAgeMin} value={ageMin} />
-               <AgePicker label="อายุสูงสุด" onValueChange={onAgeMax} value={ageMax} />
-             </View>
-             <Text style={[styles.filterHelper, { color: colors.inkMuted }]}>ระบบจะแสดงคนอายุ {ageMin}–{ageMax} ปี</Text>
-
-             <FilterSectionLabel label="ระยะห่างจากคุณ" />
-             <View style={[styles.distanceCard, { backgroundColor: colors.surfaceRaised }]}>
-               <View style={styles.distanceHeader}><Text style={[styles.distanceValue, { color: colors.primary }]}>{Math.round(distance)} กม.</Text><Text style={[styles.distanceHint, { color: colors.inkMuted }]}>ค้นหาเพื่อนในรัศมี</Text></View>
-               <View style={styles.distanceControls}>
-                 {[5, 15, 25, 50].map((value) => <IosLikePill active={Math.round(distance) === value} key={value} onPress={() => onDistance(value)}>{`${value} กม.`}</IosLikePill>)}
-               </View>
-             </View>
-
-             <FilterSectionLabel label="กิจกรรมที่สนใจ" />
-             <View style={styles.optionGrid}>
-               {MATCHING_ACTIVITY_OPTIONS.map(({ icon, label, value }) => (
-                 <OptionToggle active={activities[value]} icon={icon} key={value} label={label} onPress={() => onActivities(value)} />
-               ))}
-             </View>
-             <Text style={[styles.filterHelper, { color: colors.inkMuted }]}>เลือกได้หลายกิจกรรม ระบบจะแสดงคนที่ตรงกับอย่างน้อยหนึ่งข้อ</Text>
-
-             <FilterSectionLabel label="ช่วงชั้นปี" />
-             <View style={styles.optionGrid}>
-              {MATCHING_YEAR_OPTIONS.map(({ icon, label, value }) => (
-                <OptionToggle active={years[value]} icon={icon} key={value} label={label} onPress={() => onYears(value)} />
-              ))}
-             </View>
-
-            <FilterSectionLabel label="คณะ" />
-            <ScrollView contentContainerStyle={styles.settingPills} horizontal showsHorizontalScrollIndicator={false}>
-              {['all', ...FACULTIES].map((item) => <IosLikePill active={!sameFacultyOnly && faculty === item} key={item} onPress={() => onFaculty(item)}>{item === 'all' ? 'ทุกคณะ' : item}</IosLikePill>)}
-             </ScrollView>
-             <SettingRow icon="building.columns.fill" label="เฉพาะคณะเดียวกับฉัน" onPress={onSameFaculty} value={sameFacultyOnly} />
-
-             <FilterSectionLabel label="เพซ / ระดับกิจกรรม" />
-             <View style={styles.optionGrid}>
-               {MATCHING_PACE_OPTIONS.map(({ icon, label, value }) => (
-                 <OptionToggle active={paces[value]} icon={icon} key={value} label={label} onPress={() => onPaces(value)} />
-               ))}
-             </View>
-
-             <FilterSectionLabel label="ช่วงเวลาที่สะดวก" />
-             <View style={styles.optionGrid}>
-               {MATCHING_AVAILABILITY_OPTIONS.map(({ icon, label, value }) => (
-                 <OptionToggle active={availabilityPeriods[value]} icon={icon} key={value} label={label} onPress={() => onAvailability(value)} />
-               ))}
-             </View>
-             <Text style={[styles.filterHelper, { color: colors.inkMuted }]}>จับคู่จากช่วงเวลาที่โปรไฟล์อีกฝ่ายระบุไว้</Text>
-
-             <FilterSectionLabel label="เพศ" />
-             <View style={styles.optionGrid}>
-              {MATCHING_GENDER_OPTIONS.map(({ icon, label, value }) => (
-                <OptionToggle active={genders[value]} icon={icon} key={value} label={label} onPress={() => onGenders(value)} />
-              ))}
-             </View>
-            <Text style={[styles.genderHelper, { color: colors.inkMuted }]}>เลือกเพศที่อยากพบได้มากกว่าหนึ่งข้อ</Text>
-
-          </ScrollView>
-          <View style={[styles.settingsFooter, { borderTopColor: colors.line }]}>
-            {facultySaving || saving ? <Text style={[styles.savingText, { color: colors.primary }]}>กำลังบันทึกการตั้งค่า…</Text> : null}
-            <Pressable accessibilityRole="button" disabled={saving} onPress={onSave} style={({ pressed }) => [styles.doneButton, { backgroundColor: colors.primary }, pressed && styles.pressed, saving && styles.disabled]}><Text style={styles.doneButtonText}>{saving ? 'กำลังบันทึก…' : 'บันทึกตัวกรอง'}</Text></Pressable>
-          </View>
-        </Animated.View>
+    <View accessibilityRole="alert" style={[styles.emptyState, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
+      <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}>
+        <FeatureIcon color={colors.primary} name={offline ? 'wifi.slash' : 'exclamationmark.triangle'} size={28} />
       </View>
-    </Modal>
-  );
-}
-
-function AgePicker({ label, onValueChange, value }) {
-  const { colors } = useTheme();
-  return (
-    <View style={styles.agePickerColumn}>
-      <Text style={[styles.agePickerLabel, { color: colors.inkMuted }]}>{label}</Text>
-      <View style={[styles.agePicker, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
-        <NativePicker
-          dropdownIconColor={colors.inkMuted}
-          mode="dropdown"
-          onValueChange={onValueChange}
-          selectedValue={value}
-          style={[styles.agePickerInput, { color: colors.ink }]}
+      <Text style={[styles.emptyTitle, { color: colors.ink }]}>{title}</Text>
+      <Text style={[styles.emptyText, { color: colors.inkMuted }]}>{body}</Text>
+      <View style={styles.emptyActionRow}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={onRetry}
+          style={({ pressed }) => [styles.resetButton, { backgroundColor: colors.primary }, pressed && styles.pressed]}
         >
-          {MATCHING_AGE_VALUES.map((age) => (
-            <NativePicker.Item key={age} label={`${age} ปี`} value={age} />
-          ))}
-        </NativePicker>
+          <FeatureIcon color={colors.onPrimary} name="arrow.triangle.2.circlepath" size={16} />
+          <Text style={[styles.resetButtonText, { color: colors.onPrimary }]}>ลองอีกครั้ง</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.push('/matching-filters')}
+          style={({ pressed }) => [styles.filterConfigButton, { borderColor: colors.line, backgroundColor: colors.surface }, pressed && styles.pressed]}
+        >
+          <FeatureIcon color={colors.ink} name="slider.horizontal.3" size={16} />
+          <Text style={[styles.filterConfigButtonText, { color: colors.ink }]}>ปรับตัวกรอง</Text>
+        </Pressable>
       </View>
     </View>
   );
 }
 
-function FilterSectionLabel({ label }) {
-  const { colors } = useTheme();
-  return <Text style={[styles.settingLabel, { color: colors.inkMuted }]}>{label}</Text>;
-}
-
-function OptionToggle({ active, icon, label, onPress }) {
+function EmptyState({ loading = false, onReset }) {
   const { colors } = useTheme();
   return (
-    <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: active }} onPress={onPress} style={({ pressed }) => [styles.optionToggle, { backgroundColor: active ? colors.primarySoft : colors.surfaceRaised, borderColor: active ? colors.primary : colors.line }, pressed && styles.pressed]}>
-      <FeatureIcon color={active ? colors.primary : colors.inkMuted} name={icon} size={15} />
-      <Text numberOfLines={1} style={[styles.optionText, { color: active ? colors.primary : colors.inkMuted }]}>{label}</Text>
-      {active ? <FeatureIcon color={colors.primary} name="checkmark" size={14} /> : null}
-    </Pressable>
-  );
-}
-
-function SettingRow({ icon, label, onPress, value }) {
-  const { colors } = useTheme();
-  return (
-    <Pressable accessibilityRole="switch" accessibilityState={{ checked: value }} onPress={onPress} style={({ pressed }) => [styles.settingRow, { borderBottomColor: colors.line }, pressed && styles.pressed]}>
-      <View style={[styles.settingIcon, { backgroundColor: colors.primarySoft }]}><FeatureIcon color={colors.primary} name={icon} size={17} /></View>
-      <Text style={[styles.settingText, { color: colors.ink }]}>{label}</Text>
-      <View style={[styles.check, { borderColor: value ? colors.primary : colors.line, backgroundColor: value ? colors.primary : 'transparent' }]}>{value ? <FeatureIcon color="#FFFFFF" name="checkmark" size={14} /> : null}</View>
-    </Pressable>
+    <View style={[styles.emptyState, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
+      <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}>
+        {loading ? (
+          <ActivityIndicator color={colors.primary} />
+        ) : (
+          <FeatureIcon color={colors.primary} name="person.2.slash" size={28} />
+        )}
+      </View>
+      <Text style={[styles.emptyTitle, { color: colors.ink }]}>
+        {loading ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกันในหมวดนี้'}
+      </Text>
+      <Text style={[styles.emptyText, { color: colors.inkMuted }]}>
+        {loading
+          ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
+          : 'ลองเปลี่ยนหมวดหมู่กิจกรรม หรือกด "เริ่มใหม่" เพื่อดูคนที่เคยข้ามอีกครั้ง'}
+      </Text>
+      {!loading ? (
+        <View style={styles.emptyActionRow}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={onReset}
+            style={({ pressed }) => [styles.resetButton, { backgroundColor: colors.primary }, pressed && styles.pressed]}
+          >
+            <FeatureIcon color={colors.onPrimary} name="arrow.triangle.2.circlepath" size={16} />
+            <Text style={[styles.resetButtonText, { color: colors.onPrimary }]}>เริ่มใหม่</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push('/matching-filters')}
+            style={({ pressed }) => [styles.filterConfigButton, { borderColor: colors.line, backgroundColor: colors.surface }, pressed && styles.pressed]}
+          >
+            <FeatureIcon color={colors.ink} name="slider.horizontal.3" size={16} />
+            <Text style={[styles.filterConfigButtonText, { color: colors.ink }]}>ปรับตัวกรอง</Text>
+          </Pressable>
+        </View>
+      ) : null}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  content: { gap: 22, paddingBottom: spacing.xxxl, paddingHorizontal: spacing.xl, paddingTop: 92 },
-  matchingHeader: { height: 85, left: 0, position: 'absolute', right: 0, top: 0, zIndex: 20 },
-  matchingHeaderSurface: { ...StyleSheet.absoluteFillObject },
-  matchingHeaderContent: { alignItems: 'center', flex: 1, flexDirection: 'row', justifyContent: 'space-between', paddingBottom: 15, paddingHorizontal: spacing.xl, paddingTop: 35 },
-  matchingHeaderTitle: { fontSize: type.title1, fontWeight: '800', letterSpacing: -0.4 },
-  matchingHeaderActions: { alignItems: 'center', flexDirection: 'row', gap: 10 },
-  matchingHeaderButton: { height: 36, width: 36 },
-  quickFilterRow: { flexDirection: 'row', gap: spacing.sm },
-  quickFilter: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flexDirection: 'row', gap: 5, justifyContent: 'center', paddingHorizontal: spacing.md, paddingVertical: 7 },
-  quickFilterText: { fontSize: type.body, fontWeight: '700' },
-  quickBadgeDot: { borderRadius: radius.pill, height: 6, marginLeft: 1, width: 6 },
-  meetupBanner: { alignItems: 'center', borderRadius: 18, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: 9, shadowColor: '#17805A', shadowOffset: { height: 2, width: 0 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 2 },
-  meetupBannerMain: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: 10, minWidth: 0 },
-  meetupIcon: { alignItems: 'center', borderRadius: radius.pill, height: 32, justifyContent: 'center', width: 32 },
+  content: {
+    gap: 14,
+    paddingBottom: spacing.xxxl,
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
+  },
+  pressed: {
+    opacity: 0.76,
+  },
+  cardPressed: {
+    opacity: 0.95,
+    transform: [{ scale: 0.995 }],
+  },
+
+  // 1. Campus Bar
+  campusBar: {
+    alignItems: 'center',
+    borderCurve: 'continuous',
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+  },
+  campusInfo: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: 10,
+    minWidth: 0,
+  },
+  campusBadgeIcon: {
+    alignItems: 'center',
+    borderRadius: radius.md,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  campusTexts: {
+    flex: 1,
+  },
+  campusTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  campusSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  campusLikesChip: {
+    alignItems: 'center',
+    borderCurve: 'continuous',
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  campusLikesText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  // 2. Activity Filter Strip
+  filterStripContainer: {
+    gap: 8,
+    paddingVertical: 2,
+  },
+  filterChip: {
+    alignItems: 'center',
+    borderCurve: 'continuous',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  filterChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  // 3. Daily Pick Card (Collegiate Spotlight Banner)
+  dailyPickCard: {
+    borderCurve: 'continuous',
+    borderRadius: 20,
+    borderWidth: 1,
+    overflow: 'hidden',
+    position: 'relative',
+    shadowColor: '#2563EB',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  dailyPickBody: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  dailyPickStarBadge: {
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+    shadowColor: '#F59E0B',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+  },
+  dailyPickCenter: {
+    flex: 1,
+    gap: 3,
+    minWidth: 0,
+  },
+  dailyPickTitleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  dailyPickTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  matchScoreBadge: {
+    borderRadius: radius.pill,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  matchScoreText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  dailyPickDesc: {
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  dailyPickTimerRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 1,
+  },
+  dailyPickTimeText: {
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  dailyPickActionCol: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingLeft: 4,
+  },
+  dailyPickActionBtn: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 2,
+  },
+  dailyPickActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+
+  // 4. Hero Profile Card
+  profileCardWrapper: {
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  profileCard: {
+    borderCurve: 'continuous',
+    borderRadius: radius.xxl,
+    borderWidth: StyleSheet.hairlineWidth,
+    height: 460,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  profilePlaceholder: {
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+    width: '100%',
+  },
+  cardTopBadges: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    left: 12,
+    position: 'absolute',
+    right: 12,
+    top: 12,
+    zIndex: 10,
+  },
+  cardTopLeftBadges: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  glassBadge: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(16,32,58,0.7)',
+    borderColor: 'rgba(255,255,255,0.18)',
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+  },
+  glassBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  matchedBadge: {
+    backgroundColor: 'rgba(16,185,129,0.2)',
+    borderColor: 'rgba(16,185,129,0.4)',
+  },
+  cardBottomOverlay: {
+    bottom: 0,
+    gap: 6,
+    justifyContent: 'flex-end',
+    left: 0,
+    paddingBottom: 16,
+    paddingHorizontal: 16,
+    paddingTop: 48,
+    position: 'absolute',
+    right: 0,
+    zIndex: 10,
+  },
+  nameRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  onlineDot: {
+    backgroundColor: '#10B981',
+    borderRadius: radius.pill,
+    height: 9,
+    width: 9,
+  },
+  heroName: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '700',
+    letterSpacing: -0.3,
+  },
+  heroFaculty: {
+    color: 'rgba(255,255,255,0.82)',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  heroBio: {
+    color: 'rgba(255,255,255,0.92)',
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  tagsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 4,
+  },
+  tagPill: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderColor: 'rgba(255,255,255,0.25)',
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  tagText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  trackPill: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(16,185,129,0.18)',
+    borderColor: 'rgba(16,185,129,0.3)',
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  trackText: {
+    color: '#E8F8F1',
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+
+  // 5. Tactile Action Bar
+  actionBar: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  actionBtnSmall: {
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    height: 48,
+    justifyContent: 'center',
+    width: 48,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  actionBtnMedium: {
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    height: 56,
+    justifyContent: 'center',
+    width: 56,
+    shadowColor: '#EF4444',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  actionBtnLarge: {
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    height: 66,
+    justifyContent: 'center',
+    shadowColor: '#2563EB',
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 6,
+    width: 66,
+  },
+
+  // Meetup Banner
+  meetupBanner: {
+    alignItems: 'center',
+    borderCurve: 'continuous',
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+  },
+  meetupBannerMain: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    gap: 10,
+    minWidth: 0,
+  },
+  meetupIcon: {
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    height: 32,
+    justifyContent: 'center',
+    width: 32,
+  },
   meetupCopy: { flex: 1 },
   meetupTitleRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
-  meetupEyebrow: { fontSize: type.caption2, fontWeight: '700' },
-  meetupStatus: { fontSize: 10, fontWeight: '700' },
-  meetupName: { fontSize: 13.5, fontWeight: '800', marginTop: 1 },
-  meetupMeta: { fontSize: 10.5, marginTop: 1 },
-  meetupManage: { alignItems: 'center', borderRadius: radius.pill, justifyContent: 'center', minHeight: 32, paddingHorizontal: 10 },
-  meetupManageText: { color: '#FFFFFF', fontSize: type.caption2, fontWeight: '800' },
-  profileCard: { borderColor: 'transparent', borderRadius: 24, borderWidth: 0, elevation: 6, overflow: 'hidden', padding: 0, shadowColor: '#000000', shadowOffset: { height: 10, width: 0 }, shadowOpacity: 0.28, shadowRadius: 22 },
-  profileHero: { borderRadius: 24, height: 340, justifyContent: 'flex-end', overflow: 'hidden', position: 'relative' },
-  profileBlur: { bottom: 0, height: 158, left: 0, position: 'absolute', right: 0 },
-  profilePlaceholder: { alignItems: 'center', flex: 1, justifyContent: 'center', width: '100%' },
-  profileHeroCopy: { bottom: 22, left: 18, position: 'absolute', right: 18 },
-  profileHeroName: { color: '#FFFFFF', fontSize: type.title, fontWeight: '800', letterSpacing: -0.4 },
-  profileHeroMeta: { color: 'rgba(255,255,255,0.88)', fontSize: type.subheadline, fontWeight: '600', marginTop: 5 },
-  matchedBadge: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: radius.pill, flexDirection: 'row', gap: 4, marginBottom: 6, paddingHorizontal: 8, paddingVertical: 4 },
-  matchedBadgeText: { color: '#FFFFFF', fontSize: type.caption2, fontWeight: '700' },
-  compatibility: { alignItems: 'center', borderRadius: radius.pill, bottom: spacing.lg, elevation: 4, paddingHorizontal: 10, paddingVertical: 7, position: 'absolute', right: spacing.lg, shadowColor: '#000000', shadowOpacity: 0.16, shadowRadius: 8 },
-  compatibilityValue: { fontSize: type.headline, fontWeight: '800' },
-  compatibilityLabel: { fontSize: 9, fontWeight: '700', marginTop: 1 },
-  shortcutRow: { alignItems: 'center', flexDirection: 'row', gap: 10 },
-  shortcutPill: { alignItems: 'center', borderRadius: radius.pill, flex: 1, flexDirection: 'row', gap: 6, minHeight: 0, minWidth: 0, paddingHorizontal: 11, paddingVertical: 7 },
-  shortcutLabel: { flexShrink: 1, fontSize: type.caption2, fontWeight: '700' },
-  shortcutValue: { fontSize: type.caption2, fontWeight: '600' },
-  emptyState: { alignItems: 'center', paddingHorizontal: 22, paddingVertical: 36 },
-  emptyIcon: { alignItems: 'center', borderRadius: radius.pill, height: 58, justifyContent: 'center', width: 58 },
-  emptyTitle: { fontSize: type.headline, fontWeight: '800', marginTop: spacing.md },
-  emptyText: { fontSize: type.caption, lineHeight: 18, marginTop: spacing.sm, textAlign: 'center' },
-  resetButton: { alignItems: 'center', borderRadius: radius.pill, flexDirection: 'row', gap: 7, justifyContent: 'center', marginTop: spacing.lg, minHeight: 48, paddingHorizontal: spacing.xl, width: '100%' },
-  resetButtonText: { color: '#FFFFFF', fontSize: type.caption, fontWeight: '800' },
-  modalBackdrop: { flex: 1, justifyContent: 'flex-end' },
-  settingsSheet: { borderTopLeftRadius: 28, borderTopRightRadius: 28, height: '90%', overflow: 'hidden', paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
-  settingsScroll: { flex: 1, minHeight: 0 },
-  settingsFooter: { flexShrink: 0, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: spacing.sm, paddingBottom: spacing.lg },
-  sheetHandle: { alignSelf: 'center', borderRadius: radius.pill, height: 5, opacity: 0.45, width: 44 },
-  sheetHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', paddingBottom: spacing.md },
-  sheetTitle: { fontSize: type.headline, fontWeight: '800' },
-  sheetSubtitle: { fontSize: type.caption2, marginTop: 3 },
-  settingsContent: { gap: spacing.md, paddingBottom: spacing.xl },
-  settingLabel: { fontSize: type.caption, fontWeight: '800', marginTop: spacing.sm },
-  filterHelper: { fontSize: type.caption2, lineHeight: 16, marginTop: -spacing.sm },
-  agePickerRow: { flexDirection: 'row', gap: spacing.sm },
-  agePickerColumn: { flex: 1, gap: spacing.xs },
-  agePickerLabel: { fontSize: type.caption2, fontWeight: '700' },
-  agePicker: { borderRadius: radius.md, borderWidth: 1, minHeight: 52, justifyContent: 'center' },
-  agePickerInput: { height: 52, width: '100%' },
-  distanceCard: { borderRadius: radius.lg, padding: spacing.md },
-  distanceHeader: { alignItems: 'baseline', flexDirection: 'row', gap: spacing.sm },
-  distanceValue: { fontSize: type.title, fontWeight: '900' },
-  distanceHint: { fontSize: type.caption2 },
-  distanceControls: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.md },
-  settingPills: { gap: spacing.sm, paddingBottom: spacing.xs },
-  optionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  optionToggle: { alignItems: 'center', borderRadius: radius.md, borderWidth: 1, flexDirection: 'row', gap: 5, minHeight: 42, paddingHorizontal: spacing.sm, width: '48%' },
-  optionText: { flex: 1, fontSize: type.caption2, fontWeight: '700' },
-  genderHelper: { fontSize: type.caption2, marginTop: -spacing.sm },
-  settingRow: { alignItems: 'center', borderBottomWidth: 1, flexDirection: 'row', minHeight: 58, paddingVertical: spacing.sm },
-  settingIcon: { alignItems: 'center', borderRadius: radius.sm, height: 34, justifyContent: 'center', marginRight: spacing.md, width: 34 },
-  settingText: { flex: 1, fontSize: type.body, fontWeight: '700' },
-  check: { alignItems: 'center', borderRadius: 7, borderWidth: 1.5, height: 24, justifyContent: 'center', width: 24 },
-  savingText: { fontSize: type.caption, fontWeight: '600' },
-  doneButton: { alignItems: 'center', borderRadius: radius.pill, minHeight: 48, justifyContent: 'center', marginTop: spacing.sm },
-  doneButtonText: { color: '#FFFFFF', fontSize: type.body, fontWeight: '800' },
-  disabled: { opacity: 0.5 },
-  pressed: { opacity: 0.76, transform: [{ scale: 0.985 }] },
+  meetupEyebrow: { fontSize: type.caption2, fontWeight: '600' },
+  meetupStatus: { fontSize: 12, fontWeight: '600' },
+  meetupName: { fontSize: type.bodySmall, fontWeight: '600', marginTop: 1 },
+  meetupMeta: { fontSize: type.caption2, marginTop: 1 },
+  meetupManage: {
+    alignItems: 'center',
+    borderCurve: 'continuous',
+    borderRadius: radius.pill,
+    justifyContent: 'center',
+    minHeight: 32,
+    paddingHorizontal: 10,
+  },
+  meetupManageText: { fontSize: type.caption2, fontWeight: '600' },
+
+  // Empty State
+  emptyState: {
+    alignItems: 'center',
+    borderCurve: 'continuous',
+    borderRadius: radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 22,
+    paddingVertical: 36,
+  },
+  emptyIcon: {
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    height: 58,
+    justifyContent: 'center',
+    width: 58,
+  },
+  emptyTitle: {
+    fontSize: type.headline,
+    fontWeight: '700',
+    marginTop: spacing.md,
+    textAlign: 'center',
+  },
+  emptyText: {
+    fontSize: type.caption,
+    lineHeight: 20,
+    marginTop: spacing.sm,
+    textAlign: 'center',
+  },
+  emptyActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: spacing.lg,
+    width: '100%',
+  },
+  resetButton: {
+    alignItems: 'center',
+    borderCurve: 'continuous',
+    borderRadius: radius.md,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: spacing.md,
+  },
+  resetButtonText: {
+    fontSize: type.bodySmall,
+    fontWeight: '600',
+  },
+  filterConfigButton: {
+    alignItems: 'center',
+    borderCurve: 'continuous',
+    borderRadius: radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    flex: 1,
+    flexDirection: 'row',
+    gap: 7,
+    justifyContent: 'center',
+    minHeight: 46,
+    paddingHorizontal: spacing.md,
+  },
+  filterConfigButtonText: {
+    fontSize: type.bodySmall,
+    fontWeight: '600',
+  },
 });

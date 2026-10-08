@@ -1,113 +1,169 @@
-import React from 'react';
-import { ActivityIndicator, Image, ImageBackground, StyleSheet, Text, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import Text from './AppText';
+import React, { useEffect, useState, useRef } from 'react';
+import { ActivityIndicator, Image, StyleSheet, View, Animated } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
 
-const heroImage = require('../../assets/login-campus-hero.png');
-const appIcon = require('../../assets/icon.png');
+const appIcon = require('../../assets/adaptive-icon.png');
+const WAIT_HINT_DELAY_MS = 700;
 
 export default function AppSplashScreen({ message }) {
-  return (
-    <ImageBackground
-      source={heroImage}
-      style={styles.container}
-      imageStyle={styles.backgroundImage}
-    >
-      <LinearGradient
-        colors={['rgba(11,13,20,0.38)', 'rgba(11,13,20,0.68)', 'rgba(11,13,20,0.92)']}
-        locations={[0, 0.45, 0.9]}
-        style={styles.gradient}
-      >
-        <View style={styles.centerContent}>
-          <View style={styles.logoBadgeContainer}>
-            <Image source={appIcon} style={styles.appLogo} />
-          </View>
-          <Text style={styles.appName}>CampusMate</Text>
-          <Text style={styles.appTagline}>พื้นที่เพื่อนใหม่ในรั้วมหาวิทยาลัย</Text>
+  const [showWaitHint, setShowWaitHint] = useState(Boolean(message));
 
-          {message ? (
-            <View style={styles.loadingCapsule}>
-              <ActivityIndicator size="small" color="#FFFFFF" />
-              <Text style={styles.loadingText}>{message}</Text>
-            </View>
-          ) : (
-            <View style={styles.loadingIndicatorOnly}>
-              <ActivityIndicator size="small" color="rgba(255, 255, 255, 0.7)" />
-            </View>
-          )}
-        </View>
-      </LinearGradient>
-    </ImageBackground>
+  // Animation values
+  const logoScale = useRef(new Animated.Value(0.3)).current;
+  const logoOpacity = useRef(new Animated.Value(0)).current;
+  const textOpacity = useRef(new Animated.Value(0)).current;
+  const textTranslateY = useRef(new Animated.Value(20)).current;
+  const glowOpacity = useRef(new Animated.Value(0)).current;
+  const hintOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    SplashScreen.hideAsync().catch(() => {});
+
+    // Staggered entrance animation
+    Animated.sequence([
+      // 1. Logo zooms in with spring
+      Animated.parallel([
+        Animated.spring(logoScale, {
+          toValue: 1,
+          friction: 6,
+          tension: 80,
+          useNativeDriver: true,
+        }),
+        Animated.timing(logoOpacity, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+      ]),
+      // 2. Text fades in and slides up
+      Animated.parallel([
+        Animated.timing(textOpacity, {
+          toValue: 1,
+          duration: 350,
+          useNativeDriver: true,
+        }),
+        Animated.spring(textTranslateY, {
+          toValue: 0,
+          friction: 8,
+          tension: 60,
+          useNativeDriver: true,
+        }),
+      ]),
+      // 3. Glow circles fade in
+      Animated.timing(glowOpacity, {
+        toValue: 1,
+        duration: 600,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, []);
+
+  useEffect(() => {
+    if (message) {
+      setShowWaitHint(true);
+      return undefined;
+    }
+    const timeoutId = setTimeout(() => {
+      setShowWaitHint(true);
+      Animated.timing(hintOpacity, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    }, WAIT_HINT_DELAY_MS);
+    return () => clearTimeout(timeoutId);
+  }, [message]);
+
+  return (
+    <View style={styles.container}>
+      <StatusBar style="dark" backgroundColor="#F7F7F8" />
+      <Animated.View pointerEvents="none" style={[styles.topGlow, { opacity: glowOpacity }]} />
+      <Animated.View pointerEvents="none" style={[styles.bottomGlow, { opacity: glowOpacity }]} />
+
+      <View style={styles.brand}>
+        <Animated.View style={{ transform: [{ scale: logoScale }], opacity: logoOpacity }}>
+          <Image source={appIcon} style={styles.logo} resizeMode="contain" accessibilityLabel="โลโก้ CampusMate" />
+        </Animated.View>
+        <Animated.Text style={[styles.appName, { opacity: textOpacity, transform: [{ translateY: textTranslateY }] }]}>CampusMate</Animated.Text>
+        <Animated.Text style={[styles.tagline, { opacity: textOpacity, transform: [{ translateY: textTranslateY }] }]}>เพื่อนใหม่ในรั้วมหาวิทยาลัย</Animated.Text>
+      </View>
+
+      {showWaitHint ? (
+        <Animated.View style={[styles.waitHint, { opacity: hintOpacity }]} accessibilityRole="progressbar">
+          <ActivityIndicator size="small" color="#2869C7" />
+          <Text style={styles.loadingText}>{message || 'กำลังเตรียมพื้นที่ของคุณ'}</Text>
+        </Animated.View>
+      ) : null}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: '#0B0D14',
-    flex: 1,
-  },
-  backgroundImage: {
-    resizeMode: 'cover',
-  },
-  gradient: {
     alignItems: 'center',
+    backgroundColor: '#F7F7F8',
     flex: 1,
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  topGlow: {
+    backgroundColor: '#E7F3FF',
+    borderRadius: 220,
+    height: 440,
+    left: -190,
+    position: 'absolute',
+    top: -210,
+    width: 440,
+  },
+  bottomGlow: {
+    backgroundColor: '#EAF0FF',
+    borderRadius: 190,
+    bottom: -230,
+    height: 380,
+    position: 'absolute',
+    right: -160,
+    width: 380,
+  },
+  brand: {
+    alignItems: 'center',
     paddingHorizontal: 24,
-  },
-  centerContent: {
-    alignItems: 'center',
-    justifyContent: 'center',
+    transform: [{ translateY: -20 }],
     width: '100%',
   },
-  logoBadgeContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-    shadowColor: '#5B5CE2',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.45,
-    shadowRadius: 20,
-    elevation: 8,
-  },
-  appLogo: {
-    borderRadius: 22,
-    height: 84,
-    width: 84,
-  },
-  loadingIndicatorOnly: {
-    marginTop: 36,
-    height: 24,
-    justifyContent: 'center',
+  logo: {
+    height: 170,
+    width: 170,
   },
   appName: {
-    color: '#FFFFFF',
-    fontSize: 38,
-    fontWeight: '900',
-    letterSpacing: -0.5,
-    textAlign: 'center',
+    color: '#25272B',
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: -0.7,
+    marginTop: 8,
   },
-  appTagline: {
-    color: 'rgba(255, 255, 255, 0.88)',
-    fontSize: 16,
+  tagline: {
+    color: '#6B7078',
+    fontSize: 15,
     fontWeight: '500',
     marginTop: 6,
     textAlign: 'center',
   },
-  loadingCapsule: {
+  waitHint: {
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    borderColor: 'rgba(255, 255, 255, 0.18)',
-    borderRadius: 24,
-    borderWidth: 1,
+    bottom: 64,
     flexDirection: 'row',
     gap: 10,
-    marginTop: 40,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    justifyContent: 'center',
+    left: 24,
+    position: 'absolute',
+    right: 24,
   },
   loadingText: {
-    color: '#FFFFFF',
+    color: '#6B7078',
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
+    textAlign: 'center',
   },
 });

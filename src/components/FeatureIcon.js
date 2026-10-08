@@ -1,6 +1,7 @@
+import Text from './AppText';
 import React from 'react';
-import { Platform, StyleSheet, Text } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Platform, StyleSheet } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { SymbolView } from 'expo-symbols';
 
 const ANDROID_ICON_MAP = {
@@ -24,10 +25,24 @@ const ANDROID_ICON_MAP = {
   'arrow.up.circle': 'arrow-up-circle-outline',
   'arrow.up.circle.fill': 'arrow-up-circle',
   'arrow.up.left.and.arrow.down.right': 'expand',
+  'arrow.uturn.backward': 'arrow-undo',
   'arrow.uturn.backward.circle': 'arrow-undo-circle',
   'arrowshape.turn.up.left': 'return-up-back',
   'arrowshape.turn.up.left.fill': 'return-up-back',
   apps: 'apps',
+  'banknote.fill': 'cash',
+  bicycle: 'bicycle',
+  'chart.bar.fill': 'bar-chart',
+  'figure.mind.and.body': 'body',
+  'figure.pool.swim': 'water',
+  'fork.knife': 'restaurant',
+  'gamecontroller.fill': 'game-controller',
+  globe: 'globe-outline',
+  'music.note': 'musical-notes',
+  'paintpalette.fill': 'color-palette',
+  'person.3.fill': 'people',
+  'point.topleft.down.curvedto.point.bottomright.up': 'trail-sign',
+  target: 'locate',
   'bell.badge.fill': 'notifications',
   'bell.fill': 'notifications',
   'bubble.left.fill': 'chatbubble',
@@ -38,6 +53,7 @@ const ANDROID_ICON_MAP = {
   'book.fill': 'book',
   calendar: 'calendar',
   'calendar.badge.clock': 'calendar',
+  camera: 'camera',
   'camera.fill': 'camera',
   'camera.filters': 'color-filter',
   checkmark: 'checkmark',
@@ -89,8 +105,16 @@ const ANDROID_ICON_MAP = {
   'heart.circle.fill': 'heart-circle',
   'heart.fill': 'heart',
   'heart.slash': 'heart-dislike',
+  'info.circle': 'information-circle-outline',
   'info.circle.fill': 'information-circle',
+  'crown': 'ribbon-outline',
+  'crown.fill': 'ribbon',
+  'figure.badminton': 'tennisball',
+  'tag': 'pricetag-outline',
+  'tag.fill': 'pricetag',
   'leaf.fill': 'leaf',
+  lightbulb: 'bulb-outline',
+  'lightbulb.fill': 'bulb',
   'line.3.horizontal': 'menu',
   list: 'list',
   'location.circle.fill': 'location',
@@ -132,12 +156,17 @@ const ANDROID_ICON_MAP = {
   'stop.fill': 'square',
   paperplane: 'send',
   'paperplane.fill': 'send',
+  pencil: 'pencil',
+  'pencil.fill': 'pencil',
+  'pencil.circle': 'pencil-outline',
+  'pencil.circle.fill': 'pencil',
   'person.2.circle': 'people-circle',
   'person.2.fill': 'people',
   'person.2.slash': 'person-remove',
   'person.badge.plus': 'person-add',
   'person.badge.key.fill': 'key',
   'person.crop.circle.badge.checkmark': 'person-circle',
+  'person.crop.circle.badge.plus': 'person-add',
   'person.crop.circle.badge.questionmark': 'help-circle',
   'person.crop.circle.fill': 'person-circle',
   'person.crop.square.fill': 'person',
@@ -168,6 +197,8 @@ const ANDROID_ICON_MAP = {
   'tray.full.fill': 'file-tray-full',
   tune: 'options',
   'wand.and.stars': 'color-wand',
+  'arrow.clockwise': 'sync',
+  wifi: 'wifi',
   'wifi.slash': 'cloud-offline',
   xmark: 'close',
   'xmark.circle': 'close-circle',
@@ -264,7 +295,7 @@ export default function FeatureIcon({ color, name, size = 22, style }) {
       color={color}
       name={getAndroidIconName(resolvedName)}
       size={size}
-      style={style}
+      style={[{ height: size, width: size }, style]}
     />
   );
 }

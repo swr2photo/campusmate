@@ -1,5 +1,6 @@
+import Text from '../src/components/AppText';
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import DiscoverProfileScreen from '../src/screens/DiscoverProfileScreen';
 import { useToast } from '../src/context/ToastContext';
@@ -54,9 +55,9 @@ export default function DiscoverProfileRoute() {
 }
 
 const styles = StyleSheet.create({
-  errorState: { alignItems: 'center', backgroundColor: '#F6F8FC', flex: 1, justifyContent: 'center', padding: 24 },
-  errorTitle: { color: '#10203A', fontSize: 18, fontWeight: '800', textAlign: 'center' },
-  errorMessage: { color: '#60708A', fontSize: 14, marginTop: 8, textAlign: 'center' },
-  errorButton: { backgroundColor: '#5B5CE2', borderRadius: 999, marginTop: 20, paddingHorizontal: 20, paddingVertical: 12 },
+  errorState: { alignItems: 'center', backgroundColor: '#F7F7F8', flex: 1, justifyContent: 'center', padding: 24 },
+  errorTitle: { color: '#25272B', fontSize: 18, fontWeight: '800', textAlign: 'center' },
+  errorMessage: { color: '#6B7078', fontSize: 14, marginTop: 8, textAlign: 'center' },
+  errorButton: { backgroundColor: '#2869C7', borderRadius: 999, marginTop: 20, paddingHorizontal: 20, paddingVertical: 12 },
   errorButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
 });

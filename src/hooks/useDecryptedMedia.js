@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getAuth } from 'firebase/auth';
 import { getDecryptedMediaUri, getSyncCachedMediaUri } from '../services/chatMediaService';
 import { getOrFetchConversationKey } from '../services/chatEncryptionService';
@@ -23,29 +23,39 @@ export function useDecryptedMedia(mediaUrl, { conversationId, currentUserId, con
     || mediaUrl.startsWith('data:')
   );
 
-  const syncCached = getSyncCachedMediaUri(mediaUrl, mediaType);
+  const syncCached = getSyncCachedMediaUri(mediaUrl, mediaType, conversationKey);
   const initialUri = syncCached || (isLocal ? mediaUrl : null);
+  const identity = `${currentUserId || ''}:${conversationId || ''}:${mediaType}:${mediaUrl || ''}:${conversationKey ? Array.from(conversationKey).join(',') : ''}`;
   const [uri, setUri] = useState(() => initialUri);
+  const [resolvedIdentity, setResolvedIdentity] = useState(identity);
   const [loading, setLoading] = useState(() => Boolean(mediaUrl && !initialUri));
   const [error, setError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => setAttempt((value) => value + 1), []);
 
   useEffect(() => {
     let isMounted = true;
 
     if (!mediaUrl) {
+      setError(null);
       setUri(null);
+      setResolvedIdentity(identity);
       setLoading(false);
       return;
     }
 
-    const currentSync = getSyncCachedMediaUri(mediaUrl, mediaType);
+    const currentSync = getSyncCachedMediaUri(mediaUrl, mediaType, conversationKey);
     if (currentSync || isLocal) {
+      setError(null);
       setUri(currentSync || mediaUrl);
+      setResolvedIdentity(identity);
       setLoading(false);
       return;
     }
 
     setLoading(true);
+    setUri(null);
+    setResolvedIdentity(identity);
     setError(null);
 
     async function resolveMedia() {
@@ -93,7 +103,12 @@ export function useDecryptedMedia(mediaUrl, { conversationId, currentUserId, con
     return () => {
       isMounted = false;
     };
-  }, [mediaUrl, conversationId, currentUserId, conversationKey, mediaType, isLocal]);
+  }, [mediaUrl, conversationId, currentUserId, conversationKey, mediaType, isLocal, attempt]);
 
-  return { uri, loading, error };
+  return {
+    uri: resolvedIdentity === identity ? uri : initialUri,
+    loading: resolvedIdentity === identity ? loading : Boolean(mediaUrl && !initialUri),
+    error: resolvedIdentity === identity ? error : null,
+    retry,
+  };
 }

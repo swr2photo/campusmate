@@ -1,14 +1,15 @@
+import Text from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Animated,
-  FlatList,
-  Modal,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { FlatList, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import Animated, {
+  Easing,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
 import { collection, getDocs, limit, orderBy, query } from 'firebase/firestore';
@@ -19,9 +20,10 @@ import VoiceMessageBubble from './VoiceMessageBubble';
 import { ChatVideoCover } from './ChatVideoBubble';
 import ChatProtectedImageBubble from './ChatProtectedImageBubble';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
-import { getOrFetchConversationKey } from '../services/chatEncryptionService';
+import { getOrFetchConversationKey, peekCachedConversationKey } from '../services/chatEncryptionService';
 import { decryptConversationMessageList } from '../services/firestoreService';
 import { requireFirebase } from '../services/dbService';
+import { warmChatPreviewMedia } from '../services/chatPreviewMedia';
 
 function toDate(timestamp) {
   if (!timestamp) return null;
@@ -63,7 +65,7 @@ function formatMessageTime(message) {
   return `${hours}:${minutes}`;
 }
 
-const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors, conversation, currentUserId, item }) {
+const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors, conversation, conversationKey, currentUserId, item }) {
   const mine = item?.senderId === currentUserId || item?.sender === 'me';
   const text = typeof item?.text === 'string' && item.text.trim()
     ? item.text
@@ -71,9 +73,10 @@ const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors,
   const time = formatMessageTime(item);
   const bubbleTextColor = mine ? '#FFFFFF' : colors.ink;
   const replyColor = mine ? 'rgba(255,255,255,0.76)' : colors.inkSoft;
+  const imageMediaUrl = item?.mediaUrl || (Array.isArray(item?.mediaUrls) ? item.mediaUrls[0] : null);
 
   const isImage = Boolean(
-    (item?.mediaUrl && (item?.mediaType === 'image' || item?.mediaType === 'gif' || !item?.mediaType) && !item?.audioUrl)
+    (imageMediaUrl && (item?.mediaType === 'image' || item?.mediaType === 'gif' || !item?.mediaType) && !item?.audioUrl)
     || item?.mediaType === 'image'
     || item?.mediaType === 'gif'
     || item?.text === '[GIF]'
@@ -109,7 +112,7 @@ const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors,
       {!mine ? (
         <IosLikeAvatar
           cacheScope={conversation.profileId}
-          cacheVersion={conversation.participantProfiles?.[conversation.profileId]?.updatedAt}
+          cacheVersion={conversation.participantProfiles?.[conversation.profileId]?.avatarRevision}
           color={conversation.avatarColor}
           emoji={conversation.avatar}
           size={26}
@@ -141,9 +144,10 @@ const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors,
             <View style={styles.previewImageContainer}>
               <DecryptedChatImage
                 conversationId={conversation?.id}
+                conversationKey={conversationKey}
                 currentUserId={currentUserId}
                 isUploading={Boolean(item?.isUploading)}
-                mediaUrl={item.mediaUrl}
+                mediaUrl={imageMediaUrl}
                 resizeMode="cover"
                 style={styles.previewImage}
               />
@@ -182,21 +186,38 @@ const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors,
 export default function ChatPreviewModal({ accentColor, blurTarget, conversation, currentUserId, onClose, onOpenChat, visible }) {
   const { colors, isDark } = useTheme();
   const chatAccent = accentColor || colors.primary;
-  const blurIntensity = isDark ? 28 : 32;
+  const blurIntensity = isDark ? 8 : 10;
   const androidBlurMethod = Platform.OS === 'android' && blurTarget
     ? 'dimezisBlurViewSdk31Plus'
     : undefined;
+  const blurReductionFactor = Platform.OS === 'android' ? 1 : undefined;
   const listRef = useRef(null);
   const [presentedConversation, setPresentedConversation] = useState(conversation || null);
   const [isRendered, setIsRendered] = useState(Boolean(visible && conversation));
   const renderedRef = useRef(Boolean(visible && conversation));
-  const backdropOpacity = useRef(new Animated.Value(visible ? 1 : 0)).current;
-  const popupScale = useRef(new Animated.Value(visible ? 1 : 0.86)).current;
-  const popupTranslateY = useRef(new Animated.Value(visible ? 0 : 14)).current;
-  const animationRef = useRef(null);
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const backdropOpacity = useSharedValue(visible ? 1 : 0);
+  const popupScale = useSharedValue(visible ? 1 : 0.86);
+  const popupTranslateY = useSharedValue(visible ? 0 : 14);
   const activeConversation = conversation || presentedConversation;
 
-  const [fetchedMessages, setFetchedMessages] = useState([]);
+  const [fetchedMessages, setFetchedMessages] = useState(null);
+  const [previewKey, setPreviewKey] = useState(null);
+  const historyCutoffMs = toDate(activeConversation?.historyClearedAt?.[currentUserId])?.getTime() || 0;
+  const previewIdentity = `${currentUserId || ''}:${activeConversation?.id || ''}:${historyCutoffMs}`;
+  const conversationKey = previewKey?.identity === previewIdentity ? previewKey.key
+    : (currentUserId && activeConversation?.id ? peekCachedConversationKey(activeConversation.id, currentUserId) : null);
+
+  useEffect(() => {
+    if (!visible || !activeConversation?.id || !currentUserId) return;
+    let active = true;
+    void warmChatPreviewMedia(activeConversation, currentUserId).catch(() => {});
+    getOrFetchConversationKey(activeConversation.id, currentUserId)
+      .then((key) => { if (active) setPreviewKey({ identity: previewIdentity, key }); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [visible, previewIdentity]);
 
   useEffect(() => {
     if (conversation) setPresentedConversation(conversation);
@@ -204,10 +225,13 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
 
   useEffect(() => {
     if (!visible || !activeConversation?.id) {
-      setFetchedMessages([]);
+      setFetchedMessages(null);
       return;
     }
-    if (Array.isArray(activeConversation?.messages) && activeConversation.messages.length > 0) {
+    if (
+      Array.isArray(activeConversation?.messages)
+      && activeConversation.messages.length >= 8
+    ) {
       return;
     }
 
@@ -217,27 +241,31 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
         const { db } = requireFirebase();
         const messagesRef = collection(db, 'conversations', activeConversation.id, 'messages');
         const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(10));
-        const snapshot = await getDocs(q);
+        const [snapshot, fetchedKey] = await Promise.all([
+          getDocs(q),
+          currentUserId ? getOrFetchConversationKey(activeConversation.id, currentUserId).catch(() => null) : null,
+        ]);
         if (!isSubscribed) return;
 
-        let key = null;
-        if (currentUserId) {
-          try {
-            key = await getOrFetchConversationKey(activeConversation.id, currentUserId);
-          } catch (_) {}
-        }
         const rawDocs = snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() })).reverse();
         const historyCutoff = activeConversation?.historyClearedAt?.[currentUserId] || null;
-        const decryptedList = decryptConversationMessageList(
-          activeConversation.id,
-          rawDocs,
-          key,
-          currentUserId,
-          historyCutoff
-        );
-        if (isSubscribed) {
-          setFetchedMessages(decryptedList);
-        }
+        const key = fetchedKey || (currentUserId
+          ? peekCachedConversationKey(activeConversation.id, currentUserId)
+          : null);
+        const apply = (currentKey) => {
+          const decryptedList = decryptConversationMessageList(
+            activeConversation.id,
+            rawDocs,
+            currentKey,
+            currentUserId,
+            historyCutoff
+          );
+          if (isSubscribed) {
+            setFetchedMessages({ identity: previewIdentity, messages: decryptedList });
+            void warmChatPreviewMedia({ id: activeConversation.id, messages: decryptedList }, currentUserId).catch(() => {});
+          }
+        };
+        apply(key);
       } catch (err) {
         console.warn('ChatPreviewModal fetch messages fallback warning:', err?.message || err);
       }
@@ -246,56 +274,63 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
     return () => {
       isSubscribed = false;
     };
-  }, [activeConversation?.historyClearedAt, activeConversation?.id, activeConversation?.messages, currentUserId, visible]);
+  }, [activeConversation?.historyClearedAt, activeConversation?.id, activeConversation?.lastMessageId, activeConversation?.messagesPreviewOnly, currentUserId, visible]);
+
+  const unmountPreview = useCallback(() => {
+    if (visibleRef.current) return;
+    renderedRef.current = false;
+    setIsRendered(false);
+    setPresentedConversation(null);
+  }, []);
 
   useEffect(() => {
-    animationRef.current?.stop();
+    cancelAnimation(backdropOpacity);
+    cancelAnimation(popupScale);
+    cancelAnimation(popupTranslateY);
 
     if (visible && activeConversation) {
       renderedRef.current = true;
       setIsRendered(true);
-      backdropOpacity.setValue(0);
-      popupScale.setValue(0.86);
-      popupTranslateY.setValue(14);
-
-      const animation = Animated.parallel([
-        Animated.timing(backdropOpacity, { duration: 170, toValue: 1, useNativeDriver: true }),
-        Animated.spring(popupScale, { damping: 14, mass: 0.8, stiffness: 220, toValue: 1, useNativeDriver: true }),
-        Animated.spring(popupTranslateY, { damping: 15, mass: 0.8, stiffness: 220, toValue: 0, useNativeDriver: true }),
-      ]);
-      animationRef.current = animation;
-      animation.start();
-
-      return () => animation.stop();
+      backdropOpacity.set(0);
+      popupScale.set(0.86);
+      popupTranslateY.set(14);
+      backdropOpacity.set(withTiming(1, { duration: 170 }));
+      popupScale.set(withSpring(1, { duration: 400, dampingRatio: 0.8 }));
+      popupTranslateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+      return undefined;
     }
 
     if (!renderedRef.current) return undefined;
 
-    const animation = Animated.parallel([
-      Animated.timing(backdropOpacity, { duration: 140, toValue: 0, useNativeDriver: true }),
-      Animated.timing(popupScale, { duration: 140, toValue: 0.92, useNativeDriver: true }),
-      Animated.timing(popupTranslateY, { duration: 140, toValue: 8, useNativeDriver: true }),
-    ]);
-    animationRef.current = animation;
-    animation.start(({ finished }) => {
-      if (finished && !visible) {
-        renderedRef.current = false;
-        setIsRendered(false);
-        setPresentedConversation(null);
-      }
-    });
+    backdropOpacity.set(withTiming(0, { duration: 140, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
+    popupScale.set(withTiming(0.86, { duration: 140, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
+    popupTranslateY.set(withTiming(14, { duration: 140, easing: Easing.bezier(0.23, 1, 0.32, 1) }, (finished) => {
+      if (finished) scheduleOnRN(unmountPreview);
+    }));
 
-    return () => animation.stop();
-  }, [activeConversation?.id, backdropOpacity, popupScale, popupTranslateY, visible]);
+    return undefined;
+  }, [activeConversation?.id, backdropOpacity, popupScale, popupTranslateY, unmountPreview, visible]);
+
+  const backdropStyle = useAnimatedStyle(() => ({
+    opacity: backdropOpacity.get(),
+  }));
+
+  const popupStyle = useAnimatedStyle(() => ({
+    opacity: backdropOpacity.get(),
+    transform: [
+      { translateY: popupTranslateY.get() },
+      { scale: popupScale.get() },
+    ],
+  }));
 
   // Keep the preview compact enough to show complete bubbles instead of
   // clipping the oldest bubble at the top when the square card scrolls.
   const messages = useMemo(() => {
-    const list = (Array.isArray(activeConversation?.messages) && activeConversation.messages.length > 0)
-      ? activeConversation.messages
-      : fetchedMessages;
+    const list = fetchedMessages?.identity === previewIdentity
+      ? fetchedMessages.messages
+      : (Array.isArray(activeConversation?.messages) ? activeConversation.messages : []);
     return list.slice(-8);
-  }, [activeConversation?.messages, fetchedMessages]);
+  }, [activeConversation?.messages, fetchedMessages, previewIdentity]);
 
   useEffect(() => {
     if (!visible || !activeConversation?.id) return;
@@ -316,10 +351,11 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
       accentColor={chatAccent}
       colors={colors}
       conversation={activeConversation}
+      conversationKey={conversationKey}
       currentUserId={currentUserId}
       item={item}
     />
-  ), [activeConversation, chatAccent, colors, currentUserId]);
+  ), [activeConversation, chatAccent, colors, conversationKey, currentUserId]);
 
   const shouldRender = Boolean(activeConversation && (visible || isRendered));
   if (!shouldRender) return null;
@@ -338,11 +374,11 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
       <View style={styles.overlay}>
         <Animated.View
           pointerEvents="none"
-          style={[StyleSheet.absoluteFill, { opacity: backdropOpacity }]}
+          style={[StyleSheet.absoluteFill, backdropStyle]}
         >
           <BlurView
             blurMethod={androidBlurMethod}
-            blurReductionFactor={Platform.OS === 'android' ? 4 : undefined}
+            blurReductionFactor={blurReductionFactor}
             blurTarget={blurTarget}
             intensity={blurIntensity}
             pointerEvents="none"
@@ -356,15 +392,7 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
           onPress={onClose}
           style={StyleSheet.absoluteFill}
         />
-        <Animated.View
-          style={[
-            styles.popupContainer,
-            {
-              opacity: backdropOpacity,
-              transform: [{ translateY: popupTranslateY }, { scale: popupScale }],
-            },
-          ]}
-        >
+        <Animated.View style={[styles.popupContainer, popupStyle]}>
           <Pressable accessible={false} onPress={onOpenChat} style={styles.popupCard}>
             <SafeAreaView edges={[]} style={[styles.sheet, { backgroundColor: colors.canvas, borderColor: colors.line }]}>
               {Platform.OS === 'ios' ? <View style={[styles.grabber, { backgroundColor: colors.inkSoft }]} /> : null}

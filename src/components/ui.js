@@ -1,11 +1,6 @@
+import Text from './AppText';
 import React from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 
@@ -34,7 +29,7 @@ export function Chip({ label, icon, iconName, active = false, color, onPress, st
   const content = (
     <View style={[styles.chip, active && { backgroundColor: activeColor, borderColor: activeColor }, style]}>
       {iconName ? (
-        <FeatureIcon color={active ? colors.card : activeColor} name={iconName} size={16} style={styles.chipIcon} />
+        <FeatureIcon color={active ? colors.onPrimary : activeColor} name={iconName} size={16} style={styles.chipIcon} />
       ) : (!!icon && <Text style={styles.chipIcon}>{icon}</Text>)}
       <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
     </View>
@@ -54,13 +49,10 @@ export function PrimaryButton({ label, icon, iconName, onPress, style, disabled 
       onPress={onPress}
       style={({ pressed }) => [styles.primaryButton, isCompact && styles.compactPrimaryButton, style, pressed && styles.pressed, disabled && styles.disabled]}
     >
-      {loading ? <ActivityIndicator color={colors.card} /> : (
+      {loading ? <ActivityIndicator color={colors.onPrimary} /> : (
         <View style={styles.buttonContent}>
-          {resolvedIcon ? <FeatureIcon color={colors.card} name={resolvedIcon} size={18} style={styles.buttonIcon} /> : null}
+          {resolvedIcon ? <FeatureIcon color={colors.onPrimary} name={resolvedIcon} size={18} style={styles.buttonIcon} /> : null}
           <Text
-            adjustsFontSizeToFit={isCompact}
-            minimumFontScale={0.78}
-            numberOfLines={isCompact ? 1 : undefined}
             style={[styles.primaryButtonText, isCompact && styles.compactButtonText]}
           >
             {label}
@@ -87,9 +79,6 @@ export function OutlineButton({ label, icon, iconName, onPress, style, danger = 
       <View style={styles.buttonContent}>
         {resolvedIcon ? <FeatureIcon color={buttonColor} name={resolvedIcon} size={18} style={styles.buttonIcon} /> : null}
         <Text
-          adjustsFontSizeToFit={isCompact}
-          minimumFontScale={0.78}
-          numberOfLines={isCompact ? 1 : undefined}
           style={[styles.outlineButtonText, isCompact && styles.compactButtonText, danger && styles.outlineDangerText]}
         >
           {label}
@@ -143,25 +132,27 @@ const createStyles = (colors) => StyleSheet.create({
     borderCurve: 'continuous',
     borderWidth: 1,
     flexDirection: 'row',
-    minHeight: 36,
+    minHeight: 44,
+    paddingVertical: 8,
     paddingHorizontal: spacing.md,
   },
   chipIcon: { fontSize: 14, marginRight: 5 },
   chipText: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '700' },
-  chipTextActive: { color: colors.card },
+  chipTextActive: { color: colors.onPrimary },
   primaryButton: {
     alignItems: 'center',
     backgroundColor: colors.primary,
     borderRadius: radius.md,
     borderCurve: 'continuous',
     justifyContent: 'center',
-    minHeight: 50,
+    minHeight: 48,
+    paddingVertical: 12,
     paddingHorizontal: spacing.xl,
   },
-  compactPrimaryButton: { borderRadius: 12, minHeight: 38, paddingHorizontal: 8 },
+  compactPrimaryButton: { borderRadius: 12, minHeight: 44, paddingHorizontal: 8 },
   buttonContent: { alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', maxWidth: '100%' },
   buttonIcon: { flexShrink: 0 },
-  primaryButtonText: { color: colors.card, fontSize: type.body, fontWeight: '800' },
+  primaryButtonText: { color: colors.onPrimary, fontSize: type.body, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
   outlineButton: {
     alignItems: 'center',
     backgroundColor: colors.card,
@@ -170,11 +161,12 @@ const createStyles = (colors) => StyleSheet.create({
     borderCurve: 'continuous',
     borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 50,
+    minHeight: 48,
+    paddingVertical: 12,
     paddingHorizontal: spacing.xl,
   },
-  compactOutlineButton: { borderRadius: 12, minHeight: 38, paddingHorizontal: 8 },
-  outlineButtonText: { color: colors.ink, fontSize: type.body, fontWeight: '800' },
+  compactOutlineButton: { borderRadius: 12, minHeight: 44, paddingHorizontal: 8 },
+  outlineButtonText: { color: colors.ink, flexShrink: 1, fontSize: type.body, fontWeight: '600' },
   compactButtonText: { fontSize: type.caption, lineHeight: 16 },
   outlineDanger: { backgroundColor: colors.dangerSoft, borderColor: colors.danger },
   outlineDangerText: { color: colors.danger },

@@ -1,26 +1,21 @@
+import Text from '../components/AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Alert,
-  FlatList,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import { router } from 'expo-router';
-import { useApp } from '../context/AppContext';
+import { FlatList, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { usePathname } from 'expo-router';
+import { openChatRoom } from '../utils/openChatRoom';
+import { useAppActions, useAppAppointments, useAppConversations, useAppFeed, useAppProfile } from '../context/AppContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { useToast } from '../context/ToastContext';
 import {
   IosLikeAvatar,
   IosLikeCard,
-  IosLikeHeader,
   IosLikeSectionTitle,
 } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';
 import { formatReadableDate } from '../utils/formatters';
 import { canCancelMeetup, isMeetupExpired } from '../utils/meetupTime';
 import { radius, spacing, type, useTheme } from '../theme';
+import { showAlert } from '../utils/appAlert';
 
 const WEEKDAYS = ['อา.', 'จ.', 'อ.', 'พ.', 'พฤ.', 'ศ.', 'ส.'];
 const THAI_MONTHS = [
@@ -113,15 +108,16 @@ function compareAppointments(first, second, nowKey) {
 
 export default function AppointmentHistoryScreen() {
   const { colors } = useTheme();
+  const { confirm } = useConfirm();
   const { showToast } = useToast();
+  const pathname = usePathname();
   const {
     allConversations = [],
-    appointments = [],
-    availableProfiles = [],
-    cancelAppointment,
-    profile,
-    toggleMeetupAcceptanceInChat,
-  } = useApp();
+  } = useAppConversations();
+  const { availableProfiles = [] } = useAppFeed();
+  const { appointments = [] } = useAppAppointments();
+  const { profile } = useAppProfile();
+  const { cancelAppointment, toggleMeetupAcceptanceInChat } = useAppActions();
   const currentUserId = profile?.id;
   const currentDateKey = todayKey();
   const [monthDate, setMonthDate] = useState(() => {
@@ -221,7 +217,6 @@ export default function AppointmentHistoryScreen() {
     () => history.filter((appointment) => appointment.dateKey !== selectedDateKey),
     [history, selectedDateKey]
   );
-  const activeCount = history.filter((appointment) => (appointment.status === 'active' || appointment.status === 'pending') && appointment.dateKey >= currentDateKey).length;
   const cells = useMemo(() => monthCells(monthDate), [monthDate]);
 
   const selectDate = (date) => {
@@ -237,14 +232,14 @@ export default function AppointmentHistoryScreen() {
 
   const handleOpenChat = useCallback((appointment) => {
     if (appointment?.conversationId) {
-      router.push({ pathname: '/chat-room', params: { chatId: appointment.conversationId } });
+      openChatRoom(appointment.conversationId, { pathname });
     }
-  }, []);
+  }, [pathname]);
 
   const handleAccept = useCallback(async (appointment) => {
     if (!appointment?.conversationId || !appointment?.hostId) return;
     if (appointment.isExpired || isMeetupExpired(appointment.meetup || appointment)) {
-      Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้');
+      showAlert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้', { tone: 'warning' });
       return;
     }
     try {
@@ -262,42 +257,32 @@ export default function AppointmentHistoryScreen() {
     }
   }, [showToast, toggleMeetupAcceptanceInChat]);
 
-  const handleCancel = useCallback((appointment) => {
+  const handleCancel = useCallback(async (appointment) => {
     const cancelCheck = canCancelMeetup(appointment.meetup || appointment);
     if (!cancelCheck.allowed) {
-      Alert.alert('ไม่สามารถยกเลิกได้', cancelCheck.reason || 'ไม่อนุญาตให้ยกเลิกก่อนวันนัดจริง 1 วัน (ต้องยกเลิกล่วงหน้าอย่างน้อย 24 ชั่วโมง)');
+      showAlert('ไม่สามารถยกเลิกได้', cancelCheck.reason || 'ไม่อนุญาตให้ยกเลิกก่อนวันนัดจริง 1 วัน (ต้องยกเลิกล่วงหน้าอย่างน้อย 24 ชั่วโมง)', { tone: 'warning' });
       return;
     }
     const personName = appointment.person?.name || appointment.person?.nickname || 'เพื่อน';
-    Alert.alert(
-      'ยกเลิกการนัดหมาย?',
-      `นัดหมายกับ ${personName} ในวันที่ ${formatReadableDate(appointment.dateKey)} จะถูกยกเลิก`,
-      [
-        { text: 'กลับไป', style: 'cancel' },
-        {
-          text: 'ยกเลิกนัดหมาย',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const result = await cancelAppointment(appointment);
-              if (result === false) {
-                showToast('นัดหมายนี้ถูกเปลี่ยนแปลงแล้ว', 'info');
-                return;
-              }
-              showToast('ยกเลิกการนัดหมายแล้ว', 'info');
-            } catch (error) {
-              showToast(error?.message || 'ยกเลิกการนัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
-            }
-          },
-        },
-      ],
-    );
-  }, [cancelAppointment, showToast]);
-
-  const onBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/home');
-  };
+    const ok = await confirm({
+      title: 'ยกเลิกการนัดหมาย?',
+      body: `นัดหมายกับ ${personName} ในวันที่ ${formatReadableDate(appointment.dateKey)} จะถูกยกเลิก`,
+      cancelLabel: 'กลับไป',
+      confirmLabel: 'ยกเลิกนัดหมาย',
+      icon: 'calendar.badge.clock',
+    });
+    if (!ok) return;
+    try {
+      const result = await cancelAppointment(appointment);
+      if (result === false) {
+        showToast('นัดหมายนี้ถูกเปลี่ยนแปลงแล้ว', 'info');
+        return;
+      }
+      showToast('ยกเลิกการนัดหมายแล้ว', 'info');
+    } catch (error) {
+      showToast(error?.message || 'ยกเลิกการนัดหมายไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    }
+  }, [cancelAppointment, confirm, showToast]);
 
   const listData = useMemo(() => {
     const rows = [];
@@ -400,14 +385,9 @@ export default function AppointmentHistoryScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.canvas }]}>
-      <IosLikeHeader
-        leftIcon="chevron.left"
-        onLeftPress={onBack}
-        subtitle={activeCount ? `${activeCount} นัดหมายที่กำลังจะมาถึง` : 'ดูวันนัดและรายละเอียดของคุณ'}
-        title="ประวัติการนัดหมาย"
-      />
       <FlatList
         contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior="automatic"
         data={listData}
         initialNumToRender={6}
         keyExtractor={keyExtractor}
@@ -438,11 +418,11 @@ function CalendarDay({ colors, date, dayStatus, isSelected, isToday, onPress }) 
         pressed && styles.pressed,
       ]}
     >
-      <Text style={[styles.dayNumber, { color: isSelected ? colors.card : colors.ink }]}>{date.getDate()}</Text>
+      <Text style={[styles.dayNumber, { color: isSelected ? colors.onPrimary : colors.ink }]}>{date.getDate()}</Text>
       <View style={styles.dayDots}>
-        {hasActive ? <View style={[styles.dayDot, { backgroundColor: isSelected ? colors.card : colors.primary }]} /> : null}
-        {hasPending && !hasActive ? <View style={[styles.dayDot, { backgroundColor: isSelected ? colors.card : '#FF9500' }]} /> : null}
-        {hasCancelled ? <View style={[styles.dayDot, { backgroundColor: isSelected ? colors.card : colors.danger }]} /> : null}
+        {hasActive ? <View style={[styles.dayDot, { backgroundColor: isSelected ? colors.onPrimary : colors.primary }]} /> : null}
+        {hasPending && !hasActive ? <View style={[styles.dayDot, { backgroundColor: isSelected ? colors.onPrimary : '#FF9500' }]} /> : null}
+        {hasCancelled ? <View style={[styles.dayDot, { backgroundColor: isSelected ? colors.onPrimary : colors.danger }]} /> : null}
       </View>
     </Pressable>
   );
@@ -494,7 +474,7 @@ const AppointmentCard = React.memo(function AppointmentCard({ appointment, color
       <View style={styles.appointmentHeader}>
         <IosLikeAvatar
           cacheScope={person.id || appointment.otherUserId}
-          cacheVersion={person.updatedAt}
+          cacheVersion={person.avatarRevision}
           color={person.avatarColor || colors.primarySoft}
           emoji={person.avatar}
           size={52}
@@ -536,7 +516,7 @@ const AppointmentCard = React.memo(function AppointmentCard({ appointment, color
             accessibilityLabel={`ตอบรับนัดหมายของ ${personName}`}
             accessibilityRole="button"
             disabled={appointment.isExpired}
-            onPress={appointment.isExpired ? () => Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้') : handleAcceptPress}
+            onPress={appointment.isExpired ? () => showAlert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้', { tone: 'warning' }) : handleAcceptPress}
             style={({ pressed }) => [
               styles.actionButton,
               styles.acceptButton,
@@ -544,8 +524,8 @@ const AppointmentCard = React.memo(function AppointmentCard({ appointment, color
               pressed && !appointment.isExpired && styles.pressed,
             ]}
           >
-            <FeatureIcon color="#FFFFFF" name={appointment.isExpired ? 'clock.badge.xmark' : 'checkmark.circle.fill'} size={15} />
-            <Text style={[styles.actionButtonText, { color: '#FFFFFF' }]}>
+            <FeatureIcon color={colors.onPrimary} name={appointment.isExpired ? 'clock.badge.xmark' : 'checkmark.circle.fill'} size={15} />
+            <Text style={[styles.actionButtonText, { color: colors.onPrimary }]}>
               {appointment.isExpired ? 'เลยกำหนดแล้ว' : 'ตอบรับนัดหมาย'}
             </Text>
           </Pressable>

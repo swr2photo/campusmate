@@ -1,86 +1,38 @@
+import { Button, Text } from '../components/NativeTypography';
+import { font } from '../components/brandFont';
+import RNText from '../components/AppText';
 import { randomUUID } from 'expo-crypto';
 import { stageVideoUpgrade, cancelVideoUpgrade, resumeVideoUpgrades } from '../services/videoUpgradeService';
+import { exportChatVideo, discardVideoExport } from '../services/videoProcessingService';
 import ChatVideoBubble from '../components/ChatVideoBubble';
 import ChatVideoComposer from '../components/ChatVideoComposer';
 import ChatCameraModal from '../components/ChatCameraModal';
 import ChatMediaComposer from '../components/ChatMediaComposer';
 import ChatProtectedImageBubble from '../components/ChatProtectedImageBubble';
+import CallMessageBubble from '../components/CallMessageBubble';
+import ChatGiphyPickerSheet from '../components/ChatGiphyPickerSheet';
+import SpotifyTrackSearchSheet from '../components/SpotifyTrackSearchSheet';
+import TrackPreviewButton from '../components/TrackPreviewButton';
 import { pickChatVideo } from '../services/chatVideoService';
-import { validateChatVideo } from '../utils/chatVideoPolicy';
+import { isProtectedMedia, validateChatVideo } from '../utils/chatVideoPolicy';
+import { usePeerMediaView } from '../hooks/usePeerMediaView';
 import ReplyPreview from '../components/ReplyPreview';
 import MessageTimeSwipeArea from '../components/MessageTimeSwipeArea';
 import { createReplySnapshot, resolveMessageReply } from '../utils/messageReply';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SymbolView } from 'expo-symbols';
-import { ActionSheetIOS, Alert, Animated, AppState, Image as RNImage, Keyboard, Modal, Platform, Pressable, Switch, Text as RNText, useColorScheme, View } from 'react-native';
+import { ActionSheetIOS, Animated, AppState, Image as RNImage, Keyboard, Linking, Modal, Platform, Pressable, Switch, useColorScheme, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import {
-  Button,
-  ContentUnavailableView,
-  ContextMenu,
-  Host,
-  RNHostView,
-  HStack,
-  Image,
-  List,
-  ProgressView,
-  ScrollView,
-  Spacer,
-  SwipeActions,
-  Text,
-  TextField,
-  useNativeState,
-  VStack,
-  ZStack,
-} from '@expo/ui/swift-ui';
-import {
-  aspectRatio,
-  background,
-  buttonBorderShape,
-  buttonStyle,
-  clipShape,
-  clipped,
-  controlSize,
-  cornerRadius,
-  defaultScrollAnchor,
-  disabled,
-  font,
-  foregroundStyle,
-  frame,
-  id,
-  labelStyle,
-  lineLimit,
-  listRowBackground,
-  listRowInsets,
-  listRowSeparator,
-  listStyle,
-  multilineTextAlignment,
-  offset,
-  onTapGesture,
-  onGeometryChange,
-  onLongPressGesture,
-  onSubmit,
-  opacity,
-  padding,
-  resizable,
-  rotationEffect,
-  scaleEffect,
-  scrollDismissesKeyboard,
-  scrollIndicators,
-  scrollPosition,
-  scrollContentBackground,
-  shadow,
-  shapes,
-  textFieldStyle,
-  tint,
-} from '@expo/ui/swift-ui/modifiers';
+import { ContentUnavailableView, ContextMenu, Host, RNHostView, HStack, Image, List, ProgressView, ScrollView, Spacer, SwipeActions, TextField, useNativeState, VStack, ZStack } from '@expo/ui/swift-ui';
+import { aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, controlSize, cornerRadius, defaultScrollAnchor, disabled, foregroundStyle, frame, id, labelStyle, lineLimit, listRowBackground, listRowInsets, listRowSeparator, listStyle, multilineTextAlignment, offset, onTapGesture, onGeometryChange, onLongPressGesture, onSubmit, opacity, padding, resizable, rotationEffect, scaleEffect, scrollDismissesKeyboard, scrollIndicators, scrollPosition, scrollContentBackground, shadow, shapes, textFieldStyle, tint } from '@expo/ui/swift-ui/modifiers';
 import { router, useLocalSearchParams } from 'expo-router';
 import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, startAfter } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
+import { secureDiscoveryConfigured, subscribeSecureProfile } from '../services/secureDiscoveryService';
 import { decryptConversationMessageList, mergeProfileRecords, toSafePublicProfile } from '../services/firestoreService';
 import {
   ensureConversationEncryption,
@@ -89,16 +41,20 @@ import {
   hasCurrentDeviceEnvelope,
   isValidConversationEncryption,
   getOrFetchConversationKey,
+  peekCachedConversationKey,
 } from '../services/chatEncryptionService';
 import { useDecryptedMedia } from '../hooks/useDecryptedMedia';
-import { useApp } from '../context/AppContext';
+import { useAppActions, useAppConversations, useAppFeed, useAppProfile } from '../context/AppContext';
+import { useCall } from '../context/CallContext';
+import { isSpotifyFeatureAllowed } from '../utils/featureFlags';
+import { useConfirm } from '../context/ConfirmContext';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import { formatReadableDate } from '../utils/formatters';
 import { canCancelMeetup, isMeetupExpired } from '../utils/meetupTime';
 import { getMessageReactionSummary, recordReactionUsage, useQuickReactions } from '../utils/messageReactions';
 import InstagramMessageOverlay, { DEFAULT_MESSAGE_REACTION } from '../components/InstagramMessageOverlay';
 import ReactionDetailsModal from '../components/ReactionDetailsModal';
-import ChatMediaPickerSheet from '../components/ChatMediaPickerSheet';
+import ChatMediaPickerSheet, { MEDIA_PICKER_COLLAPSED_HEIGHT } from '../components/ChatMediaPickerSheet';
 import DecryptedChatImage from '../components/DecryptedChatImage';
 import ChatImageViewerModal from '../components/ChatImageViewerModal';
 import ChatImageEditorModal from '../components/ChatImageEditorModal';
@@ -128,6 +84,7 @@ import {
   preCacheDecryptedMedia,
   getDecryptedMediaUri,
 } from '../services/chatMediaService';
+import { showAlert } from '../utils/appAlert';
 
 const DOUBLE_TAP_WINDOW_MS = 320;
 // Keep the context menu responsive while retaining a deliberate press-and-hold
@@ -248,6 +205,28 @@ function messageTimestamp(message) {
   return message?.createdAt || message?.time || message?.timestamp;
 }
 
+function preferCachedDecryption(messages, cachedMessages) {
+  if (!Array.isArray(cachedMessages) || cachedMessages.length === 0) return messages;
+  const cachedById = new Map();
+  cachedMessages.forEach((message) => {
+    if (message?.id) cachedById.set(message.id, message);
+  });
+  return messages.map((message) => {
+    if (!message?.id || !message.decryptionFailed) return message;
+    const cached = cachedById.get(message.id);
+    if (!cached || cached.decryptionFailed || !cached.text) return message;
+    return {
+      ...message,
+      text: cached.text,
+      mediaUrl: cached.mediaUrl || message.mediaUrl,
+      mediaUrls: cached.mediaUrls || message.mediaUrls,
+      mediaType: cached.mediaType || message.mediaType,
+      audioDuration: cached.audioDuration ?? message.audioDuration,
+      decryptionFailed: false,
+    };
+  });
+}
+
 function formatRelativeTime(timestamp) {
   const date = toDate(timestamp);
   if (!date) return '';
@@ -286,14 +265,24 @@ function formatRelativeTime(timestamp) {
   return `${Math.floor(months / 12) || 1} ปีที่แล้ว`;
 }
 
-function formatStatusTime(item, mine, isLatest, otherReadAt, otherUnread, showAllMessageTimes = false) {
+function formatStatusTime(item, mine, isLatest, otherReadAt, otherUnread, showAllMessageTimes = false, mediaViewedAt) {
   const sentDate = messageDate(item);
   if (!sentDate) return '';
   const sentTime = sentDate.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false });
 
+  if (mine && item.sendStatus === 'failed') return 'ส่งไม่สำเร็จ · แตะเพื่อลองใหม่';
   if (mine && isLatest) {
+    if (item.sendStatus === 'queued') return 'รอเชื่อมต่อเพื่อส่ง';
     if (item.pendingSync) {
       return 'กำลังส่ง...';
+    }
+    if (isProtectedMedia(item)) {
+      const viewedDate = toDate(mediaViewedAt);
+      if (viewedDate) {
+        const viewedTime = viewedDate.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false });
+        return `เปิดดูแล้วเมื่อ ${viewedTime}`;
+      }
+      return `ส่งแล้วเมื่อ ${sentTime}`;
     }
     const readDate = toDate(otherReadAt);
     const isReadByOther = Boolean(
@@ -329,27 +318,27 @@ function formatDay(message) {
 }
 
 export default function ChatRoomScreen() {
+  const { confirm } = useConfirm();
   const { chatId, entryAnimation } = useLocalSearchParams();
+  const { allConversations, conversations } = useAppConversations();
+  const { acceptedIncomingLikes, availableProfiles, matchedProfileIds, outgoingLikes } = useAppFeed();
+  const { profile } = useAppProfile();
+  const canUseSpotify = React.useMemo(() => isSpotifyFeatureAllowed(null, profile), [profile]);
   const {
-    acceptedIncomingLikes,
-    allConversations,
-    availableProfiles,
-    conversations,
     deleteMessageForMeInChat,
     getMeetupStats,
     markAsRead,
-    matchedProfileIds,
-    outgoingLikes,
-    profile,
     reactToMessageInChat,
     removeConversation,
     blockUser,
     reportContent,
     sendMessage,
+    cacheConversationMessages,
     toggleMeetupAcceptanceInChat,
     unsendMessageInChat,
     updateChatSettingsInChat,
-  } = useApp();
+  } = useAppActions();
+  const { activeCall, canCall, startVoiceCall, startVideoCall, acceptCall } = useCall();
   const palette = usePalette();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -460,15 +449,19 @@ export default function ChatRoomScreen() {
   const handleUnsend = useCallback(async (item) => {
     if (!chat?.id || !item?.id) return;
     setActionMessage(null);
-    Alert.alert('ยกเลิกการส่ง?', 'ข้อความนี้จะหายจากห้องสนทนาของทั้งสองฝ่าย', [
-      { style: 'cancel', text: 'ยกเลิก' },
-      {
-        onPress: () => unsendMessageInChat(chat.id, item.id).catch((error) => console.error('unsend message error:', error)),
-        style: 'destructive',
-        text: 'ยกเลิกการส่ง',
-      },
-    ]);
-  }, [chat?.id, unsendMessageInChat]);
+    const ok = await confirm({
+      title: 'ยกเลิกการส่ง?',
+      body: 'ข้อความนี้จะหายจากห้องสนทนาของทั้งสองฝ่าย',
+      confirmLabel: 'ยกเลิกการส่ง',
+      icon: 'arrow.uturn.backward.circle',
+    });
+    if (!ok) return;
+    try {
+      await unsendMessageInChat(chat.id, item.id);
+    } catch (error) {
+      console.error('unsend message error:', error);
+    }
+  }, [chat?.id, confirm, unsendMessageInChat]);
 
   const handleReact = useCallback(async (item, emoji) => {
     if (!chat?.id || !item?.id || !emoji) return;
@@ -489,50 +482,32 @@ export default function ChatRoomScreen() {
     setReplyingTo(item);
   }, []);
 
-  const handleDeleteForMe = useCallback((item) => {
+  const handleDeleteForMe = useCallback(async (item) => {
     if (!chat?.id || !item?.id) return;
     setActionMessage(null);
-    Alert.alert('ลบสำหรับคุณ?', 'อีกฝ่ายจะยังเห็นข้อความนี้ตามปกติ', [
-      { style: 'cancel', text: 'ยกเลิก' },
-      {
-        onPress: () => deleteMessageForMeInChat(chat.id, item.id).catch((error) => console.error('delete message error:', error)),
-        style: 'destructive',
-        text: 'ลบ',
-      },
-    ]);
-  }, [chat?.id, deleteMessageForMeInChat]);
+    const ok = await confirm({
+      title: 'ลบสำหรับคุณ?',
+      body: 'อีกฝ่ายจะยังเห็นข้อความนี้ตามปกติ',
+      confirmLabel: 'ลบ',
+      icon: 'trash.fill',
+    });
+    if (!ok) return;
+    try {
+      await deleteMessageForMeInChat(chat.id, item.id);
+    } catch (error) {
+      console.error('delete message error:', error);
+    }
+  }, [chat?.id, confirm, deleteMessageForMeInChat]);
 
   const [videoDraft, setVideoDraft] = useState(null);
   const handlePickVideo = async () => {
     try { const asset = await pickChatVideo(); if (asset) setMediaComposerDraft({ ...asset, type: 'video' }); }
-    catch (error) { Alert.alert('เลือกวิดีโอไม่สำเร็จ', error.message); }
+    catch (error) { showAlert('เลือกวิดีโอไม่สำเร็จ', error.message, { tone: 'danger' }); }
   };
-  const handleSendVideo = async (asset, mode, caption = '') => {
-    validateChatVideo(asset, mode);
-    if (!chat?.id || !currentUserId || chat.encryptionPending) throw new Error('ห้องแชตยังไม่พร้อมส่งวิดีโอ');
-    const replySnapshot = replyingTo;
-    const conversationKey = await getOrFetchConversationKey(chat.id, currentUserId);
-    const mediaUrl = await uploadChatMedia(asset.uri, {
-      conversationId: chat.id, mediaType: 'video', extension: 'mp4', conversationKey, videoDuration: asset.duration,
-    });
-    const messageId = randomUUID();
-    if (asset.upgradeSource) await stageVideoUpgrade({ userId: currentUserId, conversationId: chat.id, messageId,
-      asset: asset.upgradeSource, edit: asset.videoEdit, mode });
-    try {
-      const sent = await sendMessage(chat.id, caption.trim() || '[วิดีโอ]', { clientMessageId: messageId,
-        mediaType: 'video', mediaUrl, videoMode: mode, videoDuration: asset.duration,
-        videoStartMs: asset.videoEdit?.startMs, videoEndMs: asset.videoEdit?.endMs,
-        replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined });
-      if (!sent) throw new Error('ไม่สามารถส่งวิดีโอได้');
-      setReplyingTo(null);
-    } catch (error) { await cancelVideoUpgrade(currentUserId, messageId); throw error; }
-    void resumeVideoUpgrades(currentUserId);
-  };
-
   const handleForward = useCallback(async (item, targetConversationId) => {
     setActionMessage(null);
     if (item?.mediaType === 'video') {
-      Alert.alert('ไม่สามารถส่งต่อวิดีโอ', 'กรุณาเลือกวิดีโอจากเครื่องเพื่อส่งใหม่');
+      showAlert('ไม่สามารถส่งต่อวิดีโอ', 'กรุณาเลือกวิดีโอจากเครื่องเพื่อส่งใหม่', { tone: 'danger' });
       return;
     }
     if ((!item?.text && !item?.mediaUrl) || !targetConversationId) return;
@@ -564,7 +539,7 @@ export default function ChatRoomScreen() {
               conversationKey: targetKey,
             });
             forwardOptions.mediaUrl = newDownloadUrl;
-            preCacheDecryptedMedia(newDownloadUrl, localUri);
+            preCacheDecryptedMedia(newDownloadUrl, localUri, { conversationKey: targetKey, mediaType });
           } else {
             forwardOptions.mediaUrl = item.mediaUrl;
           }
@@ -576,9 +551,9 @@ export default function ChatRoomScreen() {
 
       const messageText = item.text || (item.mediaType === 'audio' ? '[ข้อความเสียง]' : '[รูปภาพ]');
       await sendMessage(targetConversationId, messageText, forwardOptions);
-      Alert.alert('ส่งต่อแล้ว', 'ส่งข้อความไปยังห้องสนทนาที่เลือกเรียบร้อย');
+      showAlert('ส่งต่อแล้ว', 'ส่งข้อความไปยังห้องสนทนาที่เลือกเรียบร้อย', { tone: 'success' });
     } catch (error) {
-      Alert.alert('ส่งต่อไม่สำเร็จ', error?.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ส่งต่อไม่สำเร็จ', error?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     }
   }, [chat?.id, currentUserId, sendMessage]);
 
@@ -645,108 +620,136 @@ export default function ChatRoomScreen() {
     : null;
   const resolvedPartnerAvatar = useRemoteImage(
     partnerAvatarUri,
-    chat?.participantProfiles?.[otherUserId]?.updatedAt,
+    chat?.participantProfiles?.[otherUserId]?.avatarRevision,
     otherUserId
   );
   const otherReadAt = chat?.readReceipts?.[otherUserId] || null;
   const isReadByOther = (chat?.unreadCounts?.[otherUserId] || 0) === 0;
 
   const [directMessages, setDirectMessages] = useState(null);
+  const [directMessagesRoomId, setDirectMessagesRoomId] = useState(normalizedChatId);
+  const decryptedMessageCacheRef = useRef(new Map());
+  const lastCachedMessagesSigRef = useRef('');
+  const [olderMessages, setOlderMessages] = useState([]);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const oldestDocRef = useRef(null);
+  const historyClearedAtRef = useRef(chat?.historyClearedAt?.[currentUserId] || null);
+  historyClearedAtRef.current = chat?.historyClearedAt?.[currentUserId] || null;
+
+  if (directMessagesRoomId !== normalizedChatId) {
+    setDirectMessagesRoomId(normalizedChatId);
+    setDirectMessages(null);
+    decryptedMessageCacheRef.current = new Map();
+    lastCachedMessagesSigRef.current = '';
+    setOlderMessages([]);
+    setIsLoadingOlder(false);
+    setHasMoreOlder(false);
+    oldestDocRef.current = null;
+  }
+
+  const scopedDirectMessages = directMessagesRoomId === normalizedChatId ? directMessages : null;
+  const scopedOlderMessages = directMessagesRoomId === normalizedChatId ? olderMessages : [];
 
   useEffect(() => {
     if (!normalizedChatId) {
       setDirectMessages(null);
-      return;
+      return undefined;
     }
 
     let isSubscribed = true;
     let unsubscribe = () => {};
+    let latestRawDocs = null;
+    let key = currentUserId
+      ? peekCachedConversationKey(normalizedChatId, currentUserId)
+      : null;
 
-    const startListener = async () => {
-      try {
-        const { db } = requireFirebase();
-        let key = null;
-        if (currentUserId) {
-          try {
-            key = await getOrFetchConversationKey(normalizedChatId, currentUserId);
-          } catch {
-            key = null;
-          }
+    const applyDecrypted = (rawDocs, currentKey) => {
+      const previousById = decryptedMessageCacheRef.current;
+      const nextById = new Map();
+      const decryptedList = rawDocs.map((doc) => {
+        const stamp = [
+          doc.ciphertext || '',
+          doc.nonce || '',
+          JSON.stringify(doc.reactions || {}),
+          JSON.stringify(doc.hiddenFor || []),
+          doc.isDeleted || '',
+          doc.unsent || '',
+        ].join(':');
+        const cached = previousById.get(doc.id);
+        if (cached?.stamp === stamp) {
+          nextById.set(doc.id, cached);
+          return cached.message;
         }
-
-        if (!isSubscribed) return;
-
-        const messagesRef = collection(db, 'conversations', normalizedChatId, 'messages');
-        const messagesQuery = query(
-          messagesRef,
-          orderBy('createdAt', 'desc'),
-          limit(40)
+        const decodedList = decryptConversationMessageList(
+          normalizedChatId,
+          [doc],
+          currentKey,
+          currentUserId,
+          historyClearedAtRef.current
         );
-        unsubscribe = onSnapshot(
-          messagesQuery,
-          async (snapshot) => {
-            try {
-              if (snapshot.docs.length >= 40) {
-                setHasMoreOlder(true);
-                oldestDocRef.current = snapshot.docs[snapshot.docs.length - 1];
-              } else {
-                setHasMoreOlder(false);
-                oldestDocRef.current = snapshot.docs[snapshot.docs.length - 1] || null;
-              }
-              const rawDocs = snapshot.docs.map((docSnap) => ({
-                id: docSnap.id,
-                ...docSnap.data(),
-              })).reverse();
-              let currentKey = key;
-              if (!currentKey && currentUserId) {
-                try {
-                  currentKey = await getOrFetchConversationKey(normalizedChatId, currentUserId);
-                  if (currentKey) key = currentKey;
-                } catch {}
-              }
-              const historyCutoff = chat?.historyClearedAt?.[currentUserId] || null;
-              const decryptedList = decryptConversationMessageList(
-                normalizedChatId,
-                rawDocs,
-                currentKey,
-                currentUserId,
-                historyCutoff
-              );
-              if (isSubscribed) {
-                setDirectMessages(decryptedList);
-              }
-            } catch (err) {
-              console.warn('ChatRoom direct messages decrypt error (iOS):', err?.message || err);
-            }
-          },
-          (error) => {
-            console.warn('ChatRoom direct messages listener error (iOS):', error?.message || error);
-          }
-        );
-      } catch (err) {
-        console.warn('ChatRoom direct listener setup failed (iOS):', err?.message || err);
-      }
+        if (!decodedList.length) return null;
+        const decoded = decodedList[0];
+        const entry = { stamp, message: decoded };
+        nextById.set(doc.id, entry);
+        return decoded;
+      }).filter(Boolean);
+      decryptedMessageCacheRef.current = nextById;
+      if (isSubscribed) setDirectMessages(decryptedList);
     };
 
-    startListener();
+    try {
+      const { db } = requireFirebase();
+      const messagesRef = collection(db, 'conversations', normalizedChatId, 'messages');
+      const messagesQuery = query(
+        messagesRef,
+        orderBy('createdAt', 'desc'),
+        limit(40)
+      );
+      unsubscribe = onSnapshot(
+        messagesQuery,
+        (snapshot) => {
+          try {
+            if (snapshot.docs.length >= 40) {
+              setHasMoreOlder(true);
+              oldestDocRef.current = snapshot.docs[snapshot.docs.length - 1];
+            } else {
+              setHasMoreOlder(false);
+              oldestDocRef.current = snapshot.docs[snapshot.docs.length - 1] || null;
+            }
+            const rawDocs = snapshot.docs.map((docSnap) => ({
+              id: docSnap.id,
+              ...docSnap.data(),
+            })).reverse();
+            latestRawDocs = rawDocs;
+            applyDecrypted(rawDocs, key);
+          } catch (err) {
+            console.warn('ChatRoom direct messages decrypt error (iOS):', err?.message || err);
+          }
+        },
+        (error) => {
+          console.warn('ChatRoom direct messages listener error (iOS):', error?.message || error);
+        }
+      );
+    } catch (err) {
+      console.warn('ChatRoom direct listener setup failed (iOS):', err?.message || err);
+    }
+
+    if (currentUserId) {
+      getOrFetchConversationKey(normalizedChatId, currentUserId)
+        .then((fetchedKey) => {
+          if (!isSubscribed || !fetchedKey) return;
+          key = fetchedKey;
+          if (latestRawDocs) applyDecrypted(latestRawDocs, key);
+        })
+        .catch(() => {});
+    }
 
     return () => {
       isSubscribed = false;
       unsubscribe();
     };
   }, [normalizedChatId, currentUserId]);
-
-  const [olderMessages, setOlderMessages] = useState([]);
-  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
-  const [hasMoreOlder, setHasMoreOlder] = useState(false);
-  const oldestDocRef = useRef(null);
-
-  useEffect(() => {
-    setOlderMessages([]);
-    setIsLoadingOlder(false);
-    setHasMoreOlder(false);
-    oldestDocRef.current = null;
-  }, [normalizedChatId]);
 
   const loadOlderMessages = useCallback(async () => {
     if (isLoadingOlder || !hasMoreOlder || !oldestDocRef.current || !normalizedChatId) return;
@@ -793,13 +796,14 @@ export default function ChatRoomScreen() {
   const [localPendingMediaMessages, setLocalPendingMediaMessages] = useState([]);
 
   const effectiveMessages = useMemo(() => {
-    const directWithOlder = directMessages !== null
-      ? [...olderMessages, ...directMessages]
-      : null;
-    const base = directWithOlder !== null ? directWithOlder : (chat?.messages || []);
+    const cachedMessages = Array.isArray(chat?.messages) ? chat.messages : [];
+    const liveMessages = scopedDirectMessages !== null
+      ? preferCachedDecryption([...scopedOlderMessages, ...scopedDirectMessages], cachedMessages)
+      : cachedMessages;
+    const base = liveMessages;
     const baseIds = new Set(base.map((b) => b?.id).filter(Boolean));
     const baseMediaUrls = new Set(base.map((b) => b?.mediaUrl).filter(Boolean));
-    const pendingOptimistic = (chat?.messages || []).filter(
+    const pendingOptimistic = cachedMessages.filter(
       (m) => !baseIds.has(m.id) && !(m.mediaUrl && baseMediaUrls.has(m.mediaUrl)) && (m?.pendingSync || m?.senderId === currentUserId)
     );
     const pendingLocalMedia = localPendingMediaMessages.filter(
@@ -817,7 +821,20 @@ export default function ChatRoomScreen() {
     return uniqueMessages.sort(
       (a, b) => (toDate(messageTimestamp(a))?.getTime() || 0) - (toDate(messageTimestamp(b))?.getTime() || 0)
     );
-  }, [chat?.messages, directMessages, localPendingMediaMessages, olderMessages]);
+  }, [chat?.messages, currentUserId, localPendingMediaMessages, scopedDirectMessages, scopedOlderMessages]);
+
+  useEffect(() => {
+    if (!normalizedChatId || scopedDirectMessages === null || !cacheConversationMessages) return undefined;
+    const liveMessages = [...scopedOlderMessages, ...scopedDirectMessages];
+    const lastMessage = liveMessages[liveMessages.length - 1];
+    const signature = `${normalizedChatId}:${liveMessages.length}:${lastMessage?.id || ''}:${lastMessage?.text || ''}`;
+    if (signature === lastCachedMessagesSigRef.current) return undefined;
+    const timer = setTimeout(() => {
+      lastCachedMessagesSigRef.current = signature;
+      cacheConversationMessages(normalizedChatId, liveMessages);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [cacheConversationMessages, normalizedChatId, scopedDirectMessages, scopedOlderMessages]);
 
   const latestMessageId = effectiveMessages[effectiveMessages.length - 1]?.id || null;
 
@@ -867,14 +884,14 @@ export default function ChatRoomScreen() {
     try {
       const uri = await getPastedImageFromClipboard();
       if (uri) {
-        setClipboardImage(null);
-        setMediaComposerDraft({ uri, uris: uris?.length ? uris : [uri], type: 'image', edit: true });
+        // The clipboard helper returns a single image; open it straight in the media editor.
+        setMediaComposerDraft({ uri, uris: [uri], type: 'image', edit: true });
         setEditingMediaUris([uri]);
       } else {
-        Alert.alert('คลิปบอร์ด', 'ไม่พบรูปภาพหรือลิงก์รูปภาพที่คัดลอกมา');
+        showAlert('คลิปบอร์ด', 'ไม่พบรูปภาพหรือลิงก์รูปภาพที่คัดลอกมา', { tone: 'info' });
       }
     } catch (err) {
-      Alert.alert('ไม่สามารถวางรูปได้', err?.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ไม่สามารถวางรูปได้', err?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     }
   }, []);
 
@@ -923,27 +940,21 @@ export default function ChatRoomScreen() {
     }
   }, [otherUserId]);
 
-  const handleRemoveConversation = () => {
+  const handleRemoveConversation = async () => {
     setIsSettingsOpen(false);
-    Alert.alert(
-      'ยกเลิกการจับคู่และลบห้องสนทนา?',
-      `การจับคู่และห้องสนทนากับ ${chat?.name || 'เพื่อน'} จะถูกนำออกจากรายการของคุณ`,
-      [
-        { text: 'ยกเลิก', style: 'cancel' },
-        {
-          text: 'ลบห้องสนทนา',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await removeConversation(chat?.id, otherUserId);
-              router.replace('/chat');
-            } catch (error) {
-              console.error('removeConversation error:', error);
-            }
-          },
-        },
-      ]
-    );
+    const ok = await confirm({
+      title: 'ยกเลิกการจับคู่และลบห้องสนทนา?',
+      body: `การจับคู่และห้องสนทนากับ ${chat?.name || 'เพื่อน'} จะถูกนำออกจากรายการของคุณ`,
+      confirmLabel: 'ลบห้องสนทนา',
+      icon: 'trash.fill',
+    });
+    if (!ok) return;
+    try {
+      await removeConversation(chat?.id, otherUserId);
+      router.replace('/chat');
+    } catch (error) {
+      console.error('removeConversation error:', error);
+    }
   };
 
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
@@ -979,29 +990,23 @@ export default function ChatRoomScreen() {
     setIsReportModalOpen(true);
   }, [otherUserId]);
 
-  const handleBlockUserAction = useCallback(() => {
+  const handleBlockUserAction = useCallback(async () => {
     setIsSettingsOpen(false);
-    Alert.alert(
-      `บล็อก ${chat?.name || 'ผู้ใช้นี้'}?`,
-      'คุณจะไม่เห็นข้อความและการจับคู่กับผู้ใช้นี้อีกต่อไป และผู้ใช้นี้จะไม่สามารถส่งข้อความหาคุณได้',
-      [
-        { text: 'ยกเลิก', style: 'cancel' },
-        {
-          text: 'บล็อกผู้ใช้',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await blockUser(otherUserId, chat?.id);
-              Alert.alert('บล็อกผู้ใช้เรียบร้อยแล้ว');
-              router.replace('/chat');
-            } catch (err) {
-              Alert.alert('บล็อกไม่สำเร็จ', err?.message || 'กรุณาลองใหม่อีกครั้ง');
-            }
-          },
-        },
-      ]
-    );
-  }, [blockUser, chat?.id, chat?.name, otherUserId]);
+    const ok = await confirm({
+      title: `บล็อก ${chat?.name || 'ผู้ใช้นี้'}?`,
+      body: 'คุณจะไม่เห็นข้อความและการจับคู่กับผู้ใช้นี้อีกต่อไป และผู้ใช้นี้จะไม่สามารถส่งข้อความหาคุณได้',
+      confirmLabel: 'บล็อกผู้ใช้',
+      icon: 'person.fill.xmark',
+    });
+    if (!ok) return;
+    try {
+      await blockUser(otherUserId, chat?.id);
+      showAlert('บล็อกผู้ใช้เรียบร้อยแล้ว', undefined, { tone: 'success' });
+      router.replace('/chat');
+    } catch (err) {
+      showAlert('บล็อกไม่สำเร็จ', err?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
+    }
+  }, [blockUser, chat?.id, chat?.name, confirm, otherUserId]);
 
   const handleSubmitReport = useCallback(async ({ reason, details }) => {
     if (!reportTarget.reportedUserId && !otherUserId) return;
@@ -1026,7 +1031,10 @@ export default function ChatRoomScreen() {
   }, []);
 
   useEffect(() => {
+    setPartnerProfileDirect(null);
     if (!otherUserId) return;
+    if (secureDiscoveryConfigured()) return subscribeSecureProfile(otherUserId, setPartnerProfileDirect,
+      (reason) => console.warn('Partner profile lookup failed:', reason?.code || 'unavailable'));
     try {
       const { db } = requireFirebase();
       const unsub = onSnapshot(doc(db, 'profiles', otherUserId), (snap) => {
@@ -1070,13 +1078,13 @@ export default function ChatRoomScreen() {
   const handleToggleAcceptMeetup = async () => {
     if (!chat?.id || !otherUserId || !partnerMeetup) return;
     if (!isAcceptedByMe && isMeetupExpired(partnerMeetup)) {
-      Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้');
+      showAlert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้', { tone: 'warning' });
       return;
     }
     if (isAcceptedByMe) {
       const cancelCheck = canCancelMeetup(partnerMeetup);
       if (!cancelCheck.allowed) {
-        Alert.alert('ไม่สามารถยกเลิกได้', cancelCheck.reason || 'ไม่อนุญาตให้ยกเลิกก่อนวันนัดจริง 1 วัน');
+        showAlert('ไม่สามารถยกเลิกได้', cancelCheck.reason || 'ไม่อนุญาตให้ยกเลิกก่อนวันนัดจริง 1 วัน', { tone: 'warning' });
         return;
       }
     }
@@ -1084,7 +1092,7 @@ export default function ChatRoomScreen() {
       await toggleMeetupAcceptanceInChat(chat.id, targetHostId, partnerMeetup.name || 'จุดนัดพบ', partnerMeetup);
     } catch (e) {
       console.warn('toggle meetup acceptance warning:', e?.message || e);
-      Alert.alert('เกิดข้อผิดพลาด', e?.message || 'ไม่สามารถดำเนินการได้');
+      showAlert('เกิดข้อผิดพลาด', e?.message || 'ไม่สามารถดำเนินการได้', { tone: 'danger' });
     }
   };
 
@@ -1096,20 +1104,24 @@ export default function ChatRoomScreen() {
     } catch (_) {}
   }, [latestMessageId, scrollTarget]);
 
+  const didInitialScrollRef = useRef(false);
+  useEffect(() => {
+    didInitialScrollRef.current = false;
+  }, [chat?.id]);
+
   useEffect(() => {
     if (!latestMessageId) return;
+    if (!didInitialScrollRef.current) {
+      didInitialScrollRef.current = true;
+      scrollToLatest();
+      // One deferred settle after first paint — no multi-timeout chase that
+      // animates through the whole history as messages hydrate.
+      const settle = setTimeout(scrollToLatest, 80);
+      return () => clearTimeout(settle);
+    }
     scrollToLatest();
-    const t1 = setTimeout(scrollToLatest, 40);
-    const t2 = setTimeout(scrollToLatest, 120);
-    const t3 = setTimeout(scrollToLatest, 250);
-    const t4 = setTimeout(scrollToLatest, 500);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-      clearTimeout(t4);
-    };
-  }, [latestMessageId, effectiveMessages.length, scrollToLatest]);
+    return undefined;
+  }, [latestMessageId, scrollToLatest]);
 
   useEffect(() => {
     try {
@@ -1127,6 +1139,8 @@ export default function ChatRoomScreen() {
   }, [chat?.id]);
 
   const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
+  const [isGiphyPickerOpen, setIsGiphyPickerOpen] = useState(false);
+  const [isSpotifyPickerOpen, setIsSpotifyPickerOpen] = useState(false);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [recordedAudio, setRecordedAudio] = useState(null);
   const isStopping = !isRecordingAudio && Boolean(recordedAudio?.stopping);
@@ -1152,8 +1166,110 @@ export default function ChatRoomScreen() {
 
   const handlePickImage = useCallback(() => {
     Keyboard.dismiss();
+    setIsGiphyPickerOpen(false);
+    setIsSpotifyPickerOpen(false);
     setIsMediaPickerOpen((prev) => !prev);
   }, []);
+
+  const handleSendGif = useCallback(
+    async (gif) => {
+      if (!gif?.url || !chat?.id) return;
+      setIsGiphyPickerOpen(false);
+      const replySnapshot = replyingTo;
+      setReplyingTo(null);
+
+      const tempId = `temp-gif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const optimisticMessage = {
+        id: tempId,
+        sender: 'me',
+        senderId: currentUserId,
+        text: '[GIF]',
+        createdAt: Date.now(),
+        time: Date.now(),
+        mediaType: 'image',
+        mediaUrl: gif.url,
+        pendingSync: true,
+        replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+      };
+
+      setLocalPendingMediaMessages((prev) => [...prev, optimisticMessage]);
+      scrollToLatest();
+
+      try {
+        await sendMessage(chat.id, '[GIF]', {
+          mediaType: 'image',
+          mediaUrl: gif.url,
+          clientMessageId: tempId,
+          replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+        });
+        scrollToLatest();
+      } catch (err) {
+        showAlert('ส่ง GIF ไม่สำเร็จ', err?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
+      } finally {
+        setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== tempId));
+      }
+    },
+    [chat?.id, currentUserId, replyingTo, scrollToLatest, sendMessage]
+  );
+
+  const handleSendTrack = useCallback(
+    async (track) => {
+      if (!track?.id || !chat?.id) return;
+      setIsSpotifyPickerOpen(false);
+      const replySnapshot = replyingTo;
+      setReplyingTo(null);
+
+      const trackName = String(track.name || 'Spotify').slice(0, 200);
+      const plaintext = `🎵 ${trackName}`.slice(0, 1000);
+      const tempId = `temp-track-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const trackFields = {
+        mediaType: 'track',
+        trackId: String(track.id).slice(0, 64),
+        trackName,
+        artists: String(track.artists || '').slice(0, 200),
+        albumArt: typeof track.albumArt === 'string' ? track.albumArt.slice(0, 2000) : '',
+        ...(typeof track.previewUrl === 'string' && track.previewUrl
+          ? { previewUrl: track.previewUrl.slice(0, 2000) }
+          : {}),
+        externalUrl: typeof track.externalUrl === 'string' && track.externalUrl
+          ? track.externalUrl.slice(0, 500)
+          : `https://open.spotify.com/track/${track.id}`,
+        ...(Number.isFinite(Number(track.previewStartMs))
+          ? { previewStartMs: Math.max(0, Math.round(Number(track.previewStartMs))) }
+          : {}),
+        ...(Number.isFinite(Number(track.previewEndMs))
+          ? { previewEndMs: Math.max(0, Math.round(Number(track.previewEndMs))) }
+          : {}),
+      };
+
+      setLocalPendingMediaMessages((prev) => [...prev, {
+        id: tempId,
+        sender: 'me',
+        senderId: currentUserId,
+        text: plaintext,
+        createdAt: Date.now(),
+        time: Date.now(),
+        ...trackFields,
+        pendingSync: true,
+        replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+      }]);
+      scrollToLatest();
+
+      try {
+        await sendMessage(chat.id, plaintext, {
+          ...trackFields,
+          clientMessageId: tempId,
+          replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+        });
+        scrollToLatest();
+      } catch (err) {
+        showAlert('ส่งเพลงไม่สำเร็จ', err?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
+      } finally {
+        setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== tempId));
+      }
+    },
+    [chat?.id, currentUserId, replyingTo, scrollToLatest, sendMessage]
+  );
 
   const handleStartRecording = useCallback(async () => {
     try {
@@ -1180,7 +1296,7 @@ export default function ChatRoomScreen() {
         }
       }, 80);
     } catch (err) {
-      Alert.alert('ไม่สามารถบันทึกเสียงได้', err.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ไม่สามารถบันทึกเสียงได้', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     }
   }, [recordedAudio]);
 
@@ -1201,7 +1317,7 @@ export default function ChatRoomScreen() {
       }
       const actualDuration = Math.max(duration, Math.round(res.duration || 0));
       if (actualDuration < 1) {
-        Alert.alert('เสียงสั้นเกินไป', 'กรุณาบันทึกเสียงอย่างน้อย 1 วินาที');
+        showAlert('เสียงสั้นเกินไป', 'กรุณาบันทึกเสียงอย่างน้อย 1 วินาที', { tone: 'warning' });
         setRecordedAudio(null);
         setRecordingSeconds(0);
         return;
@@ -1212,7 +1328,7 @@ export default function ChatRoomScreen() {
         levels: levelsSnapshot,
       });
     } catch (err) {
-      Alert.alert('ไม่สามารถหยุดการบันทึกได้', err.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ไม่สามารถหยุดการบันทึกได้', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
       setRecordedAudio(null);
     }
   }, [recordingLevels, recordingSeconds]);
@@ -1272,7 +1388,7 @@ export default function ChatRoomScreen() {
 
     if (!audioUri || !chat?.id) return;
     if (duration < 1) {
-      Alert.alert('เสียงสั้นเกินไป', 'กรุณาบันทึกเสียงอย่างน้อย 1 วินาที');
+      showAlert('เสียงสั้นเกินไป', 'กรุณาบันทึกเสียงอย่างน้อย 1 วินาที', { tone: 'warning' });
       return;
     }
 
@@ -1305,7 +1421,7 @@ export default function ChatRoomScreen() {
         extension: 'm4a',
         conversationKey,
       });
-      preCacheDecryptedMedia(downloadUrl, audioUri);
+      preCacheDecryptedMedia(downloadUrl, audioUri, { conversationKey, mediaType: 'audio' });
       await sendMessage(chat.id, '[ข้อความเสียง]', {
         mediaType: 'audio',
         mediaUrl: downloadUrl,
@@ -1315,11 +1431,86 @@ export default function ChatRoomScreen() {
       });
       setTimeout(scrollToLatest, 60);
     } catch (err) {
-      Alert.alert('ส่งข้อความเสียงไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ส่งข้อความเสียงไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     } finally {
       setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== tempId));
     }
   }, [chat?.id, currentUserId, isPreviewPlaying, isRecordingAudio, previewPlayer, recordedAudio, recordingSeconds, replyingTo, scrollToLatest, sendMessage]);
+
+  const handleSendVideo = useCallback(async (asset, mode, caption = '') => {
+    if (!chat?.id || !currentUserId) throw new Error('ห้องแชตยังไม่พร้อมส่งวิดีโอ');
+    if (!asset.needsExport) validateChatVideo(asset, mode);
+    const replySnapshot = createReplySnapshot(replyingTo);
+    setReplyingTo(null);
+    const messageId = randomUUID();
+    const messageText = (caption || '').trim() || '[วิดีโอ]';
+    const clipDuration = Number.isFinite(asset.videoEdit?.endMs) && Number.isFinite(asset.videoEdit?.startMs)
+      ? Math.max(1, asset.videoEdit.endMs - asset.videoEdit.startMs)
+      : asset.duration;
+    const optimisticVideo = {
+      id: messageId,
+      sender: 'me',
+      senderId: currentUserId,
+      text: messageText,
+      createdAt: Date.now(),
+      time: Date.now(),
+      mediaType: 'video',
+      mediaUrl: asset.uri,
+      videoMode: mode,
+      videoDuration: clipDuration,
+      videoStartMs: asset.videoEdit?.startMs,
+      videoEndMs: asset.videoEdit?.endMs,
+      isUploading: true,
+      pendingSync: true,
+      replyTo: replySnapshot,
+    };
+    setLocalPendingMediaMessages((prev) => [...prev, optimisticVideo]);
+    setTimeout(() => scrollToLatest(), 50);
+
+    let exported;
+    try {
+      const conversationKeyPromise = getOrFetchConversationKey(chat.id, currentUserId);
+      let uploadAsset = asset;
+      if (asset.needsExport && asset.videoEdit) {
+        exported = await exportChatVideo({ ...asset, duration: asset.duration }, asset.videoEdit, 'medium');
+        uploadAsset = { ...asset, ...exported };
+      }
+      validateChatVideo(uploadAsset, mode);
+      const conversationKey = await conversationKeyPromise;
+      const mediaUrl = await uploadChatMedia(uploadAsset.uri, {
+        conversationId: chat.id, mediaType: 'video', extension: 'mp4', conversationKey, videoDuration: uploadAsset.duration,
+      });
+      const sent = await sendMessage(chat.id, messageText, {
+        clientMessageId: messageId,
+        mediaType: 'video',
+        mediaUrl,
+        videoMode: mode,
+        videoDuration: uploadAsset.duration,
+        videoStartMs: 0,
+        videoEndMs: uploadAsset.duration,
+        replyTo: replySnapshot,
+      });
+      if (!sent) throw new Error('ไม่สามารถส่งวิดีโอได้');
+      if (asset.upgradeSource) {
+        void stageVideoUpgrade({
+          userId: currentUserId,
+          conversationId: chat.id,
+          messageId,
+          asset: asset.upgradeSource,
+          edit: asset.videoEdit,
+          mode,
+        }).then(() => resumeVideoUpgrades(currentUserId)).catch((upgradeError) => {
+          console.warn('[VideoUpgrade] Unable to stage clearer rendition:', upgradeError?.message || upgradeError);
+        });
+      }
+    } catch (error) {
+      await cancelVideoUpgrade(currentUserId, messageId);
+      throw error;
+    } finally {
+      await discardVideoExport(exported);
+      setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== messageId));
+    }
+  }, [chat?.id, currentUserId, replyingTo, scrollToLatest, sendMessage]);
 
   const handleSendImage = useCallback(async (photoUri, captionText, viewMode = 'chat') => {
     const uris = Array.isArray(photoUri) ? photoUri.filter(Boolean) : (photoUri ? [photoUri] : []);
@@ -1328,58 +1519,78 @@ export default function ChatRoomScreen() {
 
     const replySnapshot = createReplySnapshot(replyingTo);
     setReplyingTo(null);
-    const tempId = `temp-img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const safeCaption = (captionText || '').trim();
-    const isMulti = uris.length > 1;
-    const defaultPlaceholder = isMulti ? `[รูปภาพ ${uris.length} รูป]` : '[รูปภาพ]';
-    const messageText = safeCaption || defaultPlaceholder;
+    const stamp = Date.now();
+    const pending = uris.map((uri, index) => ({
+      id: `temp-img-${stamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      uri,
+      caption: index === 0 ? safeCaption : '',
+    }));
+    const pendingIds = new Set(pending.map((item) => item.id));
 
-    const optimisticMessage = {
-      id: tempId,
-      sender: 'me',
-      senderId: currentUserId,
-      text: messageText,
-      createdAt: Date.now(),
-      time: Date.now(),
-      mediaType: 'image',
-      mediaUrl: uris[0],
-      mediaUrls: uris,
-      isUploading: true,
-      pendingSync: true,
-      replyTo: replySnapshot,
-    };
-
-    setLocalPendingMediaMessages((prev) => [...prev, optimisticMessage]);
+    setLocalPendingMediaMessages((prev) => [
+      ...prev,
+      ...pending.map((item, index) => ({
+        id: item.id,
+        sender: 'me',
+        senderId: currentUserId,
+        text: item.caption || '[รูปภาพ]',
+        createdAt: stamp + index,
+        time: stamp + index,
+        mediaType: 'image',
+        mediaUrl: item.uri,
+        viewMode,
+        isUploading: true,
+        pendingSync: true,
+        replyTo: index === 0 ? replySnapshot : undefined,
+      })),
+    ]);
     setTimeout(() => scrollToLatest(), 50);
 
     try {
       const conversationKey = await getOrFetchConversationKey(chat.id, currentUserId);
-      const downloadUrls = await Promise.all(
-        uris.map(async (u) => {
-          const downloadUrl = await uploadChatMedia(u, {
-            conversationId: chat.id,
-            mediaType: 'image',
-            extension: 'jpg',
-            conversationKey,
-          });
-          preCacheDecryptedMedia(downloadUrl, u);
-          return downloadUrl;
-        })
-      );
-
-      await sendMessage(chat.id, messageText, {
-        mediaType: 'image',
-        viewMode,
-        mediaUrl: downloadUrls[0],
-        mediaUrls: downloadUrls,
-        clientMessageId: tempId,
-        replyTo: replySnapshot,
-      });
+      const uploadResults = new Array(pending.length);
+      let nextUploadIndex = 0;
+      let uploadFailed = false;
+      const startNextUpload = () => {
+        if (uploadFailed || nextUploadIndex >= pending.length) return;
+        const index = nextUploadIndex++;
+        uploadResults[index] = uploadChatMedia(pending[index].uri, {
+          conversationId: chat.id,
+          mediaType: 'image',
+          extension: 'jpg',
+          conversationKey,
+        }).then(
+          (downloadUrl) => ({ ok: true, downloadUrl }),
+          (error) => {
+            uploadFailed = true;
+            return { ok: false, error };
+          }
+        );
+      };
+      startNextUpload();
+      startNextUpload();
+      for (let index = 0; index < pending.length; index += 1) {
+        const item = pending[index];
+        const uploadResult = await uploadResults[index];
+        if (!uploadResult.ok) throw uploadResult.error;
+        const { downloadUrl } = uploadResult;
+        preCacheDecryptedMedia(downloadUrl, item.uri, { conversationKey });
+        await sendMessage(chat.id, item.caption || '[รูปภาพ]', {
+          mediaType: 'image',
+          viewMode,
+          mediaUrl: downloadUrl,
+          clientMessageId: item.id,
+          replyTo: index === 0 ? replySnapshot : undefined,
+        });
+        setLocalPendingMediaMessages((prev) => prev.filter((message) => message.id !== item.id));
+        startNextUpload();
+      }
       setTimeout(() => scrollToLatest(), 60);
     } catch (err) {
-      Alert.alert(err.isModerationViolation ? 'ระบบความปลอดภัย' : 'ส่งรูปภาพไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert(err.isModerationViolation ? 'ระบบความปลอดภัย' : 'ส่งรูปภาพไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     } finally {
-      setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== tempId));
+      setLocalPendingMediaMessages((prev) => prev.filter((message) => !pendingIds.has(message.id)));
     }
   }, [chat?.id, currentUserId, replyingTo, scrollToLatest, sendMessage]);
 
@@ -1389,7 +1600,7 @@ export default function ChatRoomScreen() {
 
   const handleSend = useCallback(async () => {
     const trimmed = (messageState.get() || '').trim();
-    if (!trimmed || sendingRef.current || !chat?.id || chat.encryptionPending || !isMatchActive) return;
+    if (!trimmed || sendingRef.current || !chat?.id || !isMatchActive) return;
     sendingRef.current = true;
     messageState.set('');
     setHasText(false);
@@ -1408,10 +1619,13 @@ export default function ChatRoomScreen() {
       setHasText(true);
       setReplyingTo(replySnapshot);
       await textFieldRef.current?.setText(trimmed);
+      if (error?.code === 'E2EE_KEY_MISSING' || error?.code === 'E2EE_KEY_UNAVAILABLE') {
+        showAlert('ยังส่งไม่สำเร็จ', error.message || 'กำลังเชื่อมกุญแจเข้ารหัส ลองส่งอีกครั้งได้เลย', { tone: 'warning' });
+      }
     } finally {
       sendingRef.current = false;
     }
-  }, [chat?.encryptionPending, chat?.id, isMatchActive, messageState, replyingTo, scrollToLatest, sendMessage]);
+  }, [chat?.id, isMatchActive, messageState, replyingTo, scrollToLatest, sendMessage]);
 
   // Keep the native modifier objects stable for the lifetime of the field.
   // Recreating the submit modifier while typing or selecting a reply can make
@@ -1446,6 +1660,10 @@ export default function ChatRoomScreen() {
         isLatest={index === messages.length - 1}
         item={item}
         key={item.id}
+        onCallPress={(type) => {
+          if (type === 'video') startVideoCall(chat, chat?.id);
+          else startVoiceCall(chat, chat?.id);
+        }}
         onOpenProfile={handleOpenPartnerProfile}
         onPreviewImage={handlePreviewImage}
         onQuickReact={handleQuickReact}
@@ -1456,11 +1674,12 @@ export default function ChatRoomScreen() {
         otherUnread={otherUnread}
         previousItem={messages[index - 1]}
         readAt={otherReadAt}
+        otherUserId={otherUserId}
         showAllMessageTimes={showAllMessageTimes}
         tick={0}
       />
     ));
-  }, [chat?.id, currentUserId, chat?.avatar, chat?.avatarColor, chat?.unreadCounts, effectiveMessages, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUserId, handleReply, resolvedPartnerAvatar, showAllMessageTimes]);
+  }, [acceptCall, activeCall, chat, currentUserId, chat?.avatar, chat?.avatarColor, chat?.unreadCounts, effectiveMessages, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUserId, handleReply, resolvedPartnerAvatar, showAllMessageTimes, startVideoCall, startVoiceCall]);
 
   // Only the newest row shows a ticking relative time, so refresh that single
   // element instead of rebuilding every row's element tree on each tick.
@@ -1479,7 +1698,7 @@ export default function ChatRoomScreen() {
         <View pointerEvents="box-none" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }}>
           <Host colorScheme={colorScheme} seedColor={palette.accent} style={{ width: '100%' }}>
             <HStack alignment="center" spacing={12} modifiers={[padding({ top: 58, bottom: 12, horizontal: 16 }), frame({ maxWidth: Infinity })]}>
-              <Button label="ย้อนกลับ" onPress={onBack} systemImage="chevron.left" modifiers={[buttonStyle('glass'), buttonBorderShape('circle'), controlSize('large'), labelStyle('iconOnly')]} />
+              {canCall ? <Button label="ย้อนกลับ" onPress={onBack} systemImage="chevron.left" modifiers={[buttonStyle('glass'), buttonBorderShape('circle'), controlSize('large'), labelStyle('iconOnly')]} /> : null}
               <VStack alignment="leading" spacing={2}>
                 <Text modifiers={[font({ textStyle: 'headline', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text)]}>ไม่พบห้องสนทนา</Text>
               </VStack>
@@ -1539,6 +1758,30 @@ export default function ChatRoomScreen() {
                 </HStack>
               </Button>
               <Spacer />
+              {activeCall && activeCall.conversationId === chat?.id && (activeCall.status === 'calling' || activeCall.status === 'ringing') && activeCall.callerId !== currentUserId ? (
+                <Button
+                  label="เข้าร่วม"
+                  onPress={() => acceptCall()}
+                  systemImage="phone.fill"
+                  modifiers={[buttonStyle('glassProminent'), buttonBorderShape('capsule'), controlSize('small'), tint('#18A878')]}
+                />
+              ) : null}
+              {canCall ? (
+                <>
+                <Button
+                label="โทรด้วยเสียง"
+                onPress={() => startVoiceCall(chat, chat?.id)}
+                systemImage="phone.fill"
+                modifiers={[buttonStyle('glass'), buttonBorderShape('circle'), controlSize('large'), labelStyle('iconOnly'), tint(palette.text)]}
+              />
+              <Button
+                label="วิดีโอคอล"
+                onPress={() => startVideoCall(chat, chat?.id)}
+                systemImage="video.fill"
+                modifiers={[buttonStyle('glass'), buttonBorderShape('circle'), controlSize('large'), labelStyle('iconOnly'), tint(palette.text)]}
+              />
+                </>
+              ) : null}
               <Button
                 label="ตั้งค่าแชต"
                 onPress={() => setIsSettingsOpen(true)}
@@ -1625,7 +1868,7 @@ export default function ChatRoomScreen() {
                   ]}
                 >
                   {chat.encryptionPending
-                    ? 'กำลังรอคีย์จากผู้ร่วมสนทนา ข้อความเก่าจะแสดงเมื่อได้รับคีย์'
+                    ? 'กำลังเชื่อมกุญแจเข้ารหัส ส่งข้อความได้เลย ไม่ต้องรออัปเดตแอป'
                     : 'แชตนี้เข้ารหัสแบบต้นทางถึงปลายทาง'}
                 </Text>
               </HStack>
@@ -1639,7 +1882,7 @@ export default function ChatRoomScreen() {
             <HStack spacing={10} modifiers={[padding({ top: 8, horizontal: 18 }), frame({ maxWidth: Infinity }), background(palette.background)]}>
               <VStack alignment="leading" spacing={2} modifiers={[padding({ leading: 9 }), frame({ maxWidth: Infinity, alignment: 'leading' })]}>
                 <Text modifiers={[font({ textStyle: 'caption', weight: 'bold' }), foregroundStyle(palette.accent)]}>ตอบกลับข้อความ</Text>
-                <ReplyPreview reply={replyingTo} conversationId={chat?.id} color={palette.secondary} />
+                <ReplyPreview reply={replyingTo} conversationId={chat?.id} currentUserId={currentUserId} color={palette.secondary} />
               </VStack>
               <Button label="ยกเลิกการตอบกลับ" onPress={() => setReplyingTo(null)} systemImage="xmark" modifiers={[buttonStyle('glass'), buttonBorderShape('circle'), controlSize('small'), labelStyle('iconOnly')]} />
             </HStack>
@@ -1773,11 +2016,11 @@ export default function ChatRoomScreen() {
                     maxLength={1000}
                     onFocusChange={handleTextFieldFocusChange}
                     onTextChange={handleTextFieldChange}
-                    placeholder={chat.encryptionPending ? 'พิมพ์รอคีย์ได้...' : 'พิมพ์ข้อความ...'}
+                    placeholder="พิมพ์ข้อความ..."
                     ref={textFieldRef}
                     text={messageState}
                   />
-                  <ZStack alignment="center" modifiers={[frame({ width: 112, height: 38 })]}>
+                  <ZStack alignment="center" modifiers={[frame({ width: 148, height: 38 })]}>
                     <HStack
                       spacing={10}
                       modifiers={[
@@ -1799,11 +2042,28 @@ export default function ChatRoomScreen() {
                         modifiers={[buttonStyle('plain'), labelStyle('iconOnly'), foregroundStyle(palette.text)]}
                       />
                       <Button
-                        label="อิโมจิ"
-                        onPress={() => setShowQuickEmoji((prev) => !prev)}
-                        systemImage="face.smiling"
-                        modifiers={[buttonStyle('plain'), labelStyle('iconOnly'), foregroundStyle(showQuickEmoji ? palette.accent : palette.text)]}
+                        label="ส่ง GIF"
+                        onPress={() => {
+                          setIsMediaPickerOpen(false);
+                          setIsSpotifyPickerOpen(false);
+                          setIsGiphyPickerOpen((prev) => !prev);
+                        }}
+                        systemImage="gift"
+                        modifiers={[buttonStyle('plain'), labelStyle('iconOnly'), foregroundStyle(isGiphyPickerOpen ? palette.accent : palette.text)]}
                       />
+                      {canUseSpotify ? (
+<Button
+                        label="ส่งเพลง Spotify"
+                        onPress={() => {
+                          Keyboard.dismiss();
+                          setIsMediaPickerOpen(false);
+                          setIsGiphyPickerOpen(false);
+                          requestAnimationFrame(() => setIsSpotifyPickerOpen(true));
+                        }}
+                        systemImage="music.note"
+                        modifiers={[buttonStyle('plain'), labelStyle('iconOnly'), foregroundStyle(isSpotifyPickerOpen ? palette.accent : palette.text)]}
+                      />
+) : null}) : null}
                     </HStack>
                     <Button
                       label="ส่งข้อความ"
@@ -1811,7 +2071,7 @@ export default function ChatRoomScreen() {
                       systemImage="paperplane.fill"
                       modifiers={[
                         opacity(hasText || replyingTo ? 1 : 0),
-                        disabled(chat.encryptionPending || !hasText),
+                        disabled(!hasText),
                         buttonStyle('glassProminent'),
                         buttonBorderShape('capsule'),
                         controlSize('regular'),
@@ -1836,10 +2096,13 @@ export default function ChatRoomScreen() {
           ? handleSendVideo(asset, mode, asset.caption)
           : handleSendImage(asset.uris || asset.uri, asset.caption, mode)} />}
       {videoDraft && <ChatVideoComposer asset={videoDraft} onSend={handleSendVideo} onClose={() => setVideoDraft(null)} />}
+      {isMediaPickerOpen ? (
+        <View style={{ height: MEDIA_PICKER_COLLAPSED_HEIGHT + (insets.bottom || 0) }} />
+      ) : null}
       {isMediaPickerOpen && (
         <ChatMediaPickerSheet
+            overlay
             onSelectVideo={handlePickVideo}
-          inline
           colors={{
             card: palette.surface,
             line: palette.line || 'rgba(255, 255, 255, 0.08)',
@@ -1883,11 +2146,44 @@ export default function ChatRoomScreen() {
                 setIsMediaPickerOpen(false);
               }
             } catch (err) {
-              Alert.alert('ไม่สามารถเปิดคลังภาพได้', err.message || 'กรุณาลองใหม่อีกครั้ง');
+              showAlert('ไม่สามารถเปิดคลังภาพได้', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
             }
           }}
         />
       )}
+      {isGiphyPickerOpen ? (
+        <ChatGiphyPickerSheet
+          colors={{
+            card: palette.surface,
+            canvas: palette.background,
+            line: palette.line || 'rgba(255, 255, 255, 0.08)',
+            ink: palette.text,
+            inkMuted: palette.secondary || '#64748B',
+            inkSoft: palette.tertiary || '#8895A7',
+            primary: palette.accent || '#3B5AFE',
+            primarySoft: palette.accentSoft || 'rgba(59, 90, 254, 0.12)',
+            onPrimary: '#FFFFFF',
+          }}
+          isDark={isDark}
+          isOpen={isGiphyPickerOpen}
+          onClose={() => setIsGiphyPickerOpen(false)}
+          onSelectGif={handleSendGif}
+          onSelectEmoji={(emoji) => {
+            const next = `${messageState.get?.() || ''}${emoji}`;
+            messageState.set?.(next);
+            setHasText(Boolean(next.trim()));
+            textFieldRef.current?.setText?.(next);
+          }}
+        />
+      ) : null}
+      {isSpotifyPickerOpen ? (
+        <SpotifyTrackSearchSheet
+          onClose={() => setIsSpotifyPickerOpen(false)}
+          onSelect={handleSendTrack}
+          title="ส่งเพลง Spotify"
+          visible
+        />
+      ) : null}
 
       <ChatSettingsModal
         chat={chat}
@@ -2084,6 +2380,7 @@ function ChatSettingsModal({
               </RNText>
             </View>
             <Switch
+              ios_backgroundColor={isDark ? '#3A3F4B' : '#CBD5E1'}
               trackColor={{ false: isDark ? '#3A3F4B' : '#CBD5E1', true: palette.accent }}
               thumbColor="#FFFFFF"
               value={showPinnedMeetup}
@@ -2113,6 +2410,7 @@ function ChatSettingsModal({
               </RNText>
             </View>
             <Switch
+              ios_backgroundColor={isDark ? '#3A3F4B' : '#CBD5E1'}
               trackColor={{ false: isDark ? '#3A3F4B' : '#CBD5E1', true: palette.accent }}
               thumbColor="#FFFFFF"
               value={isMuted}
@@ -2841,10 +3139,17 @@ const IosStackedImageCards = React.memo(function IosStackedImageCards({
   );
 });
 
-const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmoji, avatarUri, conversationId, currentUserId, isLatest, item, onOpenProfile, onPreviewImage, onQuickReact, onScrollToMessage, onSelectMessage, onShowReactionDetails, otherUnread, readAt, showAllMessageTimes }) {
+const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmoji, avatarUri, conversationId, currentUserId, isLatest, item, onCallPress, onOpenProfile, onPreviewImage, onQuickReact, onScrollToMessage, onSelectMessage, onShowReactionDetails, otherUnread, otherUserId, readAt, showAllMessageTimes }) {
   const palette = usePalette();
-  const mine = item.sender === 'me';
-  const statusText = formatStatusTime(item, mine, isLatest, readAt, otherUnread, showAllMessageTimes);
+  const mine = item.sender === 'me' || (Boolean(currentUserId) && item.senderId === currentUserId);
+  const mediaViewedAt = usePeerMediaView(
+    conversationId,
+    item.id,
+    otherUserId,
+    mine && isLatest && isProtectedMedia(item) && !item.pendingSync,
+  );
+  const { retryFailedMessage } = useAppActions();
+  const statusText = formatStatusTime(item, mine, isLatest, readAt, otherUnread, showAllMessageTimes, mediaViewedAt);
   const { count: reactionCount, uniqueEmojis } = getMessageReactionSummary(item.reactions);
   const lastTapAtRef = useRef(0);
   const doubleTapTimerRef = useRef(null);
@@ -2909,7 +3214,7 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
           >
             <HStack spacing={4} alignment="center" modifiers={[padding({ horizontal: 9, vertical: 5 }), background(palette.raised, shapes.roundedRectangle({ cornerRadius: 9 }))]}>
               <Image color={palette.secondary} size={10} systemName="arrowshape.turn.up.left.fill" />
-              <ReplyPreview reply={item.replyTo} conversationId={conversationId} color={palette.secondary} />
+              <ReplyPreview reply={item.replyTo} conversationId={conversationId} currentUserId={currentUserId} color={palette.secondary} />
             </HStack>
           </Button>
         ) : null}
@@ -2918,12 +3223,21 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
           spacing={3}
           modifiers={[frame({ maxWidth: 300, alignment: mine ? 'trailing' : 'leading' })]}
         >
-          {item.mediaType === 'video' && item.mediaUrl ? (
-            <VStack modifiers={[frame({ width: 230, height: 100 })]}><RNHostView>
-              <ChatVideoBubble onLongPress={handleLongPress} item={item} conversationId={conversationId} currentUserId={currentUserId} mine={mine} />
-            </RNHostView></VStack>
+          {item.mediaType === 'call' ? (
+            <RNHostView>
+              <CallMessageBubble
+                item={item}
+                mine={mine}
+                onCallPress={onCallPress}
+              />
+            </RNHostView>
           ) : null}
-          {item.mediaType === 'image' && item.viewMode && item.viewMode !== 'chat' && item.mediaUrl ? <RNHostView><ChatProtectedImageBubble onLongPress={handleLongPress} item={item} conversationId={conversationId} currentUserId={currentUserId} mine={mine} /></RNHostView> : null}
+          {item.mediaType === 'video' && item.mediaUrl ? (
+            <RNHostView>
+              <ChatVideoBubble onLongPress={handleLongPress} item={item} conversationId={conversationId} currentUserId={currentUserId} otherUserId={otherUserId} mine={mine} />
+            </RNHostView>
+          ) : null}
+          {item.mediaType === 'image' && item.viewMode && item.viewMode !== 'chat' && item.mediaUrl ? <RNHostView><ChatProtectedImageBubble onLongPress={handleLongPress} item={item} conversationId={conversationId} currentUserId={currentUserId} otherUserId={otherUserId} mine={mine} /></RNHostView> : null}
           {/* Voice Message */}
           {item.mediaType === 'audio' || item.audioUrl ? (
             <IosVoiceBubble
@@ -2936,6 +3250,67 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
               mine={mine}
               palette={palette}
             />
+          ) : null}
+
+          {item.mediaType === 'track' ? (
+            <Pressable
+              onLongPress={handleLongPress}
+              onPress={() => {
+                const url = item.externalUrl || (item.trackId ? `https://open.spotify.com/track/${item.trackId}` : '');
+                if (url) Linking.openURL(url).catch(() => {});
+              }}
+              style={({ pressed }) => [{
+                alignItems: 'center',
+                backgroundColor: mine ? 'rgba(255,255,255,0.14)' : (palette.surfaceRaised || 'rgba(15,27,51,0.04)'),
+                borderRadius: 14,
+                flexDirection: 'row',
+                gap: 10,
+                maxWidth: 260,
+                minWidth: 200,
+                opacity: pressed ? 0.88 : 1,
+                padding: 10,
+              }]}
+            >
+              {item.albumArt ? (
+                <RNImage source={{ uri: item.albumArt }} style={{ width: 52, height: 52, borderRadius: 8 }} />
+              ) : (
+                <View style={{
+                  alignItems: 'center',
+                  backgroundColor: mine ? 'rgba(255,255,255,0.2)' : (palette.accentSoft || '#F0F1F3'),
+                  borderRadius: 8,
+                  height: 52,
+                  justifyContent: 'center',
+                  width: 52,
+                }}>
+                  <SymbolView name="music.note" size={18} tintColor={mine ? '#FFFFFF' : (palette.accent || '#3B5AFE')} />
+                </View>
+              )}
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <RNText numberOfLines={1} style={{ color: mine ? '#FFFFFF' : palette.text, fontSize: 14, fontWeight: '800' }}>
+                  {item.trackName || 'Spotify'}
+                </RNText>
+                <RNText numberOfLines={1} style={{ color: mine ? 'rgba(255,255,255,0.75)' : (palette.tertiary || '#8895A7'), fontSize: 12, fontWeight: '600', marginTop: 2 }}>
+                  {item.artists || 'Unknown'}
+                </RNText>
+                <RNText style={{ color: mine ? 'rgba(255,255,255,0.9)' : (palette.accent || '#3B5AFE'), fontSize: 11, fontWeight: '800', marginTop: 4 }}>
+                  เปิดฟังเต็มเพลง
+                </RNText>
+              </View>
+              {(item.previewUrl || item.youtubeVideoId || item.trackName) ? (
+                <TrackPreviewButton
+                  backgroundColor={mine ? 'rgba(255,255,255,0.22)' : (palette.accentSoft || 'rgba(59,90,254,0.12)')}
+                  color={mine ? '#FFFFFF' : (palette.accent || '#3B5AFE')}
+                  previewEndMs={item.previewEndMs}
+                  previewStartMs={item.previewStartMs}
+                  previewUrl={item.previewUrl}
+                  size={34}
+                  track={item}
+                  trackArtists={item.artists}
+                  trackName={item.trackName || item.text}
+                  youtubeVideoId={item.youtubeVideoId}
+                />
+              ) : null}
+            </Pressable>
           ) : null}
 
           {/* Image Message */}
@@ -2977,7 +3352,7 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
           })() : null}
 
           {/* Text Bubble */}
-          {item.text && item.text !== '[รูปภาพ]' && item.text !== '[ข้อความเสียง]' && !item.text.startsWith('[รูปภาพ ') ? (
+          {item.mediaType !== 'call' && item.mediaType !== 'track' && item.text && item.text !== '[รูปภาพ]' && item.text !== '[ข้อความเสียง]' && !item.text.startsWith('[รูปภาพ ') ? (
             <Text
               modifiers={[
                 onTapGesture(handleTap),
@@ -3010,7 +3385,7 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
           ) : null}
         </VStack>
         {!showAllMessageTimes && statusText ? (
-          <Text modifiers={[font({ textStyle: 'caption2', weight: 'regular' }), foregroundStyle(palette.tertiary)]}>
+          <Text modifiers={[font({ textStyle: 'caption2', weight: 'regular' }), foregroundStyle(palette.tertiary), ...(item.sendStatus === 'failed' ? [onTapGesture(() => { void retryFailedMessage(conversationId, item.id).catch(() => {}); })] : [])]}>
             {statusText}
           </Text>
         ) : null}
@@ -3028,12 +3403,17 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
   && previous.avatarUri === next.avatarUri
   && previous.isLatest === next.isLatest
   && previous.showAllMessageTimes === next.showAllMessageTimes
+  && previous.onCallPress === next.onCallPress
   && previous.item.id === next.item.id
   && previous.item.sender === next.item.sender
   && previous.item.text === next.item.text
   && previous.item.mediaUrl === next.item.mediaUrl
   && JSON.stringify(previous.item.mediaUrls || []) === JSON.stringify(next.item.mediaUrls || [])
   && previous.item.mediaType === next.item.mediaType
+  && previous.item.callType === next.item.callType
+  && previous.item.callStatus === next.item.callStatus
+  && previous.item.callDuration === next.item.callDuration
+  && previous.item.callTime === next.item.callTime
   && previous.item.isUploading === next.item.isUploading
   && previous.item.audioUrl === next.item.audioUrl
   && previous.item.audioDuration === next.item.audioDuration
@@ -3050,10 +3430,11 @@ const MessageBubble = React.memo(function MessageBubble({ avatarColor, avatarEmo
   && JSON.stringify(previous.item.replyTo || null) === JSON.stringify(next.item.replyTo || null)
   && toDate(previous.readAt)?.getTime() === toDate(next.readAt)?.getTime()
   && previous.otherUnread === next.otherUnread
+  && previous.otherUserId === next.otherUserId
   && messageDate(previous.item)?.getTime() === messageDate(next.item)?.getTime()
 ));
 
-const MessageSwipeRow = React.memo(function MessageSwipeRow({ avatarColor, avatarEmoji, avatarUri, conversationId, currentUserId, isLatest, item, onOpenProfile, onPreviewImage, onQuickReact, onReply, onScrollToMessage, onSelectMessage, onShowReactionDetails, otherUnread, previousItem, readAt, showAllMessageTimes, tick }) {
+const MessageSwipeRow = React.memo(function MessageSwipeRow({ avatarColor, avatarEmoji, avatarUri, conversationId, currentUserId, isLatest, item, onCallPress, onOpenProfile, onPreviewImage, onQuickReact, onReply, onScrollToMessage, onSelectMessage, onShowReactionDetails, otherUnread, otherUserId, previousItem, readAt, showAllMessageTimes, tick }) {
   const palette = usePalette();
   const messagesAreOnDifferentDays = previousItem && !isSameDay(previousItem, item);
   const rowModifiers = [
@@ -3075,6 +3456,7 @@ const MessageSwipeRow = React.memo(function MessageSwipeRow({ avatarColor, avata
         currentUserId={currentUserId}
         isLatest={isLatest}
         item={item}
+        onCallPress={onCallPress}
         onOpenProfile={onOpenProfile}
         onPreviewImage={onPreviewImage}
         onQuickReact={onQuickReact}
@@ -3082,6 +3464,7 @@ const MessageSwipeRow = React.memo(function MessageSwipeRow({ avatarColor, avata
         onSelectMessage={onSelectMessage}
         onShowReactionDetails={onShowReactionDetails}
         otherUnread={otherUnread}
+        otherUserId={otherUserId}
         readAt={readAt}
         showAllMessageTimes={showAllMessageTimes}
         tick={tick}
@@ -3115,10 +3498,15 @@ const MessageSwipeRow = React.memo(function MessageSwipeRow({ avatarColor, avata
   && previous.item.mediaUrl === next.item.mediaUrl
   && JSON.stringify(previous.item.mediaUrls || []) === JSON.stringify(next.item.mediaUrls || [])
   && previous.item.mediaType === next.item.mediaType
+  && previous.item.callType === next.item.callType
+  && previous.item.callStatus === next.item.callStatus
+  && previous.item.callDuration === next.item.callDuration
+  && previous.item.callTime === next.item.callTime
   && previous.item.isUploading === next.item.isUploading
   && previous.item.audioUrl === next.item.audioUrl
   && previous.item.audioDuration === next.item.audioDuration
   && previous.item.forwarded === next.item.forwarded
+  && previous.onCallPress === next.onCallPress
   && previous.onQuickReact === next.onQuickReact
   && previous.onOpenProfile === next.onOpenProfile
   && previous.onPreviewImage === next.onPreviewImage
@@ -3134,6 +3522,7 @@ const MessageSwipeRow = React.memo(function MessageSwipeRow({ avatarColor, avata
   && JSON.stringify(previous.item.replyTo || null) === JSON.stringify(next.item.replyTo || null)
   && toDate(previous.readAt)?.getTime() === toDate(next.readAt)?.getTime()
   && previous.otherUnread === next.otherUnread
+  && previous.otherUserId === next.otherUserId
   && messageDate(previous.item)?.getTime() === messageDate(next.item)?.getTime()
 ));
 
@@ -3309,7 +3698,7 @@ function ChatMeetupBanner({ encryptionPending, isAcceptedByMe, isExpanded, meetu
         <HStack alignment="center" spacing={6}>
           <Button
             label={isAcceptedByMe ? 'ตอบรับแล้ว' : (isExpired ? 'เลยกำหนดแล้ว' : (stats?.isFull ? 'เต็ม' : 'ยอมรับ'))}
-            onPress={isExpired ? () => Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้') : onToggleAccept}
+            onPress={isExpired ? () => showAlert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้', { tone: 'warning' }) : onToggleAccept}
             disabled={encryptionPending || (!isAcceptedByMe && (isExpired || stats?.isFull))}
             systemImage={isAcceptedByMe ? 'checkmark.circle.fill' : (isExpired ? 'clock.badge.xmark' : (stats?.isFull ? 'xmark.circle' : 'person.badge.plus'))}
             modifiers={[
@@ -3377,7 +3766,7 @@ function ChatMeetupBanner({ encryptionPending, isAcceptedByMe, isExpanded, meetu
 
           <Button
             label={isAcceptedByMe ? 'ยอมรับนัดหมายแล้ว (แตะเพื่อยกเลิก)' : (isExpired ? 'นัดหมายนี้เลยกำหนดเวลาแล้ว' : (stats?.isFull ? 'นัดหมายเต็มจำนวนแล้ว' : 'ยอมรับนัดหมาย'))}
-            onPress={isExpired ? () => Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้') : onToggleAccept}
+            onPress={isExpired ? () => showAlert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้', { tone: 'warning' }) : onToggleAccept}
             disabled={encryptionPending || (!isAcceptedByMe && (isExpired || stats?.isFull))}
             systemImage={isAcceptedByMe ? 'checkmark.circle.fill' : (isExpired ? 'clock.badge.xmark' : (stats?.isFull ? 'xmark.circle' : 'person.badge.plus'))}
             modifiers={[

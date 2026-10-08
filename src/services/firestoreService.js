@@ -1,5 +1,7 @@
 import { compareConversationsByActivity } from '../utils/conversationOrder';
+import { withServerFaceVerification } from '../utils/faceVerificationState';
 import { createReplySnapshot } from '../utils/messageReply';
+import { getR2AvatarOwnerId as getImageAvatarOwnerId } from '../utils/imagePolicy';
 import {
   Timestamp,
   arrayUnion,
@@ -25,10 +27,20 @@ import {
 } from 'firebase/firestore';
 import { getCurrentUserIdToken } from './authService';
 import { requireFirebase } from './dbService';
+import { createSecureProfilesSubscription, recordSecureDiscoveryAction, respondToSecureLike, rewindSecureDiscoveryAction, secureDiscoveryCall, secureDiscoveryConfigured, subscribeSecureDecisions, waitForAuthReady } from './secureDiscoveryService';
 import { verifyImageSafety } from './imageModerationService';
 import * as FileSystem from 'expo-file-system/legacy';
 import { ACTIVITY_LABELS } from '../utils/formatters';
-import { matchesAvailabilityPeriods } from '../data/matchingFilters';
+import { getStudentAcademicProfile } from '../utils/studentId';
+import { getRunningPace, sanitizeActivityDetails } from '../data/activityCategories';
+import {
+  matchesActivityDetailFilters,
+  matchesAvailabilityPeriods,
+  matchesAvailabilityWeekdays,
+  profileHasAvailability,
+  profileHasPhoto,
+  sanitizeActivityDetailFilters,
+} from '../data/matchingFilters';
 import {
   createConversationEncryption,
   decryptMessageRecord,
@@ -36,6 +48,7 @@ import {
   ensureConversationEncryption,
   ensureEncryptionIdentity,
   getOrCreateEncryptionIdentity,
+  cacheConversationKey,
   getConversationKey,
   getEncryptionDevices,
   hasCurrentDeviceEnvelope,
@@ -54,6 +67,7 @@ const publicProfileFields = [
   'activity',
   'activities',
   'activityLabel',
+  'activityDetails',
   'skill',
   'pace',
   'availability',
@@ -62,12 +76,17 @@ const publicProfileFields = [
   'avatar',
   'avatarColor',
   'avatarUri',
+  'avatarRevision',
+  'gallery',
   'compatibility',
   // GPS coordinates are intentionally excluded from public profiles.
   // They are stored only in the private `users/{uid}` collection
   // to comply with PDPA data protection requirements.
   'tags',
   'interests',
+  'favoriteTracks',
+  'spotifyTopArtists',
+  'spotifyTopGenres',
   'gender',
   'meetup',
   'encryptionDevices',
@@ -75,12 +94,16 @@ const publicProfileFields = [
 
 const privateProfileFields = [
   ...publicProfileFields,
+  'studentId',
   'latitude',
   'longitude',
+  'locationUpdatedAt',
   'privacy',
   'matchingPreferences',
   'notificationsEnabled',
+  'locationEnabled',
   'consentAcceptedAt',
+  'campusEmail',
 ];
 
 const matchingPreferenceFields = [
@@ -89,10 +112,14 @@ const matchingPreferenceFields = [
   'genders',
   'years',
   'activities',
+  'activityDetails',
   'paces',
   'availabilityPeriods',
+  'weekdays',
   'faculty',
   'sameFacultyOnly',
+  'requirePhoto',
+  'requireAvailability',
   'maxDistance',
 ];
 
@@ -100,6 +127,8 @@ const DISCOVERY_COLLECTION = 'discoveryProfiles';
 const DISCOVERY_META_ID = '_meta';
 const DISCOVERY_PAGE_SIZE = 40;
 const LEGACY_DISCOVERY_LIMIT = 200;
+const INBOX_PREVIEW_MESSAGE_LIMIT = 5;
+const LAST_MESSAGE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const PROFILE_ID_QUERY_LIMIT = 30;
 const PAGED_DISCOVERY_SOURCES = new Set(['discovery', 'profiles', DISCOVERY_COLLECTION]);
 
@@ -126,6 +155,7 @@ const profileTextLimits = {
   avatarColor: 50,
   avatarUri: 5000,
   gender: 100,
+  studentId: 10,
 };
 
 function withoutUndefined(obj) {
@@ -191,6 +221,18 @@ function sanitizeMatchingPreferences(value) {
         .slice(0, 30);
       return;
     }
+    if (field === 'weekdays') {
+      if (!Array.isArray(currentValue)) return;
+      result[field] = currentValue
+        .map((item) => String(item))
+        .filter((item) => /^[0-6]$/.test(item))
+        .slice(0, 7);
+      return;
+    }
+    if (field === 'activityDetails') {
+      result[field] = sanitizeActivityDetailFilters(currentValue);
+      return;
+    }
     if (['ageMin', 'ageMax', 'maxDistance'].includes(field)) {
       if (typeof currentValue === 'number' && Number.isFinite(currentValue)) {
         result[field] = currentValue;
@@ -201,7 +243,7 @@ function sanitizeMatchingPreferences(value) {
       if (typeof currentValue === 'string') result[field] = currentValue.slice(0, 100);
       return;
     }
-    if (field === 'sameFacultyOnly' && typeof currentValue === 'boolean') {
+    if (['sameFacultyOnly', 'requirePhoto', 'requireAvailability'].includes(field) && typeof currentValue === 'boolean') {
       result[field] = currentValue;
     }
   });
@@ -229,19 +271,7 @@ function hasMeaningfulValue(value) {
 }
 
 function getR2AvatarOwnerId(uri) {
-  if (typeof uri !== 'string' || !/^https?:\/\//i.test(uri)) return null;
-  try {
-    const match = uri.match(/^https?:\/\/([^/]+)(\/users\/([^/?#]+)\/avatar\.(?:jpe?g|png|webp))(?:[?#].*)?$/i);
-    if (!match) return null;
-    const hostname = match[1].toLowerCase().split(':')[0];
-    const isCloudflareStorageHost = hostname.endsWith('.r2.dev')
-      || hostname.endsWith('.workers.dev')
-      || hostname.endsWith('.r2.cloudflarestorage.com');
-    if (!isCloudflareStorageHost) return null;
-    return decodeURIComponent(match[3]);
-  } catch {
-    return null;
-  }
+  return getImageAvatarOwnerId(uri, process.env.EXPO_PUBLIC_PROFILE_CDN_DOMAIN);
 }
 
 /**
@@ -282,6 +312,18 @@ function sanitizeProfileList(value, maxSize, itemMaxLength = 100) {
     ));
 }
 
+const GALLERY_LIMIT = 5;
+const GALLERY_URL_LIMIT = 5000;
+
+function sanitizeGallery(value) {
+  if (!Array.isArray(value)) return undefined;
+  return [...new Set(value
+    .filter((uri) => typeof uri === 'string')
+    .map((uri) => uri.trim())
+    .filter((uri) => uri.length <= GALLERY_URL_LIMIT && /^https:\/\/[^/\s?#]+(?:[/?#][^\s]*)?$/i.test(uri)))]
+    .slice(0, GALLERY_LIMIT);
+}
+
 function sanitizeProfilePrivacy(value) {
   if (value === null) return null;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -292,8 +334,67 @@ function sanitizeProfilePrivacy(value) {
   );
 }
 
+const FAVORITE_TRACK_LIMIT = 10;
+const FAVORITE_TRACK_FIELD_LIMITS = {
+  id: 64,
+  name: 200,
+  artists: 200,
+  albumArt: 2000,
+  previewUrl: 2000,
+  externalUrl: 500,
+};
+
+function sanitizeFavoriteTracks(value) {
+  if (value === null) return null;
+  if (!Array.isArray(value)) return undefined;
+  const tracks = [];
+  const seen = new Set();
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const id = typeof item.id === 'string' ? item.id.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.id) : '';
+    const name = typeof item.name === 'string' ? item.name.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.name) : '';
+    if (!id || !name || seen.has(id)) continue;
+    seen.add(id);
+    const track = {
+      id,
+      name,
+      artists: typeof item.artists === 'string'
+        ? item.artists.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.artists)
+        : '',
+      albumArt: typeof item.albumArt === 'string'
+        ? item.albumArt.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.albumArt)
+        : '',
+      externalUrl: typeof item.externalUrl === 'string' && item.externalUrl.trim()
+        ? item.externalUrl.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.externalUrl)
+        : `https://open.spotify.com/track/${id}`,
+    };
+    if (!track.artists) track.artists = 'Unknown';
+    if (typeof item.previewUrl === 'string' && item.previewUrl.trim()) {
+      track.previewUrl = item.previewUrl.trim().slice(0, FAVORITE_TRACK_FIELD_LIMITS.previewUrl);
+    }
+    if (Number.isFinite(Number(item.previewStartMs))) {
+      track.previewStartMs = Math.max(0, Math.round(Number(item.previewStartMs)));
+    }
+    if (Number.isFinite(Number(item.previewEndMs))) {
+      track.previewEndMs = Math.max(0, Math.round(Number(item.previewEndMs)));
+    }
+    if (
+      Number.isFinite(track.previewStartMs)
+      && Number.isFinite(track.previewEndMs)
+      && track.previewEndMs <= track.previewStartMs
+    ) {
+      delete track.previewStartMs;
+      delete track.previewEndMs;
+    }
+    tracks.push(track);
+    if (tracks.length >= FAVORITE_TRACK_LIMIT) break;
+  }
+  return tracks;
+}
+
 function sanitizeProfileForFirestore(userId, source = {}) {
   const profile = { id: userId };
+  if (Number.isSafeInteger(source.avatarRevision) && source.avatarRevision >= 0) profile.avatarRevision = source.avatarRevision;
 
   Object.entries(profileTextLimits).forEach(([field, maxLength]) => {
     if (!Object.prototype.hasOwnProperty.call(source, field)) return;
@@ -310,9 +411,42 @@ function sanitizeProfileForFirestore(userId, source = {}) {
     const value = sanitizeProfileList(source[field], maxSize);
     if (value !== undefined) profile[field] = value;
   });
+  if (Object.prototype.hasOwnProperty.call(source, 'gallery')) {
+    const gallery = sanitizeGallery(source.gallery);
+    if (gallery !== undefined) profile.gallery = gallery;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'favoriteTracks')) {
+    const value = sanitizeFavoriteTracks(source.favoriteTracks);
+    if (value !== undefined) profile.favoriteTracks = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'spotifyTopArtists')) {
+    if (Array.isArray(source.spotifyTopArtists)) {
+      profile.spotifyTopArtists = source.spotifyTopArtists.slice(0, 10).map((a) => ({
+        id: String(a?.id || '').slice(0, 64),
+        name: String(a?.name || '').slice(0, 100),
+        genres: Array.isArray(a?.genres) ? a.genres.slice(0, 5).map((g) => String(g).slice(0, 50)) : [],
+        imageUrl: typeof a?.imageUrl === 'string' ? a.imageUrl.slice(0, 300) : '',
+      })).filter((a) => a.id && a.name);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'spotifyTopGenres')) {
+    if (Array.isArray(source.spotifyTopGenres)) {
+      profile.spotifyTopGenres = source.spotifyTopGenres.slice(0, 10).map((g) => String(g).slice(0, 50));
+    }
+  }
   if (Object.prototype.hasOwnProperty.call(source, 'availabilitySlots')) {
     const value = sanitizeProfileList(source.availabilitySlots, 50, 200);
     if (value !== undefined) profile.availabilitySlots = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, 'activityDetails')) {
+    profile.activityDetails = source.activityDetails === null
+      ? null
+      : sanitizeActivityDetails(source.activityDetails, Array.isArray(profile.activities) ? profile.activities : undefined);
+    // Keep the legacy pace column aligned with the running detail so pace
+    // filters and older clients see the same value.
+    if (profile.activityDetails && !Object.prototype.hasOwnProperty.call(source, 'pace')) {
+      profile.pace = getRunningPace(profile.activityDetails);
+    }
   }
 
   if (Object.prototype.hasOwnProperty.call(source, 'age')) {
@@ -333,7 +467,7 @@ function sanitizeProfileForFirestore(userId, source = {}) {
     profile.encryptionDevices = getEncryptionDevices(source);
   }
 
-  ['isNewUser', 'isDiscoverable', 'notificationsEnabled'].forEach((field) => {
+  ['isNewUser', 'isDiscoverable', 'notificationsEnabled', 'locationEnabled'].forEach((field) => {
     if (typeof source[field] === 'boolean') profile[field] = source[field];
   });
 
@@ -341,6 +475,29 @@ function sanitizeProfileForFirestore(userId, source = {}) {
     const email = sanitizeProfileText(source.email, 320);
     if (email !== undefined) profile.email = email;
   }
+  if (Object.prototype.hasOwnProperty.call(source, 'campusEmail')) {
+    const campusEmail = sanitizeProfileText(source.campusEmail, 320);
+    if (campusEmail !== undefined) profile.campusEmail = campusEmail;
+  }
+  // The student ID, academic year, and faculty are derived from the verified
+  // campus email. Ignore manually supplied values so profile writes cannot
+  // drift from the university admission and faculty codes.
+  const studentAcademicProfile = getStudentAcademicProfile({
+    campusEmail: profile.campusEmail || source.campusEmail,
+    email: profile.email || source.email,
+  });
+  if (studentAcademicProfile.studentId) {
+    profile.studentId = studentAcademicProfile.studentId;
+    if (studentAcademicProfile.year) profile.year = studentAcademicProfile.year;
+    else delete profile.year;
+    if (studentAcademicProfile.faculty) profile.faculty = studentAcademicProfile.faculty;
+    else delete profile.faculty;
+  } else {
+    delete profile.studentId;
+    delete profile.year;
+    delete profile.faculty;
+  }
+  // campusEmailVerified is Auth/server-owned — never accept client writes.
   if (Object.prototype.hasOwnProperty.call(source, 'privacy')) {
     profile.privacy = sanitizeProfilePrivacy(source.privacy);
   }
@@ -469,9 +626,12 @@ function toPublicProfile(userId, data) {
     'avatar',
     'avatarColor',
     'avatarUri',
+    'avatarRevision',
+    'gallery',
     'compatibility',
     'tags',
     'interests',
+    'favoriteTracks',
     'encryptionDevices',
   ];
   const visibilityByField = {
@@ -482,6 +642,7 @@ function toPublicProfile(userId, data) {
     activity: privacy.showActivity !== false,
     activities: privacy.showActivity !== false,
     activityLabel: privacy.showActivity !== false,
+    activityDetails: privacy.showActivity !== false,
     skill: privacy.showActivity !== false,
     pace: privacy.showActivity !== false,
     availability: privacy.showAvailability !== false,
@@ -494,7 +655,9 @@ function toPublicProfile(userId, data) {
       && (field !== 'meetup' || publicMeetup)
       && (alwaysVisibleFields.includes(field) || visibilityByField[field] !== false)
     ) {
-      profile[field] = field === 'encryptionDevices'
+      profile[field] = field === 'gallery'
+        ? sanitizeGallery(data.gallery)
+        : field === 'encryptionDevices'
         ? getEncryptionDevices(data)
         : field === 'meetup'
           ? publicMeetup
@@ -510,6 +673,7 @@ function toPublicProfile(userId, data) {
 function toConversationProfile(userId, data) {
   const publicProfile = toPublicProfile(userId, data);
   const profile = { id: userId, isDiscoverable: publicProfile.isDiscoverable === true };
+  if (Number.isSafeInteger(publicProfile.avatarRevision)) profile.avatarRevision = publicProfile.avatarRevision;
   const textLimits = {
     name: 100,
     nickname: 100,
@@ -593,6 +757,13 @@ export function normalizeProfileRecord(userId, data = {}) {
   if (!profile.bio) profile.bio = profile.introduction || profile.about || profile.description || profile.bio;
   if (!profile.faculty) profile.faculty = profile.major || profile.department || profile.course || profile.faculty;
   if (!profile.year) profile.year = profile.classYear || profile.studyYear || profile.year;
+  const studentAcademicProfile = getStudentAcademicProfile(profile);
+  if (studentAcademicProfile.studentId) {
+    profile.studentId = studentAcademicProfile.studentId;
+    if (studentAcademicProfile.year) profile.year = studentAcademicProfile.year;
+    if (studentAcademicProfile.faculty) profile.faculty = studentAcademicProfile.faculty;
+    else delete profile.faculty;
+  }
   if (!profile.gender) profile.gender = profile.sex || profile.gender;
   if (!Array.isArray(profile.activities)) {
     const legacyActivities = profile.activity || profile.interests;
@@ -609,6 +780,7 @@ export function normalizeProfileRecord(userId, data = {}) {
 }
 
 export function toSafePublicProfile(userId, data = {}) {
+  if (!data || data.isDeleted === true) return null;
   const profile = normalizeProfileRecord(userId, data);
   const safeProfile = {
     id: userId,
@@ -628,6 +800,11 @@ export function toSafePublicProfile(userId, data = {}) {
       if (Object.keys(encryptionDevices).length) safeProfile.encryptionDevices = encryptionDevices;
       return;
     }
+    if (field === 'gallery') {
+      const gallery = sanitizeGallery(profile.gallery);
+      if (gallery !== undefined) safeProfile.gallery = gallery;
+      return;
+    }
     if (profile[field] !== undefined) safeProfile[field] = profile[field];
   });
   // Keep the projection revision available to the image cache and to paged
@@ -635,6 +812,9 @@ export function toSafePublicProfile(userId, data = {}) {
   if (profile.updatedAt !== undefined && profile.updatedAt !== null) {
     safeProfile.updatedAt = profile.updatedAt;
   }
+  // Server-written (completeFaceVerification) and read-only for clients; needed to
+  // keep unverified owners out of discovery and to show the verified badge.
+  if (profile.isFaceVerified === true) safeProfile.isFaceVerified = true;
   return withoutUndefined(safeProfile);
 }
 
@@ -667,6 +847,9 @@ function isNormalizedProfileReady(normalized) {
 
   // 1. ผู้ใช้ใหม่ที่ยังตั้งค่าโปรไฟล์ไม่เสร็จ (isNewUser: true)
   if (normalized.isNewUser === true) return false;
+
+  // 1.1 ต้องยืนยันตัวตนด้วยใบหน้าแล้ว (ค่าจากเซิร์ฟเวอร์เท่านั้น) บัญชีเก่าที่ยังไม่มีค่านี้จะไม่แสดง
+  if (normalized.isFaceVerified !== true) return false;
 
   // 2. ต้องตั้งชื่ออย่างน้อย 2 ตัวอักษร
   const name = String(normalized.nickname || normalized.name || '').trim();
@@ -727,6 +910,9 @@ async function getProfileDocPreferCache(reference) {
 
 export async function getPublicProfile(userId) {
   if (!userId) return null;
+  if (secureDiscoveryConfigured()) {
+    return (await secureDiscoveryCall('getVisibleProfiles', { userIds: [userId] })).profiles[0] || null;
+  }
   const { db } = requireFirebase();
   const snapshot = await getProfileDocFresh(doc(db, 'profiles', userId));
   return snapshot.exists() ? toSafePublicProfile(snapshot.id, snapshot.data()) : null;
@@ -741,6 +927,14 @@ export async function getPublicProfilesByIds(userIds) {
   const ids = [...new Set((Array.isArray(userIds) ? userIds : [])
     .filter((value) => typeof value === 'string' && value.trim()))];
   if (!ids.length) return [];
+
+  if (secureDiscoveryConfigured()) {
+    const profiles = [];
+    for (let index = 0; index < ids.length; index += 50) {
+      profiles.push(...(await secureDiscoveryCall('getVisibleProfiles', { userIds: ids.slice(index, index + 50) })).profiles);
+    }
+    return profiles;
+  }
 
   const { db } = requireFirebase();
   const resultById = new Map();
@@ -758,7 +952,7 @@ export async function getPublicProfilesByIds(userIds) {
         ));
         snapshot.docs.forEach((profileDocument) => {
           const safeProfile = toSafePublicProfile(profileDocument.id, profileDocument.data());
-          if (isNormalizedProfileReady(safeProfile)) resultById.set(profileDocument.id, safeProfile);
+          if (safeProfile?.id) resultById.set(profileDocument.id, safeProfile);
         });
       } catch (error) {
         // A migration can briefly have the new collection/rules unavailable.
@@ -821,16 +1015,16 @@ export function formatDistance(km) {
 }
 
 function matchesPreferences(profile, preferences = {}, currentUserProfile = null) {
-  if (currentUserProfile && preferences.maxDistance) {
-    const dist = getDistanceBetweenProfiles(currentUserProfile, profile);
-    if (dist > preferences.maxDistance) return false;
+  if (Number(preferences.maxDistance) > 0) {
+    if (typeof profile?.distance !== 'number' || !Number.isFinite(profile.distance)) return false;
+    if (profile.distance > preferences.maxDistance) return false;
   }
 
   // "Same faculty" and a specifically selected faculty are mutually exclusive.
   // Prefer the user's own faculty when sameFacultyOnly is enabled so stale
   // persisted values cannot combine into an impossible filter.
   const facultyFilter = preferences.sameFacultyOnly
-    ? preferences.currentFaculty
+    ? (preferences.currentFaculty || currentUserProfile?.faculty)
     : (preferences.faculty && preferences.faculty !== 'all' ? preferences.faculty : null);
   if (facultyFilter && profile.faculty !== facultyFilter) {
     return false;
@@ -854,9 +1048,15 @@ function matchesPreferences(profile, preferences = {}, currentUserProfile = null
     if (!profileActivities.some((activity) => activities.has(activity))) return false;
   }
   if (paces.size && !paces.has(profile.pace)) return false;
+  if (!matchesActivityDetailFilters(profile, preferences.activityDetails)) return false;
   if (preferences.availabilityPeriods?.length && !matchesAvailabilityPeriods(profile, preferences.availabilityPeriods)) {
     return false;
   }
+  if (preferences.weekdays?.length && !matchesAvailabilityWeekdays(profile, preferences.weekdays)) {
+    return false;
+  }
+  if (preferences.requirePhoto && !profileHasPhoto(profile)) return false;
+  if (preferences.requireAvailability && !profileHasAvailability(profile)) return false;
   return true;
 }
 
@@ -1003,46 +1203,68 @@ export async function uploadImage(uri, userId) {
   return uri;
 }
 
+export function subscribeToFaceVerification(userId, onChange, onError) {
+  let active = true, unsubscribe = () => {};
+  const { db, app } = requireFirebase();
+  import('firebase/auth').then(({ getAuth }) => waitForAuthReady(getAuth(app)))
+    .then((currentUser) => {
+      if (!active || currentUser?.uid !== userId) return;
+      unsubscribe = onSnapshot(doc(db, 'users', userId), { includeMetadataChanges: true }, (snapshot) => {
+        // A cached false value must not undo a just-completed server verification.
+        if (active && !snapshot.metadata.fromCache && !snapshot.metadata.hasPendingWrites && snapshot.exists()) onChange(snapshot.data());
+      }, onError);
+    }).catch((error) => { if (active) onError?.(error); });
+  return () => { active = false; unsubscribe(); };
+}
+
 export async function getUserProfile(userId) {
   if (!userId) return null;
-  const { db } = requireFirebase();
-  try {
-    const privateSnapshot = await getProfileDocPreferCache(doc(db, 'users', userId));
-    if (privateSnapshot.exists()) {
-      return normalizeProfileRecord(userId, privateSnapshot.data());
-    }
-  } catch (err) {
-    console.warn('[getUserProfile] Failed to fetch private profile:', err?.message || err);
+  if (secureDiscoveryConfigured()) {
+    const { getAuth } = await import('firebase/auth');
+    // On a cold start the owner's fast-boot session arrives before Firebase Auth
+    // restores currentUser; without waiting, the owner was treated as a stranger.
+    const currentUser = await waitForAuthReady(getAuth(requireFirebase().app));
+    if (currentUser?.uid !== userId) return getPublicProfile(userId);
   }
-
-  try {
-    const publicSnapshot = await getProfileDocPreferCache(doc(db, 'profiles', userId));
-    if (publicSnapshot.exists()) {
-      return normalizeProfileRecord(userId, publicSnapshot.data());
-    }
-  } catch (err) {
-    console.warn('[getUserProfile] Failed to fetch public profile:', err?.message || err);
+  const { db } = requireFirebase();
+  const privateSnapshot = await getProfileDocFresh(doc(db, 'users', userId));
+  if (privateSnapshot.exists()) {
+    return normalizeProfileRecord(userId, privateSnapshot.data());
+  }
+  // A failed read or a cache-only absence is not a new account. Returning
+  // null here makes bootstrap write an empty profile over the existing one.
+  if (privateSnapshot.metadata?.fromCache) {
+    throw Object.assign(new Error('ยังตรวจสอบโปรไฟล์กับเซิร์ฟเวอร์ไม่ได้'), { code: 'unavailable' });
+  }
+  const publicSnapshot = await getProfileDocPreferCache(doc(db, 'profiles', userId));
+  if (publicSnapshot.exists()) {
+    return normalizeProfileRecord(userId, publicSnapshot.data());
+  }
+  if (publicSnapshot.metadata?.fromCache) {
+    throw Object.assign(new Error('ยังตรวจสอบโปรไฟล์กับเซิร์ฟเวอร์ไม่ได้'), { code: 'unavailable' });
   }
 
   return null;
 }
 
-export async function createUserProfile(userId, data) {
+export async function createUserProfile(userId, data, { onlyIfMissing = false } = {}) {
   const { db } = requireFirebase();
-  let existingPrivateData = {};
-  try {
-    const existingPrivateSnapshot = await getProfileDocFresh(doc(db, 'users', userId));
-    if (existingPrivateSnapshot.exists()) existingPrivateData = existingPrivateSnapshot.data();
-  } catch (error) {
-    // A complete optimistic profile can still be written if the read is
-    // temporarily unavailable. Offline callers are already queued by the
-    // AppContext layer.
-    console.warn('[createUserProfile] Existing profile read failed:', error?.message || error);
+  const existingPrivateSnapshot = await getProfileDocFresh(doc(db, 'users', userId));
+  if (!existingPrivateSnapshot.exists() && existingPrivateSnapshot.metadata?.fromCache) {
+    throw Object.assign(new Error('ยังตรวจสอบโปรไฟล์ก่อนบันทึกไม่ได้'), { code: 'unavailable' });
   }
+  const existingPrivateData = existingPrivateSnapshot.exists() ? existingPrivateSnapshot.data() : {};
+  if (onlyIfMissing && existingPrivateSnapshot.exists()) return normalizeProfileRecord(userId, existingPrivateData);
   let profileData = normalizeProfileRecord(
     userId,
     mergeProfileInput(existingPrivateData, data || {})
   );
+  // Seed legacy avatars once; unrelated profile saves must preserve this value.
+  if (!Number.isSafeInteger(profileData.avatarRevision)) {
+    profileData.avatarRevision = Number.isSafeInteger(existingPrivateData.avatarRevision)
+      ? existingPrivateData.avatarRevision
+      : (typeof existingPrivateData.updatedAt?.toMillis === 'function' ? existingPrivateData.updatedAt.toMillis() : 0);
+  }
   // Profile saves can run at the same time as the first E2EE publication.
   // Always carry this device's public key in the complete profile projection
   // so a full `profiles/{uid}` write cannot accidentally erase it.
@@ -1091,6 +1313,12 @@ export async function createUserProfile(userId, data) {
     }
     privateData[field] = profileData[field];
   });
+  // campusEmailVerified is Auth/server-owned. Full document replaces must keep
+  // the existing flag so a normal profile edit cannot clear verification (and
+  // so rules that gate the true flag stay satisfied for campus accounts).
+  if (typeof existingPrivateData.campusEmailVerified === 'boolean') {
+    privateData.campusEmailVerified = existingPrivateData.campusEmailVerified;
+  }
   const publicData = {
     ...toPublicProfile(userId, profileData),
     updatedAt: serverTimestamp(),
@@ -1102,8 +1330,42 @@ export async function createUserProfile(userId, data) {
   // 1,000-expression request budget even though each document is valid alone.
   // The private write comes first so the owner record remains authoritative if
   // a transient failure interrupts the public projection write.
-  await setDoc(doc(db, 'users', userId), withoutUndefined(privateData));
-  await setDoc(doc(db, 'profiles', userId), withoutUndefined(publicData));
+  try {
+    if (onlyIfMissing) {
+      const concurrentProfile = await runTransaction(db, async (transaction) => {
+        const reference = doc(db, 'users', userId), current = await transaction.get(reference);
+        if (current.exists()) return normalizeProfileRecord(userId, current.data());
+        transaction.set(reference, withoutUndefined(privateData));
+        return null;
+      });
+      if (concurrentProfile) return concurrentProfile;
+    } else {
+      const savedData = await runTransaction(db, async (transaction) => {
+        const reference = doc(db, 'users', userId);
+        const current = await transaction.get(reference);
+        const next = withServerFaceVerification(privateData, current.exists() ? current.data() : {});
+        transaction.set(reference, withoutUndefined(next));
+        return next;
+      });
+      profileData = withServerFaceVerification(profileData, savedData);
+    }
+    console.log('[createUserProfile] users doc written successfully');
+  } catch (err) {
+    console.error('[createUserProfile] FAILED users doc:', err?.message || err);
+    throw err;
+  }
+
+  try {
+    await runTransaction(db, async (transaction) => {
+      const reference = doc(db, 'profiles', userId);
+      const current = await transaction.get(reference);
+      transaction.set(reference, withoutUndefined(withServerFaceVerification(publicData, current.exists() ? current.data() : {})));
+    });
+    console.log('[createUserProfile] profiles doc written successfully');
+  } catch (err) {
+    console.error('[createUserProfile] FAILED profiles doc:', err?.message || err);
+    throw err;
+  }
 
   // อัพเดท participantProfiles ใน conversations ที่ user นี้เป็นสมาชิก
   // เพื่อให้อีกเครื่องเห็นชื่อ/รูปที่เปลี่ยนแปลงทันที
@@ -1136,6 +1398,7 @@ export async function createUserProfile(userId, data) {
   } catch (error) {
     console.warn('[createUserProfile] Conversation sync warning:', error?.message || error);
   }
+  return profileData;
 }
 
 export async function updateUserMatchingPreferences(userId, matchingPreferences) {
@@ -1169,10 +1432,10 @@ export async function ensurePublicProfileProjection(userId, profileData) {
   try {
     const publicSnapshot = await getProfileDocFresh(doc(db, 'profiles', userId));
     const currentPublic = publicSnapshot.exists() ? publicSnapshot.data() : {};
-    const expectedPublic = toPublicProfile(
+    const expectedPublic = withServerFaceVerification(toPublicProfile(
       userId,
       normalizeProfileRecord(userId, profileData)
-    );
+    ), currentPublic);
     // Compare the complete public projection, including fields that should be
     // absent. This repairs stale documents that still contain email, GPS, or
     // privacy-controlled fields from an older release.
@@ -1194,11 +1457,24 @@ export async function ensurePublicProfileProjection(userId, profileData) {
 
 export async function updateUserLocation(userId, latitude, longitude) {
   if (!userId) return;
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+  if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return;
   const { db } = requireFirebase();
   await setDoc(doc(db, 'users', userId), {
     id: userId,
     latitude,
     longitude,
+    locationUpdatedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+export async function updateUserLocationEnabled(userId, locationEnabled) {
+  if (!userId) return;
+  const { db } = requireFirebase();
+  await setDoc(doc(db, 'users', userId), {
+    id: userId,
+    locationEnabled: locationEnabled === true,
     updatedAt: serverTimestamp(),
   }, { merge: true });
 }
@@ -1324,6 +1600,7 @@ export function subscribeToAppointments(currentUserId, callback, onError) {
  */
 export async function ensureAppointmentHistory(conversationId, currentUserId, hostUserId) {
   if (!conversationId || !currentUserId) return false;
+  const visibleHost = secureDiscoveryConfigured() && hostUserId ? await getPublicProfile(hostUserId) : null;
   const { db } = requireFirebase();
   const conversationRef = doc(db, 'conversations', conversationId);
   let created = false;
@@ -1358,15 +1635,18 @@ export async function ensureAppointmentHistory(conversationId, currentUserId, ho
       }
       if (appointmentSnapshot?.exists()) return;
 
-      let hostProfileSnapshot = null;
-      try {
-        hostProfileSnapshot = await transaction.get(doc(db, 'profiles', hostId));
-      } catch (e) {
-        if (e?.code === 'permission-denied') return;
-        throw e;
+      let hostProfile = visibleHost;
+      if (!secureDiscoveryConfigured()) {
+        try {
+          const snapshot = await transaction.get(doc(db, 'profiles', hostId));
+          hostProfile = snapshot.exists() ? snapshot.data() : null;
+        } catch (e) {
+          if (e?.code === 'permission-denied') return;
+          throw e;
+        }
       }
       const hostMeetup = appointmentMeetupSnapshot(
-        hostProfileSnapshot?.exists() ? hostProfileSnapshot.data()?.meetup : null
+        hostProfile?.meetup
       );
       if (!hostMeetup) return;
 
@@ -1405,6 +1685,7 @@ export async function ensureAppointmentHistory(conversationId, currentUserId, ho
  * partial migration can never hide users from the app.
  */
 export function createSharedProfilesSubscription(onProfiles, onError, options = {}) {
+  if (secureDiscoveryConfigured()) return createSecureProfilesSubscription(onProfiles, onError, options);
   const { db } = requireFirebase();
   const pageSize = Math.max(10, Math.min(100, Number(options.pageSize) || DISCOVERY_PAGE_SIZE));
   const onPageInfo = typeof options.onPageInfo === 'function' ? options.onPageInfo : () => {};
@@ -1467,6 +1748,7 @@ export function createSharedProfilesSubscription(onProfiles, onError, options = 
       query(
         collection(db, 'profiles'),
         where('isDiscoverable', '==', true),
+        where('isFaceVerified', '==', true),
         limit(LEGACY_DISCOVERY_LIMIT),
       ),
       (snapshot) => {
@@ -1486,7 +1768,7 @@ export function createSharedProfilesSubscription(onProfiles, onError, options = 
         });
         onProfiles?.(snapshot.docs.map((document) => profileCache.get(document.id)).filter(Boolean));
       },
-      onError
+      (error) => onError?.(error, { feed: true })
     );
   };
 
@@ -1503,8 +1785,11 @@ export function createSharedProfilesSubscription(onProfiles, onError, options = 
     };
     pageStates[pageIndex] = page;
 
+    // Only face-verified owners are discoverable. Older documents without the
+    // field are excluded by the equality filter itself.
     const constraints = [
       where('isDiscoverable', '==', true),
+      where('isFaceVerified', '==', true),
       orderBy(documentId()),
     ];
     if (cursor) constraints.push(startAfter(cursor));
@@ -1556,7 +1841,9 @@ export function createSharedProfilesSubscription(onProfiles, onError, options = 
           startUnboundedLegacy();
           return;
         }
-        onError?.(error);
+        // Clear the loading flag so Home can leave its skeleton and offer a retry.
+        emitPageInfo(false);
+        onError?.(error, { feed: true });
       }
     );
   };
@@ -1670,7 +1957,9 @@ export function filterAvailableProfiles(
     filteredProfiles.push({
       ...cardProfile,
       isMatched: matchedIds.has(profile.id),
-      distance: getDistanceBetweenProfiles(currentUserProfile, profile),
+      distance: typeof profile.distance === 'number' && Number.isFinite(profile.distance)
+        ? profile.distance
+        : null,
     });
   });
 
@@ -1678,17 +1967,31 @@ export function filterAvailableProfiles(
 }
 
 export function hydrateDecisionLikes(decisions, allProfiles, direction) {
-  const profilesById = new Map(allProfiles.map((profile) => [profile.id, profile]));
-  return decisions
+  const profilesById = new Map((Array.isArray(allProfiles) ? allProfiles : []).map((profile) => [profile?.id, profile]));
+  return (Array.isArray(decisions) ? decisions : [])
     .filter((decision) => (
-      decision.type === 'like'
+      decision
+      && decision.type === 'like'
       && decision.status !== 'removed'
       && decision.status !== 'rejected'
     ))
     .map((decision) => {
       const profileId = decisionProfileId(decision, direction);
+      if (!profileId || typeof profileId !== 'string') return null;
       const profileData = profilesById.get(profileId);
-      if (!profileData) return null;
+      // Drop deleted or non-existent profiles so ghost cards never appear
+      if (!profileData || profileData.isDeleted) return null;
+      // Both pending and accepted cards in Likes require a verified profile.
+      // Conversation participant snapshots are handled independently.
+      if (profileData.isFaceVerified !== true) return null;
+      if (
+        profileData.name === 'เพื่อนใหม่'
+        && !profileData.avatarUri
+        && !profileData.faculty
+        && !profileData.nickname
+      ) {
+        return null;
+      }
       return {
         id: profileId,
         ...profileData,
@@ -1709,33 +2012,25 @@ export function hydrateDecisionLikes(decisions, allProfiles, direction) {
  * recreated all decision listeners whenever the profile list changed.
  */
 export function subscribeToUserDecisions(currentUserId, callback, onError) {
+  if (secureDiscoveryConfigured()) return subscribeSecureDecisions(currentUserId, callback, onError);
   const { db } = requireFirebase();
-  const decisionCaches = {
-    incoming: new Map(),
-    outgoing: new Map(),
-  };
   let incomingDecisions = null;
   let outgoingDecisions = null;
 
   const emit = () => {
-    if (!incomingDecisions || !outgoingDecisions) return;
+    if (incomingDecisions === null || outgoingDecisions === null) return;
     callback({ incomingDecisions, outgoingDecisions });
   };
 
+  const DECISION_QUERY_LIMIT = 250;
   const subscribeFor = (field, target) => onSnapshot(
-    query(collection(db, 'decisions'), where(field, '==', currentUserId)),
+    query(collection(db, 'decisions'), where(field, '==', currentUserId), limit(DECISION_QUERY_LIMIT)),
     (snapshot) => {
-      const cache = decisionCaches[target];
-      const changes = snapshot.docChanges();
-      if (changes.length === 0) return;
-      changes.forEach((change) => {
-        if (change.type === 'removed') {
-          cache.delete(change.doc.id);
-          return;
-        }
-        cache.set(change.doc.id, { id: change.doc.id, ...change.doc.data() });
-      });
-      const decisions = [...cache.values()];
+      const decisions = snapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        decisionId: docSnap.id,
+        ...docSnap.data(),
+      }));
       if (target === 'incoming') incomingDecisions = decisions;
       else outgoingDecisions = decisions;
       emit();
@@ -1789,11 +2084,44 @@ export function decryptConversationMessageList(
     .sort((first, second) => toMillis(first.createdAt || first.time) - toMillis(second.createdAt || second.time));
 }
 
+function selectLegacyPreviewMessages(messages, lastMessageId) {
+  if (!Array.isArray(messages) || messages.length === 0) return [];
+  if (lastMessageId) {
+    const match = messages.find((message) => message?.id === lastMessageId);
+    if (match) return [match];
+  }
+  return messages.slice(-1);
+}
+
+async function fetchInboxPreviewMessages(db, conversationId, lastMessageId) {
+  const candidate = String(lastMessageId || '').trim();
+  if (LAST_MESSAGE_ID_PATTERN.test(candidate)) {
+    try {
+      const snapshot = await getDoc(doc(db, 'conversations', conversationId, 'messages', candidate));
+      if (snapshot.exists()) {
+        return [{ id: snapshot.id, ...snapshot.data() }];
+      }
+    } catch (error) {
+      console.warn('[Firestore] Inbox preview getDoc failed:', conversationId, error?.message || error);
+    }
+  }
+  try {
+    const snapshot = await getDocs(query(
+      collection(db, 'conversations', conversationId, 'messages'),
+      orderBy('createdAt', 'desc'),
+      limit(INBOX_PREVIEW_MESSAGE_LIMIT)
+    ));
+    return snapshot.docs.map((messageDoc) => ({ id: messageDoc.id, ...messageDoc.data() })).reverse();
+  } catch (error) {
+    console.warn('[Firestore] Inbox preview query failed:', conversationId, error?.message || error);
+    return [];
+  }
+}
+
 /**
- * Subscribe to conversation metadata and the protected per-message
- * subcollection. The root `messages` array is legacy/read-only data; new
- * writes never use it because Firestore rules cannot validate an array item
- * independently.
+ * Subscribe to conversation metadata only. Chat rooms already listen to their
+ * own message subcollection; the inbox decrypts the latest message with a
+ * one-shot read instead of opening N live listeners at boot.
  */
 export function subscribeToConversations(currentUserId, callback, onError) {
   const { db } = requireFirebase();
@@ -1807,9 +2135,7 @@ export function subscribeToConversations(currentUserId, callback, onError) {
   let emitRequested = false;
   const rawConversations = new Map();
   const hydratedConversations = new Map();
-  const secureMessagesByConversation = new Map();
-  const secureMessageSnapshotsReady = new Set();
-  const messageUnsubscribers = new Map();
+  const previewCache = new Map();
   let latestRootSnapshotInfo = { fromCache: true, hasPendingWrites: false };
   // Reading the local identity must not wait for the optional Firestore
   // publication transaction. A legacy profile can reject that transaction
@@ -1832,16 +2158,8 @@ export function subscribeToConversations(currentUserId, callback, onError) {
 
     try {
       const hydrateConversation = async ([conversationId, entry]) => {
-        subscribeToMessageSubcollection(conversationId);
-        const secureMessageSnapshot = secureMessagesByConversation.get(conversationId) || [];
-        const secureSnapshotReady = secureMessageSnapshotsReady.has(conversationId);
         const cachedHydration = hydratedConversations.get(conversationId);
-        if (
-          cachedHydration
-          && cachedHydration.rawEntry === entry
-          && cachedHydration.secureMessages === secureMessageSnapshot
-          && cachedHydration.secureSnapshotReady === secureSnapshotReady
-        ) return cachedHydration.conversation;
+        if (cachedHydration && cachedHydration.rawEntry === entry) return cachedHydration.conversation;
 
         const data = entry.data || {};
         const mySettings = data.participantSettings?.[currentUserId] || {};
@@ -1872,55 +2190,63 @@ export function subscribeToConversations(currentUserId, callback, onError) {
               && (!otherEnvelopes || Object.keys(otherEnvelopes).length === 0)
             );
 
-            if (!conversationKey || isMissingOtherEnvelope) {
-              const prepared = await ensureConversationEncryption(
-                conversationId,
-                currentUserId,
-                data.participantProfiles || {}
-              );
-              conversationKey = prepared.conversationKey;
-              preparedData = {
-                ...data,
-                ...prepared.data,
-                encryption: prepared.encryption,
-                messages: prepared.messages,
-              };
+            if (!conversationKey) {
+              encryptionPending = true;
+              encryptionError = encryptionError || 'E2EE_KEY_UNAVAILABLE';
+            } else if (isMissingOtherEnvelope) {
+              encryptionError = encryptionError || 'E2EE_PEER_ENVELOPE_MISSING';
             }
           } catch (error) {
             console.warn(`[Firestore] E2EE unavailable for conversation ${conversationId}:`, error?.message || error);
-            encryptionPending = true;
-            encryptionError = error?.code || 'E2EE_KEY_UNAVAILABLE';
+            if (!conversationKey) {
+              encryptionPending = true;
+              encryptionError = error?.code || 'E2EE_KEY_UNAVAILABLE';
+            }
           }
         }
 
-        const legacyMessages = isHidden ? [] : decryptConversationMessageList(
-          conversationId,
-          preparedData.messages,
-          encryptionPending ? null : conversationKey,
-          currentUserId,
-          historyClearedAt
-        );
+        if (conversationKey) {
+          cacheConversationKey(conversationId, currentUserId, conversationKey, {
+            encryption: preparedData.encryption,
+            data: preparedData,
+          });
+        }
+
+        let secureMessageSnapshot = [];
+        if (!isHidden && conversationKey) {
+          const previewKey = `${preparedData.lastMessageId || ''}:${toMillis(preparedData.updatedAt)}`;
+          const cachedPreview = previewCache.get(conversationId);
+          if (cachedPreview?.previewKey === previewKey) {
+            secureMessageSnapshot = cachedPreview.rawMessages;
+          } else {
+            secureMessageSnapshot = await fetchInboxPreviewMessages(
+              db,
+              conversationId,
+              preparedData.lastMessageId
+            );
+            if (disposed) return cachedHydration?.conversation || null;
+            previewCache.set(conversationId, { previewKey, rawMessages: secureMessageSnapshot });
+          }
+        }
+
         const secureMessages = isHidden ? [] : decryptConversationMessageList(
           conversationId,
           secureMessageSnapshot,
-          encryptionPending ? null : conversationKey,
+          conversationKey,
           currentUserId,
           historyClearedAt
         );
+        const legacyMessages = (!isHidden && secureMessages.length === 0)
+          ? decryptConversationMessageList(
+            conversationId,
+            selectLegacyPreviewMessages(preparedData.messages, preparedData.lastMessageId),
+            conversationKey,
+            currentUserId,
+            historyClearedAt
+          )
+          : [];
         const messagesById = new Map(legacyMessages.map((message) => [message.id, message]));
         secureMessages.forEach((message) => messagesById.set(message.id, message));
-        // The parent conversation snapshot can arrive before the first
-        // per-message snapshot. Reuse the last hydrated timeline during that
-        // gap instead of publishing an empty history to the UI.
-        if (!isHidden && !encryptionPending && !secureMessageSnapshotsReady.has(conversationId)) {
-          const previousMessages = previousEntries.get(conversationId)?.conversation?.messages || [];
-          previousMessages
-            .filter((message) => (
-              !isMessageHiddenForUser(message, currentUserId)
-                && (!hasHistoryCutoff || toMillis(message.createdAt || message.time) > toMillis(historyClearedAt))
-            ))
-            .forEach((message) => messagesById.set(message.id, message));
-        }
         const messages = [...messagesById.values()]
           .sort((first, second) => toMillis(first.createdAt || first.time) - toMillis(second.createdAt || second.time));
 
@@ -1960,14 +2286,13 @@ export function subscribeToConversations(currentUserId, callback, onError) {
             : (latestMessage?.createdAt || (hasHistoryCutoff ? null : preparedData.lastMessageAt)),
           lastMessageId: latestMessage?.id || (hasHistoryCutoff ? null : preparedData.lastMessageId),
           messages,
-          messagesHydrating: !isHidden && !secureSnapshotReady,
+          messagesHydrating: false,
+          messagesPreviewOnly: !isHidden,
           encryptionPending,
           encryptionError,
         };
         hydratedConversations.set(conversationId, {
           rawEntry: entry,
-          secureMessages: secureMessageSnapshot,
-          secureSnapshotReady,
           conversation: hydratedConversation,
         });
         return hydratedConversation;
@@ -2014,7 +2339,7 @@ export function subscribeToConversations(currentUserId, callback, onError) {
         if (disposed || currentEmitVersion !== emitVersion) return;
         const batch = await Promise.all(entries.slice(offset, offset + 5).map(hydrateConversation));
         if (disposed || currentEmitVersion !== emitVersion) return;
-        conversations.push(...batch);
+        conversations.push(...batch.filter(Boolean));
         publish(conversations, entries.slice(offset + 5).map(([id]) => id));
         // Let the rendered batch reach the screen before decrypting more rooms.
         if (offset + 5 < entries.length) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2025,9 +2350,8 @@ export function subscribeToConversations(currentUserId, callback, onError) {
     }
   };
 
-  // A root snapshot and its message subcollection snapshots often arrive in
-  // the same turn. Coalesce them so decryption, sorting, and React updates run
-  // once instead of once per listener callback.
+  // Root metadata and one-shot preview reads often finish in the same turn.
+  // Coalesce them so decryption, sorting, and React updates run once.
   const scheduleEmit = () => {
     emitRequested = true;
     if (emitTimer !== null || emitInFlight) return;
@@ -2048,34 +2372,10 @@ export function subscribeToConversations(currentUserId, callback, onError) {
     }, 0);
   };
 
-  const subscribeToMessageSubcollection = (conversationId) => {
-    if (messageUnsubscribers.has(conversationId)) return;
-    const messagesQuery = query(
-      collection(db, 'conversations', conversationId, 'messages'),
-      orderBy('createdAt', 'desc'),
-      limit(25)
-    );
-    const unsubscribe = onSnapshot(
-      messagesQuery,
-      (snapshot) => {
-        secureMessagesByConversation.set(
-          conversationId,
-          snapshot.docs.map((messageDoc) => ({ id: messageDoc.id, ...messageDoc.data() })).reverse()
-        );
-        secureMessageSnapshotsReady.add(conversationId);
-        scheduleEmit();
-      },
-      (error) => {
-        console.warn('[Firestore] Messages subscription failed, falling back:', conversationId, error?.message || error);
-        // Keep the last successful snapshot. Clearing it here made a
-        // transient listener error look like a deleted conversation history.
-        if (!secureMessagesByConversation.has(conversationId)) {
-          secureMessagesByConversation.set(conversationId, []);
-        }
-        scheduleEmit();
-      }
-    );
-    messageUnsubscribers.set(conversationId, unsubscribe);
+  const forgetConversation = (conversationId) => {
+    rawConversations.delete(conversationId);
+    hydratedConversations.delete(conversationId);
+    previewCache.delete(conversationId);
   };
 
   const rootUnsubscribe = onSnapshot(
@@ -2090,24 +2390,14 @@ export function subscribeToConversations(currentUserId, callback, onError) {
       const activeIds = new Set(snapshot.docs.map((conversationDoc) => conversationDoc.id));
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'removed') {
-          rawConversations.delete(change.doc.id);
-          hydratedConversations.delete(change.doc.id);
-          secureMessagesByConversation.delete(change.doc.id);
-          secureMessageSnapshotsReady.delete(change.doc.id);
-          messageUnsubscribers.get(change.doc.id)?.();
-          messageUnsubscribers.delete(change.doc.id);
+          forgetConversation(change.doc.id);
           return;
         }
         rawConversations.set(change.doc.id, { data: change.doc.data() });
       });
       [...rawConversations.keys()].forEach((conversationId) => {
         if (activeIds.has(conversationId)) return;
-        rawConversations.delete(conversationId);
-        hydratedConversations.delete(conversationId);
-        secureMessagesByConversation.delete(conversationId);
-        secureMessageSnapshotsReady.delete(conversationId);
-        messageUnsubscribers.get(conversationId)?.();
-        messageUnsubscribers.delete(conversationId);
+        forgetConversation(conversationId);
       });
       scheduleEmit();
     },
@@ -2128,12 +2418,9 @@ export function subscribeToConversations(currentUserId, callback, onError) {
     }
     emitRequested = false;
     rootUnsubscribe?.();
-    messageUnsubscribers.forEach((unsubscribe) => unsubscribe?.());
-    messageUnsubscribers.clear();
     rawConversations.clear();
     hydratedConversations.clear();
-    secureMessagesByConversation.clear();
-    secureMessageSnapshotsReady.clear();
+    previewCache.clear();
   };
 }
 
@@ -2298,45 +2585,30 @@ function subscribeToConversationsLegacy(currentUserId, callback, onError) {
 function conversationRenderSignature(conversation) {
   const unreadCounts = Object.entries(conversation.unreadCounts || {})
     .sort(([firstId], [secondId]) => firstId.localeCompare(secondId));
-  const readReceipts = Object.entries(conversation.readReceipts || {})
-    .map(([uid, ts]) => [uid, toMillis(ts)])
-    .sort(([firstId], [secondId]) => firstId.localeCompare(secondId));
-  const participantSettings = Object.entries(conversation.participantSettings || {})
-    .sort(([firstId], [secondId]) => firstId.localeCompare(secondId));
-  const messages = (conversation.messages || []).map((message) => [
-    message.id,
-    message.sender,
-    message.text,
-    toMillis(message.createdAt || message.time),
-    JSON.stringify(message.reactions || {}),
-    JSON.stringify(message.reactionTimes || {}),
-    JSON.stringify(message.replyTo || null),
-    Boolean(message.forwarded),
-    JSON.stringify(message.hiddenFor || []),
-  ]);
+  const lastPreview = conversation.messages?.[conversation.messages.length - 1];
   return JSON.stringify([
     conversation.id,
     conversation.profileId,
     conversation.name,
-    conversation.avatar,
-    conversation.avatarColor,
     conversation.avatarUri,
-    conversation.subtitle,
     conversation.lastMessage,
     conversation.lastMessageSenderId,
     toMillis(conversation.lastMessageAt),
     conversation.lastMessageId,
     Boolean(conversation.encryptionPending),
     conversation.encryptionError,
-    Boolean(conversation.messagesHydrating),
+    Boolean(conversation.isHidden),
     unreadCounts,
-    readReceipts,
-    participantSettings,
-    messages,
+    lastPreview?.id,
+    lastPreview?.text,
   ]);
 }
 
-export async function saveDecision(currentUserId, otherUserId, type, likeMessage = '', status = 'pending') {
+export async function saveDecision(currentUserId, otherUserId, type, likeMessage = '', status = 'pending', actionId) {
+  if (secureDiscoveryConfigured()) {
+    if (status !== 'pending') throw Object.assign(new Error('ต้องตอบรับหรือยกเลิกการจับคู่ผ่านระบบใหม่'), { code: 'invalid-argument' });
+    return recordSecureDiscoveryAction(otherUserId, type, likeMessage, actionId);
+  }
   const { db } = requireFirebase();
   const decisionRef = doc(db, 'decisions', `${currentUserId}_${otherUserId}`);
   
@@ -2423,6 +2695,10 @@ export async function saveDecision(currentUserId, otherUserId, type, likeMessage
 }
 
 export async function respondToDecision(decisionId, currentUserId, status, otherUserId = '') {
+  if (secureDiscoveryConfigured()) {
+    if (!otherUserId || !['accepted', 'rejected'].includes(status)) throw Object.assign(new Error('ข้อมูลการตอบรับไม่ถูกต้อง'), { code: 'invalid-argument' });
+    return respondToSecureLike(otherUserId, status === 'accepted' ? 'accept' : 'reject');
+  }
   const { db } = requireFirebase();
   const candidateId = String(otherUserId || '').trim();
   const targetIds = Array.from(new Set([
@@ -2517,6 +2793,7 @@ export async function unhideConversation(conversationId, currentUserId) {
 }
 
 export async function unmatchUser(currentUserId, otherUserId) {
+  if (secureDiscoveryConfigured()) return secureDiscoveryCall('unmatchProfile', { targetUserId: otherUserId });
   const { db } = requireFirebase();
   if (!currentUserId || !otherUserId || currentUserId === otherUserId) return false;
   const batch = writeBatch(db);
@@ -2562,6 +2839,72 @@ export async function unmatchUser(currentUserId, otherUserId) {
     await batch.commit();
   }
   return hasOps;
+}
+
+/**
+ * Permanently cleans up stale interactions with deleted users.
+ * - Deletes outgoing decisions (currentUserId -> deletedUserId)
+ * - Updates incoming decisions (deletedUserId -> currentUserId) to status 'removed'
+ * - Hides the conversation for the current user
+ */
+export async function cleanupDeletedUserInteractions(currentUserId, deletedUserIds) {
+  if (!currentUserId || !Array.isArray(deletedUserIds) || !deletedUserIds.length) return false;
+  const { db } = requireFirebase();
+  const batch = writeBatch(db);
+  let opCount = 0;
+
+  for (const deletedId of deletedUserIds) {
+    if (!deletedId || deletedId === currentUserId) continue;
+
+    // 1. Outgoing decision: delete
+    const outgoingRef = doc(db, 'decisions', `${currentUserId}_${deletedId}`);
+    try {
+      const snap = await getDoc(outgoingRef);
+      if (snap.exists()) {
+        batch.delete(outgoingRef);
+        opCount++;
+      }
+    } catch (_) {}
+
+    // 2. Incoming decision: mark removed
+    const incomingRef = doc(db, 'decisions', `${deletedId}_${currentUserId}`);
+    try {
+      const snap = await getDoc(incomingRef);
+      if (snap.exists()) {
+        batch.update(incomingRef, {
+          status: 'removed',
+          updatedAt: serverTimestamp(),
+        });
+        opCount++;
+      }
+    } catch (_) {}
+
+    // 3. Conversation: hide for current user
+    const conversationId = `c-${[currentUserId, deletedId].sort().join('-')}`;
+    const conversationRef = doc(db, 'conversations', conversationId);
+    try {
+      const snap = await getDoc(conversationRef);
+      if (snap.exists()) {
+        batch.update(conversationRef, {
+          [`participantSettings.${currentUserId}.isHidden`]: true,
+          [`participantSettings.${currentUserId}.hiddenAt`]: serverTimestamp(),
+          [`participantSettings.${currentUserId}.historyClearedAt`]: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        opCount++;
+      }
+    } catch (_) {}
+  }
+
+  if (opCount > 0) {
+    try {
+      await batch.commit();
+      return true;
+    } catch (err) {
+      console.warn('[cleanupDeletedUserInteractions] Batch commit error:', err?.message || err);
+    }
+  }
+  return false;
 }
 
 /**
@@ -2687,6 +3030,7 @@ export async function getBlockedUserIds(currentUserId) {
 
 
 export async function cancelOutgoingLike(currentUserId, otherUserId, decisionId) {
+  if (secureDiscoveryConfigured()) return secureDiscoveryCall('cancelPendingOutgoingLike', { targetUserId: otherUserId });
   const { db } = requireFirebase();
   const targetId = decisionId || `${currentUserId}_${otherUserId}`;
   const decisionRef = doc(db, 'decisions', targetId);
@@ -2723,6 +3067,7 @@ export async function cancelOutgoingLike(currentUserId, otherUserId, decisionId)
 }
 
 export async function resetSkippedDecisions(currentUserId) {
+  if (secureDiscoveryConfigured()) return rewindSecureDiscoveryAction();
   if (!currentUserId) return;
   const { db } = requireFirebase();
   try {
@@ -2771,17 +3116,21 @@ export async function createConversation(currentUserId, currentProfile, otherPro
     return conversationRef.id;
   }
 
-  const [currentProfileSnapshot, otherProfileSnapshot] = await Promise.all([
-    getDoc(doc(db, 'profiles', currentUserId)),
-    getDoc(doc(db, 'profiles', otherProfile.id)),
-  ]);
+  const freshProfiles = secureDiscoveryConfigured()
+    ? await getPublicProfilesByIds(participantIds)
+    : (await Promise.all(participantIds.map((id) => getDoc(doc(db, 'profiles', id)))))
+      .filter((snapshot) => snapshot.exists()).map((snapshot) => ({ ...snapshot.data(), id: snapshot.id }));
+  const freshById = new Map(freshProfiles.map((entry) => [entry.id, entry]));
+  if (secureDiscoveryConfigured() && participantIds.some((id) => !freshById.has(id))) {
+    throw Object.assign(new Error('ไม่สามารถเปิดโปรไฟล์ผู้ร่วมสนทนาได้'), { code: 'permission-denied' });
+  }
   const currentDisplayProfile = {
     ...(currentProfile || {}),
-    ...(currentProfileSnapshot.exists() ? currentProfileSnapshot.data() : {}),
+    ...(freshById.get(currentUserId) || {}),
   };
   const otherDisplayProfile = {
     ...(otherProfile || {}),
-    ...(otherProfileSnapshot.exists() ? otherProfileSnapshot.data() : {}),
+    ...(freshById.get(otherProfile.id) || {}),
   };
   const encryptionSetup = createConversationEncryption(
     participantIds,
@@ -2886,6 +3235,20 @@ export async function updateConversationMessage(conversationId, currentUserId, t
     if (options.mediaUrl) message.mediaUrl = options.mediaUrl;
     if (Array.isArray(options.mediaUrls)) message.mediaUrls = options.mediaUrls;
     if (typeof options.audioDuration === 'number') message.audioDuration = options.audioDuration;
+    if (options.mediaType === 'track') {
+      if (options.trackId) message.trackId = String(options.trackId).slice(0, 64);
+      if (options.trackName) message.trackName = String(options.trackName).slice(0, 200);
+      if (options.artists) message.artists = String(options.artists).slice(0, 200);
+      if (options.albumArt) message.albumArt = String(options.albumArt).slice(0, 2000);
+      if (options.previewUrl) message.previewUrl = String(options.previewUrl).slice(0, 2000);
+      if (options.externalUrl) message.externalUrl = String(options.externalUrl).slice(0, 500);
+      if (Number.isFinite(Number(options.previewStartMs))) {
+        message.previewStartMs = Math.max(0, Math.round(Number(options.previewStartMs)));
+      }
+      if (Number.isFinite(Number(options.previewEndMs))) {
+        message.previewEndMs = Math.max(0, Math.round(Number(options.previewEndMs)));
+      }
+    }
 
     if (options.replyTo?.id) {
       message.replyTo = { ...createReplySnapshot(options.replyTo), id: normalizeMessageId(options.replyTo.id) };
@@ -2957,6 +3320,20 @@ async function updateConversationMessageLegacy(conversationId, currentUserId, te
     if (options.mediaUrl) message.mediaUrl = options.mediaUrl;
     if (Array.isArray(options.mediaUrls)) message.mediaUrls = options.mediaUrls;
     if (typeof options.audioDuration === 'number') message.audioDuration = options.audioDuration;
+    if (options.mediaType === 'track') {
+      if (options.trackId) message.trackId = String(options.trackId).slice(0, 64);
+      if (options.trackName) message.trackName = String(options.trackName).slice(0, 200);
+      if (options.artists) message.artists = String(options.artists).slice(0, 200);
+      if (options.albumArt) message.albumArt = String(options.albumArt).slice(0, 2000);
+      if (options.previewUrl) message.previewUrl = String(options.previewUrl).slice(0, 2000);
+      if (options.externalUrl) message.externalUrl = String(options.externalUrl).slice(0, 500);
+      if (Number.isFinite(Number(options.previewStartMs))) {
+        message.previewStartMs = Math.max(0, Math.round(Number(options.previewStartMs)));
+      }
+      if (Number.isFinite(Number(options.previewEndMs))) {
+        message.previewEndMs = Math.max(0, Math.round(Number(options.previewEndMs)));
+      }
+    }
 
     if (options.replyTo?.id) {
       message.replyTo = createReplySnapshot(options.replyTo);
@@ -3013,6 +3390,7 @@ export async function markConversationAsRead(conversationId, currentUserId) {
 }
 
 export async function toggleMeetupAcceptance(conversationId, currentUserId, hostUserId, spotName, options = {}) {
+  const visibleHost = secureDiscoveryConfigured() && hostUserId ? await getPublicProfile(hostUserId) : null;
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
   const encryptionSetup = await ensureConversationEncryption(conversationId, currentUserId);
@@ -3059,17 +3437,16 @@ export async function toggleMeetupAcceptance(conversationId, currentUserId, host
         throw error;
       }
     }
-    let hostProfileSnapshot = null;
-    if (shouldAccept && appointmentRef && !appointmentExists) {
+    let hostProfile = visibleHost;
+    if (!secureDiscoveryConfigured() && shouldAccept && appointmentRef && !appointmentExists) {
       try {
-        hostProfileSnapshot = await transaction.get(doc(db, 'profiles', hostId));
+        const snapshot = await transaction.get(doc(db, 'profiles', hostId));
+        hostProfile = snapshot.exists() ? snapshot.data() : null;
       } catch (error) {
         // If profile read in transaction fails, we still allow conversation acceptance
       }
     }
-    const candidateMeetup = hostProfileSnapshot?.exists() && hostProfileSnapshot.data()?.meetup
-      ? hostProfileSnapshot.data().meetup
-      : (options.meetup || null);
+    const candidateMeetup = hostProfile?.meetup || (secureDiscoveryConfigured() ? null : options.meetup || null);
     const hostMeetup = (!appointmentExists && appointmentRef)
       ? appointmentMeetupSnapshot(candidateMeetup)
       : null;

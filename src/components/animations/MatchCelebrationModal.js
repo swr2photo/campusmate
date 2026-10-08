@@ -1,12 +1,6 @@
+import Text from '../AppText';
 import React from 'react';
-import {
-  Image,
-  Modal,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Image, Modal, Pressable, StyleSheet, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MotiView } from 'moti';
 import LottieViewSafe from './LottieViewSafe';
@@ -137,14 +131,14 @@ export default function MatchCelebrationModal({
 
 const styles = StyleSheet.create({
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     backgroundColor: 'rgba(11, 13, 20, 0.88)',
     justifyContent: 'center',
     padding: 24,
   },
   lottieContainer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -165,7 +159,7 @@ const styles = StyleSheet.create({
   },
   title: {
     color: '#FFFFFF',
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '800',
     letterSpacing: -0.5,
     marginBottom: 8,

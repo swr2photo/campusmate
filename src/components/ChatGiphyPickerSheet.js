@@ -1,19 +1,18 @@
+import Text from './AppText';
+import { AppTextInput as TextInput } from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Animated,
-  Dimensions,
-  FlatList,
-  Keyboard,
-  PanResponder,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Dimensions, FlatList, Keyboard, Platform, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
+import Animated, {
+  Easing,
+  Extrapolation,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { scheduleOnRN } from 'react-native-worklets';
 import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FeatureIcon from './FeatureIcon';
@@ -24,6 +23,9 @@ import {
   searchStickers,
 } from '../services/giphyService';
 import { EMOJI_CATEGORIES } from '../data/iosEmojiCategories';
+import { project, rubberband } from '../utils/motion';
+
+const EASE_OUT = Easing.bezier(0.23, 1, 0.32, 1);
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GRID_PADDING = 12;
@@ -76,78 +78,95 @@ export default function ChatGiphyPickerSheet({
   const { height: windowHeight } = useWindowDimensions();
   const expandedHeight = Math.max(280, windowHeight - insets.top - 16);
   const collapsedHeight = Math.min(380, expandedHeight);
-  const sheetHeight = useRef(new Animated.Value(collapsedHeight)).current;
-  const currentHeight = useRef(collapsedHeight);
-  const dragStartHeight = useRef(collapsedHeight);
+  const visibleH = useSharedValue(collapsedHeight);
+  const dragStartH = useSharedValue(collapsedHeight);
+  const closingSv = useSharedValue(0);
+  const expandedHSv = useSharedValue(expandedHeight);
+  const collapsedHSv = useSharedValue(collapsedHeight);
   const closing = useRef(false);
 
   useEffect(() => {
-    const listener = sheetHeight.addListener(({ value }) => {
-      currentHeight.current = value;
-    });
-    return () => {
-      sheetHeight.removeListener(listener);
-      sheetHeight.stopAnimation();
-    };
-  }, [sheetHeight]);
+    expandedHSv.set(expandedHeight);
+    collapsedHSv.set(collapsedHeight);
+  }, [collapsedHSv, collapsedHeight, expandedHSv, expandedHeight]);
 
   useEffect(() => {
     if (isOpen) {
       closing.current = false;
-      sheetHeight.stopAnimation();
-      sheetHeight.setValue(collapsedHeight);
-      currentHeight.current = collapsedHeight;
+      closingSv.set(0);
+      visibleH.set(collapsedHeight);
     }
-  }, [isOpen, collapsedHeight, sheetHeight]);
+  }, [isOpen, collapsedHeight, closingSv, visibleH]);
 
-  const animateHeight = useCallback((height, onComplete) => {
-    Animated.timing(sheetHeight, {
-      toValue: height,
-      duration: 200,
-      useNativeDriver: false,
-    }).start(({ finished }) => {
-      if (finished) onComplete?.();
-    });
-  }, [sheetHeight]);
+  const handleClosed = useCallback(() => {
+    closing.current = false;
+    closingSv.set(0);
+    onClose?.();
+  }, [closingSv, onClose]);
+
+  const dismissKeyboard = useCallback(() => {
+    Keyboard.dismiss();
+  }, []);
 
   const closeSheet = useCallback(() => {
     if (closing.current) return;
     closing.current = true;
+    closingSv.set(1);
     Keyboard.dismiss();
-    animateHeight(0, onClose);
-  }, [animateHeight, onClose]);
+    visibleH.set(withTiming(0, { duration: 200, easing: EASE_OUT }, (finished) => {
+      if (finished) scheduleOnRN(handleClosed);
+    }));
+  }, [closingSv, handleClosed, visibleH]);
 
-  // Keep dragging on the header so the content grid retains native scrolling.
-  const panResponder = useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_, { dx, dy }) =>
-      !closing.current && Math.abs(dy) > 5 && Math.abs(dy) > Math.abs(dx),
-    onPanResponderGrant: () => {
-      sheetHeight.stopAnimation();
-      dragStartHeight.current = currentHeight.current;
-      Keyboard.dismiss();
-    },
-    onPanResponderMove: (_, { dy }) => {
-      sheetHeight.setValue(Math.max(0, Math.min(expandedHeight, dragStartHeight.current - dy)));
-    },
-    onPanResponderRelease: (_, { dy, vy }) => {
-      const height = Math.max(0, Math.min(expandedHeight, dragStartHeight.current - dy));
-      if (height < collapsedHeight - 40) {
-        closeSheet();
-      } else if (dy > 10 && vy > 0.65) {
-        if (height > collapsedHeight + 80) animateHeight(collapsedHeight);
-        else closeSheet();
-      } else if (vy < -0.45) {
-        animateHeight(expandedHeight);
-      } else if (height >= expandedHeight - 40) {
-        animateHeight(expandedHeight);
-      } else if (height <= collapsedHeight + 35) {
-        animateHeight(collapsedHeight);
+  const panGesture = useMemo(() => Gesture.Pan()
+    .activeOffsetY([-6, 6])
+    .failOffsetX([-24, 24])
+    .onStart(() => {
+      if (closingSv.get()) return;
+      dragStartH.set(visibleH.get());
+      scheduleOnRN(dismissKeyboard);
+    })
+    .onUpdate((event) => {
+      if (closingSv.get()) return;
+      const maxH = expandedHSv.get();
+      const next = dragStartH.get() - event.translationY;
+      if (next > maxH) {
+        visibleH.set(maxH + rubberband(next - maxH, maxH));
+      } else if (next < 0) {
+        visibleH.set(-rubberband(-next, collapsedHSv.get() || 1));
       } else {
-        sheetHeight.setValue(height);
+        visibleH.set(next);
       }
-    },
-    onPanResponderTerminate: () => animateHeight(collapsedHeight),
-  }), [animateHeight, closeSheet, collapsedHeight, expandedHeight, sheetHeight]);
+    })
+    .onEnd((event) => {
+      if (closingSv.get()) return;
+      const maxH = expandedHSv.get();
+      const collapsedH = collapsedHSv.get();
+      const height = Math.max(0, Math.min(maxH, visibleH.get()));
+      const projected = height + project(-event.velocityY);
+      if (projected < collapsedH - 40) {
+        scheduleOnRN(closeSheet);
+      } else if (event.translationY > 10 && event.velocityY > 650) {
+        if (height > collapsedH + 80) {
+          visibleH.set(withSpring(collapsedH, { duration: 300, dampingRatio: 0.8, velocity: -event.velocityY }));
+        } else {
+          scheduleOnRN(closeSheet);
+        }
+      } else if (event.velocityY < -450 || projected >= maxH - 40) {
+        visibleH.set(withSpring(maxH, { duration: 300, dampingRatio: 0.8, velocity: -event.velocityY }));
+      } else if (projected <= collapsedH + 35) {
+        visibleH.set(withSpring(collapsedH, { duration: 300, dampingRatio: 0.8, velocity: -event.velocityY }));
+      } else {
+        visibleH.set(withSpring(height, { duration: 300, dampingRatio: 1, velocity: -event.velocityY, overshootClamping: true }));
+      }
+    }), [closeSheet, collapsedHSv, closingSv, dismissKeyboard, dragStartH, expandedHSv, visibleH]);
+
+  const spacerStyle = useAnimatedStyle(() => ({
+    height: interpolate(visibleH.get(), [0, collapsedHSv.get()], [0, collapsedHSv.get()], Extrapolation.CLAMP),
+  }));
+  const sheetStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: expandedHSv.get() - visibleH.get() }],
+  }));
 
   // Palette tokens
   const bg = isDark ? '#121620' : '#FFFFFF';
@@ -345,12 +364,6 @@ export default function ChatGiphyPickerSheet({
 
   if (!isOpen) return null;
 
-  const layoutSpacerHeight = sheetHeight.interpolate({
-    inputRange: [0, collapsedHeight],
-    outputRange: [0, collapsedHeight],
-    extrapolate: 'clamp',
-  });
-
   const searchPlaceholder =
     activeTab === 'sticker'
       ? 'ค้นหาสติกเกอร์ GIPHY...'
@@ -360,22 +373,25 @@ export default function ChatGiphyPickerSheet({
 
   return (
     <View style={styles.sheetWrapper}>
-      <Animated.View pointerEvents="none" style={{ height: layoutSpacerHeight }} />
+      <Animated.View pointerEvents="none" style={spacerStyle} />
       <Animated.View
         style={[
           styles.sheetContainer,
           {
-            height: sheetHeight,
+            height: expandedHeight,
             paddingBottom: insets.bottom,
             backgroundColor: bg,
             borderTopColor: borderColor,
           },
+          sheetStyle,
         ]}
       >
         {/* Drag handle / Header */}
-        <View style={styles.header} {...panResponder.panHandlers}>
-          <View style={[styles.dragHandle, { backgroundColor: isDark ? '#334155' : '#CBD5E1' }]} />
-        </View>
+        <GestureDetector gesture={panGesture}>
+          <View style={styles.header}>
+            <View style={[styles.dragHandle, { backgroundColor: isDark ? '#334155' : '#CBD5E1' }]} />
+          </View>
+        </GestureDetector>
 
         {/* Search Bar */}
         <View style={styles.searchRow}>

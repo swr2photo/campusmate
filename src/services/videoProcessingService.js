@@ -3,7 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { validateChatVideo } from '../utils/chatVideoPolicy';
 import { validateVideoEdit } from '../utils/videoEdit';
 
-export async function exportChatVideo(asset, edit, quality = 'preview') {
+export async function exportChatVideo(asset, edit, quality = 'medium') {
   validateVideoEdit(asset.duration, edit);
   const processor = requireOptionalNativeModule('ChatVideoProcessor');
   if (!processor) throw new Error('กรุณาอัปเดตแอปเป็นรุ่นที่รองรับการตัดวิดีโอ');

@@ -9,6 +9,28 @@ const SNAPSHOT_PREFIX = `campusmate_offline_snapshot_v${CACHE_VERSION}`;
 const QUEUE_PREFIX = `campusmate_offline_queue_v${CACHE_VERSION}`;
 const FAILED_PREFIX = `campusmate_offline_failed_v${CACHE_VERSION}`;
 const queueLocks = new Map();
+const queueListeners = new Set();
+export function subscribeOfflineQueueChanges(listener) {
+  queueListeners.add(listener);
+  return () => queueListeners.delete(listener);
+}
+function notifyQueue(userId) {
+  queueListeners.forEach((listener) => listener(userId));
+}
+export async function getFailedOfflineOperations(userId) {
+  return parseArray(await getEncryptedItem(userKey(FAILED_PREFIX, userId))).filter((item) => item.userId === userId);
+}
+export async function retryFailedOfflineOperation(userId, operationId, replacementPayload) {
+  const failed = await getFailedOfflineOperations(userId);
+  const operation = failed.find((item) => item.id === operationId && item.userId === userId);
+  if (!operation) return;
+  await enqueueOfflineOperation(userId, operation.type, replacementPayload || operation.payload, { dedupeKey: operation.dedupeKey });
+  await withQueueLock(userId, async () => {
+    const current = await getFailedOfflineOperations(userId);
+    await setEncryptedItem(userKey(FAILED_PREFIX, userId), JSON.stringify(current.filter((item) => item.id !== operationId)));
+  });
+  notifyQueue(userId);
+}
 
 function userKey(prefix, userId) {
   return `${prefix}:${encodeURIComponent(String(userId || 'anonymous'))}`;
@@ -103,6 +125,7 @@ export async function enqueueOfflineOperation(userId, type, payload, options = {
     if (existingIndex >= 0) queue[existingIndex] = operation;
     else queue.push(operation);
     await setEncryptedItem(key, JSON.stringify(queue));
+    notifyQueue(userId);
     return operation;
   });
 }
@@ -113,6 +136,7 @@ async function removeQueuedOperation(userId, operationIdToRemove) {
     const queue = await getOfflineQueue(userId);
     const nextQueue = queue.filter((operation) => operation.id !== operationIdToRemove);
     await setEncryptedItem(key, JSON.stringify(nextQueue));
+    notifyQueue(userId);
     return nextQueue.length;
   });
 }
@@ -137,6 +161,7 @@ async function markQueuedOperationAttempt(userId, operationIdToUpdate, error) {
 }
 
 async function archiveFailedOperation(userId, operation, error) {
+  return withQueueLock(userId, async () => {
   const key = userKey(FAILED_PREFIX, userId);
   const failed = parseArray(await getEncryptedItem(key));
   failed.push({
@@ -145,19 +170,24 @@ async function archiveFailedOperation(userId, operation, error) {
     lastError: String(error?.message || error || 'Unknown sync error').slice(0, 300),
   });
   await setEncryptedItem(key, JSON.stringify(failed.slice(-20)));
+  });
 }
 
 export function isRetryableNetworkError(error) {
-  const code = String(error?.code || '').toLowerCase().replace(/^firestore\//, '');
+  const code = String(error?.code || '').toLowerCase().replace(/^(firestore|functions)\//, '');
   const message = String(error?.message || '').toLowerCase();
   if (['permission-denied', 'unauthenticated', 'invalid-argument', 'not-found', 'already-exists', 'failed-precondition'].includes(code)) {
     return false;
   }
-  if (['unavailable', 'deadline-exceeded', 'cancelled', 'resource-exhausted', 'aborted', 'network-request-failed'].includes(code)) {
+  if (['unavailable', 'deadline-exceeded', 'cancelled', 'resource-exhausted', 'aborted', 'network-request-failed'].includes(code)
+    || code.includes('deadline-exceeded')
+    || code.includes('timeout')) {
     return true;
   }
-  return /network|offline|internet|connection|timeout|timed out|failed to fetch/.test(message);
+  return /network|offline|internet|connection|timeout|timed out|failed to fetch|deadline[-_ ]?exceeded/.test(message);
 }
+
+export const MAX_OFFLINE_ATTEMPTS = 5;
 
 export async function flushOfflineQueue(userId, executeOperation) {
   if (!userId) return { failed: [], pendingCount: 0, syncedCount: 0 };
@@ -171,10 +201,12 @@ export async function flushOfflineQueue(userId, executeOperation) {
       await removeQueuedOperation(userId, operation.id);
       syncedCount += 1;
     } catch (error) {
-      if (isRetryableNetworkError(error)) {
+      const attempts = (operation.attempts || 0) + 1;
+      if (isRetryableNetworkError(error) && attempts < MAX_OFFLINE_ATTEMPTS) {
         const pendingCount = await markQueuedOperationAttempt(userId, operation.id, error);
         return { failed, pendingCount, syncedCount, retryableError: error };
       }
+      // Quarantined to Dead-Letter Queue (archiveFailedOperation) to prevent stalling queue
       await archiveFailedOperation(userId, operation, error);
       await removeQueuedOperation(userId, operation.id);
       failed.push({ operation, error });
@@ -190,9 +222,10 @@ export async function flushOfflineQueue(userId, executeOperation) {
 
 export async function clearOfflineDataForUser(userId) {
   if (!userId) return;
-  await multiRemoveEncryptedItems([
+  await withQueueLock(userId, () => multiRemoveEncryptedItems([
     userKey(SNAPSHOT_PREFIX, userId),
     userKey(QUEUE_PREFIX, userId),
     userKey(FAILED_PREFIX, userId),
-  ]);
+  ]));
+  notifyQueue(userId);
 }

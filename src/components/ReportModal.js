@@ -1,18 +1,9 @@
+import Text from './AppText';
+import { AppTextInput as TextInput } from './AppText';
 import React, { useState } from 'react';
-import {
-  Modal,
-  View,
-  Text,
-  Pressable,
-  TextInput,
-  ScrollView,
-  ActivityIndicator,
-  StyleSheet,
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-} from 'react-native';
+import { Modal, View, Pressable, ScrollView, ActivityIndicator, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
 import FeatureIcon from './FeatureIcon';
+import { showAlert } from '../utils/appAlert';
 
 const REPORT_REASONS = [
   { id: 'nudity', label: 'ภาพลามกอนาจาร / โป๊เปลือย', icon: 'exclamationmark.triangle' },
@@ -53,7 +44,7 @@ export default function ReportModal({
 
   const handleSubmit = async () => {
     if (!selectedReason) {
-      Alert.alert('กรุณาเลือกเหตุผล', 'โปรดระบุเหตุผลในการรายงาน');
+      showAlert('กรุณาเลือกเหตุผล', 'โปรดระบุเหตุผลในการรายงาน', { tone: 'warning' });
       return;
     }
 
@@ -64,12 +55,13 @@ export default function ReportModal({
         details: details.trim(),
       });
       handleClose();
-      Alert.alert(
+      showAlert(
         'รายงานเรียบร้อยแล้ว',
-        'ขอบคุณสำหรับการรายงาน เราจะตรวจสอบเนื้อหาและดำเนินการตามมาตรฐานความปลอดภัยโดยเร็วที่สุด'
+        'ขอบคุณสำหรับการรายงาน เราจะตรวจสอบเนื้อหาและดำเนินการตามมาตรฐานความปลอดภัยโดยเร็วที่สุด',
+        { tone: 'success' }
       );
     } catch (err) {
-      Alert.alert('ส่งรายงานไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ส่งรายงานไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     } finally {
       setSubmitting(false);
     }

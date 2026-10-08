@@ -6,6 +6,7 @@ import * as Crypto from 'expo-crypto';
 import { collection, doc, getDoc, getDocFromServer, getDocs, limit, query, runTransaction, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import nacl from 'tweetnacl';
 import { requireFirebase } from './dbService';
+import { secureDiscoveryCall, secureDiscoveryConfigured } from './secureDiscoveryService';
 
 export const E2EE_VERSION = 1;
 export const E2EE_ALGORITHM = 'x25519-xsalsa20-poly1305.v1';
@@ -340,7 +341,7 @@ export async function ensureEncryptionIdentity(userId) {
   }
 }
 
-function wrapConversationKey(conversationKey, recipientPublicKey, senderIdentity) {
+export function wrapConversationKey(conversationKey, recipientPublicKey, senderIdentity) {
   const sharedKey = nacl.box.before(recipientPublicKey, senderIdentity.secretKey);
   const nonce = Crypto.getRandomBytes(nacl.secretbox.nonceLength);
   const ciphertext = nacl.secretbox(conversationKey, nonce, sharedKey);
@@ -502,6 +503,26 @@ function messageContent(message) {
   if (typeof message?.audioDuration === 'number') {
     content.audioDuration = message.audioDuration;
   }
+  if (message?.mediaType === 'call') {
+    if (message.callType) content.callType = String(message.callType);
+    if (typeof message.callDuration === 'number') content.callDuration = message.callDuration;
+    if (message.callStatus) content.callStatus = String(message.callStatus);
+    if (message.callTime) content.callTime = String(message.callTime);
+  }
+  if (message?.mediaType === 'track') {
+    if (message.trackId) content.trackId = String(message.trackId).slice(0, 64);
+    if (message.trackName) content.trackName = String(message.trackName).slice(0, 200);
+    if (message.artists) content.artists = String(message.artists).slice(0, 200);
+    if (message.albumArt) content.albumArt = String(message.albumArt).slice(0, 2000);
+    if (message.previewUrl) content.previewUrl = String(message.previewUrl).slice(0, 2000);
+    if (message.externalUrl) content.externalUrl = String(message.externalUrl).slice(0, 500);
+    if (Number.isFinite(Number(message.previewStartMs))) {
+      content.previewStartMs = Math.max(0, Math.round(Number(message.previewStartMs)));
+    }
+    if (Number.isFinite(Number(message.previewEndMs))) {
+      content.previewEndMs = Math.max(0, Math.round(Number(message.previewEndMs)));
+    }
+  }
   if (message?.replyTo?.id) {
     content.replyTo = createReplySnapshot(message.replyTo);
   }
@@ -532,6 +553,12 @@ export function encryptMessageRecord(message, conversationKey) {
     if (Number.isFinite(message.videoEndMs)) encryptedMessage.videoEndMs = message.videoEndMs;
   }
   if (message.mediaType === 'image' && message.viewMode) encryptedMessage.viewMode = message.viewMode;
+  if (message.mediaType === 'call') {
+    if (message.callType) encryptedMessage.callType = message.callType;
+    if (typeof message.callDuration === 'number') encryptedMessage.callDuration = message.callDuration;
+    if (message.callStatus) encryptedMessage.callStatus = message.callStatus;
+    if (message.callTime) encryptedMessage.callTime = message.callTime;
+  }
   // These fields are routing/UI metadata and contain no message body.
   if (message.isSystem) encryptedMessage.isSystem = true;
   if (message.forwarded) encryptedMessage.forwarded = true;
@@ -558,7 +585,13 @@ export function decryptMessageRecord(message, conversationKey) {
     };
   }
 
-  const cacheKey = message.id && message.ciphertext ? `${message.id}:${message.ciphertext}` : null;
+  // A cached plaintext is valid only for the exact key and nonce that opened it.
+  // Validate before consulting the cache, including after logout/key rotation.
+  if (!ArrayBuffer.isView(conversationKey) || conversationKey?.constructor?.name !== 'Uint8Array' || conversationKey.length !== 32) {
+    return { ...message, text: DECRYPTION_FAILED_TEXT, decryptionFailed: true };
+  }
+  const cacheKey = message.id && message.ciphertext
+    ? `${bytesToBase64(conversationKey)}:${message.id}:${message.nonce}:${message.ciphertext}` : null;
   if (cacheKey && decryptedRecordCache.has(cacheKey)) {
     const cached = decryptedRecordCache.get(cacheKey);
     return {
@@ -583,7 +616,7 @@ export function decryptMessageRecord(message, conversationKey) {
     };
 
     if (cacheKey) {
-      if (decryptedRecordCache.size > MAX_DECRYPT_CACHE_SIZE) {
+      if (decryptedRecordCache.size >= MAX_DECRYPT_CACHE_SIZE) {
         const firstKey = decryptedRecordCache.keys().next().value;
         if (firstKey) decryptedRecordCache.delete(firstKey);
       }
@@ -655,6 +688,15 @@ function addMissingDeviceEnvelopes(encryption, participantIds, participantProfil
 }
 
 async function resolveParticipantProfiles(db, participantIds, embeddedProfiles, currentUserId, identity) {
+  if (secureDiscoveryConfigured()) {
+    const result = await secureDiscoveryCall('getVisibleProfiles', { userIds: participantIds });
+    const publicById = new Map(result.profiles.map((profile) => [profile.id, profile]));
+    return Object.fromEntries(participantIds.map((userId) => {
+      const remote = publicById.get(userId) || {}, embedded = embeddedProfiles?.[userId] || {};
+      const profile = { ...embedded, ...remote, encryptionDevices: { ...getEncryptionDevices(embedded), ...getEncryptionDevices(remote) } };
+      return [userId, userId === currentUserId ? withIdentityDevice(profile, identity) : profile];
+    }));
+  }
   const snapshots = await Promise.all(participantIds.map(async (userId) => {
     try {
       const [publicSnap, privateSnap] = await Promise.all([
@@ -700,12 +742,18 @@ async function prepareConversationEncryption(conversationId, currentUserId, part
     if (parts.length === 3 && parts[0] === 'c' && (parts[1] === currentUserId || parts[2] === currentUserId)) {
       const otherUserId = parts[1] === currentUserId ? parts[2] : parts[1];
       try {
-        const [otherProfileSnap, myProfileSnap] = await Promise.all([
-          getDoc(doc(db, 'profiles', otherUserId)),
-          getDoc(doc(db, 'profiles', currentUserId)),
-        ]);
-        const otherProfile = otherProfileSnap.exists() ? otherProfileSnap.data() : { id: otherUserId };
-        const myProfile = myProfileSnap.exists() ? myProfileSnap.data() : { id: currentUserId };
+        let otherProfile, myProfile;
+        if (secureDiscoveryConfigured()) {
+          const { profiles } = await secureDiscoveryCall('getVisibleProfiles', { userIds: [otherUserId, currentUserId] });
+          otherProfile = profiles.find((profile) => profile.id === otherUserId) || { id: otherUserId };
+          myProfile = profiles.find((profile) => profile.id === currentUserId) || { id: currentUserId };
+        } else {
+          const [otherProfileSnap, myProfileSnap] = await Promise.all([
+            getDoc(doc(db, 'profiles', otherUserId)), getDoc(doc(db, 'profiles', currentUserId)),
+          ]);
+          otherProfile = otherProfileSnap.exists() ? otherProfileSnap.data() : { id: otherUserId };
+          myProfile = myProfileSnap.exists() ? myProfileSnap.data() : { id: currentUserId };
+        }
         const participantIds = [parts[1], parts[2]];
         const conversationProfiles = {
           [currentUserId]: {
@@ -859,12 +907,32 @@ async function prepareConversationEncryption(conversationId, currentUserId, part
 }
 
 const conversationKeyCache = new Map();
+let conversationCacheRevision = 0;
+
+export function peekCachedConversationKey(conversationId, currentUserId) {
+  if (!conversationId || !currentUserId) return null;
+  return conversationKeyCache.get(`${currentUserId}:${conversationId}`)?.conversationKey || null;
+}
+
+export function cacheConversationKey(conversationId, currentUserId, conversationKey, extras = {}) {
+  if (!conversationId || !currentUserId || !conversationKey) return;
+  const lockKey = `${currentUserId}:${conversationId}`;
+  const previous = conversationKeyCache.get(lockKey) || {};
+  conversationKeyCache.set(lockKey, {
+    ...previous,
+    ...extras,
+    conversationKey,
+  });
+}
 
 export function clearConversationKeyCache(conversationId, currentUserId) {
+  conversationCacheRevision += 1;
+  decryptedRecordCache.clear();
   if (conversationId && currentUserId) {
     conversationKeyCache.delete(`${currentUserId}:${conversationId}`);
   } else {
     conversationKeyCache.clear();
+    conversationLocks.clear();
   }
 }
 
@@ -875,6 +943,7 @@ export async function ensureConversationEncryption(
   forceRefresh = false
 ) {
   const lockKey = `${currentUserId}:${conversationId}`;
+  const revision = conversationCacheRevision;
   if (!forceRefresh && conversationKeyCache.has(lockKey)) {
     return conversationKeyCache.get(lockKey);
   }
@@ -883,12 +952,12 @@ export async function ensureConversationEncryption(
   conversationLocks.set(lockKey, promise);
   try {
     const res = await promise;
-    if (res?.conversationKey) {
+    if (res?.conversationKey && revision === conversationCacheRevision) {
       conversationKeyCache.set(lockKey, res);
     }
     return res;
   } catch (err) {
-    conversationKeyCache.delete(lockKey);
+    if (revision === conversationCacheRevision) conversationKeyCache.delete(lockKey);
     throw err;
   } finally {
     if (conversationLocks.get(lockKey) === promise) conversationLocks.delete(lockKey);

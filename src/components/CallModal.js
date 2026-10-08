@@ -1,18 +1,13 @@
+import Text from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Animated,
-  Easing,
-  Modal,
-  PanResponder,
-  Platform,
-  Pressable,
-  SafeAreaView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  View,
-  useWindowDimensions,
-} from 'react-native';
+import { Animated, Easing, Modal, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, View, useWindowDimensions } from 'react-native';
+import Reanimated, {
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Image as ExpoImage } from 'expo-image';
 import FeatureIcon from './FeatureIcon';
 import { useRemoteImage } from '../utils/useRemoteImage';
@@ -71,59 +66,73 @@ function AppVideoView({
   mirror = false,
   zOrder = 0,
 }) {
-  const getStreamUrl = useCallback((track) => {
+  const cacheRef = useRef({ trackKey: null, stream: null, url: '' });
+
+  const resolveStreamUrl = useCallback((track) => {
     if (!track) return '';
+    const mediaTrack = track.mediaStreamTrack;
+    const trackKey = track.sid || track.mediaStreamID || mediaTrack?.id || null;
     try {
-      if (track?.mediaStream && typeof track.mediaStream.toURL === 'function') {
-        return track.mediaStream.toURL();
+      const nativeStream = track.mediaStream;
+      if (nativeStream && typeof nativeStream.toURL === 'function') {
+        const url = nativeStream.toURL();
+        if (url) {
+          cacheRef.current = { trackKey, stream: nativeStream, url };
+          return url;
+        }
       }
-      if (track?.mediaStreamTrack && LKMediaStream) {
-        const ms = new LKMediaStream([track.mediaStreamTrack]);
-        return ms.toURL();
+      if (mediaTrack && LKMediaStream) {
+        if (cacheRef.current.trackKey === trackKey && cacheRef.current.url) {
+          return cacheRef.current.url;
+        }
+        const stream = new LKMediaStream([mediaTrack]);
+        const url = typeof stream.toURL === 'function' ? stream.toURL() : '';
+        if (url) {
+          cacheRef.current = { trackKey, stream, url };
+          return url;
+        }
       }
-      return '';
-    } catch (_) {
-      return '';
-    }
+    } catch (_) {}
+    return cacheRef.current.trackKey === trackKey ? cacheRef.current.url : '';
   }, []);
 
-  const [streamUrl, setStreamUrl] = useState(() => getStreamUrl(videoTrack));
+  const [streamUrl, setStreamUrl] = useState(() => resolveStreamUrl(videoTrack));
 
   useEffect(() => {
+    cacheRef.current = { trackKey: null, stream: null, url: '' };
     let timer = null;
+    let attempts = 0;
+    let delay = 200;
 
-    const checkStream = () => {
-      const url = getStreamUrl(videoTrack);
-      setStreamUrl(url);
+    const apply = () => {
+      const url = resolveStreamUrl(videoTrack);
+      if (url) setStreamUrl(url);
+      return url;
     };
 
-    checkStream();
-
-    if (!getStreamUrl(videoTrack)) {
-      // The LiveKit track exposes no "stream attached" event, so poll with a
-      // widening backoff instead of a tight interval.
-      let attempts = 0;
-      let delay = 250;
+    if (apply()) {
+      // Keep listening for camera flips / unmute so the same view can refresh.
+    } else {
       const poll = () => {
         attempts += 1;
-        const url = getStreamUrl(videoTrack);
-        if (url) {
-          setStreamUrl(url);
-          return;
-        }
-        if (attempts >= 10) return;
-        delay = Math.min(Math.round(delay * 1.5), 2000);
+        if (apply() || attempts >= 20) return;
+        delay = Math.min(Math.round(delay * 1.4), 1500);
         timer = setTimeout(poll, delay);
       };
       timer = setTimeout(poll, delay);
     }
 
-    const onUpdate = () => checkStream();
+    const onUpdate = () => {
+      cacheRef.current = { trackKey: null, stream: null, url: '' };
+      apply();
+    };
+
     if (videoTrack?.on) {
       try {
         videoTrack.on('unmuted', onUpdate);
         videoTrack.on('muted', onUpdate);
         videoTrack.on('restarted', onUpdate);
+        videoTrack.on('videoPlaybackStarted', onUpdate);
       } catch (_) {}
     }
 
@@ -134,15 +143,27 @@ function AppVideoView({
           videoTrack.off('unmuted', onUpdate);
           videoTrack.off('muted', onUpdate);
           videoTrack.off('restarted', onUpdate);
+          videoTrack.off('videoPlaybackStarted', onUpdate);
         } catch (_) {}
       }
     };
-  }, [videoTrack, getStreamUrl]);
+  }, [resolveStreamUrl, videoTrack]);
+
+  if (LiveKitVideoView && videoTrack?.mediaStream && typeof videoTrack.mediaStream.toURL === 'function') {
+    return (
+      <LiveKitVideoView
+        mirror={mirror}
+        objectFit={objectFit}
+        style={style}
+        videoTrack={videoTrack}
+        zOrder={zOrder}
+      />
+    );
+  }
 
   if (RTCView && streamUrl) {
     return (
       <RTCView
-        key={`${streamUrl}-${zOrder}`}
         mirror={mirror}
         objectFit={objectFit}
         streamURL={streamUrl}
@@ -261,7 +282,7 @@ export default function CallModal({
 
   const cachedAvatarUri = useRemoteImage(
     rawAvatarUri,
-    rawOtherParty?.updatedAt || fallbackFromProfiles?.updatedAt,
+    rawOtherParty?.avatarRevision ?? fallbackFromProfiles?.avatarRevision,
     otherUserId
   );
   const otherAvatarUri = cachedAvatarUri || rawAvatarUri;
@@ -269,23 +290,37 @@ export default function CallModal({
   // In-call states
   const callStartedAtRef = useRef(0);
   const [isMuted, setIsMuted] = useState(false);
-  const [isSpeaker, setIsSpeaker] = useState(callType === CALL_TYPES.VIDEO);
+  const [isSpeaker, setIsSpeaker] = useState(true);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
   const [isInPip, setIsInPip] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const [mediaBusy, setMediaBusy] = useState(false);
   const mediaBusyRef = useRef(false);
   const [facingMode, setFacingMode] = useState('user');
   const [localVideoTrack, setLocalVideoTrack] = useState(null);
   const [remoteVideoTrack, setRemoteVideoTrack] = useState(null);
   const [isRemoteVideoMuted, setIsRemoteVideoMuted] = useState(false);
+  const [localVideoEpoch, setLocalVideoEpoch] = useState(0);
+
+  // Guarantee all audio and ringtones stop if CallModal unmounts
+  useEffect(() => {
+    return () => {
+      stopAllCallSounds();
+    };
+  }, []);
 
   const hasRemoteVideo = Boolean(
     remoteVideoTrack &&
     !isRemoteVideoMuted &&
     !remoteVideoTrack?.isMuted
   );
+  const hasLocalVideo = Boolean(localVideoTrack && !isVideoOff);
+  const isVideoConnected = callType === CALL_TYPES.VIDEO && status === CALL_STATUS.CONNECTED;
+  const showRemoteMain = isVideoConnected && hasRemoteVideo;
+  const showLocalMain = isVideoConnected && hasLocalVideo && !hasRemoteVideo;
+  const showLocalPip = isVideoConnected && hasLocalVideo && hasRemoteVideo;
 
   // Sync call state with Android native Picture-in-Picture manager
   useEffect(() => {
@@ -347,54 +382,73 @@ export default function CallModal({
       : { x: 0, y: topInset + 48 };
   }, [isVideoCall, windowWidth, topInset]);
 
-  const pillPan = useRef(new Animated.ValueXY(initialPillPos)).current;
-  const pillPosition = useRef(initialPillPos);
-  const dragOrigin = useRef(initialPillPos);
-  const boundsRef = useRef(activeBounds);
-  boundsRef.current = activeBounds;
+  const pillX = useSharedValue(initialPillPos.x);
+  const pillY = useSharedValue(initialPillPos.y);
+  const pillOriginX = useSharedValue(initialPillPos.x);
+  const pillOriginY = useSharedValue(initialPillPos.y);
+  const minX = useSharedValue(activeBounds.minX);
+  const maxX = useSharedValue(activeBounds.maxX);
+  const minY = useSharedValue(activeBounds.minY);
+  const maxY = useSharedValue(activeBounds.maxY);
 
-  const movePill = useCallback((point) => {
-    const b = boundsRef.current;
-    const next = {
-      x: Math.max(b.minX, Math.min(b.maxX, point.x)),
-      y: Math.max(b.minY, Math.min(b.maxY, point.y)),
-    };
-    pillPosition.current = next;
-    pillPan.setValue(next);
-  }, [pillPan]);
-
-  const pillPanResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 6 || Math.abs(g.dy) > 6,
-      onPanResponderGrant: () => {
-        dragOrigin.current = { ...pillPosition.current };
-      },
-      onPanResponderMove: (_, g) => {
-        movePill({ x: dragOrigin.current.x + g.dx, y: dragOrigin.current.y + g.dy });
-      },
-      onPanResponderRelease: () => movePill(pillPosition.current),
-      onPanResponderTerminate: () => movePill(pillPosition.current),
+  const pillPanGesture = useMemo(() => Gesture.Pan()
+    .activeOffsetX([-6, 6])
+    .activeOffsetY([-6, 6])
+    .onStart(() => {
+      cancelAnimation(pillX);
+      cancelAnimation(pillY);
+      pillOriginX.set(pillX.get());
+      pillOriginY.set(pillY.get());
     })
-  ).current;
+    .onUpdate((event) => {
+      const nextX = Math.max(minX.get(), Math.min(maxX.get(), pillOriginX.get() + event.translationX));
+      const nextY = Math.max(minY.get(), Math.min(maxY.get(), pillOriginY.get() + event.translationY));
+      pillX.set(nextX);
+      pillY.set(nextY);
+    })
+    .onEnd((event) => {
+      const clampedX = Math.max(minX.get(), Math.min(maxX.get(), pillX.get()));
+      const clampedY = Math.max(minY.get(), Math.min(maxY.get(), pillY.get()));
+      pillX.set(withSpring(clampedX, { duration: 400, dampingRatio: 1, overshootClamping: true, velocity: event.velocityX }));
+      pillY.set(withSpring(clampedY, { duration: 400, dampingRatio: 1, overshootClamping: true, velocity: event.velocityY }));
+    })
+    .onFinalize((_, success) => {
+      if (!success) {
+        const clampedX = Math.max(minX.get(), Math.min(maxX.get(), pillX.get()));
+        const clampedY = Math.max(minY.get(), Math.min(maxY.get(), pillY.get()));
+        pillX.set(withSpring(clampedX, { duration: 400, dampingRatio: 1, overshootClamping: true }));
+        pillY.set(withSpring(clampedY, { duration: 400, dampingRatio: 1, overshootClamping: true }));
+      }
+    }), [maxX, maxY, minX, minY, pillOriginX, pillOriginY, pillX, pillY]);
 
-  // Reposition within safe bounds when screen dimensions change or call mode changes
+  const pillStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: pillX.get() }, { translateY: pillY.get() }],
+  }));
+
   useEffect(() => {
-    movePill(pillPosition.current);
-  }, [windowWidth, windowHeight, isVideoCall, movePill]);
+    minX.set(activeBounds.minX);
+    maxX.set(activeBounds.maxX);
+    minY.set(activeBounds.minY);
+    maxY.set(activeBounds.maxY);
+    const x = Math.max(activeBounds.minX, Math.min(activeBounds.maxX, pillX.get()));
+    const y = Math.max(activeBounds.minY, Math.min(activeBounds.maxY, pillY.get()));
+    pillX.set(x);
+    pillY.set(y);
+  }, [activeBounds, maxX, maxY, minX, minY, pillX, pillY]);
 
   useEffect(() => {
     setIsMinimized(false);
     setIsMuted(false);
     setIsVideoOff(false);
     setFacingMode('user');
-    setIsSpeaker(callType === CALL_TYPES.VIDEO);
+    setLocalVideoEpoch(0);
+    setIsSpeaker(true);
     const resetPos = isVideoCall
       ? { x: Math.max(12, windowWidth - FLOATING_VIDEO_WIDTH - 12), y: topInset + 48 }
       : { x: 0, y: topInset + 48 };
-    pillPosition.current = resetPos;
-    pillPan.setValue(resetPos);
-  }, [callData?.id, isVideoCall, windowWidth, topInset, pillPan]);
+    pillX.set(resetPos.x);
+    pillY.set(resetPos.y);
+  }, [callData?.id, isVideoCall, windowWidth, topInset, pillX, pillY]);
 
   useEffect(() => {
     if (status === CALL_STATUS.CALLING || status === CALL_STATUS.RINGING) {
@@ -499,6 +553,10 @@ export default function CallModal({
     let active = true;
 
     if (isOpen && status === CALL_STATUS.CONNECTED && callData?.id) {
+      stopAllCallSounds();
+      setStatusMessage('กำลังเชื่อมต่อสัญญาณ...');
+      setIsReconnecting(false);
+
       (async () => {
         try {
           const isVideo = callType === CALL_TYPES.VIDEO;
@@ -536,6 +594,17 @@ export default function CallModal({
               setRemoteVideoTrack(null);
               setIsRemoteVideoMuted(false);
               setLocalVideoTrack(null);
+              setIsReconnecting(false);
+            },
+            onReconnecting: () => {
+              if (!active) return;
+              setIsReconnecting(true);
+              setStatusMessage('กำลังเชื่อมต่อสัญญาณใหม่...');
+            },
+            onReconnected: () => {
+              if (!active) return;
+              setIsReconnecting(false);
+              setStatusMessage('');
             },
           });
 
@@ -543,13 +612,31 @@ export default function CallModal({
             liveKitRoomRef.current = room;
             setIsVideoOff(!room?.localParticipant?.isCameraEnabled);
             setIsMuted(!room?.localParticipant?.isMicrophoneEnabled);
-            setStatusMessage('เชื่อมต่อแล้ว');
+            setIsSpeaker(true);
+            setIsReconnecting(false);
+            setStatusMessage('');
+            try {
+              const LK = require('livekit-client');
+              const localPub = room?.localParticipant?.getTrackPublication(LK?.Track?.Source?.Camera);
+              if (localPub?.track) setLocalVideoTrack(localPub.track);
+              room?.remoteParticipants?.forEach?.((participant) => {
+                participant.trackPublications?.forEach?.((pub) => {
+                  if ((pub.kind === 'video' || pub.track?.kind === 'video') && pub.track && !pub.isMuted) {
+                    setRemoteVideoTrack(pub.track);
+                    setIsRemoteVideoMuted(false);
+                  }
+                });
+              });
+            } catch (_) {}
           } else if (room) {
             disconnectLiveKitRoom(room);
           }
         } catch (err) {
           console.warn('[CallModal] Call connection failed:', err);
-          if (active) setStatusMessage('เชื่อมต่อไม่สำเร็จ กรุณาวางสายแล้วโทรใหม่');
+          if (active) {
+            setIsReconnecting(false);
+            setStatusMessage('เชื่อมต่อสัญญาณไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+          }
         }
       })();
     }
@@ -598,23 +685,23 @@ export default function CallModal({
     }
   });
   const handleToggleSpeaker = async () => {
-    try { await setLiveKitSpeaker(!isSpeaker); setIsSpeaker(!isSpeaker); }
-    catch (_) { setStatusMessage('เปลี่ยนลำโพงไม่สำเร็จ'); }
+    try {
+      await setLiveKitSpeaker(!isSpeaker);
+      setIsSpeaker(!isSpeaker);
+    } catch (_) {
+      setStatusMessage('เปลี่ยนลำโพงไม่สำเร็จ');
+    }
   };
   const handleSwitchCamera = () => updateMedia(async (room) => {
     const next = facingMode === 'user' ? 'environment' : 'user';
-    const track = await switchLiveKitCamera(room, next);
+    const result = await switchLiveKitCamera(room, next);
     if (liveKitRoomRef.current === room) {
-      setFacingMode(next);
+      const activeTrack = result?.track;
+      const nextFacing = result?.facingMode || next;
+      setFacingMode(nextFacing);
       setIsVideoOff(false);
-      try {
-        const LK = require('livekit-client');
-        const pub = room?.localParticipant?.getTrackPublication(LK?.Track?.Source?.Camera);
-        const activeTrack = track || pub?.track;
-        if (activeTrack) setLocalVideoTrack(activeTrack);
-      } catch (_) {
-        if (track) setLocalVideoTrack(track);
-      }
+      if (activeTrack) setLocalVideoTrack(activeTrack);
+      setLocalVideoEpoch((value) => value + 1);
     }
   });
 
@@ -636,19 +723,20 @@ export default function CallModal({
     return (
       <View style={styles.systemPipContainer}>
         {isVideoMode ? (
-          <View style={StyleSheet.absoluteFillObject}>
+          <View style={StyleSheet.absoluteFill}>
             {hasRemoteVideo ? (
               <AppVideoView
                 objectFit="cover"
-                style={StyleSheet.absoluteFillObject}
+                style={StyleSheet.absoluteFill}
                 videoTrack={remoteVideoTrack}
                 zOrder={0}
               />
             ) : localVideoTrack && !isVideoOff ? (
               <AppVideoView
+                key={`pip-local-${localVideoEpoch}`}
                 mirror={facingMode === 'user'}
                 objectFit="cover"
-                style={StyleSheet.absoluteFillObject}
+                style={StyleSheet.absoluteFill}
                 videoTrack={localVideoTrack}
                 zOrder={0}
               />
@@ -700,17 +788,12 @@ export default function CallModal({
     const isVideoMode = callType === CALL_TYPES.VIDEO && (RTCView || LiveKitVideoView);
 
     return (
-      <Animated.View
+      <GestureDetector gesture={pillPanGesture}>
+      <Reanimated.View
         style={[
           isVideoMode ? styles.floatingVideoPipContainer : styles.floatingPillContainer,
-          {
-            transform: [
-              { translateX: pillPan.x },
-              { translateY: pillPan.y },
-            ],
-          },
+          pillStyle,
         ]}
-        {...pillPanResponder.panHandlers}
       >
         {isVideoMode ? (
           <Pressable
@@ -721,20 +804,21 @@ export default function CallModal({
             {hasRemoteVideo ? (
               <AppVideoView
                 objectFit="cover"
-                style={StyleSheet.absoluteFillObject}
+                style={StyleSheet.absoluteFill}
                 videoTrack={remoteVideoTrack}
                 zOrder={1}
               />
             ) : localVideoTrack && !isVideoOff ? (
               <AppVideoView
+                key={`float-local-${localVideoEpoch}`}
                 mirror={facingMode === 'user'}
                 objectFit="cover"
-                style={StyleSheet.absoluteFillObject}
+                style={StyleSheet.absoluteFill}
                 videoTrack={localVideoTrack}
                 zOrder={1}
               />
             ) : (
-              <View style={[StyleSheet.absoluteFillObject, styles.floatingVideoFallback]}>
+              <View style={[StyleSheet.absoluteFill, styles.floatingVideoFallback]}>
                 {otherAvatarUri && !imageLoadError ? (
                   <ExpoImage
                     contentFit="cover"
@@ -757,9 +841,10 @@ export default function CallModal({
             {hasRemoteVideo && localVideoTrack && !isVideoOff && (
               <View style={styles.floatingLocalMiniPip}>
                 <AppVideoView
+                  key={`float-mini-${localVideoEpoch}`}
                   mirror={facingMode === 'user'}
                   objectFit="cover"
-                  style={StyleSheet.absoluteFillObject}
+                  style={StyleSheet.absoluteFill}
                   videoTrack={localVideoTrack}
                   zOrder={2}
                 />
@@ -769,8 +854,10 @@ export default function CallModal({
             {/* Top Bar with Name Badge and Action Buttons */}
             <View style={styles.floatingVideoTopBar}>
               <View style={styles.floatingVideoNameBadge}>
-                <View style={styles.floatingLiveDotSmall} />
-                <Text numberOfLines={1} style={styles.floatingVideoNameText}>{otherName}</Text>
+                <View style={[styles.floatingLiveDotSmall, isReconnecting && { backgroundColor: '#F59E0B' }]} />
+                <Text numberOfLines={1} style={styles.floatingVideoNameText}>
+                  {isReconnecting ? 'เชื่อมต่อใหม่...' : otherName}
+                </Text>
               </View>
               <View style={{ flexDirection: 'row', gap: 4, alignItems: 'center' }}>
                 {isPipSupported && (
@@ -841,10 +928,12 @@ export default function CallModal({
                   <Text style={styles.floatingAvatarEmoji}>{otherAvatarEmoji}</Text>
                 </View>
               )}
-              <View style={styles.floatingLiveDot} />
+              <View style={[styles.floatingLiveDot, isReconnecting && { backgroundColor: '#F59E0B' }]} />
             </View>
             <View style={styles.floatingPillInfo}>
-              <Text numberOfLines={1} style={styles.floatingPillName}>{otherName}</Text>
+              <Text numberOfLines={1} style={styles.floatingPillName}>
+                {isReconnecting ? 'กำลังเชื่อมต่อใหม่...' : otherName}
+              </Text>
               <CallDurationText startedAtRef={callStartedAtRef} style={styles.floatingPillTimer} />
             </View>
             {isPipSupported && (
@@ -874,7 +963,8 @@ export default function CallModal({
             </Pressable>
           </Pressable>
         )}
-      </Animated.View>
+      </Reanimated.View>
+      </GestureDetector>
     );
   }
 
@@ -889,18 +979,29 @@ export default function CallModal({
       <View
         style={[
           styles.callContainer,
-          (callType === CALL_TYPES.VIDEO && status === CALL_STATUS.CONNECTED && hasRemoteVideo) && {
+          (showRemoteMain || showLocalMain) && {
             backgroundColor: 'transparent',
           },
         ]}
       >
-        {/* Remote Video Stream (Full Screen Background) */}
-        {callType === CALL_TYPES.VIDEO && status === CALL_STATUS.CONNECTED && hasRemoteVideo ? (
-          <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+        {/* Remote camera fills the screen when available; otherwise show our camera. */}
+        {showRemoteMain ? (
+          <View pointerEvents="none" style={StyleSheet.absoluteFill}>
             <AppVideoView
               objectFit="cover"
-              style={StyleSheet.absoluteFillObject}
+              style={StyleSheet.absoluteFill}
               videoTrack={remoteVideoTrack}
+              zOrder={0}
+            />
+          </View>
+        ) : showLocalMain ? (
+          <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+            <AppVideoView
+              key={`main-local-${localVideoEpoch}`}
+              mirror={facingMode === 'user'}
+              objectFit="cover"
+              style={StyleSheet.absoluteFill}
+              videoTrack={localVideoTrack}
               zOrder={0}
             />
           </View>
@@ -908,21 +1009,22 @@ export default function CallModal({
 
         {/* Ambient Blurred Background for Voice Calls */}
         {callType === CALL_TYPES.VOICE && otherAvatarUri && !imageLoadError ? (
-          <View pointerEvents="none" style={StyleSheet.absoluteFillObject}>
+          <View pointerEvents="none" style={StyleSheet.absoluteFill}>
             <ExpoImage
               blurRadius={50}
               contentFit="cover"
               source={{ uri: otherAvatarUri }}
-              style={StyleSheet.absoluteFillObject}
+              style={StyleSheet.absoluteFill}
             />
             <View style={styles.voiceDimOverlay} />
           </View>
         ) : null}
 
-        {/* Local Video Stream (Picture-in-Picture Floating Preview) */}
-        {callType === CALL_TYPES.VIDEO && status === CALL_STATUS.CONNECTED && !isVideoOff && localVideoTrack ? (
+        {/* Local camera thumbnail when the other person's camera is already on screen */}
+        {showLocalPip ? (
           <View style={[styles.localVideoPipContainer, { backgroundColor: 'transparent' }]}>
             <AppVideoView
+              key={`thumb-local-${localVideoEpoch}`}
               mirror={facingMode === 'user'}
               objectFit="cover"
               style={styles.localVideoPip}
@@ -972,8 +1074,8 @@ export default function CallModal({
 
           {/* Center Content: Avatar & Status */}
           <View style={styles.centerContent}>
-            {/* Show avatar only when audio call or when remote video track is not yet available */}
-            {(!hasRemoteVideo || callType !== CALL_TYPES.VIDEO) && (
+            {/* Avatar when there is no live camera filling the screen */}
+            {(!showRemoteMain && !showLocalMain) && (
               <View style={styles.avatarWrapper}>
                 {(status === CALL_STATUS.CALLING || status === CALL_STATUS.RINGING) && (
                   <>
@@ -1028,16 +1130,23 @@ export default function CallModal({
 
             <Text style={styles.partnerName}>{otherName}</Text>
 
-            <View style={styles.statusPill}>
+            <View style={[styles.statusPill, isReconnecting && { borderColor: 'rgba(245, 158, 11, 0.4)', borderWidth: 1 }]}>
               {status === CALL_STATUS.CONNECTED ? (
-                <View style={styles.timerRow}>
-                  <View style={styles.greenPulseDot} />
-                  <CallDurationText startedAtRef={callStartedAtRef} style={styles.callTimerText} />
-                  {callType === CALL_TYPES.VIDEO && !hasRemoteVideo && (
-                    <Text style={[styles.statusSubtitle, { marginLeft: 8, fontSize: 13 }]}>
-                      ({isRemoteVideoMuted ? 'อีกฝ่ายปิดกล้อง' : 'รอภาพคู่สนทนา...'})
+                <View style={{ alignItems: 'center' }}>
+                  <View style={styles.timerRow}>
+                    <View style={[styles.greenPulseDot, isReconnecting && { backgroundColor: '#F59E0B' }]} />
+                    <CallDurationText startedAtRef={callStartedAtRef} style={styles.callTimerText} />
+                    {callType === CALL_TYPES.VIDEO && !hasRemoteVideo && (
+                      <Text style={[styles.statusSubtitle, { marginLeft: 8, fontSize: 13 }]}>
+                        ({isRemoteVideoMuted ? 'อีกฝ่ายปิดกล้อง' : 'รอภาพคู่สนทนา...'})
+                      </Text>
+                    )}
+                  </View>
+                  {statusMessage ? (
+                    <Text style={[styles.statusSubtitle, { marginTop: 4, color: isReconnecting ? '#FBBF24' : '#EF4444', fontSize: 12 }]}>
+                      {statusMessage}
                     </Text>
-                  )}
+                  ) : null}
                 </View>
               ) : (
                 <Text style={styles.statusSubtitle}>
@@ -1186,11 +1295,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   videoDimOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.25)',
   },
   voiceDimOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(11, 14, 20, 0.85)',
   },
   localVideoPipContainer: {
@@ -1650,7 +1759,7 @@ const styles = StyleSheet.create({
   },
   // Android System PiP Styles (Outside the app)
   systemPipContainer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: 'center',
     backgroundColor: '#0B0E14',
     justifyContent: 'center',
@@ -1693,7 +1802,7 @@ const styles = StyleSheet.create({
     width: 72,
   },
   systemPipAvatarEmoji: {
-    fontSize: 30,
+    fontSize: 28,
   },
   systemPipNameText: {
     color: '#FFFFFF',

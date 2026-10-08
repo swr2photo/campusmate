@@ -1,12 +1,6 @@
+import Text from './AppText';
 import React, { useMemo } from 'react';
-import {
-  Image,
-  Modal,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { Image, Modal, Pressable, StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 import { useRemoteImage } from '../utils/useRemoteImage';
@@ -78,7 +72,7 @@ function ReactionAvatar({ profile, userId, colors }) {
   const avatar = profile?.avatarUri || profile?.avatar;
   const isImage = typeof avatar === 'string'
     && (avatar.startsWith('http') || avatar.startsWith('file://') || avatar.startsWith('data:'));
-  const remoteUri = useRemoteImage(isImage ? avatar : null, profile?.updatedAt, userId);
+  const remoteUri = useRemoteImage(isImage ? avatar : null, profile?.avatarRevision, userId);
   const avatarEmoji = !isImage && typeof avatar === 'string' && avatar.length <= 8 ? avatar : null;
 
   return (
@@ -118,7 +112,7 @@ export default function ReactionDetailsModal({
       visible={visible}
     >
       <View style={styles.modalRoot}>
-        <Pressable accessibilityLabel="ปิดรายละเอียดรีแอค" onPress={onClose} style={StyleSheet.absoluteFillObject} />
+        <Pressable accessibilityLabel="ปิดรายละเอียดรีแอค" onPress={onClose} style={StyleSheet.absoluteFill} />
         <View style={[styles.sheet, { backgroundColor: colors.card, borderColor: colors.line }]}>
           <View style={styles.header}>
             <View style={styles.headerCopy}>

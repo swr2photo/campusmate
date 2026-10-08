@@ -1,6 +1,13 @@
+import { Button, Text } from '../components/NativeTypography';
+import NotificationBell from '../components/NotificationBell';
+import { font } from '../components/brandFont';
+import { useNativePalette } from '../theme';
+import RNText from '../components/AppText';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useRemoteImage } from '../utils/useRemoteImage';
-import { formatReadableDate, getActivityLabel } from '../utils/formatters';
+import { getImageRequestUri, useProfileImagePrefetch } from '../utils/useRemoteImage';
+import ExpoImage from '../components/CachedImage';
+import { formatDistance, formatReadableDate, getActivityLabel } from '../utils/formatters';
+import { dailyPick, getDailySeed, pickDailyProfile } from '../utils/dailyPick';
 import { FACULTIES } from '../data/faculties';
 import {
   MATCHING_ACTIVITY_OPTIONS,
@@ -9,74 +16,44 @@ import {
   MATCHING_AVAILABILITY_OPTIONS,
   MATCHING_DEFAULT_AGE_MAX,
   MATCHING_GENDER_OPTIONS,
+  MATCHING_MORE_ACTIVITY_OPTIONS,
+  MATCHING_MORE_GENDER_OPTIONS,
   MATCHING_PACE_OPTIONS,
+  MATCHING_PRIMARY_ACTIVITY_OPTIONS,
+  MATCHING_PRIMARY_GENDER_OPTIONS,
+  MATCHING_UNLIMITED_DISTANCE,
+  MATCHING_WEEKDAY_OPTIONS,
   MATCHING_YEAR_OPTIONS,
+  clearActivityDetailFilter,
   createMatchingOptionState,
+  getActivityDetailFilterOptions,
   getSelectedMatchingValues,
+  matchesActivityDetailFilters,
   matchesAvailabilityPeriods,
+  pruneActivityDetailFilters,
+  toggleActivityDetailFilter,
+  matchesAvailabilityWeekdays,
   normalizeMatchingAge,
+  profileHasAvailability,
+  profileHasPhoto,
+  toggleMatchingOption,
 } from '../data/matchingFilters';
 import { router, useFocusEffect } from 'expo-router';
-import {
-  Button,
-  ContentUnavailableView,
-  Host,
-  HStack,
-  Image,
-  BottomSheet,
-  Form,
-  Section,
-  Slider,
-  Picker,
-  Menu,
-  Toggle,
-  ScrollView,
-  Spacer,
-  Text,
-  VStack,
-  ZStack,
-  RNHostView,
-} from '@expo/ui/swift-ui';
-import {
-  accessibilityHint,
-  accessibilityLabel,
-  aspectRatio,
-  background,
-  buttonBorderShape,
-  buttonStyle,
-  clipShape,
-  clipped,
-  contentShape,
-  controlSize,
-  disabled,
-  font,
-  foregroundStyle,
-  frame,
-  labelStyle,
-  lineLimit,
-  onTapGesture,
-  padding,
-  presentationDetents,
-  presentationDragIndicator,
-  pickerStyle,
-  resizable,
-  scrollIndicators,
-  shadow,
-  shapes,
-  tag,
-  tint,
-} from '@expo/ui/swift-ui/modifiers';
-import { useApp } from '../context/AppContext';
+import { useEntitlement } from '../context/MembershipContext';
+import { TourTarget } from '../context/AppTourContext';
+import { useDiscoveryDeckState } from '../hooks/useDiscoveryDeckState';
+import { FEATURE_ADVANCED_FILTERS, FEATURE_UNLIMITED_REWIND, stripPaidMatchingPreferences } from '../data/plans';
+import { ContentUnavailableView, Host, HStack, Image, BottomSheet, Form, Section, Slider, Picker, Menu, Toggle, ScrollView, Spacer, VStack, ZStack, RNHostView } from '@expo/ui/swift-ui';
+import { accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollIndicators, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
+import { useAppActions, useAppBadges, useAppFeed, useAppProfile } from '../context/AppContext';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import { View, Pressable, useColorScheme, Animated, Text as RNText } from 'react-native';
+import { View, Pressable, useColorScheme, Animated } from 'react-native';
 
 const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-const darkPalette = { background: '#14171B', surface: '#20242A', surfaceRaised: '#292E35', text: '#F7F8FA', secondary: '#B6BDC8', tertiary: '#7F8896', coral: '#FF7A6B', coralSoft: 'rgba(255,122,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#62A8FF', blueSoft: 'rgba(98,168,255,0.16)', mint: '#45D1A1', mintSoft: 'rgba(69,209,161,0.16)' , purple: '#9A8CFF', card: '#20242A', white: '#FFFFFF', chip: '#292E35', circle: '#292E35'};
-const lightPalette = { background: '#F6F8FC', surface: '#FFFFFF', surfaceRaised: '#F6F8FC', text: '#10203A', secondary: '#60708A', tertiary: '#8B98AC', coral: '#F47C6B', coralSoft: 'rgba(244,124,107,0.16)', violet: '#9A8CFF', violetSoft: 'rgba(154,140,255,0.16)', blue: '#3986E8', blueSoft: 'rgba(57,134,232,0.16)', mint: '#18A878', mintSoft: 'rgba(24,168,120,0.16)' , purple: '#5B5CE2', card: '#FFFFFF', white: '#FFFFFF', chip: '#EEF0FF', circle: '#E7EBF2'};
-function usePalette() { const scheme = useColorScheme(); return scheme === 'dark' ? darkPalette : lightPalette; }
+const usePalette = useNativePalette;
 
 const cardShape = shapes.roundedRectangle({
   cornerRadius: 24,
@@ -105,47 +82,28 @@ function formatRemainingTime(milliseconds) {
   return `${hours}:${minutes}:${seconds}`;
 }
 
-function getDailySeed() {
-  const now = new Date();
-  return `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
-}
 
-function pseudoRandom(seedStr) {
-  let hash = 0;
-  for (let i = 0; i < seedStr.length; i++) {
-    hash = Math.imul(31, hash) + seedStr.charCodeAt(i) | 0;
-  }
-  return function() {
-    hash = (hash ^ (hash << 13)) | 0;
-    hash = (hash ^ (hash >>> 17)) | 0;
-    hash = (hash ^ (hash << 5)) | 0;
-    return (Math.abs(hash) % 10000) / 10000;
-  };
-}
-
-function dailyPick(array, seedStr) {
-  if (array.length <= 1) return array;
-  const rng = pseudoRandom(seedStr);
-  return [array[Math.floor(rng() * array.length)]];
-}
-
-export default function HomeScreen({ onOpenLikes }) {
+export default function HomeScreen() {
   const palette = usePalette();
   const colorScheme = useColorScheme();
   const {
     availableProfiles,
-    conversations,
-    getMeetupStats,
-    matchedProfileIds,
-    pendingIncomingLikes,
-    profile,
-    recycleSkippedProfiles,
-    saveMatchingPreferences,
+    hasMoreProfiles = false,
+    isLoadingMoreProfiles = false,
+    isResolvingDistances = false,
+    isDiscoveryReady = false,
+    discoveryError = null,
     selectedMeetup,
-  } = useApp();
+  } = useAppFeed();
+  const { conversationCount = 0, matchedCount: matchedProfileCount = 0 } = useAppBadges();
+  const { getMeetupStats, loadMoreProfiles, recycleSkippedProfiles, retryDiscovery, saveMatchingPreferences } = useAppActions();
+  const { profile } = useAppProfile();
+  // CampusMate Plus gates (src/data/plans.js).
+  const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
+  const rewind = useEntitlement(FEATURE_UNLIMITED_REWIND);
   const scrollY = useRef(new Animated.Value(0)).current;
   const myMeetupStats = useMemo(() => (profile ? getMeetupStats(profile) : null), [profile, getMeetupStats]);
-  const matchedCount = Math.max(matchedProfileIds?.length || 0, conversations?.length || 0);
+  const matchedCount = Math.max(matchedProfileCount, conversationCount);
 
   // Settings BottomSheet State
   const [showSettings, setShowSettings] = useState(false);
@@ -156,23 +114,29 @@ export default function HomeScreen({ onOpenLikes }) {
   const [genders, setGenders] = useState(() => createMatchingOptionState(MATCHING_GENDER_OPTIONS));
   const [activities, setActivities] = useState(() => createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
   const [paces, setPaces] = useState(() => createMatchingOptionState(MATCHING_PACE_OPTIONS));
+  const [detailFilters, setDetailFilters] = useState({});
   const [availabilityPeriods, setAvailabilityPeriods] = useState(() => createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
+  const [weekdays, setWeekdays] = useState(() => createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS));
+  const [requirePhoto, setRequirePhoto] = useState(false);
+  const [requireAvailability, setRequireAvailability] = useState(false);
   const [availabilityFilterActive, setAvailabilityFilterActive] = useState(false);
   const [sameFacultyOnly, setSameFacultyOnly] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [faculty, setFaculty] = useState('all');
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const pinnedDailyRef = useRef({ day: getDailySeed(), id: null });
   
   const [showFilters, setShowFilters] = useState(false);
   
   React.useEffect(() => {
     if (!profile) return;
-    const preferences = profile.matchingPreferences || {};
+    const preferences = stripPaidMatchingPreferences(profile.matchingPreferences || {}, advancedFilters.allowed);
     const selectedActivities = preferences.activities || [];
     const selectedYears = preferences.years || [];
     const selectedGenders = preferences.genders || [];
     const selectedPaces = preferences.paces || [];
     const selectedAvailabilityPeriods = preferences.availabilityPeriods || [];
+    const selectedWeekdays = preferences.weekdays || [];
     const normalizedAgeMin = normalizeMatchingAge(preferences.ageMin, MATCHING_AGE_MIN);
     const normalizedAgeMax = Math.max(
       normalizedAgeMin,
@@ -183,11 +147,15 @@ export default function HomeScreen({ onOpenLikes }) {
     setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS, selectedYears));
     setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS, selectedGenders));
     setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS, selectedPaces));
+    setDetailFilters(pruneActivityDetailFilters(preferences.activityDetails, selectedActivities));
     setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS, selectedAvailabilityPeriods));
-    setDistance(preferences.maxDistance ?? 25);
+    setWeekdays(createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS, selectedWeekdays));
+    setDistance(Number.isFinite(Number(preferences.maxDistance)) ? Number(preferences.maxDistance) : 25);
     setAgeMin(normalizedAgeMin);
     setAgeMax(normalizedAgeMax);
     setSameFacultyOnly(preferences.sameFacultyOnly ?? false);
+    setRequirePhoto(preferences.requirePhoto === true);
+    setRequireAvailability(preferences.requireAvailability === true);
     setAvailabilityFilterActive(
       selectedAvailabilityPeriods.length > 0
       && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length
@@ -195,6 +163,7 @@ export default function HomeScreen({ onOpenLikes }) {
   }, [
     profile?.id,
     profile?.matchingPreferences?.activities,
+    profile?.matchingPreferences?.activityDetails,
     profile?.matchingPreferences?.ageMax,
     profile?.matchingPreferences?.ageMin,
     profile?.matchingPreferences?.availabilityPeriods,
@@ -202,16 +171,22 @@ export default function HomeScreen({ onOpenLikes }) {
     profile?.matchingPreferences?.genders,
     profile?.matchingPreferences?.maxDistance,
     profile?.matchingPreferences?.paces,
+    profile?.matchingPreferences?.requireAvailability,
+    profile?.matchingPreferences?.requirePhoto,
     profile?.matchingPreferences?.sameFacultyOnly,
+    profile?.matchingPreferences?.weekdays,
     profile?.matchingPreferences?.years,
+    advancedFilters.allowed,
   ]);
 
   const handleFacultySelection = (nextFaculty) => {
+    if (!advancedFilters.guard()) return;
     setFaculty(nextFaculty);
     if (nextFaculty !== 'all') setSameFacultyOnly(false);
   };
 
   const handleSameFacultySelection = (enabled) => {
+    if (!advancedFilters.guard()) return;
     setSameFacultyOnly(enabled);
     if (enabled) setFaculty('all');
   };
@@ -222,6 +197,7 @@ export default function HomeScreen({ onOpenLikes }) {
     const selectedGenders = getSelectedMatchingValues(MATCHING_GENDER_OPTIONS, genders);
     const selectedPaces = getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces);
     const selectedAvailabilityPeriods = getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods);
+    const selectedWeekdays = getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays);
     const normalizedAgeMin = Math.min(
       MATCHING_AGE_MAX,
       Math.max(MATCHING_AGE_MIN, Math.round(ageMin))
@@ -233,6 +209,7 @@ export default function HomeScreen({ onOpenLikes }) {
     await saveMatchingPreferences({
       ...(profile.matchingPreferences || {}),
       activities: selectedActivities,
+      activityDetails: pruneActivityDetailFilters(detailFilters, selectedActivities),
       ageMin: normalizedAgeMin,
       ageMax: normalizedAgeMax,
       availabilityPeriods: selectedAvailabilityPeriods,
@@ -240,7 +217,10 @@ export default function HomeScreen({ onOpenLikes }) {
       genders: selectedGenders,
       maxDistance: Math.round(distance),
       paces: selectedPaces,
+      requireAvailability,
+      requirePhoto,
       sameFacultyOnly,
+      weekdays: selectedWeekdays,
       years: selectedYears,
     });
     setAgeMin(normalizedAgeMin);
@@ -255,10 +235,26 @@ export default function HomeScreen({ onOpenLikes }) {
   const activeFacultyFilter = sameFacultyOnly
     ? (profile?.faculty || 'all')
     : (faculty || 'all');
+  const selectedFilterActivities = useMemo(
+    () => getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities),
+    [activities]
+  );
+  const detailFilterSections = useMemo(
+    () => selectedFilterActivities.map(getActivityDetailFilterOptions).filter(Boolean),
+    [selectedFilterActivities]
+  );
+  const savedDetailFilters = useMemo(
+    () => pruneActivityDetailFilters(
+      profile?.matchingPreferences?.activityDetails,
+      profile?.matchingPreferences?.activities || []
+    ),
+    [profile?.matchingPreferences?.activityDetails, profile?.matchingPreferences?.activities]
+  );
 
   const filteredProfiles = useMemo(() => {
     const filtered = availableProfiles.filter((candidate) => {
       if (selectedCategory !== 'all' && candidate.activity !== selectedCategory && !candidate.activities?.includes(selectedCategory)) return false;
+      if (!matchesActivityDetailFilters(candidate, savedDetailFilters)) return false;
       if (activeFacultyFilter !== 'all' && candidate.faculty !== activeFacultyFilter) return false;
       if (sameFacultyOnly && candidate.faculty !== profile?.faculty) return false;
       if (availabilityFilterActive) {
@@ -273,39 +269,64 @@ export default function HomeScreen({ onOpenLikes }) {
           return false;
         }
       }
+      const selectedWeekdays = getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays);
+      if (selectedWeekdays.length && !matchesAvailabilityWeekdays(candidate, selectedWeekdays)) return false;
+      if (requirePhoto && !profileHasPhoto(candidate)) return false;
+      if (requireAvailability && !profileHasAvailability(candidate)) return false;
       return true;
     });
-    return dailyPick(filtered, getDailySeed() + (profile?.id || ''));
-  }, [activeFacultyFilter, availabilityFilterActive, availabilityPeriods, availableProfiles, profile?.faculty, profile?.id, sameFacultyOnly, selectedCategory]);
+    const today = getDailySeed();
+    if (pinnedDailyRef.current.day !== today) {
+      pinnedDailyRef.current = { day: today, id: null };
+    }
+    const seed = `${today}:${profile?.id || ''}`;
+    const picked = pinnedDailyRef.current.id
+      ? pickDailyProfile(filtered, seed, pinnedDailyRef.current.id)
+      : dailyPick(filtered, seed);
+    pinnedDailyRef.current.id = picked[0]?.id || null;
+    return picked;
+  }, [activeFacultyFilter, availabilityFilterActive, availabilityPeriods, availableProfiles, profile?.faculty, profile?.id, requireAvailability, requirePhoto, sameFacultyOnly, savedDetailFilters, selectedCategory, weekdays]);
 
   const currentProfile = filteredProfiles[0] || null;
-  const remoteAvatar = useRemoteImage(currentProfile?.avatarUri, currentProfile?.updatedAt, currentProfile?.id);
-  const imageUri = remoteAvatar;
+  const imageUri = getImageRequestUri(currentProfile?.avatarUri, currentProfile?.avatarRevision);
+  useProfileImagePrefetch(filteredProfiles.slice(1, 4));
 
-  const hasRecycledForThisEmptyState = useRef(false);
+  const deck = useDiscoveryDeckState({
+    hasCandidate: Boolean(currentProfile),
+    isDiscoveryReady,
+    isLoadingMoreProfiles,
+    isResolvingDistances,
+    discoveryError,
+    retryDiscovery,
+  });
+  const isWaitingForProfiles = deck.state === 'loading';
+  const deckFailed = deck.state === 'error';
+  const hasRequestedMoreForThisEmptyState = useRef(false);
 
+  // When the deck runs dry, pull the next discovery page so new profiles show
+  // up on their own. Skipped profiles stay skipped until the user explicitly
+  // taps "เริ่มใหม่".
   useEffect(() => {
-    if (filteredProfiles.length > 0) {
-      hasRecycledForThisEmptyState.current = false;
+    if (filteredProfiles.length > 0 || isLoadingMoreProfiles || isResolvingDistances) {
+      hasRequestedMoreForThisEmptyState.current = false;
       return;
     }
-
-    if (!hasRecycledForThisEmptyState.current) {
-      hasRecycledForThisEmptyState.current = true;
-      void recycleSkippedProfiles()?.catch?.((error) => {
-        console.warn('[HomeScreen.ios] recycleSkippedProfiles error:', error?.message || error);
-      });
-    }
-  }, [filteredProfiles.length, recycleSkippedProfiles]);
+    if (!hasMoreProfiles || hasRequestedMoreForThisEmptyState.current) return;
+    hasRequestedMoreForThisEmptyState.current = true;
+    void loadMoreProfiles()?.catch?.((error) => {
+      console.warn('[HomeScreen.ios] loadMoreProfiles error:', error?.message || error);
+    });
+  }, [filteredProfiles.length, hasMoreProfiles, isLoadingMoreProfiles, isResolvingDistances, loadMoreProfiles]);
 
   useFocusEffect(
     React.useCallback(() => {
-      hasRecycledForThisEmptyState.current = false;
+      hasRequestedMoreForThisEmptyState.current = false;
       setRefreshTick((t) => t + 1);
     }, [])
   );
 
   const persistFacultyMatching = async (nextFaculty, nextSameFacultyOnly) => {
+    if (!advancedFilters.guard()) return;
     const previousFaculty = faculty;
     const previousSameFacultyOnly = sameFacultyOnly;
     const normalizedSameFacultyOnly = nextSameFacultyOnly === true && Boolean(profile?.faculty);
@@ -327,6 +348,7 @@ export default function HomeScreen({ onOpenLikes }) {
   };
 
   const persistAvailabilityPeriods = async (nextAvailabilityPeriods, nextActive) => {
+    if (!advancedFilters.guard()) return;
     const previousAvailabilityPeriods = availabilityPeriods;
     const previousActive = availabilityFilterActive;
     setAvailabilityPeriods(nextAvailabilityPeriods);
@@ -359,6 +381,7 @@ export default function HomeScreen({ onOpenLikes }) {
   };
 
   const toggleAvailabilityPeriod = (value) => {
+    if (!advancedFilters.guard()) return;
     const nextAvailabilityPeriods = {
       ...availabilityPeriods,
       [value]: !availabilityPeriods[value],
@@ -378,42 +401,28 @@ export default function HomeScreen({ onOpenLikes }) {
     );
   };
 
+  // "เริ่มใหม่" brings skipped profiles back and refreshes the deck while
+  // keeping every saved filter untouched.
   const handleReset = () => {
+    // "เริ่มใหม่" brings skipped people back: CampusMate Plus (unlimited rewind).
+    if (!rewind.guard()) return;
+    pinnedDailyRef.current.id = null;
+    setSelectedCategory('all');
     void recycleSkippedProfiles()?.catch?.((error) => {
       console.warn('[HomeScreen.ios] handleReset recycle error:', error?.message || error);
     });
-    setSelectedCategory('all');
-    setDistance(25);
-    setAgeMin(MATCHING_AGE_MIN);
-    setAgeMax(MATCHING_DEFAULT_AGE_MAX);
-    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS));
-    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS));
-    setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
-    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS));
-    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
-    setAvailabilityFilterActive(false);
-    setFaculty('all');
-    setSameFacultyOnly(false);
-    void saveMatchingPreferences({
-      ...(profile?.matchingPreferences || {}),
-      activities: [],
-      ageMin: MATCHING_AGE_MIN,
-      ageMax: MATCHING_DEFAULT_AGE_MAX,
-      availabilityPeriods: [],
-      faculty: 'all',
-      genders: [],
-      maxDistance: 25,
-      paces: [],
-      sameFacultyOnly: false,
-      years: [],
-    }).catch((error) => console.error('[HomeScreen] Failed to reset filters:', error));
+    if (hasMoreProfiles && !isLoadingMoreProfiles) {
+      void loadMoreProfiles()?.catch?.((error) => {
+        console.warn('[HomeScreen.ios] handleReset loadMore error:', error?.message || error);
+      });
+    }
   };
 
 
 
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
   const meetupAccent = colorScheme === 'dark' ? '#7966FF' : '#4546B8';
-  const meetupSoft = colorScheme === 'dark' ? 'rgba(154,140,255,0.16)' : '#EEF0FF';
+  const meetupSoft = colorScheme === 'dark' ? 'rgba(112,178,255,0.16)' : '#EEF2F7';
 
   const smallHeaderOpacity = scrollY.interpolate({
     inputRange: [30, 60],
@@ -444,13 +453,13 @@ export default function HomeScreen({ onOpenLikes }) {
       >
         <BlurView intensity={blurIntensity} tint={colorScheme} style={{ flex: 1 }} />
       </MaskedView>
-      <View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
+      <TourTarget id="home.filters" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
         <Host colorScheme={colorScheme} seedColor={palette.purple} style={{ width: '100%', height: 85 }}>
           <VStack modifiers={[padding({ top: 35, bottom: 15, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
-            <Header onSettings={() => setShowSettings(true)} />
+            <Header onSettings={() => router.push('/matching-filters')} />
           </VStack>
         </Host>
-      </View>
+      </TourTarget>
       <Host
         colorScheme={colorScheme}
         seedColor={palette.purple}
@@ -468,74 +477,7 @@ export default function HomeScreen({ onOpenLikes }) {
               frame({ maxWidth: Infinity, alignment: 'topLeading' }),
             ]}
           >
-            {selectedMeetup && (
-              <HStack
-                alignment="center"
-                spacing={10}
-                modifiers={[
-                  padding({ horizontal: 12, vertical: 9 }),
-                  frame({ maxWidth: Infinity }),
-                  background(meetupSoft, shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' })),
-                  shadow({ color: meetupAccent, opacity: 0.12, radius: 8, x: 0, y: 2 }),
-                ]}
-              >
-                <Button
-                  onPress={() => router.push('/meetup')}
-                  modifiers={[buttonStyle('plain'), frame({ maxWidth: Infinity })]}
-                >
-                  <HStack alignment="center" spacing={10} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-                    <VStack
-                      alignment="center"
-                      modifiers={[
-                        frame({ width: 32, height: 32 }),
-                        background(meetupAccent, shapes.circle()),
-                        shadow({ color: meetupAccent, opacity: 0.24, radius: 6, x: 0, y: 2 }),
-                      ]}
-                    >
-                      <Image color="#FFFFFF" size={13} systemName="mappin.and.ellipse" />
-                    </VStack>
-                    <VStack alignment="leading" spacing={1} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-                      <HStack spacing={6} alignment="center">
-                        <Text modifiers={[font({ weight: 'bold', size: 11 }), foregroundStyle(palette.text), lineLimit(1)]}>
-                          จุดนัดพบ
-                        </Text>
-                        <Text modifiers={[font({ weight: 'bold', size: 10 }), foregroundStyle(myMeetupStats?.isFull ? '#FF453A' : meetupAccent)]}>
-                          {myMeetupStats ? `${myMeetupStats.isFull ? 'เต็มแล้ว' : `ร่วม ${myMeetupStats.acceptedCount}/${myMeetupStats.maxPeople}`}` : 'พร้อม'}
-                        </Text>
-                      </HStack>
-                      <Text modifiers={[font({ size: 13.5, weight: 'bold' }), foregroundStyle(palette.text), lineLimit(1)]}>
-                        {selectedMeetup.name}
-                      </Text>
-                      {selectedMeetup.schedule?.date ? (
-                        <Text modifiers={[font({ size: 10.5, weight: 'medium' }), foregroundStyle(palette.secondary), lineLimit(1)]}>
-                          {formatReadableDate(selectedMeetup.schedule.date)}
-                          {selectedMeetup.schedule?.startTime && selectedMeetup.schedule?.endTime ? ` · ${selectedMeetup.schedule.startTime}–${selectedMeetup.schedule.endTime}` : ''}
-                        </Text>
-                      ) : (
-                        <Text modifiers={[font({ size: 10.5, weight: 'medium' }), foregroundStyle(palette.secondary)]}>
-                          แตะเพื่อจัดการจุดนัดพบ
-                        </Text>
-                      )}
-                    </VStack>
-                  </HStack>
-                </Button>
-                <Button
-                  label="จัดการ"
-                  onPress={() => router.push('/meetup')}
-                  modifiers={[
-                    buttonStyle('glassProminent'),
-                    buttonBorderShape('capsule'),
-                    controlSize('small'),
-                    tint(meetupAccent),
-                  ]}
-                />
-              </HStack>
-            )}
-            <FilterChips
-              likesCount={pendingIncomingLikes.length}
-              onAll={handleReset}
-              onLikes={onOpenLikes}
-            />
+            <FilterChips onAll={handleReset} />
 
             {showFilters && (
               <SmartFilters
@@ -571,22 +513,61 @@ export default function HomeScreen({ onOpenLikes }) {
                 ]}
               >
                 <ContentUnavailableView
-                  description="ระบบจะค้นหาโปรไฟล์ใหม่โดยอัตโนมัติ หากตัวกรองไม่มีคนที่ตรงกัน"
-                  systemImage="person.2.slash"
-                  title="ยังไม่มีโปรไฟล์ที่ตรงกัน"
+                  description={deckFailed
+                    ? (deck.offline
+                      ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
+                      : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่')
+                    : isWaitingForProfiles
+                      ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
+                      : 'ตัวกรองของคุณยังคงอยู่ กด "เริ่มใหม่" เพื่อดูคนที่เคยข้ามอีกครั้ง หรือปรับตัวกรองจากมุมขวาบน'}
+                  systemImage={deckFailed
+                    ? (deck.offline ? 'wifi.slash' : 'exclamationmark.triangle')
+                    : isWaitingForProfiles ? 'arrow.triangle.2.circlepath' : 'person.2.slash'}
+                  title={deckFailed
+                    ? (deck.offline ? 'ไม่ได้เชื่อมต่ออินเทอร์เน็ต' : deck.stalled ? 'โหลดโปรไฟล์นานกว่าปกติ' : 'โหลดโปรไฟล์ไม่สำเร็จ')
+                    : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
                 />
-                <Button
-                  label="เริ่มใหม่"
-                  onPress={handleReset}
-                  systemImage="arrow.triangle.2.circlepath"
-                  modifiers={[
-                    buttonStyle('glassProminent'),
-                    buttonBorderShape('capsule'),
-                    controlSize('large'),
-                    tint(palette.purple),
-                    frame({ maxWidth: Infinity }),
-                  ]}
-                />
+                {deckFailed ? (
+                  <Button
+                    label="ลองอีกครั้ง"
+                    onPress={deck.retry}
+                    systemImage="arrow.clockwise"
+                    modifiers={[
+                      buttonStyle('glassProminent'),
+                      buttonBorderShape('capsule'),
+                      controlSize('large'),
+                      tint(palette.purple),
+                      frame({ maxWidth: Infinity }),
+                    ]}
+                  />
+                ) : null}
+                {!isWaitingForProfiles && !deckFailed ? (
+                  <Button
+                    label="เริ่มใหม่"
+                    onPress={handleReset}
+                    systemImage="arrow.triangle.2.circlepath"
+                    modifiers={[
+                      buttonStyle('glassProminent'),
+                      buttonBorderShape('capsule'),
+                      controlSize('large'),
+                      tint(palette.purple),
+                      frame({ maxWidth: Infinity }),
+                    ]}
+                  />
+                ) : null}
+                {!isWaitingForProfiles ? (
+                  <Button
+                    label="ปรับตัวกรอง"
+                    onPress={() => router.push('/matching-filters')}
+                    systemImage="slider.horizontal.3"
+                    modifiers={[
+                      buttonStyle('glass'),
+                      buttonBorderShape('capsule'),
+                      controlSize('large'),
+                      frame({ maxWidth: Infinity }),
+                    ]}
+                  />
+                ) : null}
               </VStack>
             )}
           </VStack>
@@ -600,6 +581,7 @@ export default function HomeScreen({ onOpenLikes }) {
             presentationDragIndicator('visible')
           ]}
         >
+          <Host colorScheme={colorScheme === 'dark' ? 'dark' : 'light'} seedColor={palette.purple} style={{ flex: 1 }}>
           <VStack style={{ flex: 1 }}>
             <Text
               modifiers={[
@@ -629,78 +611,158 @@ export default function HomeScreen({ onOpenLikes }) {
                   step={1}
                 />
               </Section>
-              <Section header={<Text>ระยะห่างจากคุณ</Text>} footer={<Text>ค้นหาเพื่อนในรัศมี {Math.round(distance)} กิโลเมตร</Text>}>
+              <Section
+                header={<Text>ระยะห่างจากคุณ</Text>}
+                footer={<Text>{distance === MATCHING_UNLIMITED_DISTANCE ? 'ไม่จำกัดระยะ' : `ค้นหาในรัศมี ${Math.round(distance)} กม.`} ระยะใกล้กว่า 700 ม. แสดงเป็น 700 ม. และไม่เปิดเผยพิกัด</Text>}
+              >
+                <Toggle
+                  isOn={distance === MATCHING_UNLIMITED_DISTANCE}
+                  label="ไม่จำกัดระยะ"
+                  onIsOnChange={(enabled) => setDistance(enabled ? MATCHING_UNLIMITED_DISTANCE : 25)}
+                  systemImage="location.fill"
+                />
                 <Slider
-                  value={distance}
-                  onValueChange={setDistance}
-                  min={1}
                   max={50}
+                  min={1}
+                  onValueChange={setDistance}
                   step={1}
+                  value={distance === MATCHING_UNLIMITED_DISTANCE ? 25 : Math.max(1, distance)}
                 />
               </Section>
-              <Section header={<Text>กิจกรรมที่สนใจ</Text>}>
-                {MATCHING_ACTIVITY_OPTIONS.map(({ icon, label, value }) => (
+              <Section footer={<Text>เว้นว่างไว้ถ้าไม่ต้องการจำกัด</Text>} header={<Text>กิจกรรม</Text>}>
+                {MATCHING_PRIMARY_ACTIVITY_OPTIONS.map(({ icon, label, value }) => (
                   <Toggle
-                    isOn={activities[value]}
+                    isOn={!!activities[value]}
                     key={value}
-                    onIsOnChange={(enabled) => setActivities((current) => ({ ...current, [value]: enabled }))}
                     label={label}
+                    onIsOnChange={() => setActivities((current) => toggleMatchingOption(MATCHING_ACTIVITY_OPTIONS, current, value))}
                     systemImage={icon}
                   />
                 ))}
               </Section>
-              <Section header={<Text>ช่วงชั้นปี (เลือกได้หลายข้อ)</Text>}>
+              <Section header={<Text>กิจกรรมเพิ่มเติม</Text>}>
+                {MATCHING_MORE_ACTIVITY_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={!!activities[value]}
+                    key={value}
+                    label={label}
+                    onIsOnChange={() => setActivities((current) => toggleMatchingOption(MATCHING_ACTIVITY_OPTIONS, current, value))}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              {detailFilterSections.map((section) => (
+                <Section
+                  footer={<Text>เว้นว่างไว้ = ไม่จำกัด</Text>}
+                  header={<Text>รายละเอียด{section.label}</Text>}
+                  key={section.id}
+                >
+                  {section.fields.map((field) => {
+                    const selected = detailFilters[section.id]?.[field.key] || [];
+                    return (
+                      <Picker
+                        key={field.key}
+                        label={field.label}
+                        modifiers={[pickerStyle('navigationLink')]}
+                        onSelectionChange={(next) => {
+                          // Native pickers are single-choice; a filter saved
+                          // with several values from Android collapses to
+                          // whichever option is picked here.
+                          setDetailFilters((current) => {
+                            const cleared = clearActivityDetailFilter(current, section.id, field.key);
+                            return next === '__any__'
+                              ? cleared
+                              : toggleActivityDetailFilter(cleared, section.id, field.key, next);
+                          });
+                        }}
+                        selection={selected.length === 1 ? selected[0] : '__any__'}
+                      >
+                        <Text modifiers={[tag('__any__')]}>{selected.length > 1 ? `เลือกไว้ ${selected.length}` : 'ทั้งหมด'}</Text>
+                        {field.options.map(({ label, value }) => (
+                          <Text key={value} modifiers={[tag(value)]}>{label}</Text>
+                        ))}
+                      </Picker>
+                    );
+                  })}
+                </Section>
+              ))}
+              <Section header={<Text>ชั้นปี</Text>}>
                 {MATCHING_YEAR_OPTIONS.map(({ icon, label, value }) => (
                   <Toggle
-                    isOn={years[value]}
+                    isOn={!!years[value]}
                     key={value}
-                    onIsOnChange={(enabled) => setYears((current) => ({ ...current, [value]: enabled }))}
                     label={label}
+                    onIsOnChange={() => advancedFilters.guard() && setYears((current) => toggleMatchingOption(MATCHING_YEAR_OPTIONS, current, value))}
                     systemImage={icon}
                   />
                 ))}
               </Section>
               <Section header={<Text>คณะ</Text>}>
-                <Picker label="เลือกคณะ" selection={faculty} onSelectionChange={handleFacultySelection} modifiers={[pickerStyle('menu')]}>
+                <Picker label="เลือกคณะ" onSelectionChange={handleFacultySelection} selection={faculty} modifiers={[pickerStyle('menu')]}>
                   <Text modifiers={[tag('all')]}>ทุกคณะ</Text>
                   {FACULTIES.map((fac) => (
                     <Text key={fac} modifiers={[tag(fac)]}>{fac}</Text>
                   ))}
                 </Picker>
-                <Toggle isOn={sameFacultyOnly} onIsOnChange={handleSameFacultySelection} label="เฉพาะคณะเดียวกับฉัน" systemImage="building.columns.fill" />
+                <Toggle isOn={sameFacultyOnly} label="เฉพาะคณะเดียวกับฉัน" onIsOnChange={handleSameFacultySelection} systemImage="building.columns.fill" />
               </Section>
-              <Section header={<Text>เพซ / ระดับกิจกรรม</Text>} footer={<Text>เลือกได้หลายข้อ ระบบจะจับคู่คนที่มีระดับตรงกัน</Text>}>
+              <Section footer={<Text>ใช้เมื่อสนใจเพื่อนที่วิ่ง</Text>} header={<Text>เพซวิ่ง</Text>}>
                 {MATCHING_PACE_OPTIONS.map(({ icon, label, value }) => (
                   <Toggle
-                    isOn={paces[value]}
+                    isOn={!!paces[value]}
                     key={value}
-                    onIsOnChange={(enabled) => setPaces((current) => ({ ...current, [value]: enabled }))}
                     label={label}
+                    onIsOnChange={() => advancedFilters.guard() && setPaces((current) => toggleMatchingOption(MATCHING_PACE_OPTIONS, current, value))}
                     systemImage={icon}
                   />
                 ))}
               </Section>
-              <Section header={<Text>ช่วงเวลาที่สะดวก</Text>} footer={<Text>จับคู่จากช่วงเวลาที่อีกฝ่ายระบุไว้ในโปรไฟล์</Text>}>
+              <Section header={<Text>วันที่สะดวก</Text>}>
+                {MATCHING_WEEKDAY_OPTIONS.map(({ longLabel, value }) => (
+                  <Toggle
+                    isOn={!!weekdays[value]}
+                    key={value}
+                    label={longLabel}
+                    onIsOnChange={() => advancedFilters.guard() && setWeekdays((current) => toggleMatchingOption(MATCHING_WEEKDAY_OPTIONS, current, value))}
+                  />
+                ))}
+              </Section>
+              <Section footer={<Text>จับคู่จากช่วงเวลาในโปรไฟล์</Text>} header={<Text>ช่วงเวลา</Text>}>
                 {MATCHING_AVAILABILITY_OPTIONS.map(({ icon, label, value }) => (
                   <Toggle
-                    isOn={availabilityPeriods[value]}
+                    isOn={!!availabilityPeriods[value]}
                     key={value}
-                    onIsOnChange={() => toggleAvailabilityPeriod(value)}
                     label={label}
+                    onIsOnChange={() => toggleAvailabilityPeriod(value)}
                     systemImage={icon}
                   />
                 ))}
               </Section>
-              <Section header={<Text>เพศ (เลือกได้หลายข้อ)</Text>}>
-                {MATCHING_GENDER_OPTIONS.map(({ icon, label, value }) => (
+              <Section header={<Text>เพศ</Text>}>
+                {MATCHING_PRIMARY_GENDER_OPTIONS.map(({ icon, label, value }) => (
                   <Toggle
-                    isOn={genders[value]}
+                    isOn={!!genders[value]}
                     key={value}
-                    onIsOnChange={(enabled) => setGenders((current) => ({ ...current, [value]: enabled }))}
                     label={label}
+                    onIsOnChange={() => setGenders((current) => toggleMatchingOption(MATCHING_GENDER_OPTIONS, current, value))}
                     systemImage={icon}
                   />
                 ))}
+              </Section>
+              <Section header={<Text>เพศเพิ่มเติม</Text>}>
+                {MATCHING_MORE_GENDER_OPTIONS.map(({ icon, label, value }) => (
+                  <Toggle
+                    isOn={!!genders[value]}
+                    key={value}
+                    label={label}
+                    onIsOnChange={() => setGenders((current) => toggleMatchingOption(MATCHING_GENDER_OPTIONS, current, value))}
+                    systemImage={icon}
+                  />
+                ))}
+              </Section>
+              <Section header={<Text>เงื่อนไขเพิ่มเติม</Text>}>
+                <Toggle isOn={requirePhoto} label="ต้องมีรูปโปรไฟล์" onIsOnChange={setRequirePhoto} systemImage="person.crop.circle" />
+                <Toggle isOn={requireAvailability} label="ต้องระบุเวลาว่าง" onIsOnChange={(value) => { if (advancedFilters.guard()) setRequireAvailability(value); }} systemImage="clock.fill" />
               </Section>
             </Form>
             <Button
@@ -717,6 +779,7 @@ export default function HomeScreen({ onOpenLikes }) {
               ]}
             />
           </VStack>
+          </Host>
         </BottomSheet>
       </Host>
     </View>
@@ -736,10 +799,11 @@ function Header({ onSettings }) {
         หาเพื่อน
       </Text>
       <Spacer />
+      <RNHostView matchContents><NotificationBell /></RNHostView>
       <Button
-        label="ตั้งค่า"
+        label="ตัวกรอง"
         onPress={onSettings}
-        systemImage="gearshape.fill"
+        systemImage="slider.horizontal.3"
         modifiers={[
           buttonStyle('glass'),
           buttonBorderShape('circle'),
@@ -752,8 +816,7 @@ function Header({ onSettings }) {
   );
 }
 
-function FilterChips({ likesCount, onAll, onLikes }) {
-  const palette = usePalette();
+function FilterChips({ onAll }) {
   return (
     <ScrollView
       axes="horizontal"
@@ -761,7 +824,7 @@ function FilterChips({ likesCount, onAll, onLikes }) {
       modifiers={[scrollIndicators('never', 'horizontal')]}
     >
       <HStack spacing={8}>
-        <FilterChip dot={likesCount > 0} label="ถูกใจ & จับคู่" onPress={onLikes} />
+        <FilterChip label="ถูกใจ" onPress={() => router.push('/likes')} />
         <FilterChip label="เริ่มใหม่" onPress={onAll} />
       </HStack>
     </ScrollView>
@@ -869,15 +932,9 @@ function ProfileCard({ candidate, imageUri, onPress }) {
       <VStack spacing={0} modifiers={[frame({ maxWidth: Infinity })]}>
         <ZStack modifiers={[frame({ height: 340, maxWidth: Infinity })]}>
           {imageUri ? (
-            <Image
-              uiImage={imageUri}
-              modifiers={[
-                resizable(),
-                aspectRatio({ ratio: 0.82, contentMode: 'fill' }),
-                frame({ height: 340, maxWidth: Infinity }),
-                clipped(),
-              ]}
-            />
+            <RNHostView matchContents={false} modifiers={[frame({ height: 340, maxWidth: Infinity })]}>
+              <ExpoImage source={{ uri: imageUri }} contentFit="cover" priority="high" style={{ width: '100%', height: 340 }} />
+            </RNHostView>
           ) : (
             <Image
               color={palette.secondary}
@@ -948,7 +1005,7 @@ function ProfileCard({ candidate, imageUri, onPress }) {
                 lineLimit(1),
               ]}
             >
-              {[getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities), candidate.faculty].filter(Boolean).join(' · ') || 'แตะเพื่อดูโปรไฟล์'}
+              {[getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities), candidate.faculty, formatDistance(candidate.distance)].filter(Boolean).join(' · ') || 'แตะเพื่อดูโปรไฟล์'}
             </Text>
           </VStack>
         </ZStack>

@@ -1,11 +1,8 @@
 package com.campusmate.app
 import expo.modules.splashscreen.SplashScreenManager
 
-import android.app.PictureInPictureParams
-import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
-import android.util.Rational
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -15,55 +12,6 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
-  private var isInCall: Boolean = false
-  private var isVideoCall: Boolean = false
-
-  fun setCallState(inCall: Boolean, isVideo: Boolean) {
-    this.isInCall = inCall
-    this.isVideoCall = isVideo
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      try {
-        val ratio = if (isVideo) Rational(9, 16) else Rational(1, 1)
-        val params = PictureInPictureParams.Builder()
-          .setAspectRatio(ratio)
-          .setAutoEnterEnabled(inCall)
-          .build()
-        setPictureInPictureParams(params)
-      } catch (_: Exception) {}
-    }
-  }
-
-  fun enterPipMode() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-      try {
-        val ratio = if (isVideoCall) Rational(9, 16) else Rational(1, 1)
-        val params = PictureInPictureParams.Builder()
-          .setAspectRatio(ratio)
-          .build()
-        enterPictureInPictureMode(params)
-      } catch (e: Exception) {
-        try {
-          enterPictureInPictureMode()
-        } catch (_: Exception) {}
-      }
-    }
-  }
-
-  override fun onUserLeaveHint() {
-    super.onUserLeaveHint()
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInCall) {
-      enterPipMode()
-    }
-  }
-
-  override fun onPictureInPictureModeChanged(
-    isInPictureInPictureMode: Boolean,
-    newConfig: Configuration
-  ) {
-    super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-    PipModule.notifyPipChanged(isInPictureInPictureMode)
-  }
-
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
     // coloring the background, status bar, and navigation bar.

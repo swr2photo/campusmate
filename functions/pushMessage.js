@@ -12,10 +12,10 @@ export function stringifyPushData(data = {}) {
 /**
  * Build an Expo push payload for one registered device.
  *
- * Android's system tray cannot render MessagingStyle or a sender avatar from an
- * FCM `notification` payload. Clients that opt in with
- * `ANDROID_MESSAGING_NOTIFICATION_MODE` receive a data-only message so the app
- * can draw the chat photo locally. Older clients keep the regular Expo alert.
+ * Android messaging-style clients still get enriched data (avatar, preview) so
+ * the foreground handler can upgrade to MessagingStyle — but they also receive
+ * a visible title/body/channel so the OS tray can show alerts when the app
+ * process is killed (data-only FCM alone is unreliable on many OEMs).
  */
 export function buildExpoPushMessage(registration, notification) {
   const isMessage = notification?.data?.type === 'message';
@@ -42,18 +42,16 @@ export function buildExpoPushMessage(registration, notification) {
     to: registration.expoPushToken,
     priority: 'high',
     data,
+    sound: 'default',
+    title: notification.title,
+    body: notification.body,
+    channelId: notification.channelId,
+    threadId: notification.threadId,
     ...(useAndroidMessagingStyle ? {
-      // Omit title/body/sound so Expo/FCM deliver a data-only message.
       contentAvailable: true,
       ttl: 60 * 60,
       ...(notification.threadId ? { collapseId: String(notification.threadId) } : {}),
-    } : {
-      sound: 'default',
-      title: notification.title,
-      body: notification.body,
-      channelId: notification.channelId,
-      threadId: notification.threadId,
-    }),
+    } : {}),
     ...(isCall ? {
       ttl: 45,
       expiration: Math.floor(Date.now() / 1000) + 45,
@@ -61,12 +59,12 @@ export function buildExpoPushMessage(registration, notification) {
     } : {}),
   };
 
-  if (!useAndroidMessagingStyle && typeof notification.badge === 'number') {
+  if (typeof notification.badge === 'number') {
     pushMessage.badge = notification.badge;
   }
 
   const notificationImage = notification.avatarUri || notification.mediaUrl;
-  if (!useAndroidMessagingStyle && notificationImage && registration.platform === 'android') {
+  if (notificationImage && registration.platform === 'android') {
     pushMessage.richContent = {
       image: notificationImage,
     };

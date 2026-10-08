@@ -5,6 +5,8 @@
       "127.0.0.1",
       "campusmate-7f1ab.firebaseapp.com",
       "campusmate-7f1ab.web.app",
+      "getcampusmate.app",
+      "campusmate.app",
       "auth.expo.io"
     ],
     "providers": {
@@ -28,6 +30,8 @@
     "ignore": [
       "node_modules",
       ".git",
+      ".env",
+      ".env.*",
       "firebase-debug.log",
       "firebase-debug.*.log",
       "npm-cache",
@@ -42,6 +46,15 @@
       "**/node_modules/**"
     ],
     "headers": [
+      {
+        "source": "**/*.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
       {
         "source": "**",
         "headers": [
@@ -67,7 +80,7 @@
           },
           {
             "key": "Content-Security-Policy",
-            "value": "default-src 'self'; script-src 'self' https://www.gstatic.com 'nonce-BdM11ZAzmE0GzRoHMNkFmFul'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://www.googleapis.com https://*.googleapis.com https://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            "value": "default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https://photos.getcampusmate.app https://pub-50c04ae03d1b4222b7402a2b1ff02c62.r2.dev https://pub-73287d4af57d4e788f89d95e71d2ea70.r2.dev https://firebasestorage.googleapis.com https://storage.googleapis.com https://media.getcampusmate.app https://cdn.getcampusmate.app https://lh3.googleusercontent.com https://lh4.googleusercontent.com https://lh5.googleusercontent.com https://lh6.googleusercontent.com https://*.psu.ac.th https://*.wikimedia.org https://img.wongnai.com https://icchatyai.com; connect-src 'self' https://www.googleapis.com https://*.googleapis.com https://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://*.cloudfunctions.net https://*.run.app; frame-src 'self' https://*.firebaseapp.com https://accounts.google.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
           },
           {
             "key": "Cross-Origin-Opener-Policy",
@@ -75,12 +88,9 @@
           }
         ]
       }
-    ],
-    "rewrites": [
-      {
-        "source": "/__/auth/action",
-        "destination": "/reset.html"
-      }
     ]
+  },
+  "remoteconfig": {
+    "template": "remote_config.json"
   }
 }

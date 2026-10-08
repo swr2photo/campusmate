@@ -6,6 +6,18 @@ node_modules.*
 .git/
 dist/
 web-build/
+web/
+public/
+functions/
+scripts/
+docs/
+test_artifacts/
+play-store-assets/
+.party-build-check/
+.party-ios-build-check/
+.party-final-export/
+.party-final-android/
+.party-final-ios/
 output/
 logs/
 photo/
@@ -20,7 +32,6 @@ templates/
 *.bat
 *.docx
 *.pdf
-*.patch
 *.txt
 .env
 google-play-key.json
@@ -40,4 +51,3 @@ android/build/
 .idea/
 .vscode/
 tmp/
-

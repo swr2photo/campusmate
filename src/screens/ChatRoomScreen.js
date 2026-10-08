@@ -1,46 +1,43 @@
+import Text from '../components/AppText';
+import { AppTextInput as TextInput } from '../components/AppText';
 import { randomUUID } from 'expo-crypto';
 import { stageVideoUpgrade, cancelVideoUpgrade, resumeVideoUpgrades } from '../services/videoUpgradeService';
+import { exportChatVideo, discardVideoExport } from '../services/videoProcessingService';
 import ChatVideoBubble from '../components/ChatVideoBubble';
 import ChatVideoComposer from '../components/ChatVideoComposer';
 import ChatCameraModal from '../components/ChatCameraModal';
 import ChatMediaComposer from '../components/ChatMediaComposer';
 import ChatProtectedImageBubble from '../components/ChatProtectedImageBubble';
 import { pickChatVideo } from '../services/chatVideoService';
-import { validateChatVideo } from '../utils/chatVideoPolicy';
+import { isProtectedMedia, validateChatVideo } from '../utils/chatVideoPolicy';
+import { usePeerMediaView } from '../hooks/usePeerMediaView';
 import { useToast } from '../context/ToastContext';
+import { useConfirm } from '../context/ConfirmContext';
 import { useCall } from '../context/CallContext';
+import { isSpotifyFeatureAllowed } from '../utils/featureFlags';
 import ReplyPreview from '../components/ReplyPreview';
 import MessageTimeSwipeArea from '../components/MessageTimeSwipeArea';
 import { createReplySnapshot, resolveMessageReply } from '../utils/messageReply';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ActionSheetIOS,
-  ActivityIndicator,
-  Alert,
-  Animated,
-  AppState,
-  Easing,
-  FlatList,
-  Image,
-  Keyboard,
-  KeyboardAvoidingView,
-  LayoutAnimation,
-  Modal,
-  PanResponder,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActionSheetIOS, ActivityIndicator, Animated, AppState, Easing, FlatList, Image, Keyboard, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import Reanimated, {
+  Extrapolation,
+  interpolate,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { scheduleOnRN } from 'react-native-worklets';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { project, rubberband } from '../utils/motion';
 import { router, useLocalSearchParams } from 'expo-router';
 import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, startAfter } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
 import { decryptConversationMessageList, mergeProfileRecords, toSafePublicProfile } from '../services/firestoreService';
+import { secureDiscoveryConfigured, subscribeSecureProfile } from '../services/secureDiscoveryService';
 import { setActiveConversation } from '../services/notificationService';
 import {
   ensureConversationEncryption,
@@ -49,8 +46,9 @@ import {
   hasCurrentDeviceEnvelope,
   isValidConversationEncryption,
   getOrFetchConversationKey,
+  peekCachedConversationKey,
 } from '../services/chatEncryptionService';
-import { useApp } from '../context/AppContext';
+import { useAppActions, useAppConversations, useAppFeed, useAppProfile } from '../context/AppContext';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import { getMessageReactionSummary, recordReactionUsage, useDefaultMessageReaction, useQuickReactions } from '../utils/messageReactions';
 import { radius, spacing, type, useTheme } from '../theme';
@@ -64,8 +62,10 @@ import CallMessageBubble from '../components/CallMessageBubble';
 import DecryptedChatImage from '../components/DecryptedChatImage';
 import StackedImageCards from '../components/StackedImageCards';
 import AudioWaveformBar from '../components/AudioWaveformBar';
-import ChatMediaPickerSheet from '../components/ChatMediaPickerSheet';
+import ChatMediaPickerSheet, { MEDIA_PICKER_COLLAPSED_HEIGHT } from '../components/ChatMediaPickerSheet';
 import ChatGiphyPickerSheet from '../components/ChatGiphyPickerSheet';
+import SpotifyTrackSearchSheet from '../components/SpotifyTrackSearchSheet';
+import TrackPreviewButton from '../components/TrackPreviewButton';
 import ChatImageViewerModal from '../components/ChatImageViewerModal';
 import ChatImageEditorModal from '../components/ChatImageEditorModal';
 import { Image as ExpoImage } from 'expo-image';
@@ -90,6 +90,9 @@ import {
   preCacheDecryptedMedia,
   getDecryptedMediaUri,
 } from '../services/chatMediaService';
+import { prefetchBrowseMusicTracks } from '../services/spotifyService';
+import { getFlatListPerformanceConfig } from '../utils/deviceTier';
+import { showAlert } from '../utils/appAlert';
 
 const DOUBLE_TAP_WINDOW_MS = 320;
 const MESSAGE_TIME_REVEAL_THRESHOLD = 28;
@@ -137,6 +140,28 @@ function toDate(timestamp) {
 
 function messageTimestamp(message) {
   return message.createdAt || message.time;
+}
+
+function preferCachedDecryption(messages, cachedMessages) {
+  if (!Array.isArray(cachedMessages) || cachedMessages.length === 0) return messages;
+  const cachedById = new Map();
+  cachedMessages.forEach((message) => {
+    if (message?.id) cachedById.set(message.id, message);
+  });
+  return messages.map((message) => {
+    if (!message?.id || !message.decryptionFailed) return message;
+    const cached = cachedById.get(message.id);
+    if (!cached || cached.decryptionFailed || !cached.text) return message;
+    return {
+      ...message,
+      text: cached.text,
+      mediaUrl: cached.mediaUrl || message.mediaUrl,
+      mediaUrls: cached.mediaUrls || message.mediaUrls,
+      mediaType: cached.mediaType || message.mediaType,
+      audioDuration: cached.audioDuration ?? message.audioDuration,
+      decryptionFailed: false,
+    };
+  });
 }
 
 function format24Time(timestamp) {
@@ -188,14 +213,21 @@ function formatRelativeTime(timestamp) {
   return `${Math.floor(months / 12) || 1} ปีที่แล้ว`;
 }
 
-function formatStatusTime(item, mine, isLatest, otherReadAt, otherUnread) {
+function formatStatusTime(item, mine, isLatest, otherReadAt, otherUnread, mediaViewedAt) {
   const sentDate = toDate(messageTimestamp(item));
   if (!sentDate) return '';
   const sentTime = format24Time(sentDate);
 
+  if (mine && item.sendStatus === 'failed') return 'ส่งไม่สำเร็จ · แตะเพื่อลองใหม่';
   if (mine && isLatest) {
+    if (item.sendStatus === 'queued') return 'รอเชื่อมต่อเพื่อส่ง';
     if (item.pendingSync) {
       return 'กำลังส่ง...';
+    }
+    if (isProtectedMedia(item)) {
+      const viewedDate = toDate(mediaViewedAt);
+      if (viewedDate) return `เปิดดูแล้วเมื่อ ${format24Time(viewedDate)}`;
+      return `ส่งแล้วเมื่อ ${sentTime}`;
     }
     const readDate = toDate(otherReadAt);
     const isReadByOther = Boolean(
@@ -215,32 +247,32 @@ function formatStatusTime(item, mine, isLatest, otherReadAt, otherUnread) {
 }
 
 export default function ChatRoomScreen() {
+  useEffect(() => { prefetchBrowseMusicTracks(); }, []);
   const { showImageModeration } = useToast();
-  const { activeCall, startVoiceCall, startVideoCall, acceptCall } = useCall();
+  const { confirm } = useConfirm();
+  const { activeCall, canCall, startVoiceCall, startVideoCall, acceptCall } = useCall();
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
   const { chatId } = useLocalSearchParams();
+  const { allConversations, conversations } = useAppConversations();
+  const { acceptedIncomingLikes, availableProfiles, matchedProfileIds, outgoingLikes } = useAppFeed();
+  const { profile } = useAppProfile();
+  const canUseSpotify = React.useMemo(() => isSpotifyFeatureAllowed(null, profile), [profile]);
   const {
-    acceptedIncomingLikes,
-    allConversations,
-    availableProfiles,
-    conversations,
     deleteMessageForMeInChat,
     getMeetupStats,
     markAsRead,
-    matchedProfileIds,
-    outgoingLikes,
-    profile,
     reactToMessageInChat,
     removeConversation,
     blockUser,
     reportContent,
     sendMessage,
+    cacheConversationMessages,
     toggleMeetupAcceptanceInChat,
     unsendMessageInChat,
     updateChatSettingsInChat,
-  } = useApp();
+  } = useAppActions();
   const currentUserId = profile?.id;
   const normalizedChatId = Array.isArray(chatId) ? chatId[0] : chatId;
   const chat = useMemo(
@@ -330,15 +362,19 @@ export default function ChatRoomScreen() {
   const handleUnsend = useCallback(async (item) => {
     if (!chat?.id || !item?.id) return;
     setActionMessage(null);
-    Alert.alert('ยกเลิกการส่ง?', 'ข้อความนี้จะหายจากห้องสนทนาของทั้งสองฝ่าย', [
-      { style: 'cancel', text: 'ยกเลิก' },
-      {
-        onPress: () => unsendMessageInChat(chat.id, item.id).catch((error) => console.error('unsend message error:', error)),
-        style: 'destructive',
-        text: 'ยกเลิกการส่ง',
-      },
-    ]);
-  }, [chat?.id, unsendMessageInChat]);
+    const ok = await confirm({
+      title: 'ยกเลิกการส่ง?',
+      body: 'ข้อความนี้จะหายจากห้องสนทนาของทั้งสองฝ่าย',
+      confirmLabel: 'ยกเลิกการส่ง',
+      icon: 'arrow.uturn.backward.circle',
+    });
+    if (!ok) return;
+    try {
+      await unsendMessageInChat(chat.id, item.id);
+    } catch (error) {
+      console.error('unsend message error:', error);
+    }
+  }, [chat?.id, confirm, unsendMessageInChat]);
 
   const defaultQuickReaction = useDefaultMessageReaction();
   const configuredQuickReactions = useQuickReactions();
@@ -375,50 +411,32 @@ export default function ChatRoomScreen() {
     }
   }, []);
 
-  const handleDeleteForMe = useCallback((item) => {
+  const handleDeleteForMe = useCallback(async (item) => {
     if (!chat?.id || !item?.id) return;
     setActionMessage(null);
-    Alert.alert('ลบสำหรับคุณ?', 'อีกฝ่ายจะยังเห็นข้อความนี้ตามปกติ', [
-      { style: 'cancel', text: 'ยกเลิก' },
-      {
-        onPress: () => deleteMessageForMeInChat(chat.id, item.id).catch((error) => console.error('delete message error:', error)),
-        style: 'destructive',
-        text: 'ลบ',
-      },
-    ]);
-  }, [chat?.id, deleteMessageForMeInChat]);
+    const ok = await confirm({
+      title: 'ลบสำหรับคุณ?',
+      body: 'อีกฝ่ายจะยังเห็นข้อความนี้ตามปกติ',
+      confirmLabel: 'ลบ',
+      icon: 'trash.fill',
+    });
+    if (!ok) return;
+    try {
+      await deleteMessageForMeInChat(chat.id, item.id);
+    } catch (error) {
+      console.error('delete message error:', error);
+    }
+  }, [chat?.id, confirm, deleteMessageForMeInChat]);
 
   const [videoDraft, setVideoDraft] = useState(null);
   const handlePickVideo = async () => {
     try { const asset = await pickChatVideo(); if (asset) setMediaComposerDraft({ ...asset, type: 'video' }); }
-    catch (error) { Alert.alert('เลือกวิดีโอไม่สำเร็จ', error.message); }
+    catch (error) { showAlert('เลือกวิดีโอไม่สำเร็จ', error.message, { tone: 'danger' }); }
   };
-  const handleSendVideo = async (asset, mode, caption = '') => {
-    validateChatVideo(asset, mode);
-    if (!chat?.id || !currentUserId || chat.encryptionPending) throw new Error('ห้องแชตยังไม่พร้อมส่งวิดีโอ');
-    const replySnapshot = replyingTo;
-    const conversationKey = await getOrFetchConversationKey(chat.id, currentUserId);
-    const mediaUrl = await uploadChatMedia(asset.uri, {
-      conversationId: chat.id, mediaType: 'video', extension: 'mp4', conversationKey, videoDuration: asset.duration,
-    });
-    const messageId = randomUUID();
-    if (asset.upgradeSource) await stageVideoUpgrade({ userId: currentUserId, conversationId: chat.id, messageId,
-      asset: asset.upgradeSource, edit: asset.videoEdit, mode });
-    try {
-      const sent = await sendMessage(chat.id, caption.trim() || '[วิดีโอ]', { clientMessageId: messageId,
-        mediaType: 'video', mediaUrl, videoMode: mode, videoDuration: asset.duration,
-        videoStartMs: asset.videoEdit?.startMs, videoEndMs: asset.videoEdit?.endMs,
-        replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined });
-      if (!sent) throw new Error('ไม่สามารถส่งวิดีโอได้');
-      setReplyingTo(null);
-    } catch (error) { await cancelVideoUpgrade(currentUserId, messageId); throw error; }
-    void resumeVideoUpgrades(currentUserId);
-  };
-
   const handleForward = useCallback(async (item, targetConversationId) => {
     setActionMessage(null);
     if (item?.mediaType === 'video') {
-      Alert.alert('ไม่สามารถส่งต่อวิดีโอ', 'กรุณาเลือกวิดีโอจากเครื่องเพื่อส่งใหม่');
+      showAlert('ไม่สามารถส่งต่อวิดีโอ', 'กรุณาเลือกวิดีโอจากเครื่องเพื่อส่งใหม่', { tone: 'danger' });
       return;
     }
     if ((!item?.text && !item?.mediaUrl) || !targetConversationId) return;
@@ -450,7 +468,7 @@ export default function ChatRoomScreen() {
               conversationKey: targetKey,
             });
             forwardOptions.mediaUrl = newDownloadUrl;
-            preCacheDecryptedMedia(newDownloadUrl, localUri);
+            preCacheDecryptedMedia(newDownloadUrl, localUri, { conversationKey: targetKey, mediaType });
           } else {
             forwardOptions.mediaUrl = item.mediaUrl;
           }
@@ -462,9 +480,9 @@ export default function ChatRoomScreen() {
 
       const messageText = item.text || (item.mediaType === 'audio' ? '[ข้อความเสียง]' : '[รูปภาพ]');
       await sendMessage(targetConversationId, messageText, forwardOptions);
-      Alert.alert('ส่งต่อแล้ว', 'ส่งข้อความไปยังห้องสนทนาที่เลือกเรียบร้อย');
+      showAlert('ส่งต่อแล้ว', 'ส่งข้อความไปยังห้องสนทนาที่เลือกเรียบร้อย', { tone: 'success' });
     } catch (error) {
-      Alert.alert('ส่งต่อไม่สำเร็จ', error?.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ส่งต่อไม่สำเร็จ', error?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     }
   }, [chat?.id, currentUserId, sendMessage]);
 
@@ -489,6 +507,7 @@ export default function ChatRoomScreen() {
     }
   };
 
+  const flatListPerf = useMemo(() => getFlatListPerformanceConfig(), []);
   const [inputText, setInputText] = useState('');
   const [showQuickEmoji, setShowQuickEmoji] = useState(false);
   const [sending, setSending] = useState(false);
@@ -528,10 +547,10 @@ export default function ChatRoomScreen() {
         setClipboardImageDetected(false);
         setSelectedImage({ uri });
       } else {
-        Alert.alert('คลิปบอร์ด', 'ไม่พบรูปภาพหรือลิงก์รูปภาพที่คัดลอกมา');
+        showAlert('คลิปบอร์ด', 'ไม่พบรูปภาพหรือลิงก์รูปภาพที่คัดลอกมา', { tone: 'info' });
       }
     } catch (err) {
-      Alert.alert('ไม่สามารถวางรูปได้', err?.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ไม่สามารถวางรูปได้', err?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     }
   }, []);
 
@@ -550,6 +569,7 @@ export default function ChatRoomScreen() {
   }, []);
   const [isMediaPickerOpen, setIsMediaPickerOpen] = useState(false);
   const [isGiphyPickerOpen, setIsGiphyPickerOpen] = useState(false);
+  const [isSpotifyPickerOpen, setIsSpotifyPickerOpen] = useState(false);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [recordedAudio, setRecordedAudio] = useState(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -576,7 +596,10 @@ export default function ChatRoomScreen() {
   const listRef = useRef(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
+  const [isListAnchored, setIsListAnchored] = useState(false);
+  const lastSeenMessageIdRef = useRef(null);
   const isNearBottomRef = useRef(true);
+  const bottomAnchoredRef = useRef(false);
   // The first Firestore snapshot replaces the cached conversation. Position
   // that snapshot instantly; only later messages should use an animated jump.
   const initialMessagesReadyRef = useRef(false);
@@ -586,101 +609,129 @@ export default function ChatRoomScreen() {
   const isReadByOther = (chat?.unreadCounts?.[otherUserId] || 0) === 0;
 
   const [directMessages, setDirectMessages] = useState(null);
+  const [directMessagesRoomId, setDirectMessagesRoomId] = useState(normalizedChatId);
+  const decryptedMessageCacheRef = useRef(new Map());
+  const lastCachedMessagesSigRef = useRef('');
+  const [olderMessages, setOlderMessages] = useState([]);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const oldestDocRef = useRef(null);
+  const historyClearedAtRef = useRef(chat?.historyClearedAt?.[currentUserId] || null);
+  historyClearedAtRef.current = chat?.historyClearedAt?.[currentUserId] || null;
+
+  if (directMessagesRoomId !== normalizedChatId) {
+    setDirectMessagesRoomId(normalizedChatId);
+    setDirectMessages(null);
+    decryptedMessageCacheRef.current = new Map();
+    lastCachedMessagesSigRef.current = '';
+    setOlderMessages([]);
+    setIsLoadingOlder(false);
+    setHasMoreOlder(false);
+    oldestDocRef.current = null;
+  }
+
+  const scopedDirectMessages = directMessagesRoomId === normalizedChatId ? directMessages : null;
+  const scopedOlderMessages = directMessagesRoomId === normalizedChatId ? olderMessages : [];
 
   useEffect(() => {
     if (!normalizedChatId) {
       setDirectMessages(null);
-      return;
+      return undefined;
     }
 
     let isSubscribed = true;
     let unsubscribe = () => {};
+    let latestRawDocs = null;
+    let key = currentUserId
+      ? peekCachedConversationKey(normalizedChatId, currentUserId)
+      : null;
 
-    const startListener = async () => {
-      try {
-        const { db } = requireFirebase();
-        let key = null;
-        if (currentUserId) {
-          try {
-            key = await getOrFetchConversationKey(normalizedChatId, currentUserId);
-          } catch {
-            key = null;
-          }
+    const applyDecrypted = (rawDocs, currentKey) => {
+      const previousById = decryptedMessageCacheRef.current;
+      const nextById = new Map();
+      const decryptedList = rawDocs.map((doc) => {
+        const stamp = [
+          doc.ciphertext || '',
+          doc.nonce || '',
+          JSON.stringify(doc.reactions || {}),
+          JSON.stringify(doc.hiddenFor || []),
+          doc.isDeleted || '',
+          doc.unsent || '',
+        ].join(':');
+        const cached = previousById.get(doc.id);
+        if (cached?.stamp === stamp) {
+          nextById.set(doc.id, cached);
+          return cached.message;
         }
-
-        if (!isSubscribed) return;
-
-        const messagesRef = collection(db, 'conversations', normalizedChatId, 'messages');
-        const messagesQuery = query(
-          messagesRef,
-          orderBy('createdAt', 'desc'),
-          limit(40)
+        const decodedList = decryptConversationMessageList(
+          normalizedChatId,
+          [doc],
+          currentKey,
+          currentUserId,
+          historyClearedAtRef.current
         );
-        unsubscribe = onSnapshot(
-          messagesQuery,
-          async (snapshot) => {
-            try {
-              if (snapshot.docs.length >= 40) {
-                setHasMoreOlder(true);
-                oldestDocRef.current = snapshot.docs[snapshot.docs.length - 1];
-              } else {
-                setHasMoreOlder(false);
-                oldestDocRef.current = snapshot.docs[snapshot.docs.length - 1] || null;
-              }
-              const rawDocs = snapshot.docs.map((docSnap) => ({
-                id: docSnap.id,
-                ...docSnap.data(),
-              })).reverse();
-              let currentKey = key;
-              if (!currentKey && currentUserId) {
-                try {
-                  currentKey = await getOrFetchConversationKey(normalizedChatId, currentUserId);
-                  if (currentKey) key = currentKey;
-                } catch {}
-              }
-              const historyCutoff = chat?.historyClearedAt?.[currentUserId] || null;
-              const decryptedList = decryptConversationMessageList(
-                normalizedChatId,
-                rawDocs,
-                currentKey,
-                currentUserId,
-                historyCutoff
-              );
-              if (isSubscribed) {
-                setDirectMessages(decryptedList);
-              }
-            } catch (err) {
-              console.warn('ChatRoom direct messages decrypt error:', err?.message || err);
-            }
-          },
-          (error) => {
-            console.warn('ChatRoom direct messages listener error:', error?.message || error);
-          }
-        );
-      } catch (err) {
-        console.warn('ChatRoom direct listener setup failed:', err?.message || err);
-      }
+        if (!decodedList.length) return null;
+        const decoded = decodedList[0];
+        const entry = { stamp, message: decoded };
+        nextById.set(doc.id, entry);
+        return decoded;
+      }).filter(Boolean);
+      decryptedMessageCacheRef.current = nextById;
+      if (isSubscribed) setDirectMessages(decryptedList);
     };
 
-    startListener();
+    try {
+      const { db } = requireFirebase();
+      const messagesRef = collection(db, 'conversations', normalizedChatId, 'messages');
+      const messagesQuery = query(
+        messagesRef,
+        orderBy('createdAt', 'desc'),
+        limit(40)
+      );
+      unsubscribe = onSnapshot(
+        messagesQuery,
+        (snapshot) => {
+          try {
+            if (snapshot.docs.length >= 40) {
+              setHasMoreOlder(true);
+              oldestDocRef.current = snapshot.docs[snapshot.docs.length - 1];
+            } else {
+              setHasMoreOlder(false);
+              oldestDocRef.current = snapshot.docs[snapshot.docs.length - 1] || null;
+            }
+            const rawDocs = snapshot.docs.map((docSnap) => ({
+              id: docSnap.id,
+              ...docSnap.data(),
+            })).reverse();
+            latestRawDocs = rawDocs;
+            applyDecrypted(rawDocs, key);
+          } catch (err) {
+            console.warn('ChatRoom direct messages decrypt error:', err?.message || err);
+          }
+        },
+        (error) => {
+          console.warn('ChatRoom direct messages listener error:', error?.message || error);
+        }
+      );
+    } catch (err) {
+      console.warn('ChatRoom direct listener setup failed:', err?.message || err);
+    }
+
+    if (currentUserId) {
+      getOrFetchConversationKey(normalizedChatId, currentUserId)
+        .then((fetchedKey) => {
+          if (!isSubscribed || !fetchedKey) return;
+          key = fetchedKey;
+          if (latestRawDocs) applyDecrypted(latestRawDocs, key);
+        })
+        .catch(() => {});
+    }
 
     return () => {
       isSubscribed = false;
       unsubscribe();
     };
   }, [normalizedChatId, currentUserId]);
-
-  const [olderMessages, setOlderMessages] = useState([]);
-  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
-  const [hasMoreOlder, setHasMoreOlder] = useState(false);
-  const oldestDocRef = useRef(null);
-
-  useEffect(() => {
-    setOlderMessages([]);
-    setIsLoadingOlder(false);
-    setHasMoreOlder(false);
-    oldestDocRef.current = null;
-  }, [normalizedChatId]);
 
   const loadOlderMessages = useCallback(async () => {
     if (isLoadingOlder || !hasMoreOlder || !oldestDocRef.current || !normalizedChatId) return;
@@ -727,13 +778,14 @@ export default function ChatRoomScreen() {
   const [localPendingMediaMessages, setLocalPendingMediaMessages] = useState([]);
 
   const effectiveMessages = useMemo(() => {
-    const directWithOlder = directMessages !== null
-      ? [...olderMessages, ...directMessages]
-      : null;
-    const base = directWithOlder !== null ? directWithOlder : (chat?.messages || []);
+    const cachedMessages = Array.isArray(chat?.messages) ? chat.messages : [];
+    const liveMessages = scopedDirectMessages !== null
+      ? preferCachedDecryption([...scopedOlderMessages, ...scopedDirectMessages], cachedMessages)
+      : cachedMessages;
+    const base = liveMessages;
     const baseIds = new Set(base.map((b) => b?.id).filter(Boolean));
     const baseMediaUrls = new Set(base.map((b) => b?.mediaUrl).filter(Boolean));
-    const pendingOptimistic = (chat?.messages || []).filter(
+    const pendingOptimistic = cachedMessages.filter(
       (m) => !baseIds.has(m.id) && !(m.mediaUrl && baseMediaUrls.has(m.mediaUrl)) && (m?.pendingSync || m?.senderId === currentUserId)
     );
     const pendingLocalMedia = localPendingMediaMessages.filter(
@@ -751,7 +803,20 @@ export default function ChatRoomScreen() {
     return uniqueMessages.sort(
       (a, b) => (toDate(messageTimestamp(a))?.getTime() || 0) - (toDate(messageTimestamp(b))?.getTime() || 0)
     );
-  }, [chat?.messages, directMessages, localPendingMediaMessages, olderMessages]);
+  }, [chat?.messages, currentUserId, localPendingMediaMessages, scopedDirectMessages, scopedOlderMessages]);
+
+  useEffect(() => {
+    if (!normalizedChatId || scopedDirectMessages === null || !cacheConversationMessages) return undefined;
+    const liveMessages = [...scopedOlderMessages, ...scopedDirectMessages];
+    const lastMessage = liveMessages[liveMessages.length - 1];
+    const signature = `${normalizedChatId}:${liveMessages.length}:${lastMessage?.id || ''}:${lastMessage?.text || ''}`;
+    if (signature === lastCachedMessagesSigRef.current) return undefined;
+    const timer = setTimeout(() => {
+      lastCachedMessagesSigRef.current = signature;
+      cacheConversationMessages(normalizedChatId, liveMessages);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [cacheConversationMessages, normalizedChatId, scopedDirectMessages, scopedOlderMessages]);
 
   const latestMessageId = effectiveMessages[effectiveMessages.length - 1]?.id || null;
 
@@ -760,8 +825,7 @@ export default function ChatRoomScreen() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [showAllMessageTimes, setShowAllMessageTimes] = useState(false);
   const allMessageTimesTimerRef = useRef(null);
-  const timeDragAnim = useRef(new Animated.Value(0)).current;
-  const [tick, setTick] = useState(0);
+  const timeDragAnim = useSharedValue(0);
   const handleTextInputChange = useCallback((text) => {
     // Preserve native typing/paste, including image URLs, without clearing the draft.
     setInputText(text);
@@ -794,27 +858,21 @@ export default function ChatRoomScreen() {
     return isIncoming || isOutgoing;
   }, [acceptedIncomingLikes, chat?.id, chat?.isHidden, matchedProfileIds, otherUserId, outgoingLikes]);
 
-  const handleRemoveConversation = () => {
+  const handleRemoveConversation = async () => {
     setIsSettingsOpen(false);
-    Alert.alert(
-      'ยกเลิกการจับคู่และลบห้องสนทนา?',
-      `การจับคู่และห้องสนทนากับ ${chat?.name || 'เพื่อน'} จะถูกนำออกจากรายการของคุณ`,
-      [
-        { text: 'ยกเลิก', style: 'cancel' },
-        {
-          text: 'ลบห้องสนทนา',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await removeConversation(chat?.id, otherUserId);
-              router.replace('/chat');
-            } catch (error) {
-              console.error('removeConversation error:', error);
-            }
-          },
-        },
-      ]
-    );
+    const ok = await confirm({
+      title: 'ยกเลิกการจับคู่และลบห้องสนทนา?',
+      body: `การจับคู่และห้องสนทนากับ ${chat?.name || 'เพื่อน'} จะถูกนำออกจากรายการของคุณ`,
+      confirmLabel: 'ลบห้องสนทนา',
+      icon: 'trash.fill',
+    });
+    if (!ok) return;
+    try {
+      await removeConversation(chat?.id, otherUserId);
+      router.replace('/chat');
+    } catch (error) {
+      console.error('removeConversation error:', error);
+    }
   };
 
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
@@ -865,29 +923,23 @@ export default function ChatRoomScreen() {
     }, 120);
   }, [chat?.id, chat?.participants, chat?.profileId, currentUserId, otherUserId]);
 
-  const handleBlockUserAction = useCallback(() => {
+  const handleBlockUserAction = useCallback(async () => {
     setIsSettingsOpen(false);
-    Alert.alert(
-      `บล็อก ${chat?.name || 'ผู้ใช้นี้'}?`,
-      'คุณจะไม่เห็นข้อความและการจับคู่กับผู้ใช้นี้อีกต่อไป และผู้ใช้นี้จะไม่สามารถส่งข้อความหาคุณได้',
-      [
-        { text: 'ยกเลิก', style: 'cancel' },
-        {
-          text: 'บล็อกผู้ใช้',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await blockUser(otherUserId, chat?.id);
-              Alert.alert('บล็อกผู้ใช้เรียบร้อยแล้ว');
-              router.replace('/chat');
-            } catch (err) {
-              Alert.alert('บล็อกไม่สำเร็จ', err?.message || 'กรุณาลองใหม่อีกครั้ง');
-            }
-          },
-        },
-      ]
-    );
-  }, [blockUser, chat?.id, chat?.name, otherUserId]);
+    const ok = await confirm({
+      title: `บล็อก ${chat?.name || 'ผู้ใช้นี้'}?`,
+      body: 'คุณจะไม่เห็นข้อความและการจับคู่กับผู้ใช้นี้อีกต่อไป และผู้ใช้นี้จะไม่สามารถส่งข้อความหาคุณได้',
+      confirmLabel: 'บล็อกผู้ใช้',
+      icon: 'person.fill.xmark',
+    });
+    if (!ok) return;
+    try {
+      await blockUser(otherUserId, chat?.id);
+      showAlert('บล็อกผู้ใช้เรียบร้อยแล้ว', undefined, { tone: 'success' });
+      router.replace('/chat');
+    } catch (err) {
+      showAlert('บล็อกไม่สำเร็จ', err?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
+    }
+  }, [blockUser, chat?.id, chat?.name, confirm, otherUserId]);
 
   const handleSubmitReport = useCallback(async ({ reason, details }) => {
     if (!reportTarget.reportedUserId && !otherUserId) return;
@@ -906,6 +958,19 @@ export default function ChatRoomScreen() {
     }
   }, [chat?.id, deleteMessageForMeInChat, otherUserId, reportContent, reportTarget]);
 
+  // Call-back from a call history bubble. Latest chat/permission are read from a ref so the
+  // handler stays stable and the memoized message rows do not re-render on every chat update.
+  const callTargetRef = useRef({ chat: null, canCall: false });
+  useEffect(() => {
+    callTargetRef.current = { chat, canCall };
+  });
+  const handleCallPress = useCallback((type) => {
+    const { chat: target, canCall: allowed } = callTargetRef.current;
+    if (!allowed || !target) return;
+    if (type === 'video') startVideoCall(target, target.id);
+    else startVoiceCall(target, target.id);
+  }, [startVideoCall, startVoiceCall]);
+
   const handleOpenPartnerProfile = useCallback(() => {
     if (otherUserId) {
       router.push({
@@ -916,12 +981,10 @@ export default function ChatRoomScreen() {
   }, [otherUserId]);
 
   useEffect(() => {
-    const timer = setInterval(() => setTick((t) => t + 1), 30000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
+    setPartnerProfileDirect(null);
     if (!otherUserId) return;
+    if (secureDiscoveryConfigured()) return subscribeSecureProfile(otherUserId, setPartnerProfileDirect,
+      (reason) => console.warn('Partner profile lookup failed:', reason?.code || 'unavailable'));
     try {
       const { db } = requireFirebase();
       const unsub = onSnapshot(doc(db, 'profiles', otherUserId), (snap) => {
@@ -973,39 +1036,39 @@ export default function ChatRoomScreen() {
   const handleToggleAcceptMeetup = async () => {
     if (!chat?.id || !otherUserId || !partnerMeetup) return;
     if (!isAcceptedByMe && isMeetupDateExpired) {
-      Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้');
+      showAlert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้', { tone: 'warning' });
       return;
     }
     if (isAcceptedByMe && !cancelCheck.allowed) {
-      Alert.alert('ไม่สามารถยกเลิกได้', cancelCheck.reason || 'ไม่อนุญาตให้ยกเลิกก่อนวันนัดจริง 1 วัน');
+      showAlert('ไม่สามารถยกเลิกได้', cancelCheck.reason || 'ไม่อนุญาตให้ยกเลิกก่อนวันนัดจริง 1 วัน', { tone: 'warning' });
       return;
     }
     try {
       await toggleMeetupAcceptanceInChat(chat.id, targetHostId, partnerMeetup.name || 'จุดนัดพบ', partnerMeetup);
     } catch (e) {
       console.warn('toggle meetup acceptance warning:', e?.message || e);
-      Alert.alert('เกิดข้อผิดพลาด', e?.message || 'ไม่สามารถดำเนินการได้');
+      showAlert('เกิดข้อผิดพลาด', e?.message || 'ไม่สามารถดำเนินการได้', { tone: 'danger' });
     }
   };
 
-  const scrollToLatest = useCallback((animated = true, force = false) => {
+  const scrollToLatest = useCallback((animated = false, force = false) => {
     if (!listRef.current) return;
+    const allowAnimated = Boolean(animated && bottomAnchoredRef.current && isListAnchored);
     const run = () => {
       try {
-        listRef.current?.scrollToEnd({ animated });
+        listRef.current?.scrollToEnd({ animated: allowAnimated });
       } catch (_) {
         try {
-          listRef.current?.scrollToOffset({ offset: 999999, animated });
+          listRef.current?.scrollToOffset({ offset: 999999, animated: allowAnimated });
         } catch (_) {}
       }
+      bottomAnchoredRef.current = true;
     };
-    requestAnimationFrame(run);
+    run();
     if (force) {
-      setTimeout(run, 50);
-      setTimeout(run, 150);
-      setTimeout(run, 300);
+      requestAnimationFrame(run);
     }
-  }, []);
+  }, [isListAnchored]);
 
   const handleScroll = useCallback((event) => {
     const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent;
@@ -1023,16 +1086,50 @@ export default function ChatRoomScreen() {
   }, [hasMoreOlder, isLoadingOlder, loadOlderMessages]);
 
   const handleContentSizeChange = useCallback(() => {
-    if (isNearBottomRef.current) {
-      scrollToLatest(false, true);
+    if (!bottomAnchoredRef.current) {
+      try {
+        listRef.current?.scrollToEnd({ animated: false });
+      } catch (_) {
+        try {
+          listRef.current?.scrollToOffset({ offset: 999999, animated: false });
+        } catch (_) {}
+      }
+      bottomAnchoredRef.current = true;
+      setIsListAnchored(true);
+      return;
     }
-  }, [scrollToLatest]);
+    if (isNearBottomRef.current) {
+      try {
+        listRef.current?.scrollToEnd({ animated: false });
+      } catch (_) {
+        try {
+          listRef.current?.scrollToOffset({ offset: 999999, animated: false });
+        } catch (_) {}
+      }
+    }
+  }, []);
 
   const handleListLayout = useCallback(() => {
-    if (isNearBottomRef.current) {
-      scrollToLatest(false, true);
+    if (!bottomAnchoredRef.current) {
+      try {
+        listRef.current?.scrollToEnd({ animated: false });
+      } catch (_) {
+        try {
+          listRef.current?.scrollToOffset({ offset: 999999, animated: false });
+        } catch (_) {}
+      }
+      bottomAnchoredRef.current = true;
+      setIsListAnchored(true);
+    } else if (isNearBottomRef.current) {
+      try {
+        listRef.current?.scrollToEnd({ animated: false });
+      } catch (_) {
+        try {
+          listRef.current?.scrollToOffset({ offset: 999999, animated: false });
+        } catch (_) {}
+      }
     }
-  }, [scrollToLatest]);
+  }, []);
 
   const handleScrollToIndexFailed = useCallback((info) => {
     const wait = new Promise((resolve) => setTimeout(resolve, 80));
@@ -1073,12 +1170,27 @@ export default function ChatRoomScreen() {
     setShowScrollBottom(false);
     setNewMessagesBelow(0);
     isNearBottomRef.current = true;
+    bottomAnchoredRef.current = false;
     initialMessagesReadyRef.current = false;
+    lastSeenMessageIdRef.current = null;
+    setIsListAnchored(false);
     if (allMessageTimesTimerRef.current) {
       clearTimeout(allMessageTimesTimerRef.current);
       allMessageTimesTimerRef.current = null;
     }
     scrollToLatest(false, true);
+
+    const safetyTimer = setTimeout(() => {
+      if (!bottomAnchoredRef.current) {
+        try {
+          listRef.current?.scrollToEnd({ animated: false });
+        } catch (_) {}
+        bottomAnchoredRef.current = true;
+      }
+      setIsListAnchored(true);
+    }, 80);
+
+    return () => clearTimeout(safetyTimer);
   }, [chat?.id, scrollToLatest]);
 
   useEffect(() => () => {
@@ -1086,77 +1198,32 @@ export default function ChatRoomScreen() {
   }, []);
 
   useEffect(() => {
-    if (!latestMessageId) return;
-    if (directMessages === null || !initialMessagesReadyRef.current) {
+    if (!latestMessageId) {
+      setIsListAnchored(true);
+      return;
+    }
+    if (scopedDirectMessages === null || !initialMessagesReadyRef.current) {
       // The list may first contain cached messages and then be replaced by
       // the initial direct snapshot. Never animate that hydration pass.
       scrollToLatest(false, true);
-      if (directMessages !== null) {
+      lastSeenMessageIdRef.current = latestMessageId;
+      if (scopedDirectMessages !== null) {
         initialMessagesReadyRef.current = true;
       }
       return;
     }
+    if (lastSeenMessageIdRef.current === latestMessageId) {
+      return;
+    }
+    lastSeenMessageIdRef.current = latestMessageId;
+
     if (isNearBottomRef.current) {
-      scrollToLatest(true, true);
+      // New messages while already viewing the bottom — soft animate is OK.
+      scrollToLatest(true, false);
     } else {
       setNewMessagesBelow((prev) => prev + 1);
     }
-  }, [directMessages, latestMessageId, scrollToLatest]);
-
-  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
-  const [containerHeight, setContainerHeight] = useState(0);
-  const initialContainerHeightRef = useRef(0);
-
-  // Track Android keyboard height to prevent keyboard from covering the chat input in edge-to-edge mode
-  useEffect(() => {
-    if (Platform.OS !== 'android') return;
-
-    const onShow = (e) => {
-      const kh = e?.endCoordinates?.height || 0;
-      if (kh > 0) {
-        try {
-          LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-        } catch (_) {}
-        setAndroidKeyboardHeight(kh);
-        if (isNearBottomRef.current) {
-          scrollToLatest(true, true);
-        }
-      }
-    };
-
-    const onHide = () => {
-      try {
-        LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-      } catch (_) {}
-      setAndroidKeyboardHeight(0);
-    };
-
-    const showSub = Keyboard.addListener('keyboardDidShow', onShow);
-    const hideSub = Keyboard.addListener('keyboardDidHide', onHide);
-
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, [scrollToLatest]);
-
-  const handleContainerLayout = useCallback((e) => {
-    const h = e.nativeEvent?.layout?.height;
-    if (!h) return;
-    if (!initialContainerHeightRef.current || (androidKeyboardHeight === 0 && h > initialContainerHeightRef.current)) {
-      initialContainerHeightRef.current = h;
-    }
-    setContainerHeight(h);
-  }, [androidKeyboardHeight]);
-
-  const windowShrinkage = Math.max(
-    0,
-    (initialContainerHeightRef.current || 0) - (containerHeight || 0)
-  );
-
-  const androidKeyboardOffset = Platform.OS === 'android' && androidKeyboardHeight > 0
-    ? Math.max(0, androidKeyboardHeight - windowShrinkage - (windowShrinkage > 0 ? 0 : (insets?.bottom || 0))) + 10
-    : 0;
+  }, [latestMessageId, scopedDirectMessages, scrollToLatest]);
 
   // Scroll to bottom on keyboard show to lift messages with keyboard
   useEffect(() => {
@@ -1254,7 +1321,7 @@ export default function ChatRoomScreen() {
         }
       }, 80);
     } catch (err) {
-      Alert.alert('ไม่สามารถบันทึกเสียงได้', err.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ไม่สามารถบันทึกเสียงได้', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     }
   }, [recordedAudio]);
 
@@ -1275,7 +1342,7 @@ export default function ChatRoomScreen() {
       }
       const actualDuration = Math.max(duration, Math.round(res.duration || 0));
       if (actualDuration < 1) {
-        Alert.alert('เสียงสั้นเกินไป', 'กรุณาบันทึกเสียงอย่างน้อย 1 วินาที');
+        showAlert('เสียงสั้นเกินไป', 'กรุณาบันทึกเสียงอย่างน้อย 1 วินาที', { tone: 'warning' });
         setRecordedAudio(null);
         setRecordingSeconds(0);
         return;
@@ -1286,7 +1353,7 @@ export default function ChatRoomScreen() {
         levels: levelsSnapshot,
       });
     } catch (err) {
-      Alert.alert('ไม่สามารถหยุดการบันทึกได้', err.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ไม่สามารถหยุดการบันทึกได้', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
       setRecordedAudio(null);
     }
   }, [recordingLevels, recordingSeconds]);
@@ -1345,7 +1412,7 @@ export default function ChatRoomScreen() {
 
     if (!audioUri || !chat?.id) return;
     if (duration < 1) {
-      Alert.alert('เสียงสั้นเกินไป', 'กรุณาบันทึกเสียงอย่างน้อย 1 วินาที');
+      showAlert('เสียงสั้นเกินไป', 'กรุณาบันทึกเสียงอย่างน้อย 1 วินาที', { tone: 'warning' });
       return;
     }
 
@@ -1380,7 +1447,7 @@ export default function ChatRoomScreen() {
         extension: 'm4a',
         conversationKey,
       });
-      preCacheDecryptedMedia(downloadUrl, audioUri);
+      preCacheDecryptedMedia(downloadUrl, audioUri, { conversationKey, mediaType: 'audio' });
       await sendMessage(chat.id, '[ข้อความเสียง]', {
         mediaType: 'audio',
         mediaUrl: downloadUrl,
@@ -1390,82 +1457,179 @@ export default function ChatRoomScreen() {
       });
       scrollToLatest(true, true);
     } catch (err) {
-      Alert.alert('ส่งข้อความเสียงไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง');
+      showAlert('ส่งข้อความเสียงไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     } finally {
       setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== tempId));
       setUploadingMedia(false);
     }
   }, [chat?.id, currentUserId, isPreviewPlaying, isRecordingAudio, previewPlayer, recordedAudio, recordingSeconds, replyingTo, scrollToLatest, sendMessage]);
 
+  const handleSendVideo = useCallback(async (asset, mode, caption = '') => {
+    if (!chat?.id || !currentUserId) throw new Error('ห้องแชตยังไม่พร้อมส่งวิดีโอ');
+    if (!asset.needsExport) validateChatVideo(asset, mode);
+    const replySnapshot = replyingTo;
+    setReplyingTo(null);
+    const messageId = randomUUID();
+    const messageText = (caption || '').trim() || '[วิดีโอ]';
+    const clipDuration = Number.isFinite(asset.videoEdit?.endMs) && Number.isFinite(asset.videoEdit?.startMs)
+      ? Math.max(1, asset.videoEdit.endMs - asset.videoEdit.startMs)
+      : asset.duration;
+    const optimisticVideo = {
+      id: messageId,
+      sender: 'me',
+      senderId: currentUserId,
+      text: messageText,
+      createdAt: Date.now(),
+      time: Date.now(),
+      mediaType: 'video',
+      mediaUrl: asset.uri,
+      videoMode: mode,
+      videoDuration: clipDuration,
+      videoStartMs: asset.videoEdit?.startMs,
+      videoEndMs: asset.videoEdit?.endMs,
+      isUploading: true,
+      pendingSync: true,
+      replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+    };
+    setLocalPendingMediaMessages((prev) => [...prev, optimisticVideo]);
+    scrollToLatest(true, true);
+
+    let exported;
+    try {
+      const conversationKeyPromise = getOrFetchConversationKey(chat.id, currentUserId);
+      let uploadAsset = asset;
+      if (asset.needsExport && asset.videoEdit) {
+        exported = await exportChatVideo({ ...asset, duration: asset.duration }, asset.videoEdit, 'medium');
+        uploadAsset = { ...asset, ...exported };
+      }
+      validateChatVideo(uploadAsset, mode);
+      const conversationKey = await conversationKeyPromise;
+      const mediaUrl = await uploadChatMedia(uploadAsset.uri, {
+        conversationId: chat.id, mediaType: 'video', extension: 'mp4', conversationKey, videoDuration: uploadAsset.duration,
+      });
+      const sent = await sendMessage(chat.id, messageText, {
+        clientMessageId: messageId,
+        mediaType: 'video',
+        mediaUrl,
+        videoMode: mode,
+        videoDuration: uploadAsset.duration,
+        videoStartMs: 0,
+        videoEndMs: uploadAsset.duration,
+        replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+      });
+      if (!sent) throw new Error('ไม่สามารถส่งวิดีโอได้');
+      if (asset.upgradeSource) {
+        void stageVideoUpgrade({
+          userId: currentUserId,
+          conversationId: chat.id,
+          messageId,
+          asset: asset.upgradeSource,
+          edit: asset.videoEdit,
+          mode,
+        }).then(() => resumeVideoUpgrades(currentUserId)).catch((upgradeError) => {
+          console.warn('[VideoUpgrade] Unable to stage clearer rendition:', upgradeError?.message || upgradeError);
+        });
+      }
+    } catch (error) {
+      await cancelVideoUpgrade(currentUserId, messageId);
+      throw error;
+    } finally {
+      await discardVideoExport(exported);
+      setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== messageId));
+    }
+  }, [chat?.id, currentUserId, replyingTo, scrollToLatest, sendMessage]);
+
   const handleSendImage = useCallback(async (imageUri, captionText, viewMode = 'chat') => {
     const uris = Array.isArray(imageUri) ? imageUri.filter(Boolean) : (imageUri ? [imageUri] : []);
     if (!uris.length || !chat?.id) return;
-    setUploadingMedia(true);
     setSelectedImage(null);
     setInputText('');
     setIsMediaPickerOpen(false);
     const replySnapshot = replyingTo;
     setReplyingTo(null);
-
-    const tempId = `temp-img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const safeCaption = (captionText || '').trim();
-    const isMulti = uris.length > 1;
-    const defaultPlaceholder = isMulti ? `[รูปภาพ ${uris.length} รูป]` : '[รูปภาพ]';
+    const stamp = Date.now();
+    const pending = uris.map((uri, index) => ({
+      id: `temp-img-${stamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      uri,
+      caption: index === 0 ? safeCaption : '',
+    }));
+    const pendingIds = new Set(pending.map((item) => item.id));
 
-    const optimisticMessage = {
-      id: tempId,
-      sender: 'me',
-      senderId: currentUserId,
-      text: safeCaption || defaultPlaceholder,
-      createdAt: Date.now(),
-      time: Date.now(),
-      mediaType: 'image',
-      mediaUrl: uris[0],
-      mediaUrls: uris,
-      isUploading: true,
-      pendingSync: true,
-      replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
-    };
-
-    setLocalPendingMediaMessages((prev) => [...prev, optimisticMessage]);
+    setLocalPendingMediaMessages((prev) => [
+      ...prev,
+      ...pending.map((item, index) => ({
+        id: item.id,
+        sender: 'me',
+        senderId: currentUserId,
+        text: item.caption || '[รูปภาพ]',
+        createdAt: stamp + index,
+        time: stamp + index,
+        mediaType: 'image',
+        mediaUrl: item.uri,
+        viewMode,
+        isUploading: true,
+        pendingSync: true,
+        replyTo: index === 0 && replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+      })),
+    ]);
     scrollToLatest(true, true);
 
+    let sentCount = 0;
     try {
       const conversationKey = await getOrFetchConversationKey(chat.id, currentUserId);
-      const downloadUrls = await Promise.all(
-        uris.map(async (u) => {
-          const downloadUrl = await uploadChatMedia(u, {
-            conversationId: chat.id,
-            mediaType: 'image',
-            extension: 'jpg',
-            conversationKey,
-          });
-          preCacheDecryptedMedia(downloadUrl, u);
-          return downloadUrl;
-        })
-      );
-
-      await sendMessage(chat.id, safeCaption || (downloadUrls.length > 1 ? `[รูปภาพ ${downloadUrls.length} รูป]` : '[รูปภาพ]'), {
-        mediaType: 'image',
-        viewMode,
-        mediaUrl: downloadUrls[0],
-        mediaUrls: downloadUrls,
-        clientMessageId: tempId,
-        replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
-      });
+      const uploadResults = new Array(pending.length);
+      let nextUploadIndex = 0;
+      let uploadFailed = false;
+      const startNextUpload = () => {
+        if (uploadFailed || nextUploadIndex >= pending.length) return;
+        const index = nextUploadIndex++;
+        uploadResults[index] = uploadChatMedia(pending[index].uri, {
+          conversationId: chat.id,
+          mediaType: 'image',
+          extension: 'jpg',
+          conversationKey,
+        }).then(
+          (downloadUrl) => ({ ok: true, downloadUrl }),
+          (error) => {
+            uploadFailed = true;
+            return { ok: false, error };
+          }
+        );
+      };
+      startNextUpload();
+      startNextUpload();
+      for (let index = 0; index < pending.length; index += 1) {
+        const item = pending[index];
+        const uploadResult = await uploadResults[index];
+        if (!uploadResult.ok) throw uploadResult.error;
+        const { downloadUrl } = uploadResult;
+        preCacheDecryptedMedia(downloadUrl, item.uri, { conversationKey });
+        await sendMessage(chat.id, item.caption || '[รูปภาพ]', {
+          mediaType: 'image',
+          viewMode,
+          mediaUrl: downloadUrl,
+          clientMessageId: item.id,
+          replyTo: index === 0 && replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+        });
+        sentCount += 1;
+        setLocalPendingMediaMessages((prev) => prev.filter((message) => message.id !== item.id));
+        startNextUpload();
+      }
       scrollToLatest(true, true);
     } catch (err) {
       if (err.isModerationViolation || err.isModerationUnavailable) {
         showImageModeration(err);
-        setSelectedImage({ uri: uris[0], uris });
-        setInputText(safeCaption);
-        setReplyingTo(replySnapshot);
+        if (sentCount === 0) {
+          setSelectedImage({ uri: uris[0], uris });
+          setInputText(safeCaption);
+          setReplyingTo(replySnapshot);
+        }
       } else {
-        Alert.alert('ส่งรูปภาพไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง');
+        showAlert('ส่งรูปภาพไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
       }
     } finally {
-      setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== tempId));
-      setUploadingMedia(false);
+      setLocalPendingMediaMessages((prev) => prev.filter((message) => !pendingIds.has(message.id)));
     }
   }, [chat?.id, currentUserId, replyingTo, scrollToLatest, sendMessage, showImageModeration]);
 
@@ -1502,7 +1666,67 @@ export default function ChatRoomScreen() {
         });
         scrollToLatest(true, true);
       } catch (err) {
-        Alert.alert('ส่ง GIF ไม่สำเร็จ', err?.message || 'กรุณาลองใหม่อีกครั้ง');
+        showAlert('ส่ง GIF ไม่สำเร็จ', err?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
+      } finally {
+        setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== tempId));
+      }
+    },
+    [chat?.id, currentUserId, replyingTo, scrollToLatest, sendMessage]
+  );
+
+  const handleSendTrack = useCallback(
+    async (track) => {
+      if (!track?.id || !chat?.id) return;
+      setIsSpotifyPickerOpen(false);
+      const replySnapshot = replyingTo;
+      setReplyingTo(null);
+
+      const trackName = String(track.name || 'Spotify').slice(0, 200);
+      const plaintext = `🎵 ${trackName}`.slice(0, 1000);
+      const tempId = `temp-track-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const trackFields = {
+        mediaType: 'track',
+        trackId: String(track.id).slice(0, 64),
+        trackName,
+        artists: String(track.artists || '').slice(0, 200),
+        albumArt: typeof track.albumArt === 'string' ? track.albumArt.slice(0, 2000) : '',
+        ...(typeof track.previewUrl === 'string' && track.previewUrl
+          ? { previewUrl: track.previewUrl.slice(0, 2000) }
+          : {}),
+        externalUrl: typeof track.externalUrl === 'string' && track.externalUrl
+          ? track.externalUrl.slice(0, 500)
+          : `https://open.spotify.com/track/${track.id}`,
+        ...(Number.isFinite(Number(track.previewStartMs))
+          ? { previewStartMs: Math.max(0, Math.round(Number(track.previewStartMs))) }
+          : {}),
+        ...(Number.isFinite(Number(track.previewEndMs))
+          ? { previewEndMs: Math.max(0, Math.round(Number(track.previewEndMs))) }
+          : {}),
+      };
+      const optimisticMessage = {
+        id: tempId,
+        sender: 'me',
+        senderId: currentUserId,
+        text: plaintext,
+        createdAt: Date.now(),
+        time: Date.now(),
+        ...trackFields,
+        pendingSync: true,
+        replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+      };
+
+      setLocalPendingMediaMessages((prev) => [...prev, optimisticMessage]);
+      scrollToLatest(true, true);
+
+      try {
+        await sendMessage(chat.id, plaintext, {
+          ...trackFields,
+          clientMessageId: tempId,
+          replyTo: replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
+        });
+        scrollToLatest(true, true);
+      } catch (err) {
+        showAlert('ส่งเพลงไม่สำเร็จ', err?.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
       } finally {
         setLocalPendingMediaMessages((prev) => prev.filter((m) => m.id !== tempId));
       }
@@ -1514,6 +1738,7 @@ export default function ChatRoomScreen() {
     Keyboard.dismiss();
     setIsMediaPickerOpen(false);
     setIsGiphyPickerOpen(false);
+    setIsSpotifyPickerOpen(false);
     setCameraOpen(true);
   }, []);
 
@@ -1523,7 +1748,7 @@ export default function ChatRoomScreen() {
       return;
     }
     const trimmed = inputText.trim();
-    if (!trimmed || sending || uploadingMedia || !chat?.id || chat.encryptionPending || !isMatchActive) return;
+    if (!trimmed || sending || uploadingMedia || !chat?.id || !isMatchActive) return;
 
     isNearBottomRef.current = true;
     setShowScrollBottom(false);
@@ -1542,6 +1767,9 @@ export default function ChatRoomScreen() {
     } catch (error) {
       setInputText(trimmed);
       setReplyingTo(replySnapshot);
+      if (error?.code === 'E2EE_KEY_MISSING' || error?.code === 'E2EE_KEY_UNAVAILABLE') {
+        showAlert('ยังส่งไม่สำเร็จ', error.message || 'กำลังเชื่อมกุญแจเข้ารหัส ลองส่งอีกครั้งได้เลย', { tone: 'warning' });
+      }
     } finally {
       setSending(false);
     }
@@ -1568,6 +1796,7 @@ export default function ChatRoomScreen() {
         isHighlighted={highlightedMessageId === item.id}
         isLatest={index === effectiveMessages.length - 1}
         item={item}
+        onCallPress={handleCallPress}
         onOpenProfile={handleOpenPartnerProfile}
         onPreviewImage={handlePreviewImage}
         onQuickReact={handleQuickReact}
@@ -1577,14 +1806,14 @@ export default function ChatRoomScreen() {
         onSelectMessage={handleSelectMessage}
         otherReadAt={otherReadAt}
         otherUnread={chat?.unreadCounts?.[otherUserId]}
+        otherUserId={otherUserId}
         showAllMessageTimes={showAllMessageTimes}
         showDay={showDay}
         styles={styles}
-        tick={index === effectiveMessages.length - 1 ? tick : 0}
         timeDragAnim={timeDragAnim}
       />
     );
-  }, [actionMessage?.id, highlightedMessageId, chat, currentUserId, colors, effectiveMessages, replyMessagesById, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUserId, handleReply, showAllMessageTimes, styles, tick, timeDragAnim]);
+  }, [actionMessage?.id, highlightedMessageId, chat, currentUserId, colors, effectiveMessages, replyMessagesById, handleCallPress, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUserId, handleReply, showAllMessageTimes, styles, timeDragAnim]);
 
   if (!chat) {
     return (
@@ -1603,11 +1832,11 @@ export default function ChatRoomScreen() {
   }
 
   return (
-    <SafeAreaView onLayout={handleContainerLayout} style={styles.roomContainer}>
+    <SafeAreaView style={styles.roomContainer}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior="padding"
         keyboardVerticalOffset={0}
-        style={[{ flex: 1 }, Platform.OS === 'android' && { paddingBottom: androidKeyboardOffset }]}
+        style={{ flex: 1 }}
       >
         <View style={styles.roomHeader}>
           <Pressable accessibilityLabel="ย้อนกลับ" onPress={onBack} style={styles.backButton}>
@@ -1619,7 +1848,7 @@ export default function ChatRoomScreen() {
             onPress={handleOpenPartnerProfile}
             style={({ pressed }) => [styles.headerPartnerPressable, pressed && styles.pressed]}
           >
-            <Avatar avatarColor={chat.avatarColor} cacheScope={chat.profileId} cacheVersion={chat.participantProfiles?.[chat.profileId]?.updatedAt} colors={colors} emoji={chat.avatar} size={44} uri={chat.avatarUri} />
+            <Avatar avatarColor={chat.avatarColor} cacheScope={chat.profileId} cacheVersion={chat.participantProfiles?.[chat.profileId]?.avatarRevision} colors={colors} emoji={chat.avatar} size={44} uri={chat.avatarUri} />
             <View style={styles.roomIdentity}>
               <Text numberOfLines={1} style={styles.roomName}>{chat.name}</Text>
               <Text numberOfLines={1} style={styles.roomSubtitle}>{chat.subtitle || 'เพื่อนใน CampusMate'}</Text>
@@ -1637,22 +1866,26 @@ export default function ChatRoomScreen() {
                 <Text style={styles.headerJoinCallText}>เข้าร่วม</Text>
               </Pressable>
             ) : null}
-            <Pressable
-              accessibilityLabel="โทรด้วยเสียง"
-              accessibilityRole="button"
-              onPress={() => startVoiceCall(chat, chat?.id)}
-              style={({ pressed }) => [styles.headerCallBtn, pressed && styles.pressed]}
-            >
-              <FeatureIcon color={colors.ink} name="phone.fill" size={17} />
-            </Pressable>
-            <Pressable
-              accessibilityLabel="วิดีโอคอล"
-              accessibilityRole="button"
-              onPress={() => startVideoCall(chat, chat?.id)}
-              style={({ pressed }) => [styles.headerCallBtn, pressed && styles.pressed]}
-            >
-              <FeatureIcon color={colors.ink} name="video.fill" size={18} />
-            </Pressable>
+            {canCall ? (
+              <>
+                <Pressable
+                  accessibilityLabel="โทรด้วยเสียง"
+                  accessibilityRole="button"
+                  onPress={() => startVoiceCall(chat, chat?.id)}
+                  style={({ pressed }) => [styles.headerCallBtn, pressed && styles.pressed]}
+                >
+                  <FeatureIcon color={colors.ink} name="phone.fill" size={17} />
+                </Pressable>
+                <Pressable
+                  accessibilityLabel="วิดีโอคอล"
+                  accessibilityRole="button"
+                  onPress={() => startVideoCall(chat, chat?.id)}
+                  style={({ pressed }) => [styles.headerCallBtn, pressed && styles.pressed]}
+                >
+                  <FeatureIcon color={colors.ink} name="video.fill" size={18} />
+                </Pressable>
+              </>
+            ) : null}
             <Pressable
               accessibilityLabel="ตั้งค่าแชต"
               accessibilityRole="button"
@@ -1701,7 +1934,7 @@ export default function ChatRoomScreen() {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <Pressable
                     disabled={chat.encryptionPending || (!isAcceptedByMe && (isMeetupDateExpired || meetupStats?.isFull))}
-                    onPress={isMeetupDateExpired ? () => Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้') : handleToggleAcceptMeetup}
+                    onPress={isMeetupDateExpired ? () => showAlert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้', { tone: 'warning' }) : handleToggleAcceptMeetup}
                     style={({ pressed }) => [
                       styles.chatMeetupMiniBtn,
                       isAcceptedByMe && styles.chatMeetupMiniBtnAccepted,
@@ -1774,7 +2007,7 @@ export default function ChatRoomScreen() {
 
                   <Pressable
                     disabled={chat.encryptionPending || (!isAcceptedByMe && (isMeetupDateExpired || meetupStats?.isFull))}
-                    onPress={isMeetupDateExpired ? () => Alert.alert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้') : handleToggleAcceptMeetup}
+                    onPress={isMeetupDateExpired ? () => showAlert('ไม่สามารถตอบรับได้', 'นัดหมายนี้เลยกำหนดเวลาแล้ว ไม่สามารถตอบรับได้', { tone: 'warning' }) : handleToggleAcceptMeetup}
                     style={({ pressed }) => [
                       styles.chatMeetupBtn,
                       isAcceptedByMe && styles.chatMeetupBtnAccepted,
@@ -1807,6 +2040,7 @@ export default function ChatRoomScreen() {
           >
             <FlatList
             contentContainerStyle={styles.messageList}
+            style={{ flex: 1, opacity: isListAnchored || effectiveMessages.length === 0 ? 1 : 0 }}
             data={effectiveMessages}
             keyExtractor={(item) => item.id}
             keyboardDismissMode="none"
@@ -1827,7 +2061,7 @@ export default function ChatRoomScreen() {
                   <FeatureIcon color={chat.encryptionPending ? '#A15C00' : colors.primary} name="lock.shield.fill" size={14} />
                   <Text style={chat.encryptionPending ? styles.e2eePendingText : styles.e2eeText}>
                     {chat.encryptionPending
-                      ? 'กำลังรอคีย์จากผู้ร่วมสนทนา ข้อความเก่าจะแสดงเมื่อได้รับคีย์'
+                      ? 'กำลังเชื่อมกุญแจเข้ารหัส ส่งข้อความได้เลย ไม่ต้องรออัปเดตแอป'
                       : 'แชตนี้เข้ารหัสแบบต้นทางถึงปลายทาง'}
                   </Text>
                 </View>
@@ -1842,13 +2076,13 @@ export default function ChatRoomScreen() {
             )}
             ref={listRef}
             renderItem={renderMessage}
-            initialNumToRender={12}
-            maxToRenderPerBatch={8}
-            removeClippedSubviews={Platform.OS === 'android'}
+            initialNumToRender={flatListPerf.initialNumToRender}
+            maxToRenderPerBatch={flatListPerf.maxToRenderPerBatch}
+            removeClippedSubviews={flatListPerf.removeClippedSubviews}
             showsVerticalScrollIndicator={false}
             onTouchStart={handleListTouchStart}
-            updateCellsBatchingPeriod={50}
-            windowSize={9}
+            updateCellsBatchingPeriod={flatListPerf.updateCellsBatchingPeriod}
+            windowSize={flatListPerf.windowSize}
           />
           </MessageTimeSwipeArea>
 
@@ -1904,7 +2138,7 @@ export default function ChatRoomScreen() {
           <View style={styles.replyComposer}>
             <View style={styles.replyComposerCopy}>
               <Text style={styles.replyComposerTitle}>ตอบกลับข้อความ</Text>
-              <ReplyPreview reply={replyingTo} conversationId={chat?.id} color={colors.inkSoft} />
+              <ReplyPreview reply={replyingTo} conversationId={chat?.id} currentUserId={currentUserId} color={colors.inkSoft} />
             </View>
             <Pressable accessibilityLabel="ยกเลิกการตอบกลับ" onPress={() => setReplyingTo(null)} style={styles.replyComposerClose}>
               <FeatureIcon color={colors.inkSoft} name="xmark" size={12} />
@@ -2130,16 +2364,6 @@ export default function ChatRoomScreen() {
                     />
                   </Pressable>
 
-                  <Pressable
-                    accessibilityLabel="เปิดแผงอิโมจิ"
-                    focusable={false}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    onPress={() => setShowQuickEmoji((prev) => !prev)}
-                    style={({ pressed }) => [styles.capsuleSmileyBtn, showQuickEmoji && { backgroundColor: colors.primarySoft, borderRadius: 12 }, pressed && styles.pressed]}
-                  >
-                    <FeatureIcon color={showQuickEmoji ? colors.primary : colors.ink} name="face.smiling" size={22} />
-                  </Pressable>
-
                   <TextInput
                     accessibilityLabel="พิมพ์ข้อความ"
                     autoCapitalize="sentences"
@@ -2161,11 +2385,12 @@ export default function ChatRoomScreen() {
                     placeholder={
                       selectedImage
                         ? 'เพิ่มคำอธิบายรูปภาพ...'
-                        : chat.encryptionPending
-                        ? 'พิมพ์รอคีย์ได้...'
                         : 'ส่งข้อความ...'
                     }
                     placeholderTextColor={colors.inkSoft}
+                    keyboardAppearance={isDark ? 'dark' : 'light'}
+                    cursorColor={colors.primary}
+                    selectionColor={colors.primary}
                     ref={inputRef}
                     style={styles.capsuleTextInput}
                     value={inputText}
@@ -2176,11 +2401,11 @@ export default function ChatRoomScreen() {
                       <Pressable
                         accessibilityLabel="ส่งข้อความ"
                         focusable={false}
-                        disabled={sending || uploadingMedia || chat.encryptionPending || (!inputText.trim() && !selectedImage)}
+                        disabled={sending || uploadingMedia || (!inputText.trim() && !selectedImage)}
                         onPress={handleSend}
                         style={({ pressed }) => [
                           styles.capsuleSendButton,
-                          (sending || uploadingMedia || chat.encryptionPending || (!inputText.trim() && !selectedImage)) && styles.sendDisabled,
+                          (sending || uploadingMedia || (!inputText.trim() && !selectedImage)) && styles.sendDisabled,
                           pressed && styles.pressed,
                         ]}
                       >
@@ -2209,16 +2434,6 @@ export default function ChatRoomScreen() {
                         </Pressable>
 
                         <Pressable
-                          accessibilityLabel="วางรูปภาพจากคลิปบอร์ด"
-                          focusable={false}
-                          hitSlop={6}
-                          onPress={handlePasteClipboardImage}
-                          style={({ pressed }) => [styles.capsuleActionIconBtn, pressed && styles.pressed]}
-                        >
-                          <FeatureIcon color={colors.ink} name="doc.on.clipboard" size={21} />
-                        </Pressable>
-
-                        <Pressable
                           accessibilityLabel="ค้นหาและส่ง GIF"
                           focusable={false}
                           hitSlop={6}
@@ -2226,6 +2441,7 @@ export default function ChatRoomScreen() {
                             Keyboard.dismiss();
                             if (isMediaPickerOpen) setIsMediaPickerOpen(false);
                             if (showQuickEmoji) setShowQuickEmoji(false);
+                            if (isSpotifyPickerOpen) setIsSpotifyPickerOpen(false);
                             setIsGiphyPickerOpen((prev) => !prev);
                           }}
                           style={({ pressed }) => [
@@ -2240,6 +2456,29 @@ export default function ChatRoomScreen() {
                             </Text>
                           </View>
                         </Pressable>
+
+                        {canUseSpotify ? (
+                          <Pressable
+                            accessibilityLabel="ค้นหาและส่งเพลง Spotify"
+                            focusable={false}
+                            hitSlop={6}
+                            onPress={() => {
+                              Keyboard.dismiss();
+                              if (isMediaPickerOpen) setIsMediaPickerOpen(false);
+                              if (showQuickEmoji) setShowQuickEmoji(false);
+                              if (isGiphyPickerOpen) setIsGiphyPickerOpen(false);
+                              // Defer open so keyboard teardown does not contend with Modal mount.
+                              requestAnimationFrame(() => setIsSpotifyPickerOpen(true));
+                            }}
+                            style={({ pressed }) => [
+                              styles.capsuleActionIconBtn,
+                              isSpotifyPickerOpen && { backgroundColor: colors.primarySoft, borderRadius: 12 },
+                              pressed && styles.pressed,
+                            ]}
+                          >
+                            <FeatureIcon color={isSpotifyPickerOpen ? colors.primary : colors.ink} name="music.note" size={22} />
+                          </Pressable>
+                        ) : null}
                       </View>
                     )}
                   </View>
@@ -2258,51 +2497,9 @@ export default function ChatRoomScreen() {
             ? handleSendVideo(asset, mode, asset.caption)
             : handleSendImage(asset.uris || asset.uri, asset.caption, mode)} />}
         {videoDraft && <ChatVideoComposer asset={videoDraft} onSend={handleSendVideo} onClose={() => setVideoDraft(null)} />}
-      {isMediaPickerOpen && (
-          <ChatMediaPickerSheet
-            onSelectVideo={handlePickVideo}
-            inline
-            colors={{ ...colors, bg: colors.canvas }}
-            isOpen={isMediaPickerOpen}
-            onClose={() => setIsMediaPickerOpen(false)}
-            onOpenEditor={(uri, uris) => {
-              setMediaComposerDraft({ uri, uris: uris?.length ? uris : [uri], type: 'image', edit: true });
-              setEditingMediaUris(uris?.length ? uris : [uri]);
-              setIsMediaPickerOpen(false);
-            }}
-            onSelectPhoto={(photoUri) => {
-              if (photoUri) {
-                setIsMediaPickerOpen(false);
-                setMediaComposerDraft({ uri: Array.isArray(photoUri) ? photoUri[0] : photoUri, uris: Array.isArray(photoUri) ? photoUri : [photoUri], type: 'image' });
-              }
-            }}
-            onSelectMedia={(selected) => {
-              const list = Array.isArray(selected) ? selected : [selected];
-              const first = list[0];
-              if (!first?.uri) return;
-              setIsMediaPickerOpen(false);
-              setMediaComposerDraft({
-                ...first,
-                type: first.type || (first.mediaType === 'video' ? 'video' : 'image'),
-                uri: first.uri,
-                uris: list.map((entry) => entry.uri).filter(Boolean),
-              });
-            }}
-            onSelectCamera={() => { setIsMediaPickerOpen(false); setCameraOpen(true); }}
-            onSelectLibrary={async () => {
-              try {
-                const res = await pickChatImages();
-                if (res?.length > 0) {
-                  const uris = res.map((r) => r.uri);
-                  setMediaComposerDraft({ uri: uris[0], uris, type: 'image' });
-                  setIsMediaPickerOpen(false);
-                }
-              } catch (err) {
-                Alert.alert('ไม่สามารถเปิดคลังภาพได้', err.message || 'กรุณาลองใหม่อีกครั้ง');
-              }
-            }}
-          />
-        )}
+      {isMediaPickerOpen ? (
+        <View style={{ height: MEDIA_PICKER_COLLAPSED_HEIGHT + (insets.bottom || 0) }} />
+      ) : null}
 
         {isGiphyPickerOpen && (
           <ChatGiphyPickerSheet
@@ -2316,7 +2513,62 @@ export default function ChatRoomScreen() {
             }}
           />
         )}
+        {isSpotifyPickerOpen ? (
+          <SpotifyTrackSearchSheet
+            colors={colors}
+            onClose={() => setIsSpotifyPickerOpen(false)}
+            onSelect={handleSendTrack}
+            subtitle="แตะเพื่อส่งเพลงในแชต"
+            title="ส่งเพลง Spotify"
+            visible
+          />
+        ) : null}
       </KeyboardAvoidingView>
+      {isMediaPickerOpen ? (
+        <ChatMediaPickerSheet
+          overlay
+          onSelectVideo={handlePickVideo}
+          colors={{ ...colors, bg: colors.canvas }}
+          isOpen={isMediaPickerOpen}
+          onClose={() => setIsMediaPickerOpen(false)}
+          onOpenEditor={(uri, uris) => {
+            setMediaComposerDraft({ uri, uris: uris?.length ? uris : [uri], type: 'image', edit: true });
+            setEditingMediaUris(uris?.length ? uris : [uri]);
+            setIsMediaPickerOpen(false);
+          }}
+          onSelectPhoto={(photoUri) => {
+            if (photoUri) {
+              setIsMediaPickerOpen(false);
+              setMediaComposerDraft({ uri: Array.isArray(photoUri) ? photoUri[0] : photoUri, uris: Array.isArray(photoUri) ? photoUri : [photoUri], type: 'image' });
+            }
+          }}
+          onSelectMedia={(selected) => {
+            const list = Array.isArray(selected) ? selected : [selected];
+            const first = list[0];
+            if (!first?.uri) return;
+            setIsMediaPickerOpen(false);
+            setMediaComposerDraft({
+              ...first,
+              type: first.type || (first.mediaType === 'video' ? 'video' : 'image'),
+              uri: first.uri,
+              uris: list.map((entry) => entry.uri).filter(Boolean),
+            });
+          }}
+          onSelectCamera={() => { setIsMediaPickerOpen(false); setCameraOpen(true); }}
+          onSelectLibrary={async () => {
+            try {
+              const res = await pickChatImages();
+              if (res?.length > 0) {
+                const uris = res.map((r) => r.uri);
+                setMediaComposerDraft({ uri: uris[0], uris, type: 'image' });
+                setIsMediaPickerOpen(false);
+              }
+            } catch (err) {
+              showAlert('ไม่สามารถเปิดคลังภาพได้', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
+            }
+          }}
+        />
+      ) : null}
       <ChatSettingsModal
         chat={chat}
         currentUserId={currentUserId}
@@ -2433,132 +2685,145 @@ function ChatSettingsModal({
   partnerMeetup,
   showPinnedMeetup,
 }) {
-  const translateY = useRef(new Animated.Value(500)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const translateY = useSharedValue(500);
+  const fadeAnim = useSharedValue(0);
+  const sheetHeight = useSharedValue(500);
+  const dragContext = useSharedValue(0);
+  const isClosingSV = useSharedValue(0);
   const isClosingRef = useRef(false);
+  const pendingCloseCallbackRef = useRef(null);
+
+  const finishClose = useCallback(() => {
+    const callback = pendingCloseCallbackRef.current;
+    pendingCloseCallbackRef.current = null;
+    onClose();
+    isClosingRef.current = false;
+    isClosingSV.set(0);
+    if (typeof callback === 'function') {
+      setTimeout(callback, 80);
+    }
+  }, [isClosingSV, onClose]);
 
   const closeWithAnimation = useCallback((callback) => {
-    if (isClosingRef.current) return;
+    if (isClosingRef.current || isClosingSV.get()) return;
     isClosingRef.current = true;
-    Animated.parallel([
-      Animated.timing(translateY, {
-        toValue: 600,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 180,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      onClose();
-      isClosingRef.current = false;
-      if (typeof callback === 'function') {
-        setTimeout(callback, 80);
-      }
-    });
-  }, [onClose, translateY, fadeAnim]);
+    isClosingSV.set(1);
+    pendingCloseCallbackRef.current = typeof callback === 'function' ? callback : null;
+    const height = Math.max(sheetHeight.get(), 500);
+    translateY.set(withSpring(height, {
+      duration: 300,
+      dampingRatio: 1,
+      overshootClamping: true,
+    }, (finished) => {
+      if (finished) scheduleOnRN(finishClose);
+    }));
+    fadeAnim.set(withTiming(0, { duration: 180 }));
+  }, [fadeAnim, finishClose, isClosingSV, sheetHeight, translateY]);
 
   useEffect(() => {
     if (isOpen) {
       isClosingRef.current = false;
-      translateY.setValue(500);
-      fadeAnim.setValue(0);
-      Animated.parallel([
-        Animated.spring(translateY, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 260,
-          useNativeDriver: true,
-        }),
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 180,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      isClosingSV.set(0);
+      pendingCloseCallbackRef.current = null;
+      translateY.set(500);
+      fadeAnim.set(0);
+      translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+      fadeAnim.set(withTiming(1, { duration: 180 }));
     }
-  }, [isOpen, translateY, fadeAnim]);
+  }, [fadeAnim, isClosingSV, isOpen, translateY]);
 
-  const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: (_, gestureState) => (
-      gestureState.dy > 8 && Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
-    ),
-    onPanResponderGrant: () => {
-      translateY.stopAnimation();
-    },
-    onPanResponderMove: (_, gestureState) => {
-      if (gestureState.dy > 0) {
-        translateY.setValue(gestureState.dy);
-      } else {
-        translateY.setValue(gestureState.dy * 0.15);
+  const pan = useMemo(() => Gesture.Pan()
+    .activeOffsetY([-10, 10])
+    .onStart(() => {
+      dragContext.set(translateY.get());
+    })
+    .onUpdate((e) => {
+      const next = dragContext.get() + e.translationY;
+      const height = Math.max(sheetHeight.get(), 1);
+      translateY.set(next >= 0 ? next : rubberband(next, height));
+    })
+    .onEnd((e, success) => {
+      if (!success) {
+        translateY.set(withSpring(0, {
+          duration: 400,
+          dampingRatio: 0.8,
+          velocity: e.velocityY,
+        }));
+        return;
       }
-    },
-    onPanResponderRelease: (_, gestureState) => {
-      if (gestureState.dy > 70 || gestureState.vy > 0.5) {
-        closeWithAnimation();
+      const height = Math.max(sheetHeight.get(), 1);
+      const projected = translateY.get() + project(e.velocityY);
+      if (projected > height * 0.4 || e.velocityY > 800) {
+        if (isClosingSV.get()) return;
+        isClosingSV.set(1);
+        translateY.set(withSpring(height, {
+          duration: 300,
+          dampingRatio: 1,
+          velocity: e.velocityY,
+          overshootClamping: true,
+        }, (finished) => {
+          if (finished) scheduleOnRN(finishClose);
+        }));
+        fadeAnim.set(withTiming(0, { duration: 180 }));
       } else {
-        Animated.spring(translateY, {
-          toValue: 0,
-          damping: 22,
-          mass: 0.8,
-          stiffness: 280,
-          useNativeDriver: true,
-        }).start();
+        translateY.set(withSpring(0, {
+          duration: 400,
+          dampingRatio: 0.8,
+          velocity: e.velocityY,
+        }));
       }
-    },
-    onPanResponderTerminationRequest: () => false,
-    onPanResponderTerminate: () => {
-      Animated.spring(translateY, {
-        toValue: 0,
-        damping: 22,
-        mass: 0.8,
-        stiffness: 280,
-        useNativeDriver: true,
-      }).start();
-    },
-  }), [closeWithAnimation, translateY]);
+    }), [dragContext, fadeAnim, finishClose, isClosingSV, sheetHeight, translateY]);
+
+  const backdropStyle = useAnimatedStyle(() => ({
+    opacity: fadeAnim.get(),
+  }));
+  const sheetStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.get() }],
+  }));
 
   return (
     <Modal animationType="none" transparent visible={isOpen} onRequestClose={() => closeWithAnimation()}>
+      <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-        <Animated.View
+        <Reanimated.View
           style={[
             StyleSheet.absoluteFill,
-            {
-              backgroundColor: 'rgba(0,0,0,0.5)',
-              opacity: fadeAnim,
-            },
+            { backgroundColor: 'rgba(0,0,0,0.5)' },
+            backdropStyle,
           ]}
         >
           <Pressable onPress={() => closeWithAnimation()} style={{ flex: 1 }} />
-        </Animated.View>
+        </Reanimated.View>
 
-        <Animated.View
-          style={{
-            backgroundColor: colors.card,
-            borderTopLeftRadius: 28,
-            borderTopRightRadius: 28,
-            maxHeight: '88%',
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: -6 },
-            shadowOpacity: 0.16,
-            shadowRadius: 20,
-            zIndex: 10,
-            elevation: 20,
-            transform: [{ translateY }],
+        <Reanimated.View
+          onLayout={(e) => {
+            const height = e.nativeEvent?.layout?.height;
+            if (height) sheetHeight.set(height);
           }}
+          style={[
+            {
+              backgroundColor: colors.card,
+              borderTopLeftRadius: 28,
+              borderTopRightRadius: 28,
+              maxHeight: '88%',
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: -6 },
+              shadowOpacity: 0.16,
+              shadowRadius: 20,
+              zIndex: 10,
+              elevation: 20,
+            },
+            sheetStyle,
+          ]}
         >
           {/* Handle - Draggable bar */}
-          <View
-            {...panResponder.panHandlers}
-            style={{ alignItems: 'center', justifyContent: 'center', width: '100%', paddingTop: 10, paddingBottom: 10 }}
-          >
-            <View style={{ width: 44, height: 5, borderRadius: 2.5, backgroundColor: colors.line }} />
-          </View>
+          <GestureDetector gesture={pan}>
+            <View
+              style={{ alignItems: 'center', justifyContent: 'center', width: '100%', paddingTop: 10, paddingBottom: 10 }}
+            >
+              <View style={{ width: 44, height: 5, borderRadius: 2.5, backgroundColor: colors.line }} />
+            </View>
+          </GestureDetector>
 
           <ScrollView
             bounces={false}
@@ -2598,8 +2863,9 @@ function ChatSettingsModal({
                 </Text>
               </View>
               <Switch
+                ios_backgroundColor={colors.line}
                 trackColor={{ false: colors.line, true: colors.primary }}
-                thumbColor="#FFFFFF"
+                thumbColor={colors.onPrimary}
                 value={showPinnedMeetup}
                 onValueChange={onTogglePinnedMeetup}
               />
@@ -2627,8 +2893,9 @@ function ChatSettingsModal({
                 </Text>
               </View>
               <Switch
+                ios_backgroundColor={colors.line}
                 trackColor={{ false: colors.line, true: colors.primary }}
-                thumbColor="#FFFFFF"
+                thumbColor={colors.onPrimary}
                 value={isMuted}
                 onValueChange={onToggleMute}
               />
@@ -2798,8 +3065,9 @@ function ChatSettingsModal({
               </Text>
             </Pressable>
           </ScrollView>
-        </Animated.View>
+        </Reanimated.View>
       </View>
+      </GestureHandlerRootView>
     </Modal>
   );
 }
@@ -2880,6 +3148,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   isHighlighted,
   isLatest,
   item,
+  onCallPress,
   onOpenProfile,
   onPreviewImage,
   onQuickReact,
@@ -2889,21 +3158,34 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   onSelectMessage,
   otherReadAt,
   otherUnread,
+  otherUserId,
   showAllMessageTimes,
   showDay,
   styles,
-  tick,
   timeDragAnim,
 }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!isLatest) return undefined;
+    const timer = setInterval(() => setTick((value) => value + 1), 30000);
+    return () => clearInterval(timer);
+  }, [isLatest]);
   const bubbleRef = useRef(null);
   const lastTapAtRef = useRef(0);
   const doubleTapTimerRef = useRef(null);
   const longPressRef = useRef(false);
-  const replySwipeTriggeredRef = useRef(false);
   const currentImageSizeRef = useRef(null);
   const currentRatioRef = useRef(null);
   const mine = item.sender === 'me' || (Boolean(currentUserId) && item.senderId === currentUserId);
-  const statusText = formatStatusTime(item, mine, isLatest, otherReadAt, otherUnread, showAllMessageTimes);
+  const peerId = otherUserId || chat?.profileId;
+  const mediaViewedAt = usePeerMediaView(
+    chat?.id,
+    item.id,
+    peerId,
+    mine && isLatest && isProtectedMedia(item) && !item.pendingSync,
+  );
+  const { retryFailedMessage } = useAppActions();
+  const statusText = formatStatusTime(item, mine, isLatest, otherReadAt, otherUnread, mediaViewedAt);
   const { count: reactionCount, uniqueEmojis } = getMessageReactionSummary(item.reactions);
 
   const bounceAnim = useRef(new Animated.Value(1)).current;
@@ -2963,34 +3245,37 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
     if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
   }, []);
 
-  const replyFromSwipe = useCallback((distance) => {
-    if (distance < MESSAGE_TIME_REVEAL_THRESHOLD || replySwipeTriggeredRef.current) return;
-    replySwipeTriggeredRef.current = true;
+  const handleReplyFromSwipe = useCallback(() => {
     onReply?.(item);
   }, [item, onReply]);
 
-  const replyPanResponder = useMemo(() => {
-    const isHorizontalRightSwipe = (gestureState) => (
-      gestureState.dx > 16 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.4
-    );
-    return PanResponder.create({
-      onMoveShouldSetPanResponderCapture: (_, gestureState) => isHorizontalRightSwipe(gestureState),
-      onMoveShouldSetPanResponder: (_, gestureState) => isHorizontalRightSwipe(gestureState),
-      onPanResponderGrant: () => {
-        replySwipeTriggeredRef.current = false;
-      },
-      onPanResponderMove: (_, gestureState) => {
-        replyFromSwipe(gestureState.dx);
-      },
-      onPanResponderRelease: (_, gestureState) => {
-        replyFromSwipe(gestureState.dx);
-      },
-      onPanResponderTerminate: () => {
-        replySwipeTriggeredRef.current = false;
-      },
-      onPanResponderTerminationRequest: () => false,
-    });
-  }, [replyFromSwipe]);
+  const replyPan = useMemo(() => Gesture.Pan()
+    .activeOffsetX(16)
+    .failOffsetY([-16, 16])
+    .onEnd((e) => {
+      if (e.translationX >= MESSAGE_TIME_REVEAL_THRESHOLD) {
+        scheduleOnRN(handleReplyFromSwipe);
+      }
+    }), [handleReplyFromSwipe]);
+
+  const rowDragStyle = useAnimatedStyle(() => {
+    const drag = timeDragAnim ? timeDragAnim.get() : 0;
+    return {
+      transform: [{
+        translateX: interpolate(drag, [-48, 0], [mine ? -44 : -8, 0], Extrapolation.CLAMP),
+      }],
+    };
+  });
+
+  const gutterStyle = useAnimatedStyle(() => {
+    const drag = timeDragAnim ? timeDragAnim.get() : 0;
+    return {
+      opacity: interpolate(drag, [-32, -4, 0], [1, 0.15, 0], Extrapolation.CLAMP),
+      transform: [{
+        translateX: interpolate(drag, [-48, 0], [mine ? 0 : -36, 0], Extrapolation.CLAMP),
+      }],
+    };
+  });
 
   const handleLongPress = () => {
     longPressRef.current = true;
@@ -3046,21 +3331,11 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
           {toDate(messageTimestamp(item))?.toLocaleDateString('th-TH', { day: 'numeric', month: 'long', year: 'numeric' })}
         </Text>
       ) : null}
-      <Animated.View
+      <Reanimated.View
         style={[
           styles.messageRow,
           mine && styles.messageRowMine,
-          timeDragAnim && {
-            transform: [
-              {
-                translateX: timeDragAnim.interpolate({
-                  inputRange: [-48, 0],
-                  outputRange: [mine ? -44 : -8, 0],
-                  extrapolate: 'clamp',
-                }),
-              },
-            ],
-          },
+          rowDragStyle,
         ]}
       >
         {!mine ? (
@@ -3071,15 +3346,15 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
             onPress={onOpenProfile}
             style={({ pressed }) => [pressed && styles.pressed]}
           >
-            <Avatar avatarColor={chat.avatarColor} cacheScope={chat.profileId} cacheVersion={chat.participantProfiles?.[chat.profileId]?.updatedAt} colors={colors} emoji={chat.avatar} size={28} uri={chat.avatarUri} />
+            <Avatar avatarColor={chat.avatarColor} cacheScope={chat.profileId} cacheVersion={chat.participantProfiles?.[chat.profileId]?.avatarRevision} colors={colors} emoji={chat.avatar} size={28} uri={chat.avatarUri} />
           </Pressable>
         ) : null}
         <View style={[styles.messageGroup, mine && styles.messageGroupMine]}>
           <View style={[styles.messageContentRow, mine && styles.messageContentRowMine]}>
             <View style={[styles.messageStack, mine ? styles.messageStackMine : styles.messageStackOther]}>
               <Animated.View style={[styles.messageBubbleWithReaction, isActionActive && { opacity: 0 }, { transform: [{ scale: bounceAnim }] }]}>
+              <GestureDetector gesture={replyPan}>
               <Pressable
-                {...replyPanResponder.panHandlers}
                 ref={bubbleRef}
                 delayLongPress={220}
                 onLongPress={handleLongPress}
@@ -3090,7 +3365,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                 style={({ pressed }) => [
                   styles.bubble,
                   mine ? styles.myBubble : styles.theirBubble,
-                  (item.mediaUrl && (item.mediaType === 'image' || item.mediaType === 'gif' || !item.mediaType)) && styles.imageBubble,
+                  (item.mediaUrl && (item.mediaType === 'image' || item.mediaType === 'gif' || item.mediaType === 'video' || !item.mediaType)) && styles.imageBubble,
                   (Array.isArray(item.mediaUrls) && item.mediaUrls.length > 1) && styles.stackedImageBubble,
                   item.mediaType === 'call' && styles.callBubbleWrapper,
                   pressed && styles.pressed,
@@ -3112,7 +3387,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                       <FeatureIcon color={mine ? 'rgba(255,255,255,0.7)' : colors.inkSoft} name="arrowshape.turn.up.left.fill" size={10} />
-                      <ReplyPreview reply={item.replyTo} conversationId={chat?.id} color={mine ? "#FFFFFF" : colors.inkSoft} />
+                      <ReplyPreview reply={item.replyTo} conversationId={chat?.id} currentUserId={currentUserId} color={mine ? "#FFFFFF" : colors.inkSoft} />
                     </View>
                   </Pressable>
                 ) : null}
@@ -3123,16 +3398,13 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                     colors={colors}
                     item={item}
                     mine={mine}
-                    onCallPress={(type) => {
-                      if (type === 'video') startVideoCall(chat, chat?.id);
-                      else startVoiceCall(chat, chat?.id);
-                    }}
+                    onCallPress={onCallPress}
                   />
                 ) : null}
 
                 {/* Voice Message */}
-                {item.mediaType === 'video' && item.mediaUrl ? <ChatVideoBubble onLongPress={handleLongPress} item={item} conversationId={chat?.id} currentUserId={currentUserId} mine={mine} /> : null}
-                {item.mediaType === 'image' && item.viewMode && item.viewMode !== 'chat' && item.mediaUrl ? <ChatProtectedImageBubble onLongPress={handleLongPress} item={item} conversationId={chat?.id} currentUserId={currentUserId} mine={mine} /> : null}
+                {item.mediaType === 'video' && item.mediaUrl ? <ChatVideoBubble onLongPress={handleLongPress} item={item} conversationId={chat?.id} currentUserId={currentUserId} otherUserId={peerId} mine={mine} /> : null}
+                {item.mediaType === 'image' && item.viewMode && item.viewMode !== 'chat' && item.mediaUrl ? <ChatProtectedImageBubble onLongPress={handleLongPress} item={item} conversationId={chat?.id} currentUserId={currentUserId} otherUserId={peerId} mine={mine} /> : null}
                 {item.mediaType === 'audio' || item.audioUrl ? (
                   <VoiceMessageBubble
                     audioUrl={item.audioUrl || item.mediaUrl}
@@ -3142,6 +3414,49 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                     isUploading={Boolean(item.isUploading)}
                     mine={mine}
                   />
+                ) : null}
+
+                {item.mediaType === 'track' ? (
+                  <Pressable
+                    onPress={() => {
+                      const url = item.externalUrl || (item.trackId ? `https://open.spotify.com/track/${item.trackId}` : null);
+                      if (url) Linking.openURL(url).catch(() => {});
+                    }}
+                    style={({ pressed }) => [
+                      styles.trackBubble,
+                      mine ? styles.trackBubbleMine : styles.trackBubbleTheirs,
+                      pressed && { opacity: 0.88 },
+                    ]}
+                  >
+                    {item.albumArt ? (
+                      <ExpoImage contentFit="cover" source={{ uri: item.albumArt }} style={styles.trackBubbleArt} />
+                    ) : (
+                      <View style={[styles.trackBubbleArt, styles.trackBubbleArtFallback, { backgroundColor: mine ? 'rgba(255,255,255,0.2)' : colors.primarySoft }]}>
+                        <FeatureIcon color={mine ? '#FFFFFF' : colors.primary} name="music.note" size={18} />
+                      </View>
+                    )}
+                    <View style={styles.trackBubbleMeta}>
+                      <Text numberOfLines={1} style={[styles.trackBubbleName, mine && styles.trackBubbleNameMine]}>
+                        {item.trackName || item.text || 'Spotify'}
+                      </Text>
+                      <Text numberOfLines={1} style={[styles.trackBubbleArtists, mine && styles.trackBubbleArtistsMine]}>
+                        {item.artists || 'Unknown'}
+                      </Text>
+                      <Text style={[styles.trackBubbleCta, mine && styles.trackBubbleCtaMine]}>เปิดฟังเต็มเพลง</Text>
+                    </View>
+                    <TrackPreviewButton
+                      backgroundColor={mine ? 'rgba(255,255,255,0.22)' : colors.primarySoft}
+                      color={mine ? '#FFFFFF' : colors.primary}
+                      previewEndMs={item.previewEndMs}
+                      previewStartMs={item.previewStartMs}
+                      previewUrl={item.previewUrl}
+                      size={34}
+                      track={item}
+                      trackArtists={item.artists}
+                      trackName={item.trackName || item.text}
+                      youtubeVideoId={item.youtubeVideoId}
+                    />
+                  </Pressable>
                 ) : null}
 
                 {/* Image Message / Stacked Image Cards */}
@@ -3189,7 +3504,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                 })() : null}
 
                 {/* Text / Caption */}
-                {item.mediaType !== 'call' && item.text && item.text !== '[รูปภาพ]' && !item.text.startsWith('[รูปภาพ ') && item.text !== '[ข้อความเสียง]' && item.text !== '[วิดีโอ]' && item.text !== '[GIF]' && item.text.toUpperCase() !== '[GIF]' ? (
+                {item.mediaType !== 'call' && item.mediaType !== 'track' && item.text && item.text !== '[รูปภาพ]' && !item.text.startsWith('[รูปภาพ ') && item.text !== '[ข้อความเสียง]' && item.text !== '[วิดีโอ]' && item.text !== '[GIF]' && item.text.toUpperCase() !== '[GIF]' ? (
                   <Text
                     style={[
                       styles.bubbleText,
@@ -3217,6 +3532,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                   ]}
                 />
               </Pressable>
+              </GestureDetector>
               {reactionCount ? (
                 <View style={[styles.reactionLayer, mine ? styles.reactionLayerMine : styles.reactionLayerOther]}>
                   <Pressable
@@ -3234,7 +3550,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
           </View>
           </View>
           {statusText ? (
-            <Text style={[styles.messageTime, mine && styles.messageTimeMine]}>
+            <Text accessibilityRole={item.sendStatus === 'failed' ? 'button' : undefined} onPress={item.sendStatus === 'failed' ? () => { void retryFailedMessage(chat?.id, item.id).catch(() => {}); } : undefined} style={[styles.messageTime, mine && styles.messageTimeMine]}>
               {statusText}
             </Text>
           ) : null}
@@ -3242,34 +3558,16 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
 
         {/* Swipe-to-reveal timestamp in right margin */}
         {timeDragAnim ? (
-          <Animated.View
+          <Reanimated.View
             pointerEvents="none"
-            style={[
-              styles.dragTimeGutter,
-              {
-                opacity: timeDragAnim.interpolate({
-                  inputRange: [-32, -4, 0],
-                  outputRange: [1, 0.15, 0],
-                  extrapolate: 'clamp',
-                }),
-                transform: [
-                  {
-                    translateX: timeDragAnim.interpolate({
-                      inputRange: [-48, 0],
-                      outputRange: [mine ? 0 : -36, 0],
-                      extrapolate: 'clamp',
-                    }),
-                  },
-                ],
-              },
-            ]}
+            style={[styles.dragTimeGutter, gutterStyle]}
           >
             <Text numberOfLines={1} style={[styles.dragTimeText, { color: colors.inkSoft }]}>
               {format24Time(messageTimestamp(item))}
             </Text>
-          </Animated.View>
+          </Reanimated.View>
         ) : null}
-      </Animated.View>
+      </Reanimated.View>
     </View>
   );
 }, areChatMessageItemPropsEqual);
@@ -3293,6 +3591,7 @@ function areChatMessageItemPropsEqual(previous, next) {
     || previous.timeDragAnim !== next.timeDragAnim
     || previous.styles !== next.styles
     || previous.colors !== next.colors
+    || previous.onCallPress !== next.onCallPress
     || previous.onOpenProfile !== next.onOpenProfile
     || previous.onPreviewImage !== next.onPreviewImage
     || previous.onQuickReact !== next.onQuickReact
@@ -3313,7 +3612,7 @@ function areChatMessageItemPropsEqual(previous, next) {
     const nextReadAt = toDate(next.otherReadAt)?.getTime() || 0;
     if (previousReadAt !== nextReadAt) return false;
     if (previous.otherUnread !== next.otherUnread) return false;
-    if (previous.tick !== next.tick) return false;
+    if (previous.otherUserId !== next.otherUserId) return false;
   }
 
   return previousItem?.id === nextItem?.id
@@ -3322,7 +3621,14 @@ function areChatMessageItemPropsEqual(previous, next) {
     && previousItem?.mediaUrl === nextItem?.mediaUrl
     && JSON.stringify(previousItem?.mediaUrls || []) === JSON.stringify(nextItem?.mediaUrls || [])
     && previousItem?.mediaType === nextItem?.mediaType
-    && previousItem?.isUploading === nextItem?.isUploading
+    && previousItem?.viewMode === nextItem?.viewMode
+    && previousItem?.videoMode === nextItem?.videoMode
+    && Boolean(previousItem?.isUploading) === Boolean(nextItem?.isUploading)
+    && previousItem?.sendStatus === nextItem?.sendStatus
+    && Boolean(previousItem?.pendingSync) === Boolean(nextItem?.pendingSync)
+    && Boolean(previousItem?.decryptionFailed) === Boolean(nextItem?.decryptionFailed)
+    && previousItem?.unsent === nextItem?.unsent
+    && previousItem?.isDeleted === nextItem?.isDeleted
     && previousItem?.audioUrl === nextItem?.audioUrl
     && previousItem?.audioDuration === nextItem?.audioDuration
     && previousItem?.forwarded === nextItem?.forwarded
@@ -3585,13 +3891,13 @@ const createStyles = (colors) => StyleSheet.create({
   pressed: { opacity: 0.7 },
   forwardedBubbleLabel: { color: colors.inkSoft, fontSize: 10, fontWeight: '700', marginBottom: 3 },
   forwardedBubbleLabelMine: { color: 'rgba(255,255,255,0.72)' },
-  replyBubble: { borderLeftColor: colors.inkSoft, borderLeftWidth: 2, marginBottom: 5, paddingLeft: 7 },
-  replyBubbleMine: { borderLeftColor: 'rgba(255,255,255,0.72)' },
+  replyBubble: { backgroundColor: colors.canvas, borderRadius: 10, marginBottom: 6, paddingHorizontal: 9, paddingVertical: 6 },
+  replyBubbleMine: { backgroundColor: 'rgba(255,255,255,0.16)' },
   replyBubbleText: { color: colors.inkSoft, fontSize: 11.5, maxWidth: 220 },
   replyBubbleTextMine: { color: 'rgba(255,255,255,0.76)' },
   replyComposer: { alignItems: 'center', backgroundColor: colors.canvas, borderTopColor: colors.line, borderTopWidth: 1, flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.sm },
   replyComposerClose: { alignItems: 'center', backgroundColor: colors.card, borderRadius: 15, height: 30, justifyContent: 'center', width: 30 },
-  replyComposerCopy: { borderLeftColor: colors.primary, borderLeftWidth: 3, flex: 1, paddingLeft: spacing.sm },
+  replyComposerCopy: { backgroundColor: colors.card, borderRadius: radius.sm, flex: 1, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
   replyComposerText: { ...type.caption, color: colors.inkSoft, marginTop: 1 },
   replyComposerTitle: { ...type.caption, color: colors.primary, fontWeight: '800' },
   e2eeBanner: { alignItems: 'center', backgroundColor: colors.primarySoft, borderRadius: radius.sm, flexDirection: 'row', gap: spacing.xs, marginBottom: spacing.sm, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
@@ -4103,6 +4409,18 @@ const createStyles = (colors) => StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 4,
   },
+  trackBubble: { alignItems: 'center', borderRadius: 14, flexDirection: 'row', gap: 10, maxWidth: 260, minWidth: 200, padding: 10 },
+  trackBubbleMine: { backgroundColor: 'rgba(255,255,255,0.14)' },
+  trackBubbleTheirs: { backgroundColor: 'rgba(15,27,51,0.04)' },
+  trackBubbleArt: { borderRadius: 8, height: 52, width: 52 },
+  trackBubbleArtFallback: { alignItems: 'center', justifyContent: 'center' },
+  trackBubbleMeta: { flex: 1, minWidth: 0 },
+  trackBubbleName: { color: '#25272B', fontSize: 14, fontWeight: '800' },
+  trackBubbleNameMine: { color: '#FFFFFF' },
+  trackBubbleArtists: { color: '#6B7078', fontSize: 12, fontWeight: '600', marginTop: 2 },
+  trackBubbleArtistsMine: { color: 'rgba(255,255,255,0.75)' },
+  trackBubbleCta: { color: '#3986E8', fontSize: 11, fontWeight: '800', marginTop: 4 },
+  trackBubbleCtaMine: { color: 'rgba(255,255,255,0.9)' },
   gifCapsuleBadgeText: {
     fontSize: 10,
     fontWeight: '900',

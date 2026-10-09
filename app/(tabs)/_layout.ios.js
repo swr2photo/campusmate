@@ -1,5 +1,7 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Redirect, ThemeProvider, DarkTheme, DefaultTheme } from 'expo-router';
+import CircularTabAvatar from '../../src/components/CircularTabAvatar.ios';
+import { useRemoteImage } from '../../src/utils/useRemoteImage';
 import { NativeTabs } from 'expo-router/native-tabs';
 import { useAppBadges, useAppProfile } from '../../src/context/AppContext';
 import { useAuth } from '../../src/context/AuthContext';
@@ -19,6 +21,9 @@ const LABELS = {
 export default function NativeTabLayout() {
   const { isLoggedIn, user, logout } = useAuth();
   const { profile } = useAppProfile();
+  const avatarUri = useRemoteImage(profile?.avatarUri || profile?.photoURL || user?.photoURL, profile?.avatarRevision);
+  const [tabAvatar, setTabAvatar] = useState(null);
+
   const { pendingLikeCount, totalUnreadMessages = 0 } = useAppBadges();
   const { colors, isDark } = useTheme();
   const unreadCount = totalUnreadMessages;
@@ -41,6 +46,7 @@ export default function NativeTabLayout() {
   return (
     <TabsBlurTargetContext.Provider value={null}>
       <ThemeProvider value={navigationTheme}>
+        {avatarUri ? <CircularTabAvatar key={avatarUri} uri={avatarUri} onReady={setTabAvatar} /> : null}
         <NativeTabs
           backgroundColor={colors.card}
           blurEffect={isDark ? 'systemMaterialDark' : 'systemMaterial'}
@@ -54,7 +60,7 @@ export default function NativeTabLayout() {
           badgeBackgroundColor={isDark ? colors.coral : '#FF3B30'}
           shadowColor={isDark ? 'transparent' : undefined}
           sidebarAdaptable={false}
-          minimizeBehavior="automatic"
+          minimizeBehavior="never"
           unstable_nativeProps={{
             ios: {
               tabBarControllerMode: 'tabBar',
@@ -84,7 +90,9 @@ export default function NativeTabLayout() {
             <NativeTabs.Trigger.Label>{LABELS.meetup}</NativeTabs.Trigger.Label>
           </NativeTabs.Trigger>
           <NativeTabs.Trigger name="me" contentStyle={{ backgroundColor: colors.canvas }}>
-            <NativeTabs.Trigger.Icon sf={{ default: 'person.crop.circle', selected: 'person.crop.circle.fill' }} />
+            {tabAvatar?.input === avatarUri && tabAvatar?.source ? (
+              <NativeTabs.Trigger.Icon src={tabAvatar.source} renderingMode="original" />
+            ) : null}
             <NativeTabs.Trigger.Label>{LABELS.me}</NativeTabs.Trigger.Label>
           </NativeTabs.Trigger>
         </NativeTabs>

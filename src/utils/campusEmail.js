@@ -42,8 +42,17 @@ export function isLegacyGmailEmail(email) {
   return GMAIL_EMAIL_PATTERN.test(normalizeEmail(email));
 }
 
+export function resolveLoginEmail(email) {
+  const trimmed = String(email || '').trim();
+  if (/^\d{10}$/.test(trimmed)) {
+    return `${trimmed}@psu.ac.th`;
+  }
+  return trimmed;
+}
+
 export function isLoginEmailAllowed(email) {
-  return isCampusEmail(email) || isLegacyGmailEmail(email);
+  const resolved = resolveLoginEmail(email);
+  return isCampusEmail(resolved) || isLegacyGmailEmail(resolved);
 }
 
 export function campusEmailError(code, message) {
@@ -51,20 +60,22 @@ export function campusEmailError(code, message) {
 }
 
 export function assertCampusEmail(email) {
-  if (!isCampusEmail(email)) {
+  const resolved = resolveLoginEmail(email);
+  if (!isCampusEmail(resolved)) {
     throw campusEmailError('auth/campus-email-required', CAMPUS_SIGNUP_REQUIRED_MESSAGE);
   }
-  if (!isCampusStudentEmail(email)) {
+  if (!isCampusStudentEmail(resolved)) {
     throw campusEmailError('auth/student-id-required', CAMPUS_STUDENT_ID_REQUIRED_MESSAGE);
   }
-  return normalizeEmail(email);
+  return normalizeEmail(resolved);
 }
 
 export function assertLoginEmailAllowed(email) {
-  if (!isLoginEmailAllowed(email)) {
+  const resolved = resolveLoginEmail(email);
+  if (!isLoginEmailAllowed(resolved)) {
     throw campusEmailError('auth/campus-email-login-only', CAMPUS_LOGIN_ALLOWED_MESSAGE);
   }
-  return normalizeEmail(email);
+  return normalizeEmail(resolved);
 }
 
 export function isLikelyNewFirebaseUser(user) {

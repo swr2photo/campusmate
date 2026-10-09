@@ -15,6 +15,9 @@ export default function HomeRoute() {
       <Stack.Screen
         options={{
           title: 'หาเพื่อน',
+          headerShown: true,
+          headerTransparent: false,
+          headerLargeTitle: false,
           headerRight: () => (
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <NotificationBell />

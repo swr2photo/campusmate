@@ -1,10 +1,23 @@
 import { HttpsError } from 'firebase-functions/v2/https';
 
 export const REPORT_STATUSES = ['pending', 'reviewing', 'resolved', 'dismissed'];
+export const SUPER_ADMIN_EMAILS = ['6710210317@psu.ac.th'];
+
+export function isSuperAdminEmail(email) {
+  return typeof email === 'string' && SUPER_ADMIN_EMAILS.includes(email.trim().toLowerCase());
+}
+
 export function requireAdmin(request) {
   if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'กรุณาเข้าสู่ระบบ');
-  if (request.auth.token?.admin !== true || request.auth.token?.email_verified !== true)
-    throw new HttpsError('permission-denied', 'บัญชีนี้ไม่มีสิทธิ์ผู้ดูแล หรือยังไม่ได้ยืนยันอีเมล');
+  const email = request.auth.token?.email;
+  const isSuper = isSuperAdminEmail(email);
+  const isAdminClaim = request.auth.token?.admin === true;
+  if (!isAdminClaim && !isSuper) {
+    throw new HttpsError('permission-denied', 'บัญชีนี้ไม่มีสิทธิ์ผู้ดูแล');
+  }
+  if (request.auth.token?.email_verified !== true) {
+    throw new HttpsError('permission-denied', 'ยังไม่ได้ยืนยันอีเมล');
+  }
   return request.auth.uid;
 }
 export function validateReview(data) {

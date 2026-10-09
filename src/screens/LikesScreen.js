@@ -226,7 +226,7 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
         ListEmptyComponent={
           locked && activeTab === 'pending' && !showSkeleton && !showError ? (
             <StorysetStateView type="empty" title={`มี ${incomingCount} คนกดใจคุณ`}
-              description="CampusMate Plus ดูรายชื่อและรูปของคนที่กดใจคุณได้ การจับคู่และแชตที่ยอมรับแล้วใช้งานต่อได้"
+              description="CampusMate Plus ดูว่าใครกดใจคุณได้"
               actionLabel="ดู CampusMate Plus" actionIcon="lock.fill" onAction={() => router.push('/membership')} />
           ) : showSkeleton ? (
             <LikesSkeletonList count={3} />
@@ -357,13 +357,13 @@ function MetaChip({ icon, label, styles: cardStyles }) {
 const getStyles = (colors) => StyleSheet.create({
   container: { backgroundColor: colors.canvas, flex: 1 },
   listContent: { padding: spacing.lg, paddingBottom: spacing.xxxl },
-  summaryCard: { alignItems: 'center', backgroundColor: colors.coralSoft, borderCurve: 'continuous', borderRadius: radius.lg, flexDirection: 'row', marginBottom: spacing.lg, padding: spacing.md },
+  summaryCard: { alignItems: 'center', backgroundColor: colors.coralSoft, borderCurve: 'continuous', borderRadius: radius.lg, flexDirection: 'row', marginBottom: spacing.md, padding: spacing.md },
   summaryIcon: { alignItems: 'center', backgroundColor: colors.card, borderRadius: 22, height: 44, justifyContent: 'center', marginRight: spacing.md, width: 44 },
   summaryIconText: { color: colors.coral, fontSize: 23, fontWeight: '900' },
   summaryCopy: { flex: 1 },
   summaryTitle: { color: colors.ink, fontSize: type.body, fontWeight: '900' },
   summaryText: { color: colors.inkMuted, fontSize: type.micro, lineHeight: 16, marginTop: 3 },
-  tabs: { backgroundColor: colors.card, borderColor: colors.line, borderRadius: radius.pill, borderWidth: 1, flexDirection: 'row', marginBottom: spacing.lg, padding: 4 },
+  tabs: { backgroundColor: colors.card, borderColor: colors.line, borderRadius: radius.pill, borderWidth: 1, flexDirection: 'row', marginBottom: spacing.md, padding: 4 },
   tab: { alignItems: 'center', borderRadius: radius.pill, flex: 1, flexDirection: 'row', justifyContent: 'center', minHeight: 40, paddingHorizontal: spacing.sm },
   tabActive: { backgroundColor: colors.primary },
   tabText: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '900' },

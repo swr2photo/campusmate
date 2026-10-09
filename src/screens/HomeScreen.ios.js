@@ -1,5 +1,4 @@
 import { Button, Text } from '../components/NativeTypography';
-import NotificationBell from '../components/NotificationBell';
 import { font } from '../components/brandFont';
 import { useNativePalette } from '../theme';
 import RNText from '../components/AppText';
@@ -40,16 +39,16 @@ import {
 } from '../data/matchingFilters';
 import { router, useFocusEffect } from 'expo-router';
 import { useEntitlement } from '../context/MembershipContext';
-import { TourTarget } from '../context/AppTourContext';
+import NativeTourTarget from '../components/NativeTourTarget.ios';
 import { useDiscoveryDeckState } from '../hooks/useDiscoveryDeckState';
 import { FEATURE_ADVANCED_FILTERS, FEATURE_UNLIMITED_REWIND, stripPaidMatchingPreferences } from '../data/plans';
-import { ContentUnavailableView, Host, HStack, Image, BottomSheet, Form, Section, Slider, Picker, Menu, Toggle, ScrollView, Spacer, VStack, ZStack, RNHostView } from '@expo/ui/swift-ui';
-import { accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollIndicators, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
+import { ContentUnavailableView, Host, HStack, Image, BottomSheet, Form, Section, Slider, Picker, Menu, Toggle, ScrollView, Spacer, VStack, ZStack, RNHostView, useNativeState } from '@expo/ui/swift-ui';
+import { accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollIndicators, scrollPosition, scrollTargetLayout, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
 import { useAppActions, useAppBadges, useAppFeed, useAppProfile } from '../context/AppContext';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import { View, Pressable, useColorScheme, Animated } from 'react-native';
+import { View, Pressable, useColorScheme } from 'react-native';
 
 const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -101,7 +100,7 @@ export default function HomeScreen() {
   // CampusMate Plus gates (src/data/plans.js).
   const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
   const rewind = useEntitlement(FEATURE_UNLIMITED_REWIND);
-  const scrollY = useRef(new Animated.Value(0)).current;
+  const tourScrollPosition = useNativeState(null);
   const myMeetupStats = useMemo(() => (profile ? getMeetupStats(profile) : null), [profile, getMeetupStats]);
   const matchedCount = Math.max(matchedProfileCount, conversationCount);
 
@@ -424,33 +423,8 @@ export default function HomeScreen() {
   const meetupAccent = colorScheme === 'dark' ? '#7966FF' : '#4546B8';
   const meetupSoft = colorScheme === 'dark' ? 'rgba(112,178,255,0.16)' : '#EEF2F7';
 
-  const smallHeaderOpacity = scrollY.interpolate({
-    inputRange: [30, 60],
-    outputRange: [0, 1],
-    extrapolate: 'clamp',
-  });
-
-  const largeHeaderOpacity = scrollY.interpolate({
-    inputRange: [0, 30],
-    outputRange: [1, 0],
-    extrapolate: 'clamp',
-  });
-
-  const largeHeaderTranslateY = scrollY.interpolate({
-    inputRange: [0, 40],
-    outputRange: [0, -20],
-    extrapolate: 'clamp',
-  });
-
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
-      <TourTarget id="home.filters" style={{ flexShrink: 0, backgroundColor: palette.background }} pointerEvents="box-none">
-        <Host colorScheme={colorScheme} seedColor={palette.purple} matchContents={{ vertical: true }} style={{ width: '100%' }}>
-          <VStack modifiers={[padding({ top: 20, bottom: 16, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
-            <Header onSettings={() => router.push('/matching-filters')} />
-          </VStack>
-        </Host>
-      </TourTarget>
       <Host
         colorScheme={colorScheme}
         seedColor={palette.purple}
@@ -458,17 +432,20 @@ export default function HomeScreen() {
       >
         <ScrollView
           showsIndicators={false}
-          modifiers={[scrollIndicators('never', 'vertical')]}
+          modifiers={[scrollIndicators('never', 'vertical'), scrollPosition(tourScrollPosition, { anchor: 'top' })]}
         >
           <VStack
             alignment="leading"
             spacing={22}
             modifiers={[
+              scrollTargetLayout(),
               padding({ top: 12, bottom: 36, horizontal: 20 }),
               frame({ maxWidth: Infinity, alignment: 'topLeading' }),
             ]}
           >
-            <FilterChips onAll={handleReset} />
+            <NativeTourTarget id="home.activities" ensureVisible={() => tourScrollPosition.set('home.activities')}>
+              <FilterChips onAll={handleReset} />
+            </NativeTourTarget>
 
             {showFilters && (
               <SmartFilters
@@ -481,6 +458,7 @@ export default function HomeScreen() {
 
             {currentProfile ? (
               <>
+                <NativeTourTarget id="home.deck" ensureVisible={() => tourScrollPosition.set('home.deck')}>
                 <ProfileCard
                   candidate={currentProfile}
                   imageUri={imageUri}
@@ -489,6 +467,7 @@ export default function HomeScreen() {
                     params: { profileId: currentProfile.id },
                   })}
                 />
+                </NativeTourTarget>
                 <DiscoveryShortcuts
                   matchedCount={matchedCount}
                   resetKey={currentProfile.id}
@@ -774,37 +753,6 @@ export default function HomeScreen() {
         </BottomSheet>
       </Host>
     </View>
-  );
-}
-
-function Header({ onSettings }) {
-  const palette = usePalette();
-  return (
-    <HStack alignment="center" spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
-      <Text
-        modifiers={[
-          font({ textStyle: 'title1', weight: 'bold', design: 'rounded' }),
-          foregroundStyle(palette.text),
-        ]}
-      >
-        หาเพื่อน
-      </Text>
-      <Spacer />
-      <RNHostView matchContents><NotificationBell /></RNHostView>
-      <Button
-        label="ตัวกรอง"
-        onPress={onSettings}
-        systemImage="slider.horizontal.3"
-        modifiers={[
-          buttonStyle('plain'),
-          buttonBorderShape('circle'),
-          frame({ width: 48, height: 48 }),
-          controlSize('regular'),
-          labelStyle('iconOnly'),
-          tint(palette.text),
-        ]}
-      />
-    </HStack>
   );
 }
 

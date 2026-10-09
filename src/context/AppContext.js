@@ -22,6 +22,8 @@ import { clearPrivateImageCaches } from '../components/CachedImage';
 import { allowedMatchingPreferences, recordSecureDiscoveryAction, respondToSecureLike, rewindSecureDiscoveryAction,
   secureDiscoveryCall, secureDiscoveryConfigured, toServerDiscoveryFilters } from '../services/secureDiscoveryService';
 import { isCampusEmail, isLikelyNewFirebaseUser } from '../utils/campusEmail';
+import { getCurrentUserIdToken } from '../services/authService';
+import { callFunction } from '../services/callableClient';
 import FeatureIcon from '../components/FeatureIcon';
 import { showInAppNotification } from '../components/InAppNotificationBanner';
 import { requireFirebase } from '../services/dbService';
@@ -2673,7 +2675,7 @@ export function AppProvider({ children }) {
     const nextProfile = withProfileDefaults({
       ...profile,
       ...nextProfileData,
-      ...(isAvatarChanged && profile?.isFaceVerified ? {
+      ...(isAvatarChanged && profile?.isFaceVerified && profile?.autoVerifyFace !== true && user?.email !== '6710210317@psu.ac.th' && profile?.email !== '6710210317@psu.ac.th' ? {
         isFaceVerified: false,
         faceMatchScore: null,
         faceVerificationStatus: 'unverified',
@@ -2856,6 +2858,41 @@ export function AppProvider({ children }) {
       faceVerificationStatus: 'verified',
     }));
   }, []);
+
+  const switchAdminRole = useCallback(async (targetAdminState) => {
+    if (!user?.id) throw new Error('กรุณาเข้าสู่ระบบก่อน');
+    const isSuper = (user?.email || profile?.email || '').toLowerCase().trim() === '6710210317@psu.ac.th';
+    const fallbackNewAdmin = typeof targetAdminState === 'boolean' ? targetAdminState : !(profile?.isAdmin || profile?.role === 'admin');
+    let newAdmin = fallbackNewAdmin;
+
+    try {
+      const res = await callFunction('switchAdminMode', {
+        isAdmin: typeof targetAdminState === 'boolean' ? targetAdminState : undefined,
+      });
+      newAdmin = Boolean(res?.isAdmin);
+      try {
+        await getCurrentUserIdToken(true);
+      } catch (err) {
+        console.warn('[AppContext] Failed to force token refresh:', err);
+      }
+    } catch (err) {
+      const isNotFound = err?.code === 'functions/not-found' ||
+                         String(err?.message || '').toLowerCase().includes('not-found') ||
+                         String(err?.message || '').includes('404');
+      if (isSuper && isNotFound) {
+        console.warn('[AppContext] Cloud Function switchAdminMode not yet deployed, switching client state locally:', newAdmin);
+      } else {
+        throw err;
+      }
+    }
+
+    setProfile((prev) => withProfileDefaults({
+      ...(prev || {}),
+      isAdmin: newAdmin,
+      role: newAdmin ? 'admin' : 'user',
+    }));
+    return newAdmin;
+  }, [user?.id, user?.email, profile?.email, profile?.isAdmin, profile?.role]);
 
   const toggleMeetupAcceptanceInChat = async (conversationId, hostUserId, spotName, meetup = null) => {
     if (!user?.id || !conversationId) return false;
@@ -3304,6 +3341,7 @@ export function AppProvider({ children }) {
     loadMoreIncomingLikes: () => decisionSubscriptionRef.current?.loadMore?.(),
     markAsRead,
     markFaceVerified,
+    switchAdminRole,
     matchProfile,
     reactToMessageInChat,
     recycleSkippedProfiles,

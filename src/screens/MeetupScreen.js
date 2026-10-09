@@ -327,38 +327,40 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
 
   const header = (
     <View>
-      {!partyOnly && <TourTarget id="meetup.hero" scrollRef={tourScrollRef} scrollOffset={0}>
-        <CampusHero onOpenMap={() => openMapForSpot(selectedMeetup || visibleSpots[0])} selectedMeetup={selectedMeetup} />
-      </TourTarget>}
 
-      <TourTarget id={partyOnly ? 'party-finder.list' : 'meetup.party'} scrollRef={tourScrollRef} scrollOffset={24}>
-      {partyOnly ? <PartyFinderSection
-        targetPartyId={targetPartyId}
-        onLoadMore={loadMoreParties}
-        onLoadMoreRequests={loadMoreRequests}
-        hasMore={hasMoreParties}
-        loadingMore={loadingMoreParties}
-        onRetry={retryParties}
-        parties={parties}
-        loading={partiesLoading && !parties?.length}
-        error={partiesError}
-        busyPartyId={busyPartyId}
-        onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
-        onJoinParty={handleJoinParty}
-        onWithdrawRequest={handleWithdraw}
-        onApproveRequest={handleApprove}
-        onRejectRequest={handleReject}
-        onCancelParty={handleCancelParty}
-        onRetryActivation={(party) => retryLegacyActivation(party.id)}
-        onOpenChat={(party) => router.push({ pathname: '/group-chat', params: { partyId: party.id } })}
-        onOpenMap={openMapForSpot}
-      /> : <PartyFinderEntry />}
-      </TourTarget>
+
+      {partyOnly && (
+        <TourTarget id="party-finder.list" scrollRef={tourScrollRef} scrollOffset={24}>
+          <PartyFinderSection
+            targetPartyId={targetPartyId}
+            onLoadMore={loadMoreParties}
+            onLoadMoreRequests={loadMoreRequests}
+            hasMore={hasMoreParties}
+            loadingMore={loadingMoreParties}
+            onRetry={retryParties}
+            parties={parties}
+            loading={partiesLoading && !parties?.length}
+            error={partiesError}
+            busyPartyId={busyPartyId}
+            onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
+            onJoinParty={handleJoinParty}
+            onWithdrawRequest={handleWithdraw}
+            onApproveRequest={handleApprove}
+            onRejectRequest={handleReject}
+            onCancelParty={handleCancelParty}
+            onRetryActivation={(party) => retryLegacyActivation(party.id)}
+            onOpenChat={(party) => router.push({ pathname: '/group-chat', params: { partyId: party.id } })}
+            onOpenMap={openMapForSpot}
+          />
+        </TourTarget>
+      )}
 
       {!partyOnly && <>
       {selectedMeetup ? <SelectedMeetup meetup={selectedMeetup} onChangeTime={() => openScheduleFor(selectedMeetup)} onClear={handleClear} onOpenMap={() => openMapForSpot(selectedMeetup)} /> : null}
 
-      <IosLikeSectionTitle subtitle="สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล" title="เลือกกิจกรรมที่สนใจ" />
+      <TourTarget id="meetup.spots" scrollRef={tourScrollRef} scrollOffset={30}>
+        <IosLikeSectionTitle subtitle="สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล" title="เลือกกิจกรรมที่สนใจ" />
+      </TourTarget>
       <ScrollView contentContainerStyle={styles.categoryRow} horizontal showsHorizontalScrollIndicator={false}>
         {SPOT_CATEGORIES.map((category) => (
           <IosLikePill
@@ -480,7 +482,7 @@ function CampusHero({ onOpenMap, selectedMeetup }) {
   const isTablet = !isIPad && windowWidth >= 700;
   const maxContentWidth = isTablet ? Math.min(windowWidth - 64, 620) : layoutWidth;
   const heroWidth = maxContentWidth - (spacing.lg * 2);
-  const heroHeight = Platform.OS === 'android' && windowWidth < 600 ? 156 : 200;
+  const heroHeight = Math.round(heroWidth * 9 / 16);
 
 
   

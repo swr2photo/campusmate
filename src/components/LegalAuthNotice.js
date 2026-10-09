@@ -14,7 +14,7 @@ export default function LegalAuthNotice({ style, compact = false }) {
         <Text
           accessibilityRole="link"
           onPress={() => router.push('/terms')}
-          style={[styles.link, { color: colors.primary }]}
+          style={[styles.copy, compact && styles.compactCopy, styles.link, { color: colors.primary }]}
         >
           เงื่อนไขการให้บริการ
         </Text>
@@ -22,7 +22,7 @@ export default function LegalAuthNotice({ style, compact = false }) {
         <Text
           accessibilityRole="link"
           onPress={() => router.push('/privacy-policy')}
-          style={[styles.link, { color: colors.primary }]}
+          style={[styles.copy, compact && styles.compactCopy, styles.link, { color: colors.primary }]}
         >
           นโยบายความเป็นส่วนตัว
         </Text>

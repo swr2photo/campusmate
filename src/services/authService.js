@@ -94,6 +94,10 @@ function requireAuth() {
 export function getFirebaseConfigurationErrorMessage(error) {
   const code = String(error?.code || '').toLowerCase();
   const message = String(error?.message || '').toLowerCase();
+  if (message.includes('firebase configuration is missing')
+    || message.includes('firebase authentication is not initialized')) {
+    return 'ยังเชื่อมต่อระบบเข้าสู่ระบบไม่ได้ กรุณาตรวจสอบการตั้งค่า Firebase ของแอป';
+  }
   const isApiKeyRestrictionError = code.includes('requests-from-referrer')
     || message.includes('requests-from-referrer')
     || code.includes('api-key-not-valid')
@@ -353,18 +357,23 @@ export const resendVerificationEmail = resendEmailVerification;
 export function getSignInErrorMessage(error, { mode } = {}) {
   const configurationError = getFirebaseConfigurationErrorMessage(error);
   if (configurationError) return configurationError;
+  let code = String(error?.code || '').replace(/^functions\//, '');
+  if (!code && error?.message) {
+    const match = String(error.message).match(/auth\/[a-z0-9-]+/i);
+    if (match) code = match[0].toLowerCase();
+  }
   if (
-    error?.code === 'auth/campus-email-required'
-    || error?.code === 'auth/student-id-required'
-    || error?.code === 'auth/campus-email-login-only'
+    code === 'auth/campus-email-required'
+    || code === 'auth/student-id-required'
+    || code === 'auth/campus-email-login-only'
   ) {
     return getCampusEmailErrorMessage(error);
   }
-  if (error?.code === 'auth/user-not-found') {
+  if (code === 'auth/user-not-found') {
     return 'ไม่พบบัญชีที่ใช้อีเมลนี้ สมัครใหม่ได้เฉพาะอีเมล @psu.ac.th';
   }
-  if (error?.code === 'auth/wrong-password' || error?.code === 'auth/invalid-credential') {
-    return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง (หากบัญชีนี้สมัครด้วย Google ให้เข้าสู่ระบบด้วย Google)';
+  if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+    return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง (หากบัญชีนี้สมัครด้วย Google ให้กดปุ่ม Google หรือกด "ลืมรหัสผ่าน?" เพื่อตั้งรหัสใหม่)';
   }
   if (error?.code === 'auth/email-already-in-use') {
     return 'อีเมลนี้มีผู้ใช้งานแล้ว กรุณาเข้าสู่ระบบ';
@@ -460,10 +469,10 @@ export async function sendPasswordReset(email) {
   };
 }
 
-export async function getCurrentUserIdToken() {
+export async function getCurrentUserIdToken(forceRefresh = false) {
   const currentUser = requireAuth().currentUser;
-  if (!currentUser) throw new Error('กรุณาเข้าสู่ระบบก่อนอัปโหลดรูปภาพ');
-  return currentUser.getIdToken();
+  if (!currentUser) throw new Error('กรุณาเข้าสู่ระบบก่อนดำเนินการ');
+  return currentUser.getIdToken(forceRefresh);
 }
 
 export function subscribeToAuthChanges(callback, onError) {

@@ -9,7 +9,15 @@ export default function DiscoverRoute() {
   const pathname = usePathname();
   return (
     <>
-      <Stack.Screen options={{ headerRight: () => null, title: 'ถูกใจ' }} />
+      <Stack.Screen
+        options={{
+          title: 'ถูกใจ',
+          headerShown: true,
+          headerTransparent: false,
+          headerLargeTitle: false,
+          headerRight: () => null,
+        }}
+      />
       <LikesScreen
         onOpenChat={(chatId) => {
           if (chatId) {

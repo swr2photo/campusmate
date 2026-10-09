@@ -8,7 +8,7 @@ export default function DiscoverLayout() {
   return (
     <Stack
       screenOptions={{
-        headerShown: Platform.OS === 'android',
+        headerShown: true,
         headerShadowVisible: false,
         headerTintColor: colors.ink,
         headerStyle: { backgroundColor: colors.canvas },

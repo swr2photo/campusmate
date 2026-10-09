@@ -428,7 +428,7 @@ function PartyCard({ party, colors, busy, onSelect, onJoin, onWithdraw, onOpenCh
           {/* Card Header: Host Info & Status Badge */}
           <View style={styles.cardHeaderRow}>
             <View style={styles.hostRow}>
-              <HostAvatar uri={hostAvatarUri} name={hostName} size={36} colors={colors} />
+              <HostAvatar uri={hostAvatarUri} name={hostName} size={42} colors={colors} />
               <View style={styles.hostMeta}>
                 <View style={styles.hostTitleRow}>
                   <Text style={[styles.hostName, { color: colors.ink }]} numberOfLines={1}>
@@ -497,7 +497,7 @@ function PartyCard({ party, colors, busy, onSelect, onJoin, onWithdraw, onOpenCh
           {/* Spot Location */}
           <View style={styles.cardSpotRow}>
             <FeatureIcon name="mappin.circle.fill" size={17} color={colors.primary} />
-            <Text style={[styles.cardSpotName, { color: colors.ink }]} numberOfLines={1}>
+            <Text style={[styles.cardSpotName, { color: colors.ink }]} numberOfLines={2}>
               {party.spotName || 'จุดนัดหมาย ม.อ.'}
             </Text>
           </View>
@@ -926,18 +926,14 @@ const styles = StyleSheet.create({
   },
   card: {
     width: CARD_WIDTH,
-    borderRadius: 18,
-    borderWidth: 1.5,
+    borderRadius: 24,
+    borderCurve: 'continuous',
+    borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
-    elevation: 2,
   },
   cardBody: {
-    padding: 14,
-    gap: 10,
+    padding: 18,
+    gap: 14,
   },
   cardHeaderRow: {
     flexDirection: 'row',
@@ -1007,8 +1003,9 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   cardSpotName: {
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 18,
+    lineHeight: 27,
+    fontWeight: '700',
     flex: 1,
   },
   timeRow: {
@@ -1020,7 +1017,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   timeText: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
   },
   quoteWrap: {
@@ -1032,9 +1029,8 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   quoteText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontStyle: 'italic',
+    fontSize: 14,
+    lineHeight: 22,
     flex: 1,
   },
   slotRow: {

@@ -6,7 +6,7 @@ import ChatScreen from '../../../src/screens/ChatScreen';
 export default function ChatRoute() {
   return (
     <>
-      <Stack.Screen options={{ headerRight: () => null, headerShown: Platform.OS !== 'android', title: 'ข้อความ' }} />
+      <Stack.Screen options={{ headerRight: () => null, headerShown: Platform.OS !== 'android', title: 'ข้อความ', headerTransparent: false, headerLargeTitle: false }} />
       <ChatScreen />
     </>
   );

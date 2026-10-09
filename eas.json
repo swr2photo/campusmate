@@ -4,6 +4,7 @@
   },
   "build": {
     "preview": {
+      "pnpm": "12.10.1",
       "environment": "preview",
       "distribution": "internal",
       "android": {

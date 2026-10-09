@@ -66,6 +66,8 @@ export default function RootLayout() {
                     screenOptions={{
                       headerShown: false,
                       headerShadowVisible: false,
+                      headerBackButtonDisplayMode: 'minimal',
+                      headerBackTitle: 'ย้อนกลับ',
                       headerTintColor: colors.ink,
                       headerStyle: { backgroundColor: colors.canvas },
                       headerTitleStyle: { color: colors.ink, fontFamily: 'NotoSansThai_600SemiBold', fontSize: 18 },
@@ -84,11 +86,11 @@ export default function RootLayout() {
                         gestureEnabled: false,
                       }}
                     />
-                    <Stack.Screen name="(tabs)" options={{ animation: 'none' }} />
+                    <Stack.Screen name="(tabs)" options={{ animation: 'none', title: 'หน้าหลัก' }} />
                     <Stack.Screen name="profile" options={{ headerShown: true, title: 'แก้ไขโปรไฟล์' }} />
                     <Stack.Screen name="profile-settings" options={{ headerShown: false }} />
                     <Stack.Screen name="membership" options={{ headerShown: true, title: 'CampusMate Plus' }} />
-                    <Stack.Screen name="likes" options={{ headerShown: Platform.OS === 'android', title: 'ถูกใจ' }} />
+                    <Stack.Screen name="likes" options={{ headerShown: true, title: 'ถูกใจ' }} />
                     <Stack.Screen name="notifications" options={{ headerShown: true, title: 'แจ้งเตือน' }} />
                     <Stack.Screen name="appointments" options={{ headerShown: true, title: 'ประวัติการนัดหมาย' }} />
                     <Stack.Screen name="party-finder" options={{ headerShown: true, title: 'หาตี้ใน ม.อ.' }} />

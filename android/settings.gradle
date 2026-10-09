@@ -37,3 +37,8 @@ expoAutolinking.useExpoVersionCatalog()
 
 include ':app'
 includeBuild(expoAutolinking.reactNativeGradlePlugin)
+
+// Resolve pnpm links before Gradle tracks native-library build outputs.
+rootProject.children.each { descriptor ->
+  descriptor.projectDir = descriptor.projectDir.canonicalFile
+}

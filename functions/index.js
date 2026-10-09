@@ -1,5 +1,6 @@
 import { persistInbox, syncFaceInbox } from './notificationInbox.js';
 import { newerGroupMessage } from './groupMessageMetadata.js';
+import { isSuperAdminEmail } from './adminPolicy.js';
 export { adminConsole } from './adminFunctions.js';
 import crypto from 'node:crypto';
 import { initializeApp } from 'firebase-admin/app';
@@ -1850,11 +1851,64 @@ export const browseMusicTracks = onCall({ region: REGION, maxInstances: 20 }, as
   }
 });
 
+export const switchAdminMode = onCall({ region: REGION }, async (request) => {
+  if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'กรุณาเข้าสู่ระบบ');
+  const uid = request.auth.uid;
+  const user = await auth.getUser(uid);
+  const isSuper = isSuperAdminEmail(user.email);
+  const currentAdmin = user.customClaims?.admin === true;
+  if (!isSuper && !currentAdmin) {
+    throw new HttpsError('permission-denied', 'เฉพาะผู้ดูแลระบบหรือผู้ใช้ที่ได้รับอนุญาตเท่านั้น');
+  }
+  const newAdmin = typeof request.data?.isAdmin === 'boolean' ? request.data.isAdmin : !currentAdmin;
+  await auth.setCustomUserClaims(uid, {
+    ...(user.customClaims || {}),
+    admin: newAdmin,
+  });
+  await db.collection('users').doc(uid).set({
+    isAdmin: newAdmin,
+    role: newAdmin ? 'admin' : 'user',
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  await db.collection('profiles').doc(uid).set({
+    role: newAdmin ? 'admin' : 'user',
+  }, { merge: true });
+  return { success: true, isAdmin: newAdmin };
+});
+
 export const ensureNotificationInbox = onCall({ region: REGION }, async (request) => {
   if (request.data?.expectedUid && request.data.expectedUid !== request.auth?.uid) throw new HttpsError('permission-denied', 'บัญชีเปลี่ยนแล้ว');
   if (!request.auth) throw new HttpsError('unauthenticated', 'กรุณาเข้าสู่ระบบ');
-  const user = await db.doc(`users/${request.auth.uid}`).get();
-  await syncFaceInbox(db, request.auth.uid, user.data());
+  const userRef = db.doc(`users/${request.auth.uid}`);
+  const userSnap = await userRef.get();
+  const userData = userSnap.data() || {};
+  const email = request.auth.token?.email || userData.email || userData.campusEmail;
+  if (isSuperAdminEmail(email)) {
+    const patch = {};
+    let needsUpdate = false;
+    if (userData.isFaceVerified !== true || userData.faceMatchScore !== 100) {
+      patch.isFaceVerified = true;
+      patch.faceMatchScore = 100;
+      patch.faceVerificationStatus = 'verified';
+      patch.autoVerifyFace = true;
+      patch.faceVerifiedAt = FieldValue.serverTimestamp();
+      needsUpdate = true;
+    }
+    if (needsUpdate) {
+      await userRef.set(patch, { merge: true });
+      await db.doc(`profiles/${request.auth.uid}`).set({
+        isFaceVerified: true,
+        faceMatchScore: 100,
+      }, { merge: true });
+      const discRef = db.doc(`discoveryProfiles/${request.auth.uid}`);
+      const discSnap = await discRef.get();
+      if (discSnap.exists) {
+        await discRef.set({ isFaceVerified: true }, { merge: true });
+      }
+    }
+  }
+  const refreshedUser = (await userRef.get()).data() || {};
+  await syncFaceInbox(db, request.auth.uid, refreshedUser);
   return { ok: true };
 });
 export const syncFaceNotificationInbox = onDocumentWritten({ ...EVENT_OPTIONS, document: 'users/{userId}' }, async (event) => {

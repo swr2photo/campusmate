@@ -40,6 +40,21 @@
   },
   "hosting": {
     "public": "public",
+    "cleanUrls": true,
+    "rewrites": [
+      {
+        "source": "/admin",
+        "destination": "/admin.html"
+      },
+      {
+        "source": "/reset",
+        "destination": "/reset.html"
+      },
+      {
+        "source": "/email-verified",
+        "destination": "/email-verified.html"
+      }
+    ],
     "ignore": [
       "firebase.json",
       "**/.*",

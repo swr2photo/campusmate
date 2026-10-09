@@ -24,7 +24,8 @@ export default function CampusMapView({ spots = [], selectedSpot, onSelectSpot, 
   const [locating, setLocating] = useState(false);
   const [myLocation, setMyLocation] = useState(null);
   const configured = Platform.OS === 'android'
-    ? Constants.expoConfig?.extra?.androidMapsConfigured : Constants.expoConfig?.extra?.iosMapsConfigured;
+    ? Boolean(Constants.expoConfig?.extra?.androidMapsConfigured)
+    : true;
   const pins = useMemo(() => spots.filter((spot) => getSpotCoordinates(spot)), [spots]);
   const selected = pins.find((spot) => spot.id === selectedId) || (selectedSpot?.id === selectedId ? selectedSpot : null);
   const initial = getSpotCoordinates(selectedSpot) || CAMPUS_CENTER;
@@ -52,9 +53,11 @@ export default function CampusMapView({ spots = [], selectedSpot, onSelectSpot, 
     finally { setLocating(false); }
   };
   return <View style={[styles.container, { height, backgroundColor: colors.canvas }, style]}>
-    {configured ? <MapView key={retry} ref={map} style={StyleSheet.absoluteFill} provider={PROVIDER_GOOGLE}
+    {configured ? <MapView key={retry} ref={map} style={StyleSheet.absoluteFill}
+      provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
       initialRegion={{ ...initial, latitudeDelta: 0.016, longitudeDelta: 0.016 }} userInterfaceStyle={isDark ? 'dark' : 'light'}
-      onMapReady={() => setReady(true)} onMapLoaded={() => { setLoaded(true); setError(''); }}
+      onMapReady={() => { setReady(true); setLoaded(true); setError(''); }}
+      onMapLoaded={() => { setLoaded(true); setError(''); }}
       showsMyLocationButton={false} toolbarEnabled={false}>
       {pins.map((spot) => <Marker key={spot.id} coordinate={getSpotCoordinates(spot)} title={spot.name}
         pinColor={selectedId === spot.id ? colors.primary : '#F47C6B'} onPress={() => setSelectedId(spot.id)} />)}

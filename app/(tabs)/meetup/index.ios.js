@@ -8,7 +8,7 @@ export default function MeetupRoute() {
 
   return (
     <>
-      <Stack.Screen options={{ title: 'กิจกรรม' }} />
+      <Stack.Screen options={{ title: 'กิจกรรม', headerShown: true, headerTransparent: false, headerLargeTitle: false }} />
       <MeetupScreen onToast={showToast} />
     </>
   );

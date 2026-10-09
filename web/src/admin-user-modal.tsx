@@ -582,11 +582,131 @@ export function AdminUserModal({
                   <strong>เหตุผลที่ระงับ:</strong> {account.restriction.suspensionReason}
                 </div>
               )}
-              {account.restriction?.latestWarning && (
-                <div className="info" style={{ margin: '16px 0' }}>
-                  <strong>คำเตือนล่าสุด:</strong> {account.restriction.latestWarning.message}
+              {/* Section 1: Admin Role Settings */}
+              <div className="admin-role-form-panel" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: '16px 20px', marginBottom: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+                  <h3 style={{ margin: 0, fontSize: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Sparkles size={18} color="#7c3aed" />
+                    สิทธิ์ผู้ดูแลระบบ (Admin Privileges)
+                  </h3>
+                  <span className={`badge ${account.isAdmin ? 'reviewing' : 'pending'}`}>
+                    {account.isAdmin ? '👑 ผู้ดูแลระบบ' : '👤 ผู้ใช้ทั่วไป'}
+                  </span>
                 </div>
-              )}
+                <p className="muted" style={{ margin: '0 0 14px', fontSize: 13, lineHeight: 1.5 }}>
+                  {account.isAdmin
+                    ? 'บัญชีนี้ได้รับสิทธิ์ผู้ดูแลระบบ สามารถเข้าสู่ระบบ Admin Console และตั้งค่าระบบได้'
+                    : 'บัญชีนี้มีสถานะเป็นผู้ใช้ทั่วไป ไม่สามารถเข้าถึงหน้า Admin Console ได้'}
+                </p>
+                <button
+                  type="button"
+                  disabled={busy || actionBusy}
+                  className={account.isAdmin ? 'secondary' : 'primary'}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                  onClick={async () => {
+                    const willBeAdmin = !account.isAdmin;
+                    const actionName = willBeAdmin ? 'มอบสิทธิ์ผู้ดูแลระบบให้' : 'ยกเลิกสิทธิ์ผู้ดูแลระบบของ';
+                    if (window.confirm(`${actionName} ${account.email || account.uid} หรือไม่?`)) {
+                      setActionBusy(true);
+                      onError('');
+                      try {
+                        await api('setAdminRole', { uid: account.uid, isAdmin: willBeAdmin, note: accountNote });
+                        onNotice(`${willBeAdmin ? 'มอบ' : 'ยกเลิก'}สิทธิ์ผู้ดูแลระบบเรียบร้อยแล้ว`);
+                        onUpdateAccount({ ...account, isAdmin: willBeAdmin });
+                      } catch (err: any) {
+                        onError(err.message || 'ตั้งค่าสิทธิ์แอดมินไม่สำเร็จ');
+                      } finally {
+                        setActionBusy(false);
+                      }
+                    }
+                  }}
+                >
+                  <Sparkles size={15} />
+                  {account.isAdmin ? 'ปรับเป็นสิทธิ์ผู้ใช้ทั่วไป' : 'ตั้งเป็นผู้ดูแลระบบ (แอดมิน)'}
+                </button>
+              </div>
+
+              {/* Section 2: Face Verification Management */}
+              <div className="face-verification-form-panel" style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 12, padding: '16px 20px', marginBottom: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+                  <h3 style={{ margin: 0, fontSize: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <ShieldCheck size={18} color="#16a34a" />
+                    การยืนยันใบหน้า (Face Verification)
+                  </h3>
+                  <span className={`badge ${account.isFaceVerified ? 'resolved' : 'pending'}`}>
+                    {account.isFaceVerified
+                      ? `✓ ยืนยันแล้ว ${account.faceMatchScore ? `(${account.faceMatchScore}%)` : ''}`
+                      : 'ยังไม่ยืนยันใบหน้า'}
+                  </span>
+                </div>
+                <p className="muted" style={{ margin: '0 0 14px', fontSize: 13, lineHeight: 1.5 }}>
+                  {account.isFaceVerified
+                    ? 'บัญชีนี้ได้รับการยืนยันใบหน้าแล้ว สามารถแสดงผลในระบบค้นหาเพื่อนและใช้งานฟีเจอร์นัดพบได้'
+                    : 'บัญชีนี้ยังไม่ได้รับการยืนยันใบหน้า สามารถกดอนุมัติการยืนยันใบหน้าอัตโนมัติ (100%) ได้จากที่นี่ทันที'}
+                </p>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    disabled={busy || actionBusy || account.isFaceVerified}
+                    className="primary"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                    onClick={async () => {
+                      if (window.confirm(`อนุมัติการยืนยันใบหน้าอัตโนมัติให้ ${account.email || account.uid} ทันทีหรือไม่?`)) {
+                        setActionBusy(true);
+                        onError('');
+                        try {
+                          await api('setFaceVerification', { uid: account.uid, isVerified: true, score: 100, note: accountNote });
+                          onNotice('อนุมัติการยืนยันใบหน้าอัตโนมัติเรียบร้อยแล้ว (100%)');
+                          onUpdateAccount({
+                            ...account,
+                            isFaceVerified: true,
+                            faceMatchScore: 100,
+                            faceVerificationStatus: 'verified',
+                          });
+                        } catch (err: any) {
+                          onError(err.message || 'อนุมัติการยืนยันใบหน้าไม่สำเร็จ');
+                        } finally {
+                          setActionBusy(false);
+                        }
+                      }
+                    }}
+                  >
+                    <ShieldCheck size={15} />
+                    อนุมัติยืนยันใบหน้าอัตโนมัติ (100%)
+                  </button>
+                  {account.isFaceVerified && (
+                    <button
+                      type="button"
+                      disabled={busy || actionBusy}
+                      className="secondary"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                      onClick={async () => {
+                        if (window.confirm(`ยกเลิกการยืนยันใบหน้าของ ${account.email || account.uid} หรือไม่?`)) {
+                          setActionBusy(true);
+                          onError('');
+                          try {
+                            await api('setFaceVerification', { uid: account.uid, isVerified: false, note: accountNote });
+                            onNotice('ยกเลิกการยืนยันใบหน้าเรียบร้อยแล้ว');
+                            onUpdateAccount({
+                              ...account,
+                              isFaceVerified: false,
+                              faceMatchScore: null,
+                              faceVerificationStatus: 'unverified',
+                            });
+                          } catch (err: any) {
+                            onError(err.message || 'ยกเลิกการยืนยันใบหน้าไม่สำเร็จ');
+                          } finally {
+                            setActionBusy(false);
+                          }
+                        }
+                      }}
+                    >
+                      <X size={15} />
+                      ยกเลิกการยืนยันใบหน้า
+                    </button>
+                  )}
+                </div>
+              </div>
 
               {/* Suspension Toggle Form */}
               <div className="suspension-form-panel">

@@ -19,7 +19,7 @@ import SpotifyConnectCard from '../components/SpotifyConnectCard';
 import { prefetchBrowseMusicTracks } from '../services/spotifyService';
 import { isSpotifyFeatureAllowed } from '../utils/featureFlags';
 import { useAuth } from '../context/AuthContext';
-import { getStyles as getDiscoverStyles, ProfileCardView } from './DiscoverProfileScreen';
+import { getStyles as getDiscoverStyles, ProfileCardView } from './DiscoverProfileScreen.js';
 import { useAppProfile, useAppActions } from '../context/AppContext';
 import { Card, Chip, PrimaryButton } from '../components/ui';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -687,10 +687,19 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                         </Text>
                       </View>
                     )}
+                    {((safeProfile?.email || user?.email || '').toLowerCase() === '6710210317@psu.ac.th') && (
+                      <View style={{ backgroundColor: '#2563EB22', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
+                        <Text style={{ color: '#2563EB', fontSize: 11, fontWeight: '800' }}>
+                          👑 Super Admin
+                        </Text>
+                      </View>
+                    )}
                   </View>
                   <Text style={{ fontSize: 12, color: colors.inkMuted, marginTop: 2 }}>
                     {isFaceVerified
-                      ? 'โปรไฟล์ของคุณได้รับตราสีฟ้า ยืนยันว่าตรงกับรูปหลัก'
+                      ? (((safeProfile?.email || user?.email || '').toLowerCase() === '6710210317@psu.ac.th')
+                        ? 'ได้รับการยืนยันใบหน้าอัตโนมัติด้วยสิทธิ์ Super Admin (100%)'
+                        : 'โปรไฟล์ของคุณได้รับตราสีฟ้า ยืนยันว่าตรงกับรูปหลัก')
                       : 'สแกนใบหน้าสดเพื่อรับตราสัญลักษณ์ความถูกต้อง ป้องกันการแอบอ้าง'}
                   </Text>
                 </View>

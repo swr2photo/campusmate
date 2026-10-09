@@ -8,7 +8,7 @@ import { getEmailSendingConfig, sendCampusEmail } from './campusEmailMailer.js';
 import { prepareAdminEmail } from './adminEmail.js';
 import { reportedMessage, moderateReport, deleteReportedMedia, mediaObjectKey } from './adminModeration.js';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
-import { requireAdmin, validateReview, validateVersion, REPORT_STATUSES } from './adminPolicy.js';
+import { requireAdmin, validateReview, validateVersion, REPORT_STATUSES, isSuperAdminEmail, SUPER_ADMIN_EMAILS } from './adminPolicy.js';
 import {safeProfile,userSummary,effectiveOperations,validateOperations,validateRemotePatch,remoteParameters,remoteParameterMap,remoteParameterTarget} from './adminOperations.js';
 import {previewNotification,sendNotification,refreshNotificationReceipts} from './adminNotifications.js';
 import {previewAccountDeletion,deleteAccount} from './adminAccountDeletion.js';
@@ -53,13 +53,61 @@ function smtpConfig(){
 export const adminConsole = onCall({ region: 'asia-southeast1', maxInstances: 5, timeoutSeconds: 300, invoker: 'public', secrets:[smtpSecret,mediaSecret] }, async request => {
   try {
     const actor = requireAdmin(request);
-    // Recheck current claims so removing admin access takes effect immediately.
+    // Recheck current claims so removing admin access takes effect immediately, allowing superadmin override.
     const currentActor = await getAuth().getUser(actor);
-    if (currentActor.disabled || currentActor.customClaims?.admin !== true || !currentActor.emailVerified) throw new HttpsError('permission-denied', 'สิทธิ์ผู้ดูแลถูกยกเลิก');
+    const isSuper = isSuperAdminEmail(currentActor.email);
+    if (currentActor.disabled || (!isSuper && currentActor.customClaims?.admin !== true) || !currentActor.emailVerified) throw new HttpsError('permission-denied', 'สิทธิ์ผู้ดูแลถูกยกเลิก');
     const db = getFirestore(), data = request.data || {}, op = data.op;
     const audit = (action, target, extra = {}) => ({ actor, action, target, ...extra, createdAt: FieldValue.serverTimestamp() });
   if(op==='previewAccountDeletion')return previewAccountDeletion({db,auth:getAuth(),actor,uid:data.uid});
   if(op==='deleteAccount')return deleteAccount({db,auth:getAuth(),actor,data});
+  if(op==='setAdminRole'){
+    const targetUid=id(data.uid);
+    if(typeof data.isAdmin!=='boolean')throw new HttpsError('invalid-argument','ต้องระบุค่าสิทธิ์แอดมิน (true/false)');
+    const targetUser=await getAuth().getUser(targetUid);
+    const wasAdmin=targetUser.customClaims?.admin===true;
+    const note=typeof data.note==='string'?data.note.trim().slice(0,2000):'';
+    const nextClaims={...(targetUser.customClaims||{}),admin:data.isAdmin};
+    await getAuth().setCustomUserClaims(targetUid,nextClaims);
+    const patch={isAdmin:data.isAdmin,role:data.isAdmin?'admin':'user',updatedAt:FieldValue.serverTimestamp()};
+    await db.collection('users').doc(targetUid).set(patch,{merge:true});
+    await db.collection('profiles').doc(targetUid).set({role:data.isAdmin?'admin':'user'},{merge:true});
+    await db.collection('adminAudit').doc().set(audit('setAdminRole',targetUid,{before:{isAdmin:wasAdmin},after:{isAdmin:data.isAdmin},note,targetEmail:targetUser.email||''}));
+    return {success:true,uid:targetUid,isAdmin:data.isAdmin};
+  }
+  if(op==='setFaceVerification'){
+    const targetUid=id(data.uid);
+    if(typeof data.isVerified!=='boolean')throw new HttpsError('invalid-argument','ต้องระบุค่าการยืนยันใบหน้า (true/false)');
+    const score=typeof data.score==='number'&&Number.isFinite(data.score)?Math.min(100,Math.max(0,data.score)):100;
+    const note=typeof data.note==='string'?data.note.trim().slice(0,2000):'';
+    const patch={
+      isFaceVerified:data.isVerified,
+      faceVerificationStatus:data.isVerified?'verified':'unverified',
+      faceMatchScore:data.isVerified?score:null,
+      faceVerifiedAt:data.isVerified?FieldValue.serverTimestamp():null,
+      autoVerifyFace:data.isVerified,
+      updatedAt:FieldValue.serverTimestamp(),
+    };
+    await db.collection('users').doc(targetUid).set(patch,{merge:true});
+    await db.collection('profiles').doc(targetUid).set({isFaceVerified:data.isVerified,faceMatchScore:data.isVerified?score:null},{merge:true});
+    const discRef=db.collection('discoveryProfiles').doc(targetUid);
+    const discSnap=await discRef.get();
+    if(discSnap.exists){
+      await discRef.set({isFaceVerified:data.isVerified},{merge:true});
+    }
+    await db.collection('adminAudit').doc().set(audit('setFaceVerification',targetUid,{before:{isFaceVerified:!data.isVerified},after:{isFaceVerified:data.isVerified,faceMatchScore:data.isVerified?score:null},note}));
+    return {success:true,uid:targetUid,isFaceVerified:data.isVerified,faceMatchScore:data.isVerified?score:null};
+  }
+  if(op==='switchMyRole'){
+    const user=await getAuth().getUser(actor);
+    const currentAdmin=user.customClaims?.admin===true;
+    const newAdmin=typeof data.isAdmin==='boolean'?data.isAdmin:!currentAdmin;
+    await getAuth().setCustomUserClaims(actor,{...(user.customClaims||{}),admin:newAdmin});
+    await db.collection('users').doc(actor).set({isAdmin:newAdmin,role:newAdmin?'admin':'user',updatedAt:FieldValue.serverTimestamp()},{merge:true});
+    await db.collection('profiles').doc(actor).set({role:newAdmin?'admin':'user'},{merge:true});
+    await db.collection('adminAudit').doc().set(audit('switchMyRole',actor,{before:{isAdmin:currentAdmin},after:{isAdmin:newAdmin}}));
+    return {success:true,isAdmin:newAdmin};
+  }
   if(op==='users'){
     if(data.cursor&&(typeof data.cursor!=='string'||data.cursor.length>4096))throw new HttpsError('invalid-argument','หน้ารายชื่อไม่ถูกต้อง');
     const page=await getAuth().listUsers(100,data.cursor||undefined);
@@ -80,7 +128,7 @@ export const adminConsole = onCall({ region: 'asia-southeast1', maxInstances: 5,
       db.collection('spots').count().get(),
       db.collection('parties').where('status', '==', 'open').count().get(),
     ]);
-    return { counts, userCount: userCount.data().count, spotCount: spotCount.data().count, openPartiesCount: openPartiesCount.data().count, adminEmail: currentActor.email };
+    return { counts, userCount: userCount.data().count, spotCount: spotCount.data().count, openPartiesCount: openPartiesCount.data().count, adminEmail: currentActor.email, actorIsAdmin: currentActor.customClaims?.admin === true, isSuperAdmin: isSuper };
   }
   if (op === 'metrics') {
     const startTime = Date.now();
@@ -256,7 +304,7 @@ export const adminConsole = onCall({ region: 'asia-southeast1', maxInstances: 5,
     const membership=entitlement.data()||{};
     const auditLogs=auditSnap.docs.map(d=>({id:d.id,...serialize(d.data())})).sort((a,b)=>new Date(b.createdAt||0).getTime()-new Date(a.createdAt||0).getTime());
     const faceSessions=faceSessionsSnap.docs.map(d=>({id:d.id,...serialize(d.data())})).sort((a,b)=>new Date(b.createdAt||0).getTime()-new Date(a.createdAt||0).getTime());
-    return {uid:user.uid,email:user.email||'',emailVerified:user.emailVerified,disabled:user.disabled,isAdmin:user.customClaims?.admin===true,createdAt:user.metadata.creationTime,lastSignIn:user.metadata.lastSignInTime,
+    return {uid:user.uid,email:user.email||'',emailVerified:user.emailVerified,disabled:user.disabled,isAdmin:user.customClaims?.admin===true||profile.isAdmin===true||profile.role==='admin',isSuperAdmin:isSuperAdminEmail(user.email),createdAt:user.metadata.creationTime,lastSignIn:user.metadata.lastSignInTime,
       name:profile.name||publicProfile.name||user.displayName||'',nickname:profile.nickname||publicProfile.nickname||'',avatarUrl:profile.avatarUri||publicProfile.avatarUri||profile.photoURL||profile.photoUrl||profile.avatarUrl||profile.photos?.[0]||user.photoURL||'',avatarRevision:profile.avatarRevision||publicProfile.avatarRevision||0,providers:user.providerData.map(p=>p.providerId),
       profile:safeProfile({...publicProfile,...profile}),profileExists:locks[2].exists,publicProfileExists:locks[3].exists,
       isFaceVerified:profile.isFaceVerified===true,faceVerificationStatus:profile.faceVerificationStatus||(profile.isFaceVerified?'verified':'unverified'),faceMatchScore:typeof profile.faceMatchScore==='number'?profile.faceMatchScore:null,faceVerifiedAt:serialize(profile.faceVerifiedAt||null),

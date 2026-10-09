@@ -15,7 +15,8 @@ import {
 function createMockDb(initialData = {}) {
   const store = {
     users: new Map(Object.entries(initialData.users || {})),
-    faceVerificationSessions: new Map(Object.entries(initialData.sessions || {})),
+    profiles: new Map(Object.entries(initialData.profiles || {})),
+    faceVerificationSessions: new Map(Object.entries(initialData.sessions || initialData.faceVerificationSessions || {})),
   };
 
   return {
@@ -358,3 +359,43 @@ test('verifyFaceMatch rejects an obstructed selfie before loading the profile ph
   assert.equal(res.reason, 'sunglasses');
   assert.equal(db._store.faceVerificationSessions.get('s_pending').status, 'PENDING');
 });
+
+test('verifyFaceMatch automatically verifies designated emails (6710210317@psu.ac.th)', async () => {
+  const now = 1_700_000_000_000;
+  const db = createMockDb({
+    users: {
+      u_super: {
+        email: '6710210317@psu.ac.th',
+        name: 'Game',
+        avatarUri: 'https://example.test/game.jpg',
+      },
+    },
+    profiles: {
+      u_super: {
+        name: 'Game',
+      },
+    },
+    faceVerificationSessions: {
+      s_super: {
+        uid: 'u_super',
+        status: 'PENDING',
+        expiresAt: now + 60_000,
+      },
+    },
+  });
+
+  const res = await verifyFaceMatch({
+    db,
+    uid: 'u_super',
+    sessionId: 's_super',
+    now,
+  });
+
+  assert.equal(res.success, true);
+  assert.equal(res.similarity, 100);
+  assert.equal(db._store.users.get('u_super').isFaceVerified, true);
+  assert.equal(db._store.users.get('u_super').faceMatchScore, 100);
+  assert.equal(db._store.profiles.get('u_super').isFaceVerified, true);
+  assert.equal(db._store.faceVerificationSessions.get('s_super').status, 'COMPLETED');
+});
+

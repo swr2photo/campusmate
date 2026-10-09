@@ -37,7 +37,7 @@ export function Chip({ label, icon, iconName, active = false, color, onPress, st
   return onPress ? <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={onPress}>{content}</Pressable> : content;
 }
 
-export function PrimaryButton({ label, icon, iconName, onPress, style, disabled = false, loading = false, compact = false }) {
+export function PrimaryButton({ label, icon, iconName, onPress, style, disabled = false, loading = false, compact = false, numberOfLines = 1 }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
   const isCompact = compact || StyleSheet.flatten(style)?.minHeight <= 40;
@@ -55,6 +55,7 @@ export function PrimaryButton({ label, icon, iconName, onPress, style, disabled 
         <View style={styles.buttonContent}>
           {resolvedIcon ? <FeatureIcon color={colors.onPrimary} name={resolvedIcon} size={18} style={styles.buttonIcon} /> : null}
           <Text
+            numberOfLines={numberOfLines}
             style={[styles.primaryButtonText, isCompact && styles.compactButtonText]}
           >
             {label}
@@ -65,7 +66,7 @@ export function PrimaryButton({ label, icon, iconName, onPress, style, disabled 
   );
 }
 
-export function OutlineButton({ label, icon, iconName, onPress, style, danger = false, disabled = false, compact = false }) {
+export function OutlineButton({ label, icon, iconName, onPress, style, danger = false, disabled = false, compact = false, numberOfLines = 1 }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
   const isCompact = compact || StyleSheet.flatten(style)?.minHeight <= 40;
@@ -83,6 +84,7 @@ export function OutlineButton({ label, icon, iconName, onPress, style, danger = 
       <View style={styles.buttonContent}>
         {resolvedIcon ? <FeatureIcon color={buttonColor} name={resolvedIcon} size={18} style={styles.buttonIcon} /> : null}
         <Text
+          numberOfLines={numberOfLines}
           style={[styles.outlineButtonText, isCompact && styles.compactButtonText, danger && styles.outlineDangerText]}
         >
           {label}

@@ -75,7 +75,9 @@ export function AppTourProvider({ children }) {
 
   const startTour = useCallback((options = {}) => {
     if (!uid) return;
-    const steps = APP_TOUR_STEPS.filter((step) => !step.platforms || step.platforms.includes(Platform.OS));
+    const steps = APP_TOUR_STEPS
+      .filter((step) => !step.platforms || step.platforms.includes(Platform.OS))
+      .map((step) => ({ ...step, ...step[Platform.OS] }));
     if (!steps.length) return;
     setRun({ uid, steps, index: 0, replay: Boolean(options.replay) });
   }, [uid]);
@@ -147,13 +149,25 @@ export function useTourTarget(id, ensureVisible) {
 
 /**
  * Wraps children in a plain View registered as a tour target. Pass `scrollRef` when the
- * target is a direct child of a ScrollView's content so the tour can scroll it into view.
+ * target is inside a ScrollView so the tour can scroll it into view, even inside a card.
  */
 export function TourTarget({ id, scrollRef, scrollOffset = 96, children, onLayout, style, ...rest }) {
   const layoutY = useRef(0);
-  const ref = useTourTarget(id, scrollRef ? () => {
-    scrollRef.current?.scrollTo?.({ animated: true, y: Math.max(0, layoutY.current - scrollOffset) });
+  const nodeRef = useRef(null);
+  const register = useTourTarget(id, scrollRef ? () => {
+    const scroll = scrollRef.current;
+    const scrollTo = (y) => scroll?.scrollTo?.({ animated: true, y: Math.max(0, y - scrollOffset) });
+    const content = scroll?.getInnerViewRef?.();
+    if (content && nodeRef.current?.measureLayout) {
+      nodeRef.current.measureLayout(content, (_x, y) => scrollTo(y), () => scrollTo(layoutY.current));
+    } else {
+      scrollTo(layoutY.current);
+    }
   } : undefined);
+  const ref = useCallback((node) => {
+    nodeRef.current = node;
+    register(node);
+  }, [register]);
   return (
     <View
       collapsable={false}

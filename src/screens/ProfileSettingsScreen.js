@@ -1,6 +1,6 @@
 import Text from '../components/AppText';
 import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
@@ -36,7 +36,45 @@ export default function ProfileSettingsScreen({ onLogout, onToast }) {
   const { profile } = useAppProfile();
   const { user } = useAuth();
   const canUseSpotify = isSpotifyFeatureAllowed(user, profile);
-  const { deleteAccount, saveProfile } = useAppActions();
+  const { deleteAccount, saveProfile, switchAdminRole } = useAppActions();
+  const [switchingAdminRole, setSwitchingAdminRole] = useState(false);
+
+  const userEmail = (user?.email || profile?.email || '').toLowerCase().trim();
+  const isSuperAdmin = userEmail === '6710210317@psu.ac.th';
+  const isCurrentlyAdmin = profile?.isAdmin === true || profile?.role === 'admin';
+  const showAdminSection = isSuperAdmin || isCurrentlyAdmin;
+
+  const handleToggleAdminMode = async () => {
+    const nextAdmin = !isCurrentlyAdmin;
+    const actionLabel = nextAdmin ? 'สลับเป็นโหมดผู้ดูแลระบบ' : 'สลับเป็นโหมดผู้ใช้ทั่วไป';
+
+    await confirm({
+      icon: nextAdmin ? 'crown.fill' : 'person.fill',
+      title: `${actionLabel}?`,
+      body: nextAdmin
+        ? 'คุณจะได้รับสิทธิ์ผู้ดูแลระบบ (Admin) เพื่อจัดการระบบและเข้าถึงเครื่องมือแอดมิน'
+        : 'คุณจะใช้งานด้วยสิทธิ์ผู้ใช้ทั่วไป (Normal User) เพื่อทดสอบประสบการณ์การใช้งานจริง',
+      confirmLabel: 'ยืนยัน',
+      cancelLabel: 'ยกเลิก',
+      onConfirm: async () => {
+        setSwitchingAdminRole(true);
+        try {
+          await switchAdminRole(nextAdmin);
+          onToast?.(
+            nextAdmin
+              ? '👑 สลับเป็นโหมดผู้ดูแลระบบแล้ว'
+              : '👤 สลับเป็นโหมดผู้ใช้ทั่วไปแล้ว',
+            'success'
+          );
+        } catch (error) {
+          onToast?.(error?.message || 'สลับสิทธิ์ไม่สำเร็จ', 'error');
+        } finally {
+          setSwitchingAdminRole(false);
+        }
+      },
+    });
+  };
+
   const [notifications, setNotifications] = useState(profile?.notificationsEnabled ?? true);
   const [savingNotifications, setSavingNotifications] = useState(false);
   const { startTour } = useAppTour();
@@ -120,9 +158,18 @@ export default function ProfileSettingsScreen({ onLogout, onToast }) {
             uri={profile?.avatarUri}
           />
           <View style={styles.profileCopy}>
-            <Text style={[styles.profileName, { color: colors.ink }]}>
-              {profile?.name || profile?.nickname || 'โปรไฟล์ของฉัน'}
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={[styles.profileName, { color: colors.ink }]}>
+                {profile?.name || profile?.nickname || 'โปรไฟล์ของฉัน'}
+              </Text>
+              {isCurrentlyAdmin ? (
+                <View style={[styles.badgePill, { backgroundColor: colors.primarySoft }]}>
+                  <Text style={[styles.badgePillText, { color: colors.primary }]}>
+                    {isSuperAdmin ? '👑 SUPER ADMIN' : '👑 ADMIN'}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
             <Text style={[styles.profileMeta, { color: colors.inkMuted }]}>
               {metaText}
             </Text>
@@ -146,7 +193,100 @@ export default function ProfileSettingsScreen({ onLogout, onToast }) {
           </TourTarget>
         )}
 
-        <Text style={[styles.sectionLabel, styles.sectionLabelFirst, { color: colors.inkMuted }]}>การค้นหา</Text>
+        {showAdminSection ? (
+          <>
+            <Text style={[styles.sectionLabel, styles.sectionLabelFirst, { color: colors.inkMuted }]}>
+              ผู้ดูแลระบบ (Admin Controls)
+            </Text>
+            <View style={[styles.list, { backgroundColor: colors.card, borderColor: isCurrentlyAdmin ? colors.primary : colors.line }]}>
+              <View style={[styles.adminBanner, { backgroundColor: isCurrentlyAdmin ? colors.primarySoft : colors.surfaceRaised }]}>
+                <View style={[styles.iconWrap, { backgroundColor: isCurrentlyAdmin ? `${colors.primary}25` : colors.line }]}>
+                  <FeatureIcon
+                    color={isCurrentlyAdmin ? colors.primary : colors.inkMuted}
+                    name={isCurrentlyAdmin ? 'crown.fill' : 'person.fill'}
+                    size={20}
+                  />
+                </View>
+                <View style={styles.rowCopy}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={[styles.label, { color: colors.ink }]}>
+                      {isCurrentlyAdmin ? 'โหมดผู้ดูแลระบบ' : 'โหมดผู้ใช้ทั่วไป'}
+                    </Text>
+                    <View style={[styles.badgePill, { backgroundColor: isCurrentlyAdmin ? `${colors.primary}22` : `${colors.inkMuted}20` }]}>
+                      <Text style={[styles.badgePillText, { color: isCurrentlyAdmin ? colors.primary : colors.inkMuted }]}>
+                        {isCurrentlyAdmin ? (isSuperAdmin ? 'SUPER ADMIN' : 'ADMIN') : 'NORMAL USER'}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={[styles.subtitle, { color: colors.inkMuted }]}>
+                    {isCurrentlyAdmin
+                      ? 'มีสิทธิ์จัดการระบบและเข้าถึงเครื่องมือแอดมิน'
+                      : 'กำลังทดสอบระบบด้วยสิทธิ์ผู้ใช้ปกติ'}
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityLabel="สลับสิทธิ์ผู้ดูแลระบบ"
+                  accessibilityRole="button"
+                  disabled={switchingAdminRole}
+                  onPress={handleToggleAdminMode}
+                  style={({ pressed }) => [
+                    styles.switchRoleBtn,
+                    { backgroundColor: isCurrentlyAdmin ? colors.surface : colors.primary },
+                    pressed && styles.pressed,
+                    switchingAdminRole && { opacity: 0.6 },
+                  ]}
+                >
+                  {switchingAdminRole ? (
+                    <ActivityIndicator color={isCurrentlyAdmin ? colors.primary : colors.onPrimary} size="small" />
+                  ) : (
+                    <Text
+                      style={[
+                        styles.switchRoleBtnText,
+                        { color: isCurrentlyAdmin ? colors.primary : colors.onPrimary },
+                      ]}
+                    >
+                      {isCurrentlyAdmin ? 'สลับเป็นผู้ใช้' : 'สลับเป็นแอดมิน'}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+
+              {isSuperAdmin ? (
+                <View style={[styles.row, { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line }]}>
+                  <View style={[styles.iconWrap, { backgroundColor: colors.greenSoft }]}>
+                    <FeatureIcon color={colors.green} name="checkmark.seal.fill" size={18} />
+                  </View>
+                  <View style={styles.rowCopy}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={[styles.label, { color: colors.ink }]}>การยืนยันใบหน้าอัตโนมัติ</Text>
+                      <View style={[styles.badgePill, { backgroundColor: colors.greenSoft }]}>
+                        <Text style={[styles.badgePillText, { color: colors.green }]}>100% ผ่าน</Text>
+                      </View>
+                    </View>
+                    <Text style={[styles.subtitle, { color: colors.inkMuted }]}>
+                      Super Admin ได้รับการยืนยันตัวตนอัตโนมัติ ไม่ต้องสแกนใบหน้าสด
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
+
+              <SettingsRow
+                colors={colors}
+                icon="globe"
+                label="เปิด Web Admin Console"
+                subtitle="จัดการผู้ใช้ อนุมัติใบหน้า และดูรายงานผ่านเว็บ"
+                last
+                onPress={() => {
+                  Linking.openURL('https://campusmate-7f1ab.web.app/admin.html').catch(() => {
+                    onToast?.('ไม่สามารถเปิดเบราว์เซอร์ได้', 'error');
+                  });
+                }}
+              />
+            </View>
+          </>
+        ) : null}
+
+        <Text style={[styles.sectionLabel, !showAdminSection && styles.sectionLabelFirst, { color: colors.inkMuted }]}>การค้นหา</Text>
         <View style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
           <TourTarget id="me.plus" scrollRef={scrollRef}>
             <SettingsRow colors={colors} icon="sparkles" label="CampusMate Plus"
@@ -333,4 +473,35 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: type.caption, lineHeight: 18, marginTop: 2 },
   value: { fontSize: type.caption, fontWeight: '600', marginRight: spacing.sm },
   pressed: { opacity: 0.72 },
+  adminBanner: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    minHeight: 68,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+  },
+  badgePill: {
+    borderRadius: radius.sm || 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  badgePillText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  switchRoleBtn: {
+    borderRadius: radius.md || 10,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    minHeight: 38,
+    minWidth: 96,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+  },
+  switchRoleBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
 });

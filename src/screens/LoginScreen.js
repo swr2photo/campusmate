@@ -20,8 +20,7 @@ import {
 import FeatureIcon from '../components/FeatureIcon';
 import LegalAuthNotice from '../components/LegalAuthNotice';
 import {
-  CAMPUS_EMAIL_PLACEHOLDER,
-  isCampusEmail,
+  CAMPUS_EMAIL_DOMAIN,
   isCampusStudentEmail,
   isLoginEmailAllowed,
 } from '../utils/campusEmail';
@@ -42,7 +41,11 @@ function scheduleWhenIdle(callback) {
 }
 
 function getInlineAuthFeedback(error, { mode = 'login' } = {}) {
-  const code = String(error?.code || '').replace(/^functions\//, '');
+  let code = String(error?.code || '').replace(/^functions\//, '');
+  if (!code && error?.message) {
+    const match = String(error.message).match(/auth\/[a-z0-9-]+/i);
+    if (match) code = match[0].toLowerCase();
+  }
   if (code === 'auth/campus-email-required') return { field: 'email', message: 'ใช้อีเมล @psu.ac.th' };
   if (code === 'auth/student-id-required') return { field: 'email', message: 'อีเมลต้องขึ้นต้นด้วยรหัสนักศึกษา 10 หลัก' };
   if (code === 'auth/campus-email-login-only') return { field: 'email', message: 'ใช้ @psu.ac.th หรือ Gmail ที่สมัครไว้' };
@@ -51,13 +54,19 @@ function getInlineAuthFeedback(error, { mode = 'login' } = {}) {
   if (code === 'auth/campus-email-not-found' || code === 'not-found') return { field: 'email', message: 'ไม่พบอีเมลนี้ใน Google Workspace' };
   if (code === 'auth/campus-email-check-unavailable' || code === 'failed-precondition') return { field: 'email', message: 'ระบบตรวจสอบอีเมลมหาวิทยาลัยยังไม่พร้อม' };
   if (code === 'auth/email-already-in-use' || code === 'already-exists') return { field: 'email', message: 'อีเมลนี้มีบัญชีแล้ว' };
-  if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') return { field: 'password', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' };
+  if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+    return {
+      field: 'password',
+      message: 'รหัสผ่านไม่ถูกต้อง (หากเคยเข้าด้วย Google ให้กดปุ่ม Google หรือกด "ลืมรหัสผ่าน?" ด้านล่าง)',
+    };
+  }
   if (code === 'auth/weak-password' || code === 'auth/password-does-not-meet-requirements') return { field: 'password', message: 'รหัสผ่านไม่ตรงตามเงื่อนไข' };
   if (code === 'auth/too-many-requests' || code === 'resource-exhausted') return { message: 'ลองใหม่อีกครั้งภายหลัง' };
   if (code === 'auth/network-request-failed' || code === 'unavailable') return { message: 'เชื่อมต่อไม่ได้ ลองใหม่อีกครั้ง' };
   if (code === 'auth/user-disabled') return { message: 'บัญชีนี้ถูกปิดใช้งาน' };
-  if (getFirebaseConfigurationErrorMessage(error)) return { message: 'ระบบยังตั้งค่าไม่ครบ ลองใหม่ภายหลัง' };
-  return { message: mode === 'signup' ? 'สมัครสมาชิกไม่สำเร็จ ลองใหม่' : 'เข้าสู่ระบบไม่สำเร็จ ลองใหม่' };
+  const configurationMessage = getFirebaseConfigurationErrorMessage(error);
+  if (configurationMessage) return { message: configurationMessage };
+  return { message: mode === 'signup' ? 'สมัครสมาชิกไม่สำเร็จ ลองใหม่' : 'เข้าสู่ระบบไม่สำเร็จ ตรวจสอบอีเมลหรือรหัสผ่าน แล้วลองใหม่อีกครั้ง' };
 }
 
 function getShortPasswordMessage(passwordError) {
@@ -138,6 +147,9 @@ export default function LoginScreen({ onLoginSuccess }) {
   const [unverifiedEmail, setUnverifiedEmail] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [inlineNotice, setInlineNotice] = useState(null);
+  const isSavedLegacyAccount = mode === 'login' && selectedAccount
+    && !isCampusStudentEmail(selectedAccount.email);
+  const studentId = email.split('@')[0];
 
   const clearFeedback = () => {
     setFieldErrors({});
@@ -194,6 +206,11 @@ export default function LoginScreen({ onLoginSuccess }) {
   }, []);
 
   const showMode = (nextMode) => {
+    if (nextMode === 'google' || nextMode === 'signup') {
+      setSelectedAccount(null);
+      if (!isCampusStudentEmail(email)) setEmail('');
+      setUnverifiedEmail(null);
+    }
     setPassword('');
     setConfirmPassword('');
     setShowPassword(false);
@@ -306,11 +323,11 @@ export default function LoginScreen({ onLoginSuccess }) {
     if (loading) return;
     const cleanEmail = String(email || '').trim();
     if (!cleanEmail) {
-      showFieldError('email', 'กรอกอีเมลก่อน');
+      showFieldError('email', 'กรอกรหัสนักศึกษาก่อน');
       return;
     }
-    if (!isLoginEmailAllowed(cleanEmail)) {
-      showFieldError('email', 'ใช้ @psu.ac.th หรือ Gmail ที่สมัครไว้');
+    if (isSavedLegacyAccount ? !isLoginEmailAllowed(cleanEmail) : !isCampusStudentEmail(cleanEmail)) {
+      showFieldError('email', 'กรอกรหัสนักศึกษาให้ครบ 10 หลัก');
       return;
     }
 
@@ -368,13 +385,9 @@ export default function LoginScreen({ onLoginSuccess }) {
     const cleanEmail = email.trim();
 
     if (!cleanEmail) {
-      errors.email = 'กรอกอีเมล';
-    } else if (mode === 'signup' && !isCampusEmail(cleanEmail)) {
-      errors.email = 'ใช้อีเมล @psu.ac.th';
-    } else if (mode === 'signup' && !isCampusStudentEmail(cleanEmail)) {
-      errors.email = 'อีเมลต้องขึ้นต้นด้วยรหัสนักศึกษา 10 หลัก';
-    } else if (mode === 'login' && !isLoginEmailAllowed(cleanEmail)) {
-      errors.email = 'ใช้ @psu.ac.th หรือ Gmail ที่สมัครไว้';
+      errors.email = 'กรอกรหัสนักศึกษา';
+    } else if (isSavedLegacyAccount ? !isLoginEmailAllowed(cleanEmail) : !isCampusStudentEmail(cleanEmail)) {
+      errors.email = 'กรอกรหัสนักศึกษาให้ครบ 10 หลัก';
     }
 
     if (!password) {
@@ -565,27 +578,33 @@ export default function LoginScreen({ onLoginSuccess }) {
                       ) : null}
 
                       <Text style={styles.campusHint}>
-                        {mode === 'signup' ? 'สมัครใหม่ด้วยอีเมล @psu.ac.th' : 'ใช้ @psu.ac.th หรือ Gmail เดิมที่ยืนยันแล้ว'}
+                        {isSavedLegacyAccount ? 'เข้าสู่ระบบด้วยบัญชีที่บันทึกไว้' : 'กรอกรหัสนักศึกษา 10 หลัก ระบบเติม @psu.ac.th ให้อัตโนมัติ'}
                       </Text>
-                      <Text style={styles.inputLabel}>อีเมล</Text>
+                      <Text style={styles.inputLabel}>{isSavedLegacyAccount ? 'อีเมล' : 'รหัสนักศึกษา'}</Text>
                       <View style={[styles.inputShell, fieldErrors.email && styles.inputShellError]}>
                         <FeatureIcon color={colors.inkSoft} name="envelope.fill" size={17} />
                         <TextInput
                           autoCapitalize="none"
-                          autoComplete="email"
-                          keyboardType="email-address"
+                          accessibilityLabel={isSavedLegacyAccount ? 'อีเมลบัญชีที่บันทึกไว้' : 'รหัสนักศึกษา 10 หลัก'}
+                          autoComplete="off"
+                          editable={!isSavedLegacyAccount && !loading}
+                          keyboardType="number-pad"
+                          maxLength={isSavedLegacyAccount ? undefined : 10}
                           keyboardAppearance={isDark ? 'dark' : 'light'}
                           cursorColor={colors.primary}
                           selectionColor={colors.primary}
                           onChangeText={(value) => {
-                            setEmail(value);
+                            const digits = value.split('@')[0].replace(/[^0-9]/g, '').slice(0, 10);
+                            setEmail(digits ? `${digits}@${CAMPUS_EMAIL_DOMAIN}` : '');
+                            setUnverifiedEmail(null);
                             clearFieldError('email');
                           }}
-                          placeholder={CAMPUS_EMAIL_PLACEHOLDER}
+                          placeholder="6912345678"
                           placeholderTextColor={colors.inkSoft}
                           style={styles.input}
-                          value={email}
+                          value={isSavedLegacyAccount ? email : studentId}
                         />
+                        {!isSavedLegacyAccount ? <Text style={styles.emailSuffix}>@{CAMPUS_EMAIL_DOMAIN}</Text> : null}
                       </View>
                       {fieldErrors.email ? <Text accessibilityRole="alert" style={styles.fieldError}>{fieldErrors.email}</Text> : null}
 
@@ -914,6 +933,7 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     marginBottom: spacing.xs,
     marginTop: -spacing.xs,
   },
+  emailSuffix: { color: colors.inkMuted, fontSize: type.body, flexShrink: 0 },
   input: { color: colors.ink, flex: 1, fontSize: type.body, minHeight: 46, minWidth: 0 },
   actionRow: {
     alignItems: 'center',

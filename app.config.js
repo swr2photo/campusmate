@@ -1,4 +1,25 @@
 const { expo } = require('./app.json');
+const fs = require('fs');
+const path = require('path');
+const plist = require(require.resolve('@expo/plist', {
+  paths: [require.resolve('expo/config-plugins')],
+})).default;
+
+// Expo Go uses the JS Firebase SDK, which cannot read the native plist itself.
+// Expose only Firebase's public client configuration in the Expo manifest.
+const iosServicesPath = path.resolve(__dirname, expo.ios.googleServicesFile);
+const iosServices = fs.existsSync(iosServicesPath)
+  ? plist.parse(fs.readFileSync(iosServicesPath, 'utf8'))
+  : {};
+const iosFirebaseConfig = {
+  apiKey: iosServices.API_KEY || process.env.EXPO_PUBLIC_FIREBASE_IOS_API_KEY,
+  appId: iosServices.GOOGLE_APP_ID || process.env.EXPO_PUBLIC_FIREBASE_IOS_APP_ID,
+  projectId: iosServices.PROJECT_ID || process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  messagingSenderId: iosServices.GCM_SENDER_ID || process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+};
+iosFirebaseConfig.authDomain = iosFirebaseConfig.projectId
+  ? `${iosFirebaseConfig.projectId}.firebaseapp.com`
+  : process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN;
 
 const androidMapsKey = process.env.CAMPUSMATE_ANDROID_MAPS_SDK_KEY;
 const iosMapsKey = process.env.CAMPUSMATE_IOS_MAPS_SDK_KEY;
@@ -27,6 +48,7 @@ module.exports = {
   ],
   extra: {
     ...expo.extra,
+    iosFirebaseConfig,
     androidMapsConfigured: Boolean(androidMapsKey),
     iosMapsConfigured: Boolean(iosMapsKey),
     imageCacheDiagnostics: process.env.CAMPUSMATE_IMAGE_CACHE_DIAGNOSTICS === 'true',

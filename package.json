@@ -24,6 +24,8 @@
     "check:android-config": "node scripts/check-android-config.mjs",
     "check:animation-runtime": "node scripts/check-animation-runtime.mjs",
     "build:reset-page": "pnpm --dir web build",
+    "build:web": "pnpm --dir web build",
+    "admin:bootstrap": "node scripts/bootstrap-admin-user.mjs",
     "deploy:face-verification": "node scripts/deploy-face-verification.mjs --deploy"
   },
   "dependencies": {
@@ -94,6 +96,7 @@
     "react-native-reanimated": "4.7.0",
     "react-native-safe-area-context": "~5.9.1",
     "react-native-screens": "~4.28.0",
+    "react-native-view-shot": "5.1.1",
     "react-native-web": "~0.21.2",
     "react-native-webview": "^14.0.1",
     "react-native-worklets": "0.13.0",

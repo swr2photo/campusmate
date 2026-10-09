@@ -1,6 +1,6 @@
 import Text from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { AppState, Dimensions, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { AppState, Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   Easing,
@@ -160,7 +160,7 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
   const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const [mounted, setMounted] = useState(visible);
-  const offscreen = Dimensions.get('window').height;
+  const { height: offscreen } = useWindowDimensions();
   const sheetHeight = useSharedValue(offscreen);
   const translateY = useSharedValue(offscreen);
   const dragStart = useSharedValue(0);
@@ -192,7 +192,7 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
-  // The whole sheet follows the finger (down freely, up with a rubber band).
+  // Drag the handle to close; content keeps its native scrolling gesture.
   // Release past ~30% of its height, a projected fling past half of it, or a fast
   // downward flick closes it; anything else springs back open.
   const pan = useMemo(() => Gesture.Pan()
@@ -225,7 +225,7 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
 
   if (!mounted && !visible) return null;
 
-  const primaryBg = isDark ? colors.primaryDark || colors.primary : colors.primary;
+  const primaryBg = colors.primary;
   const sheet = (
     <GestureHandlerRootView style={[StyleSheet.absoluteFill, styles.root]}>
       <Animated.View
@@ -239,7 +239,6 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
         onPress={onClose}
         style={StyleSheet.absoluteFill}
       />
-      <GestureDetector gesture={pan}>
         <Animated.View
           accessibilityViewIsModal
           onAccessibilityEscape={onClose}
@@ -248,16 +247,24 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
             styles.sheet,
             {
               backgroundColor: colors.card,
-              borderColor: isDark ? colors.line : 'rgba(16, 32, 58, 0.06)',
+              borderColor: colors.line,
               paddingBottom: Math.max(insets.bottom, 12) + 12,
             },
             sheetStyle,
           ]}
         >
-          <View accessibilityHint="ลากลงเพื่อปิด" style={styles.grabberArea}>
+          <GestureDetector gesture={pan}>
+          <View accessibilityHint="ลากลงเพื่อปิด" collapsable={false} style={styles.grabberArea}>
             <View style={[styles.grabber, { backgroundColor: colors.line }]} />
           </View>
-          <View style={[styles.hero, { backgroundColor: colors.primarySoft }]}>
+          </GestureDetector>
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator
+            style={styles.scroll}
+          >
+          <View style={[styles.hero, { backgroundColor: colors.surfaceRaised }]}>
             <View style={[styles.heroBadge, { backgroundColor: primaryBg }]}>
               <FeatureIcon color={colors.onPrimary} name="sparkles" size={26} />
             </View>
@@ -294,8 +301,8 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
           >
             <Text style={[styles.snoozeText, { color: colors.inkMuted }]}>ไม่ต้องแสดงอีกวันนี้</Text>
           </Pressable>
+          </ScrollView>
         </Animated.View>
-      </GestureDetector>
     </GestureHandlerRootView>
   );
 
@@ -324,25 +331,23 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
 
 const styles = StyleSheet.create({
   root: { flex: 1, justifyContent: 'flex-end' },
-  grabberArea: { alignItems: 'center', marginHorizontal: -20, marginTop: -10, paddingBottom: 6, paddingTop: 10 },
+  grabberArea: { alignItems: 'center', justifyContent: 'center', marginHorizontal: -20, marginTop: -10, minHeight: 44 },
   sheet: {
     alignSelf: 'center',
     borderCurve: 'continuous',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     borderWidth: StyleSheet.hairlineWidth,
-    elevation: 24,
+    maxHeight: '92%',
     maxWidth: 560,
     paddingHorizontal: 20,
     paddingTop: 10,
-    shadowColor: '#0B1424',
-    shadowOffset: { width: 0, height: -8 },
-    shadowOpacity: 0.18,
-    shadowRadius: 24,
     width: '100%',
   },
+  scroll: { flexShrink: 1 },
+  scrollContent: { paddingBottom: 4 },
   grabber: { borderRadius: 3, height: 5, width: 42 },
-  hero: { alignItems: 'center', borderCurve: 'continuous', borderRadius: 22, flexDirection: 'row', gap: 14, marginTop: 18, padding: 16 },
+  hero: { alignItems: 'center', borderCurve: 'continuous', borderRadius: 20, flexDirection: 'row', gap: 14, marginTop: 6, padding: 16 },
   heroBadge: { alignItems: 'center', borderRadius: 26, height: 52, justifyContent: 'center', width: 52 },
   heroCopy: { flex: 1 },
   title: { fontSize: 21, fontWeight: '800', lineHeight: 30 },
@@ -351,9 +356,9 @@ const styles = StyleSheet.create({
   benefitRow: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   benefitIcon: { alignItems: 'center', borderRadius: 16, height: 32, justifyContent: 'center', width: 32 },
   benefitText: { flex: 1, fontSize: 15, lineHeight: 23 },
-  cta: { alignItems: 'center', borderCurve: 'continuous', borderRadius: 16, justifyContent: 'center', marginTop: 22, minHeight: 52, paddingHorizontal: 16 },
-  ctaText: { fontSize: 16, fontWeight: '800', lineHeight: 23 },
-  snooze: { alignItems: 'center', alignSelf: 'center', marginTop: 10, paddingHorizontal: 16, paddingVertical: 8 },
-  snoozeText: { fontSize: 14, fontWeight: '700', lineHeight: 21 },
+  cta: { alignItems: 'center', borderCurve: 'continuous', borderRadius: 16, justifyContent: 'center', marginTop: 22, minHeight: 52, paddingHorizontal: 16, paddingVertical: 10 },
+  ctaText: { fontSize: 16, fontWeight: '800', lineHeight: 23, textAlign: 'center' },
+  snooze: { alignItems: 'center', alignSelf: 'center', justifyContent: 'center', marginTop: 10, minHeight: 44, paddingHorizontal: 16, paddingVertical: 8 },
+  snoozeText: { fontSize: 14, fontWeight: '700', lineHeight: 21, textAlign: 'center' },
   pressed: { opacity: 0.82 },
 });

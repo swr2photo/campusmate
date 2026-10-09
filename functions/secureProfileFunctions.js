@@ -17,3 +17,4 @@ export const getIncomingLikeSummary = endpoint('getIncomingLikeSummary');
 export const getDiscoveryPage = endpoint('getDiscoveryPage');
 export const getMyDecisionState = endpoint('getMyDecisionState');
 export const getPartyEncryptionProfiles = endpoint('getPartyEncryptionProfiles');
+export const getConversationEncryptionProfiles = endpoint('getConversationEncryptionProfiles');

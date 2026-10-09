@@ -1,5 +1,6 @@
 import { Button, Text } from '../components/NativeTypography';
 import { font } from '../components/brandFont';
+import { useNativePalette } from '../theme';
 import RNText from '../components/AppText';
 import { randomUUID } from 'expo-crypto';
 import { stageVideoUpgrade, cancelVideoUpgrade, resumeVideoUpgrades } from '../services/videoUpgradeService';
@@ -94,34 +95,6 @@ const MESSAGE_TIME_REVEAL_THRESHOLD = 28;
 const MESSAGE_TIME_REVEAL_DURATION_MS = 1800;
 const POPULAR_CHAT_EMOJIS = ['😊', '😂', '🥰', '👍', '❤️', '🔥', '🎉', '🥺', '✨', '🙏', '😍', '🤣', '😎', '🙌', '💯', '🥳', '😉', '👋', '😭', '💖'];
 
-const darkPalette = {
-  background: '#0D0F12',
-  surface: '#1A1D22',
-  raised: '#242830',
-  text: '#F8F9FC',
-  secondary: '#A7AFBC',
-  tertiary: '#6F7887',
-  accent: '#FF6F61',
-  accentSoft: 'rgba(255,111,97,0.16)',
-  incoming: '#22262D',
-  line: 'rgba(255,255,255,0.08)',
-  white: '#FFFFFF',
-};
-
-const lightPalette = {
-  background: '#F5F7FB',
-  surface: '#FFFFFF',
-  raised: '#EDF0F5',
-  text: '#111827',
-  secondary: '#667085',
-  tertiary: '#98A2B3',
-  accent: '#EE6B5D',
-  accentSoft: 'rgba(238,107,93,0.14)',
-  incoming: '#FFFFFF',
-  line: 'rgba(17,24,39,0.08)',
-  white: '#FFFFFF',
-};
-
 const avatarShape = shapes.circle();
 const messageShape = shapes.roundedRectangle({ cornerRadius: 16, roundedCornerStyle: 'continuous' });
 const imageBubbleShape = shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' });
@@ -155,7 +128,8 @@ function getWaveformBars(levels, isRecording) {
 }
 
 function usePalette() {
-  return useColorScheme() === 'dark' ? darkPalette : lightPalette;
+  const palette = useNativePalette();
+  return { ...palette, raised: palette.surfaceRaised, accentSoft: palette.primarySoft, incoming: palette.card };
 }
 
 function toDate(timestamp) {

@@ -25,7 +25,7 @@ try {
     await assertSucceeds(setDoc(reference, { ...profile, gallery: [] }));
     console.log(`PASS ${collection}: owner saves/removes gallery; six photos, wrong type and other writers denied`);
   }
-  await assertSucceeds(getDoc(doc(other, 'profiles', 'gallery-owner')));
+  await assertFails(getDoc(doc(other, 'profiles', 'gallery-owner')));
   await assertFails(getDoc(doc(other, 'users', 'gallery-owner')));
   await environment.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();

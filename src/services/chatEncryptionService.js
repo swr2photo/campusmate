@@ -687,13 +687,18 @@ function addMissingDeviceEnvelopes(encryption, participantIds, participantProfil
   return changed ? { ...encryption, keyEnvelopes } : encryption;
 }
 
-async function resolveParticipantProfiles(db, participantIds, embeddedProfiles, currentUserId, identity) {
+async function resolveParticipantProfiles(db, conversationId, participantIds, embeddedProfiles, currentUserId, identity) {
   if (secureDiscoveryConfigured()) {
-    const result = await secureDiscoveryCall('getVisibleProfiles', { userIds: participantIds });
-    const publicById = new Map(result.profiles.map((profile) => [profile.id, profile]));
+    const result = await secureDiscoveryCall('getConversationEncryptionProfiles', { conversationId, userIds: participantIds });
+    const devicesById = new Map(result.profiles.map((profile) => [profile.id, profile]));
     return Object.fromEntries(participantIds.map((userId) => {
-      const remote = publicById.get(userId) || {}, embedded = embeddedProfiles?.[userId] || {};
-      const profile = { ...embedded, ...remote, encryptionDevices: { ...getEncryptionDevices(embedded), ...getEncryptionDevices(remote) } };
+      const remote = devicesById.get(userId) || {}, embedded = embeddedProfiles?.[userId] || {};
+      // The keys-only endpoint cannot hydrate names/photos/verification. Keep
+      // the room's existing metadata and refresh only its device key material.
+      // An authoritative key list also removes retired devices. Appending new
+      // keys after five stale embedded devices would silently drop the new one.
+      const devices = devicesById.has(userId) ? getEncryptionDevices(remote) : getEncryptionDevices(embedded);
+      const profile = { ...embedded, encryptionDevices: devices };
       return [userId, userId === currentUserId ? withIdentityDevice(profile, identity) : profile];
     }));
   }
@@ -804,6 +809,7 @@ async function prepareConversationEncryption(conversationId, currentUserId, part
   }
   const resolvedProfiles = await resolveParticipantProfiles(
     db,
+    conversationId,
     participantIds,
     { ...(initialData.participantProfiles || {}), ...participantProfiles },
     currentUserId,

@@ -2128,6 +2128,7 @@ export function subscribeToConversations(currentUserId, callback, onError) {
   let previousEntries = new Map();
   let previousConversations = null;
   let previousRootSnapshotInfo = null;
+  let previousLoadingConversationIds = [];
   let emitVersion = 0;
   let disposed = false;
   let emitTimer = null;
@@ -2319,7 +2320,10 @@ export function subscribeToConversations(currentUserId, callback, onError) {
         const serverSnapshotArrived = latestRootSnapshotInfo.fromCache === false
           && previousRootSnapshotInfo?.fromCache !== false;
         previousEntries = nextEntries;
-        if (changed || serverSnapshotArrived) {
+        const hydrationChanged = loadingConversationIds.length !== previousLoadingConversationIds.length
+          || loadingConversationIds.some((id, index) => id !== previousLoadingConversationIds[index]);
+        previousLoadingConversationIds = loadingConversationIds;
+        if (changed || serverSnapshotArrived || hydrationChanged) {
           previousConversations = stableConversations;
           previousRootSnapshotInfo = latestRootSnapshotInfo;
           callback(stableConversations, { ...latestRootSnapshotInfo, loadingConversationIds });
@@ -2380,6 +2384,7 @@ export function subscribeToConversations(currentUserId, callback, onError) {
 
   const rootUnsubscribe = onSnapshot(
     conversationsQuery,
+    { includeMetadataChanges: true },
     (snapshot) => {
       if (disposed) return;
       emitVersion += 1;

@@ -160,6 +160,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
   const styles = getStyles(colors);
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
+  const [photoGridWidth, setPhotoGridWidth] = useState(0);
   const isFirstSetup = Boolean(overrideSave);
 
   const { profile } = useAppProfile();
@@ -510,9 +511,16 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
           </View>
 
           {/* --- Photo Grid --- */}
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: ((avatarUri ? 1 : 0) + gallery.filter(Boolean).length) < 3 ? 10 : 16 }}>
+          <View
+            onLayout={({ nativeEvent }) => {
+              const width = nativeEvent.layout.width;
+              setPhotoGridWidth((current) => Math.abs(current - width) > 0.5 ? width : current);
+            }}
+            style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: ((avatarUri ? 1 : 0) + gallery.filter(Boolean).length) < 3 ? 10 : 16 }}
+          >
             {[0, 1, 2, 3, 4, 5].map((index) => {
-              const slotWidth = (windowWidth - 84) / 3;
+              const availableWidth = photoGridWidth || Math.max(0, Math.min(windowWidth, 760) - spacing.md * 2);
+              const slotWidth = Math.max(1, Math.floor((availableWidth - 20) / 3));
               const slotHeight = slotWidth * 1.5;
 
               const isHero = index === 0;
@@ -595,17 +603,17 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                         }}
                         style={{
                           position: 'absolute',
-                          top: 6,
-                          right: 6,
-                          width: 22,
-                          height: 22,
-                          borderRadius: 11,
+                          top: 2,
+                          right: 2,
+                          width: 44,
+                          height: 44,
+                          borderRadius: 22,
                           backgroundColor: 'rgba(0,0,0,0.6)',
                           justifyContent: 'center',
                           alignItems: 'center',
                         }}
                       >
-                        <FeatureIcon name="xmark" size={11} color="#FFF" />
+                        <FeatureIcon name="xmark" size={16} color="#FFF" />
                       </Pressable>
                       <View style={{ position: 'absolute', bottom: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 10, padding: 4 }}>
                         <FeatureIcon name="pencil" size={11} color="#FFF" />
@@ -614,7 +622,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                   ) : (
                     <>
                       <FeatureIcon name="plus" size={24} color={colors.inkMuted} />
-                      <Text style={{ color: colors.inkMuted, fontSize: 11, marginTop: 4, fontWeight: '700' }}>
+                      <Text style={{ color: colors.inkMuted, fontSize: 11, marginTop: 4, fontWeight: '700', textAlign: 'center' }}>
                         {isHero ? 'รูปหลัก' : `รูปที่ ${index + 1}`}
                       </Text>
                     </>
@@ -649,8 +657,8 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
               marginBottom: 16,
             }}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 180 }}>
                 <View
                   style={{
                     width: 40,
@@ -668,7 +676,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                   />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
                     <Text style={{ fontSize: 15, fontWeight: '700', color: colors.ink }}>
                       {isFaceVerified ? 'ยืนยันใบหน้าจริงแล้ว' : 'ยืนยันใบหน้า'}
                     </Text>
@@ -688,8 +696,12 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                 </View>
               </View>
               <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityState={{ disabled: isFaceVerified }}
                 activeOpacity={0.85}
+                disabled={isFaceVerified}
                 onPress={() => {
+                  if (isFaceVerified) return;
                   if (!avatarUri) {
                     showAlert('กรุณาตั้งรูปโปรไฟล์หลัก', 'ต้องตั้งรูปโปรไฟล์หลักก่อนทำการยืนยันใบหน้า', { tone: 'warning' });
                     return;
@@ -697,23 +709,24 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                   setShowFaceVerificationModal(true);
                 }}
                 style={{
-                  backgroundColor: isFaceVerified ? colors.surface : '#2869C7',
+                  backgroundColor: isFaceVerified ? colors.surface : colors.primary,
+                  justifyContent: 'center',
+                  minHeight: 48,
                   paddingHorizontal: 12,
-                  paddingVertical: 8,
+                  paddingVertical: 10,
                   borderRadius: 10,
                   borderWidth: isFaceVerified ? 1 : 0,
                   borderColor: colors.line,
-                  marginLeft: 8,
                 }}
               >
                 <Text
                   style={{
-                    color: isFaceVerified ? colors.ink : '#FFFFFF',
+                    color: isFaceVerified ? colors.ink : colors.onPrimary,
                     fontSize: 13,
                     fontWeight: '700',
                   }}
                 >
-                  {isFaceVerified ? 'สแกนใหม่' : 'เริ่มยืนยัน'}
+                  {isFaceVerified ? 'ยืนยันแล้ว' : 'เริ่มยืนยัน'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1021,7 +1034,7 @@ function FormLabel({ label, required = false, styles }) {
 function SectionToggleHeader({ colors, expanded, icon, onPress, required = false, subtitle, title }) {
   const styles = getStyles(colors);
   return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={styles.sectionToggleHeader}>
+    <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ expanded }} onPress={onPress} style={styles.sectionToggleHeader}>
       <View style={styles.sectionToggleIcon}>
         <FeatureIcon color={colors.primary} name={icon} size={19} />
       </View>
@@ -1039,6 +1052,7 @@ function Field({ colors, styles, label, required = false, value, onChangeText, p
     <View style={styles.field}>
       <FormLabel label={label} required={required} styles={styles} />
       <TextInput
+        accessibilityLabel={required ? `${label} จำเป็น` : label}
         multiline={multiline}
         keyboardType={keyboardType}
         onChangeText={onChangeText}
@@ -1061,6 +1075,7 @@ function AndroidInputField({ icon, label, onChangeText, placeholder, required = 
       <View style={styles.fullRowDropdownCopy}>
         <Text style={styles.fullRowDropdownLabel}>{label}{required ? <Text style={styles.requiredMark}> {REQUIRED_MARK}</Text> : null}</Text>
         <TextInput
+          accessibilityLabel={required ? `${label} จำเป็น` : label}
           onChangeText={onChangeText}
           placeholder={placeholder}
           placeholderTextColor={colors.inkSoft}
@@ -1080,7 +1095,7 @@ function AndroidReadOnlyRow({ helper, icon, label, value }) {
       <FeatureIcon color={colors.primary} name={icon} size={18} style={styles.fullRowDropdownIcon} />
       <View style={styles.fullRowDropdownCopy}>
         <Text style={styles.fullRowDropdownLabel}>{label}</Text>
-        <Text numberOfLines={1} style={value ? styles.fullRowDropdownValue : styles.fullRowDropdownPlaceholder}>
+        <Text style={value ? styles.fullRowDropdownValue : styles.fullRowDropdownPlaceholder}>
           {value || 'ไม่ระบุ'}
         </Text>
         {helper ? <Text style={styles.fullRowReadOnlyHint}>{helper}</Text> : null}
@@ -1226,7 +1241,7 @@ function CustomDropdown({ colors, styles, value, onSelect, options, placeholder,
         {fullRow ? (
           <View style={styles.fullRowDropdownCopy}>
             <Text style={styles.fullRowDropdownLabel}>{label}{required ? <Text style={styles.requiredMark}> {REQUIRED_MARK}</Text> : null}</Text>
-            <Text numberOfLines={1} style={value ? styles.fullRowDropdownValue : styles.fullRowDropdownPlaceholder}>
+            <Text style={value ? styles.fullRowDropdownValue : styles.fullRowDropdownPlaceholder}>
               {displayValue}
             </Text>
           </View>
@@ -1321,7 +1336,7 @@ const getStyles = (colors) => StyleSheet.create({
     optionPill: { flex: 1, backgroundColor: colors.card, borderRadius: 20, paddingVertical: 8, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
     optionPillSelected: { backgroundColor: colors.primary },
     optionPillText: { color: colors.ink, fontSize: 13, fontWeight: '600' },
-    optionPillTextSelected: { color: colors.card },
+    optionPillTextSelected: { color: colors.onPrimary },
   container: { flex: 1, backgroundColor: colors.canvas },
   stickyTabBarContainer: {
     backgroundColor: colors.canvas,
@@ -1350,6 +1365,7 @@ const getStyles = (colors) => StyleSheet.create({
     backgroundColor: 'transparent',
     borderRadius: 16,
     flex: 1,
+    minHeight: 44,
     justifyContent: 'center',
     paddingVertical: 10,
   },
@@ -1427,7 +1443,7 @@ const getStyles = (colors) => StyleSheet.create({
   modalItemTextActive: { color: colors.primary, fontWeight: '800' },
   interestGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4, marginBottom: spacing.md },
   interestGridItem: { width: '50%', paddingHorizontal: 4, marginBottom: 8 },
-  uniformInterestChip: { width: '100%', height: 46, justifyContent: 'center', alignItems: 'center' },
+  uniformInterestChip: { width: '100%', minHeight: 46, paddingVertical: 10, justifyContent: 'center', alignItems: 'center' },
   formSectionSpacing: { marginTop: spacing.md },
   fieldContainer: { marginBottom: spacing.md },
   favoriteTrackRow: { alignItems: 'center', backgroundColor: colors.surfaceRaised, borderCurve: 'continuous', borderRadius: radius.md, flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm, padding: spacing.sm },

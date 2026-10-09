@@ -780,6 +780,7 @@ export function AppProvider({ children }) {
     ? JSON.stringify(toServerDiscoveryFilters(profile?.matchingPreferences, profile, canAdvancedFilters)) : '';
   const [profileLoading, setProfileLoading] = useState(false);
   const [conversations, setConversations] = useState([]);
+  const [conversationInbox, setConversationInbox] = useState({ userId: null, ready: false, error: null });
   useEffect(() => {
     if (!user?.id) return;
     // Imported on demand: this module pulls in the image picker, the image
@@ -838,6 +839,7 @@ export function AppProvider({ children }) {
   const [selectedMeetup, setSelectedMeetup] = useState(null);
   const [dataError, setDataError] = useState(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [conversationRetryKey, setConversationRetryKey] = useState(0);
   const [optimisticHiddenIds, setOptimisticHiddenIds] = useState([]);
   const [isOnline, setIsOnline] = useState(true);
   const [networkReady, setNetworkReady] = useState(false);
@@ -1404,7 +1406,10 @@ export function AppProvider({ children }) {
     if (!user?.id || !isOnline || cacheHydratedUserId !== user.id) return undefined;
     let active = true;
     let unsubscribeConversation = null;
+    setConversationInbox({ userId: user.id, ready: false, error: null });
     const handleSubscriptionError = (error) => {
+      if (!active) return;
+      setConversationInbox((current) => ({ ...current, userId: user.id, error }));
       console.error('[AppContext] conversations subscription error:', {
         code: error?.code || 'unknown',
         message: error?.message || String(error),
@@ -1414,10 +1419,19 @@ export function AppProvider({ children }) {
     const interactionTask = runAfterInteractionsHelper(() => {
       if (!active) return;
       unsubscribeConversation = subscribeToConversations(user.id, (convs, snapshotInfo = {}) => {
+        if (!active) return;
+        const resolved = !snapshotInfo.loadingConversationIds?.length
+          && (snapshotInfo.fromCache === false || convs.length > 0);
+        setConversationInbox((current) => ({ userId: user.id, ready: current.ready || resolved, error: null }));
         const preserveOptimistic = snapshotInfo.fromCache !== false
           || snapshotInfo.hasPendingWrites === true
           || pendingSyncCountRef.current > 0;
-        setConversations((current) => mergeConversationSnapshots(current, retainLoadingConversations(current, convs, snapshotInfo.loadingConversationIds), preserveOptimistic));
+        setConversations((current) => {
+          // An empty local Firestore cache cannot invalidate persisted rooms.
+          // Let the authoritative server snapshot remove stale conversations.
+          if (snapshotInfo.fromCache === true && convs.length === 0) return current;
+          return mergeConversationSnapshots(current, retainLoadingConversations(current, convs, snapshotInfo.loadingConversationIds), preserveOptimistic);
+        });
       }, handleSubscriptionError);
     });
     return () => {
@@ -1425,7 +1439,7 @@ export function AppProvider({ children }) {
       interactionTask?.cancel?.();
       unsubscribeConversation?.();
     };
-  }, [cacheHydratedUserId, isOnline, retryKey, user?.id]);
+  }, [cacheHydratedUserId, isOnline, retryKey, conversationRetryKey, user?.id]);
 
   // Older accepted meetups may have a conversation acceptance but no
   // appointments document because appointment history was introduced later.
@@ -2393,8 +2407,13 @@ export function AppProvider({ children }) {
       const result = await recordSecureDiscoveryAction(candidate.id, 'like');
       setOptimisticHiddenIds((prev) => [...prev, candidate.id]);
       if (result.status !== 'accepted') return { matched: false };
-      const conversationId = await createConversation(user.id, profile, candidate);
-      return { matched: true, conversationId };
+      try {
+        const conversationId = await createConversation(user.id, profile, candidate);
+        return { matched: true, conversationId };
+      } catch (error) {
+        error.discoveryActionCommitted = true;
+        throw error;
+      }
     }
     setRemovedUserIds((current) => {
       if (!current.has(candidate.id)) return current;
@@ -2403,6 +2422,7 @@ export function AppProvider({ children }) {
       return next;
     });
     setOptimisticHiddenIds((prev) => [...prev, candidate.id]);
+    let decisionCommitted = false;
     try {
       const isAlreadyAccepted = acceptedIncomingLikes.some((like) => like.id === candidate.id);
       const existingConvo = activeConversations.find(
@@ -2419,6 +2439,7 @@ export function AppProvider({ children }) {
         { dedupeKey: `decision:${candidate.id}` }
       );
       if (result?.queued) return { matched: false, queued: true };
+      decisionCommitted = true;
       if (result?.matched) {
         const conversationId = await ensureConversation(candidate);
         updateHiddenConversations((current) => current.filter((id) => id !== conversationId));
@@ -2427,6 +2448,8 @@ export function AppProvider({ children }) {
       return { matched: false };
     } catch (error) {
       console.error('matchProfile error:', error);
+      if (!decisionCommitted) setOptimisticHiddenIds((current) => current.filter((id) => id !== candidate.id));
+      else error.discoveryActionCommitted = true;
       throw error;
     }
   };
@@ -3277,6 +3300,7 @@ export function AppProvider({ children }) {
       setDiscoveryError(null);
       setDiscoveryRetryKey((current) => current + 1);
     },
+    retryConversations: () => setConversationRetryKey((current) => current + 1),
     loadMoreIncomingLikes: () => decisionSubscriptionRef.current?.loadMore?.(),
     markAsRead,
     markFaceVerified,
@@ -3339,11 +3363,19 @@ export function AppProvider({ children }) {
   );
 
   const conversationsSlice = useMemo(() => ({
+    isConversationsLoading: Boolean(user?.id && (conversationInbox.userId !== user.id || !conversationInbox.ready)),
+    conversationsError: conversationInbox.userId === user?.id ? conversationInbox.error : null,
+    conversationsOnline: isOnline,
+    conversationsNetworkReady: networkReady,
     allConversations: liveConversations,
     conversations: activeConversations,
     hiddenConversationIds,
     totalUnreadMessages,
   }), [
+    conversationInbox,
+    user?.id,
+    isOnline,
+    networkReady,
     activeConversations,
     hiddenConversationIds,
     liveConversations,

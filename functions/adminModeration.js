@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { HttpsError } from 'firebase-functions/v2/https';
 import { FieldValue } from 'firebase-admin/firestore';
 import { buildExpoPushMessage } from './pushMessage.js';
+import { inboxId, inboxPayload } from './notificationInbox.js';
 
 const safeId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
 export function mediaObjectKey(report){
@@ -37,12 +38,14 @@ export async function reportedMessage(db,report){
   if(report.mediaUrl){const matches=await ref.collection('messages').where('mediaUrl','==',report.mediaUrl).limit(2).get();if(matches.size===1){const d=matches.docs[0];return {conversation,snap,message:d.data(),messageSnap:d,source:'document',messageId:d.id};}}
   return {conversation,snap,message:null};
 }
-export async function moderationPush(db,uid,body,reportId){
+export async function moderationPush(db,uid,body,reportId,notificationId){
   const {Expo}=await import('expo-server-sdk');
+  const user=await db.doc('users/'+uid).get();
+  if(user.data()?.notificationsEnabled===false)return {state:'disabled',accepted:0};
   const tokens=await db.collection('pushTokens').where('userId','==',uid).limit(10).get();
   const registrations=tokens.docs.map(d=>d.data()).filter(t=>t.enabled!==false&&Expo.isExpoPushToken(t.expoPushToken));
   if(!registrations.length)return {state:'no-device',accepted:0};
-  const client=new Expo(),notification={title:'แจ้งเตือนจากผู้ดูแล CampusMate',body:body.slice(0,220),channelId:'social',data:{type:'moderation_warning',reportId,url:'/me'}};
+  const client=new Expo(),notification={title:'แจ้งเตือนจากผู้ดูแล CampusMate',body:body.slice(0,220),channelId:'social',data:{type:'moderation_warning',reportId,notificationId,url:'/notifications'}};
   const tickets=await client.sendPushNotificationsAsync(registrations.map(t=>buildExpoPushMessage(t,notification)));
   return {state:tickets.some(t=>t.status==='ok')?'accepted':'failed',accepted:tickets.filter(t=>t.status==='ok').length};
 }
@@ -56,6 +59,7 @@ export async function moderateReport({db,actor,data,deleteMedia,notify=moderatio
     if(target.message&&target.message.senderId!==report.reportedUserId)throw new HttpsError('failed-precondition','สื่อไม่ได้อยู่ในข้อความของผู้ถูกรายงาน');mediaObjectKey(report);}
   if(!safeId(report.reportedUserId))throw new HttpsError('failed-precondition','รายงานไม่มีผู้ถูกรายงาน');
   const rev=s=>s.updateTime?`${s.updateTime.seconds}:${s.updateTime.nanoseconds}`:'missing',log=db.collection('adminAudit').doc(),noticeId=log.id;
+  const notificationId=inboxId('moderation:'+noticeId,report.reportedUserId);
   await db.runTransaction(async tx=>{
     const fresh=await tx.get(ref);if(rev(fresh)!==data.revision)throw new HttpsError('aborted','รายงานเปลี่ยนแล้ว กรุณาโหลดใหม่');
     let messageSnapshot,roomSnapshot;
@@ -71,7 +75,8 @@ export async function moderateReport({db,actor,data,deleteMedia,notify=moderatio
     }
     const moderation={action:data.action,note:data.note.trim(),actor,noticeId,at:FieldValue.serverTimestamp(),messageRemoved:removesMessage||report.moderation?.messageRemoved===true,mediaState:removesMedia?'pending':report.moderation?.mediaState||'not-requested'};
     tx.update(ref,{status:removesMedia?'reviewing':'resolved',reviewNote:data.note.trim(),reviewedBy:actor,updatedAt:FieldValue.serverTimestamp(),moderation});
-    tx.set(db.doc('accountRestrictions/'+report.reportedUserId),{latestWarning:{id:noticeId,reportId:data.id,message:data.note.trim(),action:data.action,createdAt:FieldValue.serverTimestamp()}},{merge:true});
+    tx.create(db.doc('users/'+report.reportedUserId+'/notifications/'+notificationId),inboxPayload({title:'คำเตือนจากผู้ดูแล CampusMate',body:data.note.trim(),data:{type:'system'}}));
+    tx.set(db.doc('accountRestrictions/'+report.reportedUserId),{latestWarning:{id:noticeId,notificationId,reportId:data.id,message:data.note.trim(),action:data.action,createdAt:FieldValue.serverTimestamp()}},{merge:true});
     tx.set(log,{actor,action:'moderateReport',target:data.id,moderationAction:data.action,note:data.note.trim(),messageId:target.messageId||null,state:removesMedia?'started':'completed',createdAt:FieldValue.serverTimestamp()});
   });
   let mediaState='not-requested';
@@ -82,7 +87,7 @@ export async function moderateReport({db,actor,data,deleteMedia,notify=moderatio
       if(latest.exists&&latest.data().moderation?.noticeId===noticeId)tx.update(ref,{'moderation.mediaState':mediaState,status:mediaState==='deleted'?'resolved':'reviewing',updatedAt:FieldValue.serverTimestamp()});
       tx.update(log,{state:mediaState==='deleted'?'completed':'partial',mediaState});
     });}
-  let notification;try{notification=await notify(db,report.reportedUserId,data.note.trim(),data.id);}catch{notification={state:'failed',accepted:0};}
+  let notification;try{notification=await notify(db,report.reportedUserId,data.note.trim(),data.id,notificationId);}catch{notification={state:'failed',accepted:0};}
   await log.update({notification});
   return {success:mediaState!=='failed',messageRemoved:removesMessage,mediaState,warningSaved:true,notification};
 }

@@ -44,7 +44,7 @@ export const darkColors = {
   line: '#393C43',
   onPrimary: '#FFFFFF',
   primary: '#2C68C2',
-  primaryDark: '#3995F1',
+  primaryDark: '#2458A3',
   primarySoft: 'rgba(112,178,255,0.18)',
   coral: '#FF7A6B',
   coralSoft: 'rgba(255,122,107,0.16)',

@@ -15,12 +15,12 @@ export default function MembershipScreen() {
   const membership = useMembership();
   const { offline } = useMembershipPackageAutoload();
   return <ScrollView contentInsetAdjustmentBehavior="automatic" style={{ backgroundColor: colors.canvas }} contentContainerStyle={styles.content}>
-    <View style={[styles.hero, { backgroundColor: colors.primarySoft }]}>
+    <View style={[styles.hero, { backgroundColor: colors.surfaceRaised }]}>
       <FeatureIcon name="sparkles" size={40} color={colors.primary} />
       <Text style={[styles.title, { color: colors.ink }]}>CampusMate Plus</Text>
-      <Text style={{ color: colors.inkMuted }}>{membership.plus ? 'สมาชิก Plus ของคุณเปิดใช้งานแล้ว' : 'เลือกเพื่อนและกิจกรรมได้ตรงใจยิ่งขึ้น'}</Text>
+      <Text style={{ color: colors.inkMuted, textAlign: 'center' }}>{membership.plus ? 'สมาชิก Plus ของคุณเปิดใช้งานแล้ว' : 'เลือกเพื่อนและกิจกรรมได้ตรงใจยิ่งขึ้น'}</Text>
     </View>
-    <View style={[styles.benefits, { backgroundColor: colors.card }]}>{benefits.map(([icon, text]) => <View key={text} style={styles.row}>
+    <View style={[styles.benefits, { backgroundColor: colors.card }]}>{benefits.map(([icon, text]) => <View key={text} style={styles.benefitRow}>
       <FeatureIcon name={icon} size={21} color={colors.primary} /><Text style={[styles.copy, { color: colors.ink }]}>{text}</Text>
     </View>)}</View>
     {membership.plus ? <>
@@ -28,7 +28,7 @@ export default function MembershipScreen() {
       {membership.managementUrl ? <Action colors={colors} label="จัดการสมาชิกในสโตร์" onPress={() => void Linking.openURL(membership.managementUrl).catch(() => {})} /> : null}
     </> : !membership.configured ? <Text style={{ color: colors.inkMuted }}>ระบบสมัครสมาชิกยังไม่เปิดให้ใช้งาน</Text>
       : membership.busy ? <ActivityIndicator color={colors.primary} />
-      : membership.ready && membership.packages.length ? membership.packages.map((entry) => <Action key={entry.identifier} colors={colors} disabled={membership.busy}
+      : membership.ready && membership.packages.length ? membership.packages.map((entry) => <Action key={entry.identifier} colors={colors} primary disabled={membership.busy}
         label={`${entry.packageType === 'ANNUAL' ? 'รายปี' : 'รายเดือน'} · ${entry.product.priceString}`}
         onPress={() => void membership.purchase(entry).catch(() => {})} />)
       : <PackagesLoading colors={colors} offline={offline} />}
@@ -52,12 +52,13 @@ function PackagesLoading({ colors, offline }) {
     </View>
   </View>;
 }
-function Action({ colors, label, onPress, disabled }) {
-  return <Pressable disabled={disabled} accessibilityRole="button" onPress={onPress} style={[styles.button, { backgroundColor: colors.primarySoft, opacity: disabled ? 0.5 : 1 }]}>
-    <Text style={{ color: colors.primary, fontWeight: '700', textAlign: 'center' }}>{label}</Text>
+function Action({ colors, label, onPress, disabled, primary = false }) {
+  return <Pressable disabled={disabled} accessibilityRole="button" accessibilityState={{ disabled: Boolean(disabled) }} onPress={onPress} style={[styles.button, { backgroundColor: primary ? colors.primary : colors.surfaceRaised, opacity: disabled ? 0.5 : 1 }]}>
+    <Text style={{ color: primary ? colors.onPrimary : colors.ink, fontWeight: '700', textAlign: 'center' }}>{label}</Text>
   </Pressable>;
 }
-const styles = StyleSheet.create({ content: { padding: 24, paddingBottom: 48, gap: 18 }, hero: { padding: 24, borderRadius: 24, alignItems: 'center', gap: 12 },
-  title: { fontSize: 27, fontWeight: '800' }, benefits: { padding: 20, borderRadius: 20, gap: 18 }, row: { flexDirection: 'row', gap: 12, alignItems: 'center', flexWrap: 'wrap' },
-  copy: { flex: 1, fontSize: 15, lineHeight: 22 }, button: { padding: 16, borderRadius: 16 },
+const styles = StyleSheet.create({ content: { padding: 16, paddingBottom: 48, gap: 18, alignSelf: 'center', maxWidth: 640, width: '100%' }, hero: { padding: 20, borderRadius: 20, alignItems: 'center', gap: 12 },
+  title: { fontSize: 24, fontWeight: '800', textAlign: 'center' }, benefits: { padding: 20, borderRadius: 20, gap: 18 }, row: { flexDirection: 'row', gap: 12, alignItems: 'center', flexWrap: 'wrap' },
+  benefitRow: { flexDirection: 'row', gap: 12, alignItems: 'center' },
+  copy: { flex: 1, minWidth: 0, fontSize: 15, lineHeight: 22 }, button: { justifyContent: 'center', minHeight: 48, padding: 16, borderRadius: 16, flexShrink: 1 },
   loading: { gap: 12 }, skeleton: { height: 52, borderRadius: 16, opacity: 0.6 } });

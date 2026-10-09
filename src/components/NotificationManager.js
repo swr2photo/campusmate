@@ -51,6 +51,8 @@ function openNotification(data, openIncomingCallFromNotification, route = {}) {
   const callId = typeof data.callId === 'string' ? data.callId : '';
   const partyId = typeof data.partyId === 'string' ? data.partyId : '';
 
+  if (type === 'moderation_warning') { router.push('/notifications'); return; }
+
   if (type === 'admin_announcement') {
     const target = String(data.route || '/home');
     if (['/home', '/discover', '/meetup', '/me', '/chat'].includes(target)
@@ -293,8 +295,7 @@ export default function NotificationManager() {
       const content = notification?.request?.content;
       const data = content?.data || {};
       const conversationId = data.conversationId;
-      void markPushInboxRead(data.notificationId).catch(() => {});
-  const type = String(data.type || '');
+      const type = String(data.type || '');
 
       // Suppress if the user is already viewing this exact chat room
       if (type === 'message' && conversationId && routeRef.current?.chatId === conversationId) {

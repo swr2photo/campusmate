@@ -1,4 +1,5 @@
 import Text from '../components/AppText';
+import { useToast } from '../context/ToastContext';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Image from '../components/CachedImage';
@@ -83,6 +84,7 @@ function formatRemainingTime(milliseconds) {
 }
 
 export default function HomeScreen({ onOpenLikes }) {
+  const { showToast } = useToast();
   const { colors, isDark } = useTheme();
   const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
   const rewind = useEntitlement(FEATURE_UNLIMITED_REWIND);
@@ -278,30 +280,34 @@ export default function HomeScreen({ onOpenLikes }) {
     setActionInProgress(true);
     try {
       const result = await matchProfile(currentProfile);
+      if (result?.queued) showToast('บันทึกถูกใจไว้แล้ว จะส่งเมื่อเชื่อมต่ออินเทอร์เน็ต', 'info');
       if (result?.matched && result?.conversationId) {
         router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
       }
     } catch (error) {
       console.warn('[HomeScreen] matchProfile error:', error?.message || error);
+      showToast(error?.discoveryActionCommitted ? 'บันทึกถูกใจแล้ว แต่เปิดแชตไม่สำเร็จ ลองเปิดจากหน้าแชตอีกครั้ง' : 'ส่งถูกใจไม่สำเร็จ กรุณาลองอีกครั้ง', 'info');
     } finally {
       setActionInProgress(false);
     }
-  }, [actionInProgress, currentProfile, matchProfile]);
+  }, [actionInProgress, currentProfile, matchProfile, showToast]);
 
   const handleSuperLike = useCallback(async () => {
     if (!currentProfile || actionInProgress) return;
     setActionInProgress(true);
     try {
       const result = await matchProfile(currentProfile);
+      if (result?.queued) showToast('บันทึกถูกใจไว้แล้ว จะส่งเมื่อเชื่อมต่ออินเทอร์เน็ต', 'info');
       if (result?.matched && result?.conversationId) {
         router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
       }
     } catch (error) {
       console.warn('[HomeScreen] superLike error:', error?.message || error);
+      showToast(error?.discoveryActionCommitted ? 'บันทึกถูกใจแล้ว แต่เปิดแชตไม่สำเร็จ ลองเปิดจากหน้าแชตอีกครั้ง' : 'ส่งถูกใจไม่สำเร็จ กรุณาลองอีกครั้ง', 'info');
     } finally {
       setActionInProgress(false);
     }
-  }, [actionInProgress, currentProfile, matchProfile]);
+  }, [actionInProgress, currentProfile, matchProfile, showToast]);
 
   const handleDirectChat = useCallback(async () => {
     if (!currentProfile || actionInProgress) return;

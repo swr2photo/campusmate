@@ -10,3 +10,10 @@ export function mergeInboxSnapshot(previous, uid, rows, hasMore, offline) {
     serverSeen: (sameAccount && previous.serverSeen) || !offline,
     hasMore, offline, loading: false, error: null };
 }
+
+export function overlayInboxReadReceipts(rows, receipts) {
+  const pending = new Map(receipts.map(receipt => [receipt.id, receipt.readAt]));
+  return rows.map(row => row.readAt || !pending.has(row.id) ? row : {
+    ...row, readAt: { seconds: Math.floor(pending.get(row.id) / 1000) },
+  });
+}

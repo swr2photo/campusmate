@@ -25,7 +25,7 @@ assert.throws(() => policy.validateChatVideo({ ...asset, fileSize: undefined }))
 const reply = await import('../src/utils/messageReply.js');
 for (const videoMode of ['once', 'replay', 'chat']) {
   const snapshot = reply.createReplySnapshot({ id: 'v', mediaType: 'video', videoMode, mediaUrl: 'secret.enc' });
-  assert.equal(snapshot.mediaUrl, undefined);
+  assert.equal(snapshot.mediaUrl, videoMode === 'chat' ? 'secret.enc' : undefined);
   assert.equal(snapshot.mediaType, 'video');
 }
 // Exercise the real encryption module with native-only dependencies stubbed.
@@ -80,7 +80,7 @@ new Function('require', 'module', 'exports', mediaCode)(id => {
   };
   return {};
 }, mediaModule, mediaModule.exports);
-await assert.rejects(mediaModule.exports.uploadChatMedia(asset.uri, { conversationId: 'c', mediaType: 'video', videoDuration: 60001 }), /60/);
+await assert.rejects(mediaModule.exports.uploadChatMedia(asset.uri, { conversationId: 'c', mediaType: 'video', videoDuration: 60001, conversationKey: key }), /60/);
 await assert.rejects(mediaModule.exports.uploadChatMedia(asset.uri, { conversationId: 'c', mediaType: 'video', videoDuration: 60000 }), /กุญแจ/);
 await assert.rejects(mediaModule.exports.uploadChatMedia(asset.uri, { conversationId: 'c', mediaType: 'video', videoDuration: 60000, conversationKey: key }), /encryption-failed/);
 for (const path of ['src/components/ChatCameraModal.js', 'src/components/ChatProtectedImageBubble.js', 'src/components/ChatImageViewerModal.js', 'src/components/ChatMediaComposer.js', 'src/components/ChatImageEditorModal.js']) {
@@ -93,8 +93,12 @@ let httpStatus = 200;
 const plain = new Uint8Array([0, 1, 2, 3, 255]);
 const encryptedPayload = module.exports.bytesToBase64(module.exports.encryptMediaBytes(plain, key));
 const loader = { exports: {} };
+const imagePolicy = await import('../src/utils/imagePolicy.js');
 new Function('require', 'module', 'exports', mediaCode)(id => {
   if (id.endsWith('chatEncryptionService')) return module.exports;
+  if (id.endsWith('imagePolicy')) return imagePolicy;
+  if (id === 'expo-crypto') return { CryptoDigestAlgorithm: { SHA256: 'sha256' },
+    digestStringAsync: async (_algorithm, value) => crypto.createHash('sha256').update(value).digest('hex') };
   if (id === 'expo-file-system/legacy') return {
     cacheDirectory: 'file:///cache/', EncodingType: { Base64: 'base64' },
     getInfoAsync: async path => ({ exists: files.has(path), size: files.get(path)?.length || 0 }),

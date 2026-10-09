@@ -950,7 +950,8 @@ service cloud.firestore {
     }
 
     match /profiles/{userId} {
-      allow read: if signedIn();
+      allow get: if isOwner(userId);
+      allow list: if false;
       allow create: if isOwner(userId)
         && initialUnverifiedFaceState(request.resource.data)
         && (
@@ -964,11 +965,10 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Discovery is deliberately split from the profile/detail document. Only
-    // signed-in users can read this public allowlisted projection; clients
-    // cannot create or modify ranking/discovery records themselves.
+    // Profile visibility is evaluated by authenticated server APIs using the
+    // private verification state. Projections cannot authorize client reads.
     match /discoveryProfiles/{userId} {
-      allow read: if signedIn();
+      allow read: if false;
       allow write: if false;
     }
 

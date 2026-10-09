@@ -3,10 +3,29 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const context = vm.createContext({ Array, Number });
-vm.runInContext(fs.readFileSync('src/utils/notificationInboxCache.js', 'utf8').replaceAll('export ', '') + '\nglobalThis.api = {restoreInboxCache,mergeInboxSnapshot};', context);
-const { restoreInboxCache, mergeInboxSnapshot } = context.api;
+vm.runInContext(fs.readFileSync('src/utils/notificationInboxCache.js', 'utf8').replaceAll('export ', '') + '\nglobalThis.api = {restoreInboxCache,mergeInboxSnapshot,overlayInboxReadReceipts};', context);
+const { restoreInboxCache, mergeInboxSnapshot, overlayInboxReadReceipts } = context.api;
 const initial = () => ({ uid: 'alice', rows: [], count: 0, loading: true });
 const cached = { rows: [{ id: 'n1', readAt: null }], count: 1 };
+
+test('persisted read intent survives an empty offline snapshot without altering stored history', () => {
+  const restored = restoreInboxCache(initial(), 'alice', cached);
+  const offline = mergeInboxSnapshot(restored, 'alice', [], false, true);
+  const rows = overlayInboxReadReceipts(offline.rows, [{ id: 'n1', readAt: 1800000000123 }]);
+  assert.equal(rows[0].readAt.seconds, 1800000000);
+  assert.equal(cached.rows[0].readAt, null);
+});
+
+test('authoritative read timestamp wins over pending local receipts', () => {
+  const row = { id: 'n1', readAt: { seconds: 400 }, status: 'required' };
+  assert.equal(overlayInboxReadReceipts([row], [{ id: 'n1', readAt: 200000 }])[0], row);
+});
+
+test('read receipts cannot create notifications or change required face status', () => {
+  const rows = overlayInboxReadReceipts([{ id: 'face-verification', status: 'required', readAt: null }],
+    [{ id: 'missing', readAt: 200000 }, { id: 'face-verification', readAt: 200000 }]);
+  assert.equal(rows.length, 1); assert.equal(rows[0].status, 'required'); assert.ok(rows[0].readAt);
+});
 test('cold offline empty snapshot preserves restored disk history', () => {
   const restored = restoreInboxCache(initial(), 'alice', cached);
   const next = mergeInboxSnapshot(restored, 'alice', [], false, true);

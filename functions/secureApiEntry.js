@@ -3,6 +3,6 @@
 import { initializeApp } from 'firebase-admin/app';
 initializeApp();
 export { getVisibleProfiles, setProfileVisibility, getIncomingLikeSummary, getDiscoveryPage,
-  getMyDecisionState, getPartyEncryptionProfiles } from './secureProfileFunctions.js';
+  getMyDecisionState, getPartyEncryptionProfiles, getConversationEncryptionProfiles } from './secureProfileFunctions.js';
 export { recordDiscoveryAction, respondToIncomingLike, rewindDiscoveryAction,
   cancelPendingOutgoingLike, unmatchProfile } from './matchingActionFunctions.js';

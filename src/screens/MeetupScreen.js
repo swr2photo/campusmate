@@ -155,6 +155,8 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const [mapTargetSpot, setMapTargetSpot] = useState(null);
   const [mapModal, setMapModal] = useState(false);
   const [scheduleModal, setScheduleModal] = useState(false);
+  const scheduleSubmitLock = useRef(false);
+  const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
   const [placePickerVisible, setPlacePickerVisible] = useState(false);
   const [pendingSpot, setPendingSpot] = useState(null);
   const [schedDate, setSchedDate] = useState(null);
@@ -228,6 +230,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   }, [selectedMeetup, visibleSpots]);
 
   const openScheduleFor = useCallback((spot) => {
+    if (scheduleSubmitLock.current) return;
     const savedDate = spot?.schedule?.date || selectedMeetup?.schedule?.date;
     setPendingSpot(spot);
     setSchedDate(nextDays.some((day) => day.value === savedDate) ? savedDate : nextDays[0].value);
@@ -239,6 +242,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   }, [nextDays, selectedMeetup]);
 
   const confirmSchedule = async () => {
+    if (scheduleSubmitLock.current) return;
     console.log('[MeetupScreen] confirmSchedule called', { pendingSpotName: pendingSpot?.name, schedDate, schedStart, schedEnd, maxPeople });
     if (!pendingSpot || !schedDate) {
       console.warn('[MeetupScreen] confirmSchedule missing pendingSpot or schedDate', { pendingSpot, schedDate });
@@ -255,6 +259,8 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       maxPeople: parseInt(maxPeople, 10) || 2,
       message: message.trim(),
     };
+    scheduleSubmitLock.current = true;
+    setScheduleSubmitting(true);
     try {
       const location = pendingSpot?.location?.kind === 'google'
         ? { kind: 'google', placeId: pendingSpot.location.placeId }
@@ -269,6 +275,9 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
     } catch (error) {
       console.error('[MeetupScreen] createParty error:', error);
       onToast?.(error?.message || 'สร้างตี้ไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    } finally {
+      scheduleSubmitLock.current = false;
+      setScheduleSubmitting(false);
     }
   };
 
@@ -426,6 +435,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       />
 
       <ScheduleModal
+        submitting={scheduleSubmitting}
         maxPeople={maxPeople}
         message={message}
         nextDays={nextDays}
@@ -645,7 +655,7 @@ const SpotCard = React.memo(function SpotCard({ onChoose, onOpenMap, onSchedule,
           icon="calendar.badge.clock"
           label="นัดหมาย"
           onPress={handleSchedule}
-          tintColor={colors.coral}
+          tintColor={colors.primary}
         />
         <ActionButton
           icon={selected ? 'checkmark.circle.fill' : 'mappin.circle.fill'}
@@ -816,7 +826,7 @@ function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedM
   );
 }
 
-function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDate, onEnd, onMaxPeople, onMessage, onPickPlace, onSelectSpot, onStart, pendingSpot, schedDate, schedEnd, schedStart, spots = [], visible }) {
+function ScheduleModal({ submitting = false, maxPeople, message, nextDays, onClose, onConfirm, onDate, onEnd, onMaxPeople, onMessage, onPickPlace, onSelectSpot, onStart, pendingSpot, schedDate, schedEnd, schedStart, spots = [], visible }) {
   const { colors, isDark } = useTheme();
   const [activePicker, setActivePicker] = useState(null);
   const [keyboardOffset, setKeyboardOffset] = useState(0);
@@ -884,7 +894,7 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
   }, [visible]);
 
   const panGesture = useMemo(() => Gesture.Pan()
-    .enabled(keyboardOffset <= 0)
+    .enabled(keyboardOffset <= 0 && !submitting)
     .onStart(() => {
       cancelAnimation(translateY);
       dragStartY.set(translateY.get());
@@ -909,17 +919,17 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
         translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
         fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    }), [closeWithAnimation, dragStartY, fadeAnim, keyboardOffset, translateY, unlockClose]);
+    }), [closeWithAnimation, dragStartY, fadeAnim, keyboardOffset, submitting, translateY, unlockClose]);
 
   const fadeStyle = useAnimatedStyle(() => ({ opacity: fadeAnim.get() }));
   const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.get() }] }));
 
   return (
-    <Modal animationType="none" transparent visible={visible} onRequestClose={closeWithAnimation}>
+    <Modal animationType="none" transparent visible={visible} onRequestClose={submitting ? () => {} : closeWithAnimation}>
       <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={styles.modalOverlay}>
         <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.45)' }, fadeStyle]}>
-          <Pressable accessibilityLabel="ปิดหน้าต่างนัดหมาย" onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
+          <Pressable disabled={submitting} accessibilityLabel="ปิดหน้าต่างนัดหมาย" onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
         </Animated.View>
         <View style={[styles.scheduleKeyboardAvoiding, { paddingBottom: keyboardOffset }]}>
           <Animated.View
@@ -947,6 +957,7 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
             </View>
             </GestureDetector>
             <ScrollView
+              pointerEvents={submitting ? 'none' : 'auto'}
               contentContainerStyle={styles.scheduleScroll}
               keyboardDismissMode="on-drag"
               keyboardShouldPersistTaps="handled"
@@ -998,8 +1009,8 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
               <View style={[styles.summaryBox, { backgroundColor: validTimeRange ? colors.coralSoft : colors.dangerSoft }]}><Text style={[styles.summaryText, { color: validTimeRange ? colors.coral : colors.danger }]}>{selectedDay?.label || '—'} · {schedStart}–{schedEnd}</Text></View>
             </ScrollView>
             <View style={styles.modalActions}>
-              <ActionButton disabled={!validTimeRange} emphasized icon="checkmark.circle.fill" label="ยืนยันนัดหมาย" onPress={onConfirm} tintColor={colors.coral} />
-              <Pressable accessibilityRole="button" onPress={closeWithAnimation} style={({ pressed }) => [styles.cancelModalButton, { borderColor: colors.line }, pressed && styles.pressed]}>
+              <ActionButton disabled={submitting || !pendingSpot || !validTimeRange} emphasized icon="checkmark.circle.fill" label={submitting ? 'กำลังสร้างกิจกรรม…' : 'ยืนยันนัดหมาย'} onPress={onConfirm} tintColor={colors.primary} />
+              <Pressable disabled={submitting} accessibilityRole="button" accessibilityState={{ disabled: submitting }} onPress={closeWithAnimation} style={({ pressed }) => [styles.cancelModalButton, { borderColor: colors.line }, pressed && styles.pressed, submitting && styles.disabled]}>
                 <Text style={[styles.cancelModalText, { color: colors.inkMuted }]}>ยกเลิก</Text>
               </Pressable>
             </View>

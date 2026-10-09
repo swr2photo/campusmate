@@ -1,4 +1,5 @@
 import Text from '../components/AppText';
+import ConversationInboxStatus from '../components/ConversationInboxStatus';
 import { AppTextInput as TextInput } from '../components/AppText';
 import { compareConversationsByActivity } from '../utils/conversationOrder';
 import { chatPreviewText } from '../utils/chatPreviewText';
@@ -139,9 +140,10 @@ export default function ChatScreen() {
   useEffect(() => { prefetchBrowseMusicTracks(); }, []);
   const { colors, isDark } = useTheme();
   const { confirm } = useConfirm();
-  const { conversations = [] } = useAppConversations();
+  const conversationInbox = useAppConversations();
+  const { conversations = [] } = conversationInbox;
   const { profile } = useAppProfile();
-  const { removeConversation } = useAppActions();
+  const { removeConversation, retryConversations } = useAppActions();
   const params = useLocalSearchParams();
   const pathname = usePathname();
   const [query, setQuery] = useState('');
@@ -251,15 +253,9 @@ export default function ChatScreen() {
 
           </TourTarget>
         )}
-        ListEmptyComponent={(
-          <View style={styles.emptyState}>
-            <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}><FeatureIcon color={colors.primary} name={query || unreadOnly ? 'search' : 'message.fill'} size={30} /></View>
-            <Text style={[styles.emptyTitle, { color: colors.ink }]}>{query || unreadOnly ? 'ไม่พบข้อความ' : 'ยังไม่มีแชตคู่'}</Text>
-            <Text style={[styles.emptyText, { color: colors.inkMuted }]}>{query || unreadOnly ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรอง' : 'เมื่อคุณรับคำขอถูกใจ ห้องสนทนาจะปรากฏที่นี่'}</Text>
-          </View>
-        )}
+        ListEmptyComponent={<ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} empty filtered={Boolean(query || unreadOnly)} groupLoading={groupInbox.loading} groupError={groupInbox.error} />}
         renderItem={(props) => props.item.kind === 'group' ? <GroupChatRow group={props.item} /> : renderConversation(props)}
-        ListFooterComponent={<GroupChatInboxStatus inbox={groupInbox} />}
+        ListFooterComponent={<>{groupInbox.items.length + visibleConversations.length > 0 ? <ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} /> : null}<GroupChatInboxStatus inbox={groupInbox} /></>}
         showsVerticalScrollIndicator={false}
       />
     </IosLikeScreen>

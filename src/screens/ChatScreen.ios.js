@@ -1,5 +1,7 @@
 import { Button, Text } from '../components/NativeTypography';
+import ConversationInboxStatus from '../components/ConversationInboxStatus';
 import { font } from '../components/brandFont';
+import { useNativePalette } from '../theme';
 import RNText from '../components/AppText';
 import { compareConversationsByActivity } from '../utils/conversationOrder';
 import { chatPreviewText } from '../utils/chatPreviewText';
@@ -30,39 +32,12 @@ import Reanimated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { project, rubberband } from '../utils/motion';
 
-const darkPalette = {
-  background: '#0D0F12',
-  surface: '#1A1D22',
-  raised: '#242830',
-  text: '#F8F9FC',
-  secondary: '#A7AFBC',
-  tertiary: '#6F7887',
-  accent: '#FF6F61',
-  accentSoft: 'rgba(255,111,97,0.16)',
-  incoming: '#22262D',
-  line: 'rgba(255,255,255,0.08)',
-  white: '#FFFFFF',
-};
-
-const lightPalette = {
-  background: '#F5F7FB',
-  surface: '#FFFFFF',
-  raised: '#EDF0F5',
-  text: '#111827',
-  secondary: '#667085',
-  tertiary: '#98A2B3',
-  accent: '#EE6B5D',
-  accentSoft: 'rgba(238,107,93,0.14)',
-  incoming: '#FFFFFF',
-  line: 'rgba(17,24,39,0.08)',
-  white: '#FFFFFF',
-};
-
 const DELETE_CONFIRM_DELAY_MS = 280;
 const SWIPE_DELETE_WIDTH = 88;
 
 function usePalette() {
-  return useColorScheme() === 'dark' ? darkPalette : lightPalette;
+  const palette = useNativePalette();
+  return { ...palette, raised: palette.surfaceRaised, accentSoft: palette.primarySoft, incoming: palette.card };
 }
 
 function toDate(timestamp) {
@@ -181,9 +156,10 @@ function formatConversationTime(conversation, currentUserId, unreadCount = 0) {
 export default function ChatScreen() {
   const palette = usePalette();
   const colorScheme = useColorScheme();
-  const { conversations } = useAppConversations();
+  const conversationInbox = useAppConversations();
+  const { conversations } = conversationInbox;
   const { profile } = useAppProfile();
-  const { removeConversation } = useAppActions();
+  const { removeConversation, retryConversations } = useAppActions();
   const { confirm } = useConfirm();
   const params = useLocalSearchParams();
   const pathname = usePathname();
@@ -323,16 +299,8 @@ export default function ChatScreen() {
   ), [colorScheme, currentUserId, palette, query, searchState, unreadOnly]);
 
   const renderListEmpty = useCallback(() => (
-    <View style={{ width: '100%', height: 250, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 }}>
-      <SymbolView name={query || unreadOnly ? 'magnifyingglass' : 'message.fill'} size={54} tintColor={palette.secondary} />
-      <RNText style={{ color: palette.text, fontSize: 22, fontWeight: '700', marginTop: 12, textAlign: 'center' }}>
-        {query || unreadOnly ? 'ไม่พบข้อความ' : 'ยังไม่มีแชตคู่'}
-      </RNText>
-      <RNText style={{ color: palette.secondary, fontSize: 15, fontWeight: '500', marginTop: 8, textAlign: 'center' }}>
-        {query || unreadOnly ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรอง' : 'เมื่อคุณรับคำขอถูกใจ ห้องสนทนาจะปรากฏที่นี่'}
-      </RNText>
-    </View>
-  ), [palette, query, unreadOnly]);
+    <ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} empty filtered={Boolean(query || unreadOnly)} groupLoading={groupInbox.loading} groupError={groupInbox.error} />
+  ), [conversationInbox, retryConversations, query, unreadOnly, groupInbox.loading, groupInbox.error]);
 
   const scrollY = useRef(new Animated.Value(0)).current;
 
@@ -413,7 +381,7 @@ export default function ChatScreen() {
           { useNativeDriver: true }
         )}
         renderItem={(props) => props.item.kind === 'group' ? <GroupChatRow group={props.item} /> : renderConversation(props)}
-        ListFooterComponent={<GroupChatInboxStatus inbox={groupInbox} />}
+        ListFooterComponent={<>{groupInbox.items.length + visibleConversations.length > 0 ? <ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} /> : null}<GroupChatInboxStatus inbox={groupInbox} /></>}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
         style={{ flex: 1 }}
@@ -559,9 +527,7 @@ function ConversationRow({ conversation, currentUserId, onDelete, onPreview, onP
         onPress={handlePress}
         style={({ pressed }) => [{
           alignItems: 'center',
-          backgroundColor: pressed
-            ? (palette.background === '#000000' || palette.background === '#14171B' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)')
-            : palette.background,
+          backgroundColor: pressed ? palette.surfaceRaised : palette.background,
           flexDirection: 'row',
           gap: 13,
           minHeight: 84,

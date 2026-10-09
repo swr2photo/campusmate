@@ -3,7 +3,7 @@ import { font } from '../components/brandFont';
 import { useNativePalette } from '../theme';
 import RNText from '../components/AppText';
 import PlacePhoto from '../components/PlacePhoto';
-import { Keyboard, Modal, Platform, Pressable, useColorScheme, View, Dimensions, Animated, ScrollView as RNScrollView, useWindowDimensions, StyleSheet } from 'react-native';
+import { Keyboard, Modal, Pressable, useColorScheme, View, Animated, ScrollView as RNScrollView, useWindowDimensions, StyleSheet } from 'react-native';
 import ExpoImage from '../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SymbolView } from 'expo-symbols';
@@ -15,7 +15,7 @@ import CampusMapView from '../components/CampusMapView';
 import AppointmentPlacePicker from '../components/AppointmentPlacePicker';
 import { Stack, useRouter } from 'expo-router';
 import { BottomSheet, ContentUnavailableView, DatePicker, Form, Host, HStack, Image, Picker, ScrollView, RNHostView, Section, Spacer, TextField, useNativeState, VStack, ZStack } from '@expo/ui/swift-ui';
-import { accessibilityLabel, background, buttonBorderShape, buttonStyle, controlSize, datePickerStyle, foregroundStyle, frame, labelStyle, lineLimit, padding, pickerStyle, presentationDetents, presentationDragIndicator, scrollDismissesKeyboard, scrollIndicators, shadow, shapes, textFieldStyle, tint } from '@expo/ui/swift-ui/modifiers';
+import { accessibilityLabel, background, buttonBorderShape, buttonStyle, controlSize, datePickerStyle, disabled, foregroundStyle, frame, labelStyle, lineLimit, padding, pickerStyle, presentationDetents, presentationDragIndicator, scrollDismissesKeyboard, scrollIndicators, shadow, shapes, textFieldStyle, tint } from '@expo/ui/swift-ui/modifiers';
 import { useAppActions, useAppFeed, useAppProfile } from '../context/AppContext';
 import PartyFinderSection, { sortAndRefitMeetups } from '../components/PartyFinderSection';
 import PartyFinderEntry from '../components/PartyFinderEntry';
@@ -65,9 +65,8 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const { confirm } = useConfirm();
   const colorScheme = useColorScheme();
   const { width: windowWidth } = useWindowDimensions();
-  // IPadAspectFrame in app/_layout.js clamps the screen layout canvas to 390pt on iPad
-  const isIPadFrame = Platform.OS === 'ios' && Platform.isPad && windowWidth > 430;
-  const layoutWidth = isIPadFrame ? 390 : windowWidth;
+  const [measuredWidth, setMeasuredWidth] = useState(null);
+  const layoutWidth = Math.min(measuredWidth || windowWidth, windowWidth, 760);
   const bannerWidth = layoutWidth - 40;
   const { campusSpots = [], selectedMeetup } = useAppFeed();
   const { profile: myProfile } = useAppProfile();
@@ -86,6 +85,8 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
 
   // Schedule BottomSheet state
   const [showSchedule, setShowSchedule] = useState(false);
+  const scheduleSubmitLock = useRef(false);
+  const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
   const [placePickerVisible, setPlacePickerVisible] = useState(false);
   const [showMapModal, setShowMapModal] = useState(false);
   const [isMapMounted, setIsMapMounted] = useState(false);
@@ -167,6 +168,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   }, [selectedMeetup, visibleSpots]);
 
   const openScheduleFor = useCallback((spot) => {
+    if (scheduleSubmitLock.current) return;
     setPendingSpot(spot);
     setSchedDate(new Date());
     const start = new Date(); start.setHours(14, 0, 0, 0);
@@ -179,7 +181,11 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   }, [maxPeopleState, messageState]);
 
   const confirmSchedule = async () => {
-    if (!pendingSpot) return;
+    if (!pendingSpot || scheduleSubmitLock.current) return;
+    if (schedEnd.getTime() <= schedStart.getTime()) {
+      onToast?.('เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม', 'info');
+      return;
+    }
     
     const year = schedDate.getFullYear();
     const month = String(schedDate.getMonth() + 1).padStart(2, '0');
@@ -194,6 +200,8 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       maxPeople: parseInt(maxPeopleState.get(), 10) || 2,
       message: messageState.get().trim()
     };
+    scheduleSubmitLock.current = true;
+    setScheduleSubmitting(true);
     try {
       const location = pendingSpot?.location?.kind === 'google'
         ? { kind: 'google', placeId: pendingSpot.location.placeId }
@@ -206,6 +214,9 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
     } catch (error) {
       console.error('confirmSchedule error:', error);
       onToast?.(error?.message || 'สร้างตี้ไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    } finally {
+      scheduleSubmitLock.current = false;
+      setScheduleSubmitting(false);
     }
   };
 
@@ -264,7 +275,10 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
 
   return (
-    <View style={{ flex: 1, backgroundColor: palette.background }}>
+    <View onLayout={({ nativeEvent }) => {
+      const nextWidth = nativeEvent.layout.width;
+      if (nextWidth > 0) setMeasuredWidth(current => current != null && Math.abs(current - nextWidth) < 1 ? current : nextWidth);
+    }} style={{ flex: 1, backgroundColor: palette.background }}>
       {!partyOnly && <>
       <MaskedView
         style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 105, zIndex: 10 }}
@@ -542,7 +556,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
               </Text>
             </HStack>
           )}
-          <Form>
+          <Form modifiers={[disabled(scheduleSubmitting)]}>
             <Section header={<Text>สถานที่นัดหมาย</Text>}>
               <Button
                 label={pendingSpot?.name || 'ค้นหาหรือปักหมุดบนแผนที่'}
@@ -581,14 +595,15 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
             </Section>
           </Form>
           <Button
-            label="ยืนยันนัดหมาย"
+            label={scheduleSubmitting ? 'กำลังสร้างกิจกรรม…' : 'ยืนยันนัดหมาย'}
             onPress={confirmSchedule}
             systemImage="checkmark.circle.fill"
             modifiers={[
+              disabled(scheduleSubmitting || !pendingSpot || schedEnd.getTime() <= schedStart.getTime()),
               buttonStyle('glassProminent'),
               buttonBorderShape('capsule'),
               controlSize('large'),
-              tint(palette.coral),
+              tint(palette.primary),
               padding({ horizontal: 20, bottom: 24 }),
               frame({ maxWidth: Infinity }),
             ]}
@@ -612,9 +627,8 @@ const CAMPUS_PHOTOS = [
 function CampusHero({ bannerHeight = 180, bannerWidth, onOpenMap, selectedMeetup }) {
   const palette = usePalette();
   const { width: windowWidth } = useWindowDimensions();
-  const isIPadFrame = Platform.OS === 'ios' && Platform.isPad && windowWidth > 430;
-  const layoutWidth = isIPadFrame ? 390 : windowWidth;
-  const width = Math.min(bannerWidth || (layoutWidth - 40), layoutWidth - 40);
+  const maxWidth = Math.max(0, Math.min(windowWidth, 760) - 40);
+  const width = Math.min(bannerWidth || maxWidth, maxWidth);
   const height = bannerHeight || 180;
 
 

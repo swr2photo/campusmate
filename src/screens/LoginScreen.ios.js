@@ -1,10 +1,11 @@
 import { Button, Text } from '../components/NativeTypography';
 import { font } from '../components/brandFont';
+import { useNativePalette } from '../theme';
 import React, { useState } from 'react';
 import { useAssets } from 'expo-asset';
-import { Keyboard, Platform, Pressable, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { Platform, useColorScheme, View } from 'react-native';
 import { HStack, Host, Image, ScrollView, SecureField, Spacer, TextField, useNativeState, VStack, ZStack } from '@expo/ui/swift-ui';
-import { accessibilityHint, accessibilityLabel, aspectRatio, autocorrectionDisabled, background, blur, buttonBorderShape, buttonStyle, clipShape, clipped, controlSize, disabled, foregroundStyle, frame, keyboardType, lineLimit, offset, padding, resizable, scrollDismissesKeyboard, scrollIndicators, shadow, shapes, textContentType, textFieldStyle, textInputAutocapitalization, tint } from '@expo/ui/swift-ui/modifiers';
+import { accessibilityHint, accessibilityLabel, aspectRatio, autocorrectionDisabled, background, buttonBorderShape, buttonStyle, clipShape, clipped, controlSize, disabled, foregroundStyle, frame, keyboardType, padding, resizable, scrollDismissesKeyboard, scrollIndicators, shapes, textContentType, textFieldStyle, textInputAutocapitalization, tint } from '@expo/ui/swift-ui/modifiers';
 import { getSavedAccounts, removeSavedAccount, saveAccount, enrichSavedAccountsWithFirestore } from '../services/accountStorage';
 import {
   getFirebaseConfigurationErrorMessage,
@@ -38,7 +39,6 @@ import { showAlert } from '../utils/appAlert';
 
 WebBrowser.maybeCompleteAuthSession();
 const loginPhoto = require('../../assets/login-campus-hero.png');
-const panelShape = shapes.roundedRectangle({ cornerRadius: 28, roundedCornerStyle: 'continuous' });
 const cardShape = shapes.roundedRectangle({ cornerRadius: 18, roundedCornerStyle: 'continuous' });
 
 function scheduleWhenIdle(callback) {
@@ -57,40 +57,9 @@ function reportUnexpectedAuthError(label, error) {
   if (detail) console.warn(`${label}: ${detail}`);
 }
 
-const darkPalette = {
-  background: '#101216',
-  surface: '#1B1E26',
-  inputBackground: '#242832',
-  text: '#F7F8FA',
-  secondary: '#A2ACB9',
-  tertiary: '#737D8D',
-  purple: '#88B5F2',
-  purpleSoft: 'rgba(112,178,255,0.18)',
-  coral: '#FF7A6B',
-  coralSoft: 'rgba(255,122,107,0.16)',
-  danger: '#FF6B6B',
-  dangerSoft: 'rgba(255,107,107,0.14)',
-  green: '#45D1A1',
-};
-
-const lightPalette = {
-  background: '#F5F7FB',
-  surface: '#FFFFFF',
-  inputBackground: '#F0F3F9',
-  text: '#25272B',
-  secondary: '#5A687D',
-  tertiary: '#8895A7',
-  purple: '#2869C7',
-  purpleSoft: 'rgba(35,123,231,0.12)',
-  coral: '#F47C6B',
-  coralSoft: '#FFF0ED',
-  danger: '#D65454',
-  dangerSoft: '#FFF0F0',
-  green: '#18A878',
-};
-
 function usePalette() {
-  return useColorScheme() === 'dark' ? darkPalette : lightPalette;
+  const palette = useNativePalette();
+  return { ...palette, inputBackground: palette.surfaceRaised, purpleSoft: palette.primarySoft };
 }
 
 export default function LoginScreen({ onLoginSuccess }) {
@@ -160,7 +129,6 @@ export default function LoginScreen({ onLoginSuccess }) {
 
   const colorScheme = useColorScheme();
   const { confirm } = useConfirm();
-  const { height: screenHeight } = useWindowDimensions();
   const palette = usePalette();
   const [assets] = useAssets([loginPhoto]);
   const nativeEmail = useNativeState('');
@@ -399,62 +367,35 @@ export default function LoginScreen({ onLoginSuccess }) {
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#0B0D14' }}>
+    <View style={{ flex: 1, backgroundColor: palette.background }}>
       <Host
         colorScheme={colorScheme}
         seedColor={palette.purple}
         style={{ flex: 1 }}
         useViewportSizeMeasurement
       >
-        <ZStack alignment="topLeading" modifiers={[frame({ maxWidth: Infinity, maxHeight: Infinity })]}>
-          {/* Fullscreen Background Image (คมชัด ไม่เบลอ) */}
+        <ScrollView modifiers={[scrollDismissesKeyboard('interactively'), scrollIndicators('hidden')]}>
+          <VStack alignment="center" spacing={20} modifiers={[
+            padding({ top: 24, bottom: 32, horizontal: 20 }),
+            frame({ maxWidth: 560, alignment: 'center' }),
+          ]}>
           {imageUri ? (
             <Image
               uiImage={imageUri}
               modifiers={[
                 resizable(),
                 aspectRatio({ contentMode: 'fill' }),
-                frame({ maxWidth: Infinity, maxHeight: Infinity }),
+                frame({ maxWidth: Infinity, height: mode === 'google' || mode === 'saved' ? 160 : 72 }),
+                clipShape('roundedRectangle', 16),
                 clipped(),
               ]}
             />
-          ) : (
-            <ZStack modifiers={[frame({ maxWidth: Infinity, maxHeight: Infinity }), background('#141722')]} />
-          )}
-
-          {/* Fullscreen Dark Gradient Overlay (ไล่เข้ม) */}
-          <ZStack
-            modifiers={[
-              frame({ maxWidth: Infinity, maxHeight: Infinity }),
-              background({
-                type: 'linearGradient',
-                colors: colorScheme === 'dark'
-                  ? ['rgba(11,13,20,0.40)', 'rgba(11,13,20,0.78)', 'rgba(11,13,20,0.96)']
-                  : ['rgba(11,13,20,0.25)', 'rgba(11,13,20,0.60)', 'rgba(11,13,20,0.88)'],
-                startPoint: { x: 0.5, y: 0 },
-                endPoint: { x: 0.5, y: 1 },
-              }),
-            ]}
-          />
-
-          {/* Foreground Content - Fixed, Non-scrollable */}
-          <VStack
-            alignment="center"
-            modifiers={[
-              padding({ top: 48, bottom: 28, horizontal: 20 }),
-              frame({ maxWidth: Infinity, maxHeight: Infinity }),
-            ]}
-          >
-            {/* Minimalist Floating Pill (แคปซูลจิ๋ว ลอยตัว ไม่เต็มพื้นที่) */}
+          ) : null}
             <HStack
               spacing={8}
               modifiers={[
                 padding({ horizontal: 14, vertical: 7 }),
-                background(
-                  colorScheme === 'dark' ? 'rgba(28, 32, 44, 0.82)' : 'rgba(255, 255, 255, 0.90)',
-                  shapes.capsule()
-                ),
-                shadow({ radius: 12, y: 3, color: 'rgba(0,0,0,0.30)' }),
+                frame({ maxWidth: Infinity, alignment: 'leading' }),
               ]}
             >
               <VStack
@@ -470,27 +411,18 @@ export default function LoginScreen({ onLoginSuccess }) {
               <Text
                 modifiers={[
                   font({ textStyle: 'headline', weight: 'heavy', design: 'rounded' }),
-                  foregroundStyle(colorScheme === 'dark' ? '#FFFFFF' : '#25272B'),
+                  foregroundStyle(palette.text),
                 ]}
               >
                 CampusMate
               </Text>
             </HStack>
 
-            <Spacer />
-
-            {/* Form Card - Anchored at Bottom (Translucent Glass Panel) */}
             <VStack
               alignment="center"
               spacing={14}
               modifiers={[
-                padding({ top: 20, bottom: 20, horizontal: 16 }),
-                frame({ maxWidth: 340, alignment: 'center' }),
-                background(
-                  colorScheme === 'dark' ? 'rgba(23, 26, 36, 0.82)' : 'rgba(255, 255, 255, 0.88)',
-                  panelShape
-                ),
-                shadow({ radius: 24, y: 8, color: 'rgba(0,0,0,0.35)' }),
+                frame({ maxWidth: Infinity, alignment: 'center' }),
               ]}
             >
                 {mode === 'saved' && savedAccounts.length > 0 ? (
@@ -535,7 +467,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                   </VStack>
                 ) : mode === 'google' ? (
                   <VStack spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
-                    <Text modifiers={[font({ textStyle: 'caption2' }), foregroundStyle(palette.tertiary), lineLimit(4)]}>
+                    <Text modifiers={[font({ textStyle: 'caption2' }), foregroundStyle(palette.tertiary)]}>
                       {CAMPUS_LOGIN_HINT}
                     </Text>
                     <AuthButton
@@ -552,7 +484,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                       modifiers={[
                         accessibilityLabel('เข้าสู่ระบบด้วยอีเมล'),
                         accessibilityHint('เปิดแบบฟอร์มอีเมลและรหัสผ่าน'),
-                        buttonStyle('glass'),
+                        buttonStyle('bordered'),
                         buttonBorderShape('capsule'),
                         controlSize('large'),
                         tint(palette.text),
@@ -595,7 +527,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                         </Text>
                       </HStack>
                     ) : (
-                      <Text modifiers={[font({ textStyle: 'caption2' }), foregroundStyle(palette.tertiary), lineLimit(3)]}>
+                      <Text modifiers={[font({ textStyle: 'caption2' }), foregroundStyle(palette.tertiary)]}>
                         {mode === 'signup' ? CAMPUS_SIGNUP_HINT : CAMPUS_LOGIN_HINT}
                       </Text>
                     )}
@@ -675,10 +607,10 @@ export default function LoginScreen({ onLoginSuccess }) {
                     />
                   </VStack>
                 )}
-                <Text modifiers={[font({ textStyle: 'caption2' }), foregroundStyle(palette.tertiary), lineLimit(4)]}>
+                <Text modifiers={[font({ textStyle: 'caption2' }), foregroundStyle(palette.tertiary)]}>
                   การสมัครหรือเข้าสู่ระบบ หมายความว่าคุณมีอายุอย่างน้อย 18 ปี และยอมรับเงื่อนไขการให้บริการกับนโยบายความเป็นส่วนตัวตาม PDPA
                 </Text>
-                <HStack spacing={12}>
+                <VStack spacing={4} modifiers={[frame({ maxWidth: Infinity })]}>
                   <Button
                     label="นโยบายความเป็นส่วนตัว"
                     onPress={() => router.push('/privacy-policy')}
@@ -689,10 +621,10 @@ export default function LoginScreen({ onLoginSuccess }) {
                     onPress={() => router.push('/terms')}
                     modifiers={[buttonStyle('plain'), tint(palette.purple), controlSize('small')]}
                   />
-                </HStack>
+                </VStack>
               </VStack>
           </VStack>
-        </ZStack>
+        </ScrollView>
       </Host>
     </View>
   );
@@ -758,11 +690,11 @@ function AuthButton({ label, loading, onPress, palette, systemImage }) {
       systemImage={loading ? 'hourglass' : systemImage}
       modifiers={[
         accessibilityLabel(label),
-        buttonStyle('glassProminent'),
+        buttonStyle('borderedProminent'),
         buttonBorderShape('capsule'),
         controlSize('large'),
         tint(palette.purple),
-        frame({ maxWidth: Infinity }),
+        frame({ maxWidth: Infinity, minHeight: 48 }),
         disabled(loading),
       ]}
     />
@@ -773,7 +705,7 @@ function SavedAccountRow({ acc, cardShape, onRemove, onSelect, palette }) {
   const remoteAvatar = useRemoteImage(acc.avatarUri || acc.photoURL, acc.avatarRevision, acc.id);
 
   return (
-    <HStack
+    <VStack alignment="leading"
       spacing={10}
       modifiers={[
         padding({ horizontal: 10, vertical: 8 }),
@@ -781,7 +713,7 @@ function SavedAccountRow({ acc, cardShape, onRemove, onSelect, palette }) {
         background(palette.inputBackground, cardShape),
       ]}
     >
-      <ZStack
+      <HStack spacing={10} modifiers={[frame({ maxWidth: Infinity })]}><ZStack
         alignment="center"
         modifiers={[
           frame({ width: 38, height: 38 }),
@@ -805,24 +737,25 @@ function SavedAccountRow({ acc, cardShape, onRemove, onSelect, palette }) {
       </ZStack>
 
       <VStack alignment="leading" spacing={2} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-        <Text modifiers={[font({ textStyle: 'callout', weight: 'bold' }), foregroundStyle(palette.text), lineLimit(1)]}>
+        <Text modifiers={[font({ textStyle: 'callout', weight: 'bold' }), foregroundStyle(palette.text)]}>
           {acc.displayName || acc.email}
         </Text>
-        <Text modifiers={[font({ textStyle: 'caption2', weight: 'regular' }), foregroundStyle(palette.secondary), lineLimit(1)]}>
+        <Text modifiers={[font({ textStyle: 'caption2', weight: 'regular' }), foregroundStyle(palette.secondary)]}>
           {acc.faculty ? `${acc.faculty} · ` : ''}{acc.email}
         </Text>
-      </VStack>
+      </VStack></HStack>
 
+      <HStack spacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
       <Button
         label="เข้าใช้"
         onPress={() => onSelect(acc)}
         systemImage="arrow.right"
         modifiers={[
-          buttonStyle('glassProminent'),
+          buttonStyle('borderedProminent'),
           buttonBorderShape('capsule'),
-          controlSize('mini'),
+          controlSize('regular'),
           tint(palette.purple),
-          lineLimit(1),
+          frame({ minHeight: 44 }),
         ]}
       />
 
@@ -832,9 +765,12 @@ function SavedAccountRow({ acc, cardShape, onRemove, onSelect, palette }) {
         systemImage="xmark"
         modifiers={[
           buttonStyle('plain'),
+          accessibilityLabel('ลบบัญชีที่บันทึกไว้'),
+          frame({ width: 44, minHeight: 44 }),
           tint(palette.tertiary),
         ]}
       />
-    </HStack>
+      </HStack>
+    </VStack>
   );
 }

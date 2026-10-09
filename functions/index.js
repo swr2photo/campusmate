@@ -71,7 +71,7 @@ import {
 export { ANDROID_MESSAGING_NOTIFICATION_MODE, buildExpoPushMessage } from './pushMessage.js';
 export { getMusicLyrics } from './musicLyrics.js';
 export { getMembershipState, syncMembership, revenueCatWebhook } from './plusFunctions.js';
-export { getVisibleProfiles, setProfileVisibility, getIncomingLikeSummary, getDiscoveryPage, getMyDecisionState, getPartyEncryptionProfiles } from './secureProfileFunctions.js';
+export { getVisibleProfiles, setProfileVisibility, getIncomingLikeSummary, getDiscoveryPage, getMyDecisionState, getPartyEncryptionProfiles, getConversationEncryptionProfiles } from './secureProfileFunctions.js';
 export { recordDiscoveryAction, respondToIncomingLike, rewindDiscoveryAction, cancelPendingOutgoingLike, unmatchProfile } from './matchingActionFunctions.js';
 export {
   searchCampusPlaces, resolveCampusPlace, createParty, requestJoinParty,

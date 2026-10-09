@@ -1,8 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
-import { inboxCall, markInboxRead, visibleNotification, watchInbox } from '../services/notificationInboxService';
-import { mergeInboxSnapshot, restoreInboxCache } from '../utils/notificationInboxCache';
+import { clearPendingInboxReads, inboxCall, markInboxRead, visibleNotification, watchInbox, watchPendingInboxReads } from '../services/notificationInboxService';
+import { mergeInboxSnapshot, overlayInboxReadReceipts, restoreInboxCache } from '../utils/notificationInboxCache';
 
 const InboxContext = createContext(null);
 export function NotificationInboxProvider({ children }) {
@@ -15,6 +15,17 @@ export function NotificationInboxProvider({ children }) {
   const [retryRevision, setRetryRevision] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [face, setFace] = useState({ uid: null, row: null });
+  const [pendingReads, setPendingReads] = useState({ uid: null, receipts: [] });
+  useEffect(() => {
+    if (!uid) return undefined;
+    const stop = watchPendingInboxReads(uid, receipts => {
+      if (activeUid.current === uid) setPendingReads({ uid, receipts });
+    });
+    return () => {
+      stop();
+      if (activeUid.current !== uid) void clearPendingInboxReads(uid).catch(() => {});
+    };
+  }, [uid]);
   const [expiryTick, setExpiryTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setExpiryTick(value => value + 1), 60000);
@@ -64,9 +75,11 @@ export function NotificationInboxProvider({ children }) {
   const current = state.uid === uid ? state : { rows: [], count: 0, loading: !!uid };
   const rows = useMemo(() => {
     const all = current.rows.filter(visibleNotification);
-    if (face.uid === uid && face.row?.status === 'required') return [face.row, ...all.filter(row => row.id !== face.row.id)];
-    return all.map(row => row.id === face.row?.id && face.uid === uid ? face.row : row);
-  }, [current.rows, uid, face, expiryTick]);
+    const merged = face.uid === uid && face.row?.status === 'required'
+      ? [face.row, ...all.filter(row => row.id !== face.row.id)]
+      : all.map(row => row.id === face.row?.id && face.uid === uid ? face.row : row);
+    return overlayInboxReadReceipts(merged, pendingReads.uid === uid ? pendingReads.receipts : []);
+  }, [current.rows, uid, face, expiryTick, pendingReads]);
   const markAll = async () => {
     let result;
     do { result = await inboxCall('markAllNotificationInboxRead', uid); } while (result.hasMore && activeUid.current === uid);

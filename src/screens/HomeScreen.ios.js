@@ -444,18 +444,9 @@ export default function HomeScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
-      <MaskedView
-        pointerEvents="none"
-        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 104, zIndex: 10 }}
-        maskElement={
-          <LinearGradient colors={['#FFFFFF', '#FFFFFF00']} style={{ flex: 1 }} />
-        }
-      >
-        <BlurView intensity={blurIntensity} tint={colorScheme} style={{ flex: 1 }} />
-      </MaskedView>
-      <TourTarget id="home.filters" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
-        <Host colorScheme={colorScheme} seedColor={palette.purple} style={{ width: '100%', height: 85 }}>
-          <VStack modifiers={[padding({ top: 35, bottom: 15, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
+      <TourTarget id="home.filters" style={{ flexShrink: 0, backgroundColor: palette.background }} pointerEvents="box-none">
+        <Host colorScheme={colorScheme} seedColor={palette.purple} matchContents={{ vertical: true }} style={{ width: '100%' }}>
+          <VStack modifiers={[padding({ top: 20, bottom: 16, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
             <Header onSettings={() => router.push('/matching-filters')} />
           </VStack>
         </Host>
@@ -473,7 +464,7 @@ export default function HomeScreen() {
             alignment="leading"
             spacing={22}
             modifiers={[
-              padding({ top: 60, bottom: 36, horizontal: 20 }),
+              padding({ top: 12, bottom: 36, horizontal: 20 }),
               frame({ maxWidth: Infinity, alignment: 'topLeading' }),
             ]}
           >
@@ -805,8 +796,9 @@ function Header({ onSettings }) {
         onPress={onSettings}
         systemImage="slider.horizontal.3"
         modifiers={[
-          buttonStyle('glass'),
+          buttonStyle('plain'),
           buttonBorderShape('circle'),
+          frame({ width: 48, height: 48 }),
           controlSize('regular'),
           labelStyle('iconOnly'),
           tint(palette.text),

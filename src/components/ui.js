@@ -34,7 +34,7 @@ export function Chip({ label, icon, iconName, active = false, color, onPress, st
       <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
     </View>
   );
-  return onPress ? <Pressable onPress={onPress}>{content}</Pressable> : content;
+  return onPress ? <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={onPress}>{content}</Pressable> : content;
 }
 
 export function PrimaryButton({ label, icon, iconName, onPress, style, disabled = false, loading = false, compact = false }) {
@@ -45,9 +45,11 @@ export function PrimaryButton({ label, icon, iconName, onPress, style, disabled 
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: disabled || loading, busy: loading }}
       disabled={disabled || loading}
       onPress={onPress}
-      style={({ pressed }) => [styles.primaryButton, isCompact && styles.compactPrimaryButton, style, pressed && styles.pressed, disabled && styles.disabled]}
+      style={({ pressed }) => [styles.primaryButton, isCompact && styles.compactPrimaryButton, style, { minHeight: Math.max(isCompact ? 44 : 48, StyleSheet.flatten(style)?.minHeight || 0), minWidth: 44 }, pressed && styles.pressed, disabled && styles.disabled]}
     >
       {loading ? <ActivityIndicator color={colors.onPrimary} /> : (
         <View style={styles.buttonContent}>
@@ -72,9 +74,11 @@ export function OutlineButton({ label, icon, iconName, onPress, style, danger = 
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.outlineButton, isCompact && styles.compactOutlineButton, danger && styles.outlineDanger, style, pressed && styles.pressed, disabled && styles.disabled]}
+      style={({ pressed }) => [styles.outlineButton, isCompact && styles.compactOutlineButton, danger && styles.outlineDanger, style, { minHeight: Math.max(isCompact ? 44 : 48, StyleSheet.flatten(style)?.minHeight || 0), minWidth: 44 }, pressed && styles.pressed, disabled && styles.disabled]}
     >
       <View style={styles.buttonContent}>
         {resolvedIcon ? <FeatureIcon color={buttonColor} name={resolvedIcon} size={18} style={styles.buttonIcon} /> : null}
@@ -97,7 +101,7 @@ export function SectionTitle({ title, subtitle, action, onAction }) {
         <Text style={styles.sectionTitle}>{title}</Text>
         {!!subtitle && <Text style={styles.sectionSubtitle}>{subtitle}</Text>}
       </View>
-      {!!action && <Pressable onPress={onAction}><Text style={styles.sectionAction}>{action}</Text></Pressable>}
+      {!!action && <Pressable accessibilityRole="button" onPress={onAction} style={styles.sectionActionTarget}><Text style={styles.sectionAction}>{action}</Text></Pressable>}
     </View>
   );
 }
@@ -137,7 +141,7 @@ const createStyles = (colors) => StyleSheet.create({
     paddingHorizontal: spacing.md,
   },
   chipIcon: { fontSize: 14, marginRight: 5 },
-  chipText: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '700' },
+  chipText: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '700', flexShrink: 1 },
   chipTextActive: { color: colors.onPrimary },
   primaryButton: {
     alignItems: 'center',
@@ -175,13 +179,16 @@ const createStyles = (colors) => StyleSheet.create({
   sectionHeader: {
     alignItems: 'center',
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
     justifyContent: 'space-between',
     marginBottom: spacing.md,
   },
-  sectionHeaderText: { flex: 1 },
+  sectionHeaderText: { flexGrow: 1, flexBasis: 180, minWidth: 0 },
   sectionTitle: { color: colors.ink, fontSize: type.section, fontWeight: '800' },
   sectionSubtitle: { color: colors.inkMuted, fontSize: type.caption, marginTop: 3 },
   sectionAction: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
+  sectionActionTarget: { minHeight: 44, minWidth: 44, justifyContent: 'center', flexShrink: 1 },
 });
 
 // `colors` is one of two module-level palettes, so this caches to two entries.

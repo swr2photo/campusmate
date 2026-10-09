@@ -27,7 +27,7 @@ import {
 } from '../utils/campusEmail';
 import { getPasswordError, PASSWORD_MISMATCH_MESSAGE } from '../utils/passwordPolicy';
 import { useRemoteImage } from '../utils/useRemoteImage';
-import { radius, shadow, spacing, type, useTheme } from '../theme';
+import { radius, spacing, type, useTheme } from '../theme';
 
 // Keep the login artwork distinct from the first onboarding illustration.
 const loginStoryset = require('../../assets/login-storyset.png');
@@ -449,13 +449,12 @@ export default function LoginScreen({ onLoginSuccess }) {
             style={styles.loginScroll}
           >
             <View style={styles.contentFrame}>
-              <View style={styles.loginHero}>
-                <View style={[styles.loginHeroBlob, { backgroundColor: colors.primarySoft }]} />
+              <View style={[styles.loginHero, isEmailMode && styles.formHero]}>
                 <Image
                   accessibilityLabel="ภาพประกอบการเข้าสู่ระบบ"
                   resizeMode="contain"
                   source={loginStoryset}
-                  style={styles.loginIllustration}
+                  style={[styles.loginIllustration, isEmailMode && styles.formIllustration]}
                 />
               </View>
 
@@ -485,23 +484,26 @@ export default function LoginScreen({ onLoginSuccess }) {
 
                       {savedAccounts.map((acc) => (
                         <View key={acc.id || acc.email} style={styles.savedAccountCard}>
+                          <View style={styles.savedIdentityRow}>
                           <View style={[styles.savedAvatar, acc.avatarColor && { backgroundColor: acc.avatarColor }]}>
                             <SavedAccountAvatar account={acc} colors={colors} style={styles.savedAvatarImage} />
                           </View>
                           <View style={styles.savedInfo}>
-                            <Text numberOfLines={1} style={styles.savedName}>
+                            <Text style={styles.savedName}>
                               {acc.displayName || acc.email}
                             </Text>
-                            <Text numberOfLines={1} style={styles.savedEmail}>
+                            <Text style={styles.savedEmail}>
                               {acc.faculty ? `${acc.faculty} · ` : ''}{acc.email}
                             </Text>
                           </View>
+                          </View>
+                          <View style={styles.savedActions}>
                           <Pressable
                             accessibilityRole="button"
                             onPress={() => handleSelectAccount(acc)}
                             style={({ pressed }) => [styles.quickLoginButton, pressed && styles.pressed]}
                           >
-                            <Text numberOfLines={1} style={styles.quickLoginText}>เข้าใช้</Text>
+                            <Text style={styles.quickLoginText}>เข้าใช้</Text>
                             <FeatureIcon color="#FFFFFF" name="arrow.right" size={11} />
                           </Pressable>
                           <Pressable
@@ -513,6 +515,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                           >
                             <FeatureIcon color={colors.inkSoft} name="xmark" size={13} />
                           </Pressable>
+                          </View>
                         </View>
                       ))}
 
@@ -798,21 +801,16 @@ const getStyles = (colors, isDark) => StyleSheet.create({
   },
   loginHero: {
     alignItems: 'center',
-    height: 260,
+    height: 220,
     justifyContent: 'center',
     marginBottom: spacing.md,
-    marginTop: spacing.xxl,
+    marginTop: spacing.sm,
     position: 'relative',
     width: '100%',
   },
-  loginHeroBlob: {
-    borderRadius: 120,
-    height: 190,
-    position: 'absolute',
-    transform: [{ rotate: '-8deg' }, { translateY: 20 }],
-    width: 250,
-  },
-  loginIllustration: { height: 238, transform: [{ translateY: 16 }], width: 244 },
+  loginIllustration: { height: 210, maxWidth: '100%', width: 244 },
+  formHero: { height: 100, marginBottom: 0, marginTop: 0 },
+  formIllustration: { height: 100, width: 116 },
   inlineNotice: {
     alignItems: 'center',
     borderRadius: 12,
@@ -841,17 +839,16 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     textAlign: 'center',
   },
   loginPanel: {
-    backgroundColor: isDark ? 'rgba(28, 32, 44, 0.85)' : 'rgba(255, 255, 255, 0.92)',
-    borderColor: isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(255, 255, 255, 0.60)',
+    backgroundColor: colors.card,
+    borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 24,
+    borderRadius: radius.xl,
     paddingBottom: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
     width: '100%',
     marginBottom: spacing.sm,
-    marginTop: spacing.xl,
-    ...shadow.card,
+    marginTop: spacing.sm,
   },
   legalNotice: { marginTop: 'auto' },
   actions: { gap: spacing.sm, marginTop: spacing.xs },
@@ -860,20 +857,20 @@ const getStyles = (colors, isDark) => StyleSheet.create({
   panelSubtitle: { color: colors.inkMuted, fontSize: type.caption2, lineHeight: 17, textAlign: 'center' },
   primaryButton: {
     alignItems: 'center',
-    backgroundColor: isDark ? colors.primary : '#111318',
+    backgroundColor: colors.primary,
     borderRadius: radius.pill,
     flexDirection: 'row',
     gap: spacing.sm,
     justifyContent: 'center',
     minHeight: 48,
     paddingHorizontal: spacing.lg,
-    ...shadow.card,
+    paddingVertical: 10,
   },
-  primaryButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  primaryButtonText: { color: colors.onPrimary, flexShrink: 1, fontSize: 14, fontWeight: '800', textAlign: 'center' },
   secondaryButton: {
     alignItems: 'center',
-    backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(17, 19, 24, 0.05)',
-    borderColor: isDark ? 'rgba(255,255,255,0.2)' : '#111318',
+    backgroundColor: colors.card,
+    borderColor: colors.line,
     borderRadius: radius.pill,
     borderWidth: 1.5,
     flexDirection: 'row',
@@ -881,9 +878,10 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     justifyContent: 'center',
     minHeight: 48,
     paddingHorizontal: spacing.lg,
+    paddingVertical: 10,
   },
-  secondaryButtonText: { color: colors.ink, fontSize: 14, fontWeight: '800' },
-  signupRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'center', minHeight: 30 },
+  secondaryButtonText: { color: colors.ink, flexShrink: 1, fontSize: 14, fontWeight: '800', textAlign: 'center' },
+  signupRow: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', minHeight: 44, paddingVertical: 6 },
   signupHint: { color: colors.inkMuted, fontSize: type.caption2 },
   signupLink: { color: colors.primary, fontSize: type.caption2, fontWeight: '800' },
   form: { marginTop: spacing.xs },
@@ -895,7 +893,7 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     borderRadius: 18,
     borderWidth: 1,
     flexDirection: 'row',
-    gap: spacing.md,
+    gap: spacing.sm,
     marginBottom: spacing.sm,
     minHeight: 48,
     paddingHorizontal: spacing.md,
@@ -904,6 +902,8 @@ const getStyles = (colors, isDark) => StyleSheet.create({
   passwordToggle: {
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 44,
     padding: spacing.xs,
   },
   fieldError: {
@@ -914,16 +914,18 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     marginBottom: spacing.xs,
     marginTop: -spacing.xs,
   },
-  input: { color: colors.ink, flex: 1, fontSize: type.body, minHeight: 46 },
+  input: { color: colors.ink, flex: 1, fontSize: type.body, minHeight: 46, minWidth: 0 },
   actionRow: {
     alignItems: 'center',
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
     justifyContent: 'space-between',
     marginBottom: spacing.sm,
     marginTop: -4,
     width: '100%',
   },
-  forgotPasswordButton: { alignSelf: 'flex-end', padding: 4, zIndex: 10 },
+  forgotPasswordButton: { alignSelf: 'flex-end', justifyContent: 'center', minHeight: 44, padding: 4, zIndex: 10 },
   forgotPasswordText: { color: colors.primary, fontSize: type.caption2, fontWeight: '700' },
   textButton: {
     alignItems: 'center',
@@ -931,9 +933,9 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     flexDirection: 'row',
     gap: 5,
     marginTop: spacing.sm,
-    minHeight: 32,
+    minHeight: 44,
   },
-  textButtonText: { color: colors.primary, fontSize: type.caption, fontWeight: '700' },
+  textButtonText: { color: colors.primary, flexShrink: 1, fontSize: type.caption, fontWeight: '700', textAlign: 'center' },
   savedSection: { gap: spacing.xs },
   savedHeader: {
     alignItems: 'center',
@@ -944,15 +946,17 @@ const getStyles = (colors, isDark) => StyleSheet.create({
   },
   savedTitle: { color: colors.inkMuted, fontSize: 13, fontWeight: '700', textAlign: 'center' },
   savedAccountCard: {
-    alignItems: 'center',
+    alignItems: 'stretch',
     backgroundColor: colors.canvas,
     borderColor: colors.line,
     borderRadius: 18,
     borderWidth: 1,
-    flexDirection: 'row',
+    flexDirection: 'column',
     gap: spacing.xs,
     padding: spacing.sm,
   },
+  savedIdentityRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  savedActions: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, justifyContent: 'flex-end' },
   savedAvatar: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
@@ -977,16 +981,16 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     flexDirection: 'row',
     gap: 3,
     justifyContent: 'center',
-    minHeight: 26,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   quickLoginText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
   removeButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 28,
-    minWidth: 24,
+    minHeight: 44,
+    minWidth: 44,
   },
   otherAccountButton: {
     alignItems: 'center',
@@ -994,9 +998,9 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     gap: spacing.xs,
     justifyContent: 'center',
     marginTop: spacing.sm,
-    minHeight: 40,
+    minHeight: 44,
   },
-  otherAccountText: { color: colors.ink, fontSize: type.caption, fontWeight: '800' },
+  otherAccountText: { color: colors.ink, flexShrink: 1, fontSize: type.caption, fontWeight: '800', textAlign: 'center' },
   backToLoginButton: {
     alignItems: 'center',
     borderColor: colors.line,
@@ -1006,17 +1010,17 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     gap: spacing.xs,
     justifyContent: 'center',
     marginTop: spacing.xs,
-    minHeight: 40,
+    minHeight: 44,
     paddingHorizontal: spacing.md,
   },
-  backToLoginText: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
+  backToLoginText: { color: colors.primary, flexShrink: 1, fontSize: type.caption, fontWeight: '800', textAlign: 'center' },
   selectedAccountNotice: {
     alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.xs,
     marginBottom: spacing.sm,
   },
-  selectedAccountNoticeText: { color: colors.ink, fontSize: type.caption, fontWeight: '800' },
+  selectedAccountNoticeText: { color: colors.ink, flex: 1, fontSize: type.caption, fontWeight: '800' },
   privacyRow: {
     alignItems: 'flex-start',
     borderTopColor: colors.line,

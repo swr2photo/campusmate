@@ -65,6 +65,34 @@ export function createProfileAccessApi({ db, now = Date.now, serverTimestamp, ma
       const uid = signedIn(request);
       return { profiles: await loadVisibleProfiles(db, uid, request.data?.userIds || [], now) };
     },
+    getConversationEncryptionProfiles: async (request) => {
+      const uid = signedIn(request), conversationId = request.data?.conversationId;
+      // Conversation IDs contain two UIDs and separators; never accept paths.
+      if (typeof conversationId !== 'string' || !/^[A-Za-z0-9_-]{1,259}$/.test(conversationId)) {
+        throw new HttpsError('invalid-argument', 'ห้องสนทนาไม่ถูกต้อง');
+      }
+      const ids = assertUserIds(request.data?.userIds === undefined ? [] : request.data.userIds);
+      const conversation = (await db.doc(`conversations/${conversationId}`).get()).data();
+      const participants = conversation?.participants;
+      // Existing chat membership remains independent of public visibility and
+      // face verification. Corrupt room membership cannot authorize key reads.
+      if (!Array.isArray(participants) || participants.length !== 2
+        || participants.some((id) => typeof id !== 'string' || !UID.test(id))
+        || new Set(participants).size !== 2 || !participants.includes(uid)
+        || ids.some((id) => !participants.includes(id))) {
+        throw new HttpsError('permission-denied', 'ไม่พบสิทธิ์ในห้องสนทนานี้');
+      }
+      // Match Firestore's signedIn() restriction for room reads.
+      if ((await db.doc(`accountRestrictions/${uid}`).get()).data()?.suspended === true) {
+        throw new HttpsError('permission-denied', 'บัญชีนี้ถูกระงับการใช้งาน');
+      }
+      const profiles = ids.length ? await db.getAll(...ids.map((id) => db.doc(`users/${id}`))) : [];
+      // Return only allowlisted public device keys, never profile metadata.
+      return { profiles: profiles.filter((profile) => profile.exists).map((profile) => ({
+        id: profile.id,
+        encryptionDevices: buildPublicProfile(profile.id, profile.data()).encryptionDevices || {},
+      })) };
+    },
     getPartyEncryptionProfiles: async (request) => {
       const uid = signedIn(request), partyId = request.data?.partyId;
       if (typeof partyId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(partyId)) throw new HttpsError('invalid-argument', 'กิจกรรมไม่ถูกต้อง');

@@ -6,6 +6,7 @@ import { useAppProfile, useAppSync } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { useCall } from '../context/CallContext';
 import { useMembership } from '../context/MembershipContext';
+import { usePreferences } from '../context/PreferencesContext';
 import {
   clearNotificationBadgeAsync,
   clearPrivateLikeNotifications,
@@ -122,6 +123,8 @@ const registrationInFlightByUserId = new Map();
 
 export default function NotificationManager() {
   const { user } = useAuth();
+  const { preferences } = usePreferences();
+  const teamNotificationsEnabled = preferences.notifications.team;
   const { profile } = useAppProfile();
   const { isOnline } = useAppSync();
   const { openIncomingCallFromNotification, rejectCall } = useCall();
@@ -297,6 +300,8 @@ export default function NotificationManager() {
       const conversationId = data.conversationId;
       const type = String(data.type || '');
 
+      if (type === 'admin_announcement' && !teamNotificationsEnabled) return;
+
       // Suppress if the user is already viewing this exact chat room
       if (type === 'message' && conversationId && routeRef.current?.chatId === conversationId) {
         return;
@@ -322,7 +327,7 @@ export default function NotificationManager() {
       responseSubscription.remove();
       receivedSubscription.remove();
     };
-  }, [dispatchNotification, user?.id]);
+  }, [dispatchNotification, user?.id, teamNotificationsEnabled]);
 
   useEffect(() => {
     if (!notifyKitModule?.notifee || !user?.id) return undefined;

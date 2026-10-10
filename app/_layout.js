@@ -8,6 +8,7 @@ import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppProvider } from '../src/context/AppContext';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
+import { PreferencesProvider } from '../src/context/PreferencesContext';
 import { MembershipProvider } from '../src/context/MembershipContext';
 import { ConfirmProvider } from '../src/context/ConfirmContext';
 import { ToastProvider } from '../src/context/ToastContext';
@@ -22,6 +23,7 @@ import AppErrorBoundary from '../src/components/AppErrorBoundary';
 import AppAlertHost from '../src/components/AppAlertHost';
 import InAppNotificationHost from '../src/components/InAppNotificationBanner';
 import AppTourOverlay from '../src/components/AppTourOverlay';
+import AppText from '../src/components/AppText';
 import PlusUpsellHost from '../src/components/PlusUpsellSheet';
 import { AppTourProvider } from '../src/context/AppTourContext';
 
@@ -29,26 +31,34 @@ function ColdBootGuard({ children }) {
   const { isReady } = useAuth();
   const iconFontsReady = useIconFontsReady();
   const booting = !iconFontsReady || !isReady;
-  return (
-    <View style={{ flex: 1 }}>
-      {children}
-      {booting ? (
-        <View pointerEvents="auto" style={StyleSheet.absoluteFill}>
-          <AppSplashScreen />
-        </View>
-      ) : null}
-    </View>
-  );
+  if (booting) {
+    return <AppSplashScreen />;
+  }
+  return children;
 }
 
 export default function RootLayout() {
+  return (
+    <AuthProvider>
+      <UserPreferences>
+        <RootNavigator />
+      </UserPreferences>
+    </AuthProvider>
+  );
+}
+
+function UserPreferences({ children }) {
+  const { user } = useAuth();
+  return <PreferencesProvider userId={user?.id}>{children}</PreferencesProvider>;
+}
+
+function RootNavigator() {
   const { colors, isDark } = useTheme();
   const navigationTheme = createNavigationTheme(isDark ? DarkTheme : DefaultTheme, colors);
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.canvas }}>
       <KeyboardProvider>
-    <AuthProvider>
       <MembershipProvider>
       <AppProvider>
       <NotificationInboxProvider>
@@ -70,7 +80,12 @@ export default function RootLayout() {
                       headerBackTitle: 'ย้อนกลับ',
                       headerTintColor: colors.ink,
                       headerStyle: { backgroundColor: colors.canvas },
-                      headerTitleStyle: { color: colors.ink, fontFamily: 'NotoSansThai_600SemiBold', fontSize: 18 },
+                      headerTitle: ({ children }) => (
+                        <AppText style={{ color: colors.ink, fontSize: 18, fontWeight: '700' }}>
+                          {children}
+                        </AppText>
+                      ),
+                      headerTitleStyle: { color: colors.ink, fontFamily: 'NotoSansThai_700Bold', fontSize: 18 },
                       contentStyle: { backgroundColor: colors.canvas },
                       animation: 'slide_from_right',
                     }}
@@ -89,7 +104,10 @@ export default function RootLayout() {
                     <Stack.Screen name="(tabs)" options={{ animation: 'none', title: 'หน้าหลัก' }} />
                     <Stack.Screen name="profile" options={{ headerShown: true, title: 'แก้ไขโปรไฟล์' }} />
                     <Stack.Screen name="profile-settings" options={{ headerShown: false }} />
-                    <Stack.Screen name="membership" options={{ headerShown: true, title: 'CampusMate Plus' }} />
+                    <Stack.Screen name="profile-photos" options={{ headerShown: false }} />
+                    <Stack.Screen name="settings-detail" options={{ headerShown: false }} />
+                    <Stack.Screen name="account-security" options={{ headerShown: true, title: 'จัดการบัญชีและความปลอดภัย' }} />
+                    <Stack.Screen name="membership" options={{ headerShown: false, title: 'CampusMate Plus' }} />
                     <Stack.Screen name="likes" options={{ headerShown: true, title: 'ถูกใจ' }} />
                     <Stack.Screen name="notifications" options={{ headerShown: true, title: 'แจ้งเตือน' }} />
                     <Stack.Screen name="appointments" options={{ headerShown: true, title: 'ประวัติการนัดหมาย' }} />
@@ -152,7 +170,6 @@ export default function RootLayout() {
       </NotificationInboxProvider>
       </AppProvider>
       </MembershipProvider>
-    </AuthProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>
   );

@@ -26,9 +26,12 @@ import { getCurrentUserIdToken } from '../services/authService';
 import { callFunction } from '../services/callableClient';
 import FeatureIcon from '../components/FeatureIcon';
 import { showInAppNotification } from '../components/InAppNotificationBanner';
-import { requireFirebase } from '../services/dbService';
+import { db, requireFirebase } from '../services/dbService';
 import { uploadGalleryImage } from '../services/profileGalleryService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { MAX_GALLERY_PHOTOS } from '../data/profilePhotos';
+import { usePreferences } from './PreferencesContext';
+import { orderRecommendedProfiles } from '../utils/appPreferences';
 import {
   createConversation,
   createSharedProfilesSubscription,
@@ -178,19 +181,23 @@ function getFastBootFeedProfiles() {
 }
 
 function withProfileDefaults(profile) {
+  const email = (profile?.email || profile?.campusEmail || '').toLowerCase().trim();
+  const isSuper = email === '6710210317@psu.ac.th';
+  const isAdmin = isSuper || profile?.isAdmin === true || profile?.role === 'admin';
   return {
     ...profile,
     // Older profile documents may not have this field. Keep the historical
     // discoverable-by-default behavior while honoring an explicit opt-out.
     isDiscoverable: profile?.isDiscoverable !== false,
     locationEnabled: profile?.locationEnabled !== false,
-    isFaceVerified: profile?.isFaceVerified === true,
-    faceMatchScore: typeof profile?.faceMatchScore === 'number' ? profile.faceMatchScore : null,
-    faceVerificationStatus: profile?.faceVerificationStatus || (profile?.isFaceVerified ? 'verified' : 'unverified'),
-    privacy: { ...defaultPrivacy, ...(profile.privacy || {}) },
+    isFaceVerified: isAdmin ? true : (profile?.isFaceVerified === true),
+    faceMatchScore: isAdmin ? (profile?.faceMatchScore ?? 100) : (typeof profile?.faceMatchScore === 'number' ? profile.faceMatchScore : null),
+    faceVerificationStatus: isAdmin ? 'verified' : (profile?.faceVerificationStatus || (profile?.isFaceVerified ? 'verified' : 'unverified')),
+    autoVerifyFace: isAdmin ? true : Boolean(profile?.autoVerifyFace),
+    privacy: { ...defaultPrivacy, ...(profile?.privacy || {}) },
     matchingPreferences: {
       ...defaultMatchingPreferences,
-      ...(profile.matchingPreferences || {}),
+      ...(profile?.matchingPreferences || {}),
     },
   };
 }
@@ -628,7 +635,7 @@ async function persistProfileToFirestore(userId, profileData) {
   }
   if (Array.isArray(nextProfile.gallery)) {
     const uploadedGallery = [];
-    const gallery = nextProfile.gallery.filter((uri) => typeof uri === 'string' && uri).slice(0, 5);
+    const gallery = nextProfile.gallery.filter((uri) => typeof uri === 'string' && uri).slice(0, MAX_GALLERY_PHOTOS);
     for (const imageUri of gallery) {
       let uri = imageUri;
       if (uri && (uri.startsWith('data:image') || uri.startsWith('file:'))) {
@@ -765,6 +772,7 @@ function withScheduleTimestamp(schedule) {
 
 export function AppProvider({ children }) {
   const { user } = useAuth();
+  const { preferences } = usePreferences();
   const membership = useMembership();
   // Plan gates (src/data/plans.js). While the entitlement is loading nothing paid is unlocked.
   const membershipLoading = membership.status === 'loading';
@@ -1136,6 +1144,29 @@ export function AppProvider({ children }) {
           // public projection. Repair the owner-selected fields once so other
           // devices stop receiving an image-only/stale profile.
           setProfile(defaults);
+          const currentEmail = (user.email || defaults.email || '').toLowerCase().trim();
+          const isSuperUser = currentEmail === '6710210317@psu.ac.th';
+          const isAdminUser = isSuperUser || defaults.isAdmin === true || defaults.role === 'admin';
+          if (isAdminUser && (storedProfile?.isFaceVerified !== true || storedProfile?.isDiscoverable !== true)) {
+            try {
+              const targetDb = db || requireFirebase()?.db;
+              if (targetDb && user?.id) {
+                void updateDoc(doc(targetDb, 'profiles', user.id), {
+                  isFaceVerified: true,
+                  faceMatchScore: 100,
+                  faceVerificationStatus: 'verified',
+                  isDiscoverable: true,
+                }).catch(() => {});
+                void updateDoc(doc(targetDb, 'users', user.id), {
+                  isFaceVerified: true,
+                  faceMatchScore: 100,
+                  faceVerificationStatus: 'verified',
+                }).catch(() => {});
+              }
+            } catch (syncErr) {
+              console.warn('[AppContext] Admin sync skipped:', syncErr?.message || syncErr);
+            }
+          }
           backgroundProfileTask = runAfterInteractionsHelper(() => {
             if (!active) return;
             if (!pending.length) void ensurePublicProfileProjection(user.id, defaults);
@@ -2675,7 +2706,7 @@ export function AppProvider({ children }) {
     const nextProfile = withProfileDefaults({
       ...profile,
       ...nextProfileData,
-      ...(isAvatarChanged && profile?.isFaceVerified && profile?.autoVerifyFace !== true && user?.email !== '6710210317@psu.ac.th' && profile?.email !== '6710210317@psu.ac.th' ? {
+      ...(isAvatarChanged && nextProfileData.isFaceVerified !== true && profile?.isFaceVerified && profile?.autoVerifyFace !== true && user?.email !== '6710210317@psu.ac.th' && profile?.email !== '6710210317@psu.ac.th' ? {
         isFaceVerified: false,
         faceMatchScore: null,
         faceVerificationStatus: 'unverified',
@@ -2886,10 +2917,38 @@ export function AppProvider({ children }) {
       }
     }
 
+    if (newAdmin && user?.id) {
+      try {
+        const targetDb = db || requireFirebase()?.db;
+        if (targetDb) {
+          void updateDoc(doc(targetDb, 'profiles', user.id), {
+            isFaceVerified: true,
+            faceMatchScore: 100,
+            faceVerificationStatus: 'verified',
+            isDiscoverable: true,
+          }).catch(() => {});
+          void updateDoc(doc(targetDb, 'users', user.id), {
+            isFaceVerified: true,
+            faceMatchScore: 100,
+            faceVerificationStatus: 'verified',
+          }).catch(() => {});
+        }
+      } catch (syncErr) {
+        console.warn('[AppContext] switchAdmin sync skipped:', syncErr?.message || syncErr);
+      }
+    }
+
     setProfile((prev) => withProfileDefaults({
       ...(prev || {}),
       isAdmin: newAdmin,
       role: newAdmin ? 'admin' : 'user',
+      ...(newAdmin ? {
+        isFaceVerified: true,
+        faceMatchScore: 100,
+        faceVerificationStatus: 'verified',
+        autoVerifyFace: true,
+        isDiscoverable: true,
+      } : {}),
     }));
     return newAdmin;
   }, [user?.id, user?.email, profile?.email, profile?.isAdmin, profile?.role]);
@@ -3164,10 +3223,12 @@ export function AppProvider({ children }) {
     [availableProfiles]
   );
   const filteredAvailableProfiles = useMemo(() => {
-    if (optimisticHiddenIds.length === 0 && blockedUserIds.length === 0 && !isResolvingDistances) return availableProfiles;
     const hiddenIds = new Set([...optimisticHiddenIds, ...blockedUserIds]);
-    return availableProfiles.filter((profileItem) => !hiddenIds.has(profileItem.id) && !profileItem.distancePending);
-  }, [availableProfiles, blockedUserIds, isResolvingDistances, optimisticHiddenIds]);
+    const visible = hiddenIds.size === 0 && !isResolvingDistances
+      ? availableProfiles
+      : availableProfiles.filter((profileItem) => !hiddenIds.has(profileItem.id) && !profileItem.distancePending);
+    return orderRecommendedProfiles(visible, preferences.recommendation);
+  }, [availableProfiles, blockedUserIds, isResolvingDistances, optimisticHiddenIds, preferences.recommendation]);
 
   const combinedAppointments = useMemo(() => {
     const result = [];

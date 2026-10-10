@@ -15,7 +15,7 @@ import {
   verifyBeforeUpdateEmail,
 } from 'firebase/auth';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { Platform } from 'react-native';
+import { NativeModules, Platform, TurboModuleRegistry } from 'react-native';
 import { firebaseApp, firebaseConfigError } from './dbService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -210,13 +210,22 @@ export async function signInWithGoogleCredential(id_token) {
   return { mode: 'firebase', user: normalizeUser(result.user) };
 }
 
+function isNativeGoogleSigninAvailable() {
+  return Boolean(
+    Platform.OS !== 'web' &&
+      (TurboModuleRegistry?.get?.('RNGoogleSignin') || NativeModules?.RNGoogleSignin)
+  );
+}
+
 export async function signOutUser() {
-  try {
-    const { GoogleSignin } = require('@react-native-google-signin/google-signin');
-    if (await GoogleSignin.hasPreviousSignIn()) {
-      await GoogleSignin.signOut();
-    }
-  } catch (_) {}
+  if (isNativeGoogleSigninAvailable()) {
+    try {
+      const { GoogleSignin } = require('@react-native-google-signin/google-signin');
+      if (await GoogleSignin.hasPreviousSignIn()) {
+        await GoogleSignin.signOut();
+      }
+    } catch (_) {}
+  }
   await signOut(requireAuth());
 }
 

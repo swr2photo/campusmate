@@ -4,6 +4,8 @@ import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { useAuth } from './AuthContext';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { requireFirebase } from '../services/dbService';
 import { getCachedPackages, isPurchaseCancelled, loadMembershipPackages, membershipConfigured, purchaseMembership, purchasesConfigured, releasePurchases, restoreMembership, subscribeMembership, syncMembership } from '../services/membershipService';
 import { featuresForPlan, hasFeature, isPlusRecord, PLAN_FREE, PLAN_PLUS, PLUS_ENTITLEMENT_ID } from '../data/plans';
 import { showAlert } from '../utils/appAlert';
@@ -50,6 +52,29 @@ export function MembershipProvider({ children }) {
   const uid = user?.id || user?.uid;
   const owner = useRef(uid); owner.current = uid;
   const configured = membershipConfigured();
+
+  const userEmail = (user?.email || '').toLowerCase().trim();
+  const isSuperAdmin = userEmail === '6710210317@psu.ac.th';
+  const [isAdmin, setIsAdmin] = useState(isSuperAdmin);
+
+  useEffect(() => {
+    if (!uid) { setIsAdmin(false); return undefined; }
+    if (isSuperAdmin) { setIsAdmin(true); return undefined; }
+    try {
+      const { db } = requireFirebase();
+      const unsub = onSnapshot(doc(db, 'users', uid), (snap) => {
+        const data = snap.data();
+        const email = (data?.email || data?.campusEmail || user?.email || '').toLowerCase().trim();
+        const admin = email === '6710210317@psu.ac.th' || data?.isAdmin === true || data?.role === 'admin';
+        setIsAdmin(Boolean(admin));
+      }, (err) => {
+        console.warn('[Membership] Admin check error:', err?.message || err);
+      });
+      return unsub;
+    } catch {
+      return undefined;
+    }
+  }, [uid, isSuperAdmin, user?.email]);
   const [confirmed, setConfirmed] = useState(null); // { owner, record, server }
   const [cached, setCached] = useState(null); // { owner, record } from a cache-only snapshot
   // { owner, record } from the store right after a purchase/restore, until the server confirms it.
@@ -133,21 +158,23 @@ export function MembershipProvider({ children }) {
 
   const knownRecord = !uid ? null : confirmed && confirmed.owner === uid ? confirmed.record : cached && cached.owner === uid ? cached.record : null;
   const storeRecord = uid && storePlus?.owner === uid ? storePlus.record : null;
-  // The store's answer right after a purchase bridges the gap until the server record catches up.
   const record = !isPlusRecord(knownRecord, clock) && isPlusRecord(storeRecord, clock) ? storeRecord : knownRecord;
-  const plusActive = isPlusRecord(record, clock);
-  const status = !uid || !configured ? PLAN_FREE : plusActive ? PLAN_PLUS : settledFor !== uid ? 'loading' : PLAN_FREE;
-  const plan = status === 'loading' ? null : status;
+  const rawPlusActive = isPlusRecord(record, clock);
+  const plusActive = isAdmin || rawPlusActive;
+  const rawStatus = !uid || !configured ? PLAN_FREE : rawPlusActive ? PLAN_PLUS : settledFor !== uid ? 'loading' : PLAN_FREE;
+  const status = isAdmin ? PLAN_PLUS : rawStatus;
+  const plan = isAdmin ? PLAN_PLUS : (status === 'loading' ? null : status);
 
   // Re-evaluate exactly at expiry; ask the server first so a renewal is picked up instead of a lockout.
+  // Admins have permanent entitlements without a store subscription record.
   useEffect(() => {
-    if (!plusActive) return undefined;
+    if (isAdmin || !rawPlusActive || !record?.activeUntil) return undefined;
     const timeout = setTimeout(() => {
       setClock(Date.now());
       if (purchasesConfigured() && owner.current) void syncMembership(owner.current).catch(() => {});
     }, Math.min(Math.max(record.activeUntil - Date.now() + 10, 10), 86400000));
     return () => clearTimeout(timeout);
-  }, [plusActive, clock, record?.activeUntil]);
+  }, [isAdmin, rawPlusActive, clock, record?.activeUntil]);
 
   // Runs a store action with `busy` set; the spinner covers only the store itself, never the server sync.
   const perform = useCallback(async (action) => {
@@ -241,14 +268,15 @@ export function MembershipProvider({ children }) {
     return {
       status, plan, features,
       loading: status === 'loading',
-      can: (feature) => hasFeature(plan, feature),
+      can: (feature) => (isAdmin ? true : hasFeature(plan, feature)),
       plus: status === PLAN_PLUS, ready: status !== 'loading', configured, busy, error, packages, loadPackages,
-      serverConfirmed: Boolean(uid) && confirmed?.owner === uid && confirmed?.server === true,
+      isAdmin,
+      serverConfirmed: isAdmin || (Boolean(uid) && confirmed?.owner === uid && confirmed?.server === true),
       activeUntil: record?.activeUntil || 0,
       managementUrl: record?.managementUrl || null,
       purchase, restore, refresh,
     };
-  }, [status, plan, configured, busy, error, packages, loadPackages, confirmed, record, uid, purchase, restore, refresh]);
+  }, [status, plan, isAdmin, configured, busy, error, packages, loadPackages, confirmed, record, uid, purchase, restore, refresh]);
   return <MembershipContext.Provider value={value}>{children}</MembershipContext.Provider>;
 }
 export function useMembership() {
@@ -266,8 +294,8 @@ export function useMembership() {
  */
 export function useEntitlement(feature) {
   const membership = useMembership();
-  const allowed = membership.can(feature);
-  const loading = membership.status === 'loading';
+  const allowed = Boolean(membership.isAdmin) || membership.can(feature);
+  const loading = !membership.isAdmin && membership.status === 'loading';
   const guard = useCallback(() => {
     if (allowed) return true;
     if (loading) {

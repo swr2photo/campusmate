@@ -1,6 +1,14 @@
 import React from 'react';
-import { Redirect } from 'expo-router';
+import { router, Stack } from 'expo-router';
+import ProfileSettingsScreen from '../src/screens/ProfileSettingsScreen';
+import { useAuth } from '../src/context/AuthContext';
+import { useToast } from '../src/context/ToastContext';
 
 export default function ProfileSettingsRoute() {
-  return <Redirect href="/me" />;
+  const { logout } = useAuth();
+  const { showToast } = useToast();
+  return <>
+    <Stack.Screen options={{ headerShown: false }} />
+    <ProfileSettingsScreen onLogout={async () => { await logout(); router.replace('/'); }} onToast={showToast} />
+  </>;
 }

@@ -110,13 +110,15 @@ export function hideInAppNotification() {
   }
 }
 
+import LiquidGlassView from './LiquidGlassView';
+
 export default function InAppNotificationHost() {
   const insets = useSafeAreaInsets();
   const { colors, isDark } = useTheme();
   const [current, setCurrent] = useState(null);
 
   const translateY = useRef(new Animated.Value(-160)).current;
-  const opacity = useRef(new Animated.Value(0)).current;
+  const scale = useRef(new Animated.Value(0.92)).current;
   const dismissTimer = useRef(null);
   const isDismissing = useRef(false);
 
@@ -135,9 +137,9 @@ export default function InAppNotificationHost() {
           duration: 220,
           useNativeDriver: true,
         }),
-        Animated.timing(opacity, {
-          toValue: 0,
-          duration: 180,
+        Animated.timing(scale, {
+          toValue: 0.92,
+          duration: 200,
           useNativeDriver: true,
         }),
       ]).start(() => {
@@ -150,7 +152,7 @@ export default function InAppNotificationHost() {
         }
       });
     },
-    [opacity, translateY]
+    [scale, translateY]
   );
 
   const displayBanner = useCallback(
@@ -164,18 +166,19 @@ export default function InAppNotificationHost() {
       setCurrent(bannerItem);
 
       translateY.setValue(-160);
-      opacity.setValue(0);
+      scale.setValue(0.92);
 
       Animated.parallel([
         Animated.spring(translateY, {
           toValue: 0,
           friction: 8,
-          tension: 55,
+          tension: 65,
           useNativeDriver: true,
         }),
-        Animated.timing(opacity, {
+        Animated.spring(scale, {
           toValue: 1,
-          duration: 200,
+          friction: 8,
+          tension: 65,
           useNativeDriver: true,
         }),
       ]).start();
@@ -185,7 +188,7 @@ export default function InAppNotificationHost() {
         dismiss();
       }, duration);
     },
-    [dismiss, opacity, translateY]
+    [dismiss, scale, translateY]
   );
 
   useEffect(() => {
@@ -239,42 +242,49 @@ export default function InAppNotificationHost() {
   const getBadgeStyle = (item) => {
     if (item.tone === 'success') {
       return {
-        bg: colors.greenSoft || '#E8F8F1',
+        bg: isDark ? 'rgba(24, 168, 120, 0.22)' : 'rgba(24, 168, 120, 0.14)',
+        borderColor: isDark ? 'rgba(24, 168, 120, 0.45)' : 'rgba(24, 168, 120, 0.3)',
         iconColor: colors.green || '#18A878',
       };
     }
     if (item.tone === 'danger' || item.tone === 'error') {
       return {
-        bg: colors.dangerSoft || '#FFF0F0',
+        bg: isDark ? 'rgba(214, 84, 84, 0.24)' : 'rgba(214, 84, 84, 0.14)',
+        borderColor: isDark ? 'rgba(214, 84, 84, 0.45)' : 'rgba(214, 84, 84, 0.3)',
         iconColor: colors.danger || '#D65454',
       };
     }
     if (item.tone === 'warning') {
       return {
-        bg: colors.amberSoft || '#FFF6DF',
+        bg: isDark ? 'rgba(216, 144, 27, 0.24)' : 'rgba(216, 144, 27, 0.15)',
+        borderColor: isDark ? 'rgba(216, 144, 27, 0.45)' : 'rgba(216, 144, 27, 0.3)',
         iconColor: colors.amber || '#D8901B',
       };
     }
     if (item.tone === 'info') {
       return {
-        bg: colors.blueSoft || '#F0F1F3',
+        bg: isDark ? 'rgba(40, 105, 199, 0.24)' : 'rgba(40, 105, 199, 0.14)',
+        borderColor: isDark ? 'rgba(40, 105, 199, 0.45)' : 'rgba(40, 105, 199, 0.3)',
         iconColor: colors.blue || '#2869C7',
       };
     }
     if (item.type === 'like' || item.type === 'match') {
       return {
-        bg: colors.coralSoft || '#FFF0ED',
+        bg: isDark ? 'rgba(244, 124, 107, 0.25)' : 'rgba(244, 124, 107, 0.15)',
+        borderColor: isDark ? 'rgba(244, 124, 107, 0.45)' : 'rgba(244, 124, 107, 0.3)',
         iconColor: colors.coral || '#F47C6B',
       };
     }
     if (item.type === 'admin_announcement') {
       return {
-        bg: colors.primarySoft || '#F0F1F3',
+        bg: isDark ? 'rgba(40, 105, 199, 0.24)' : 'rgba(40, 105, 199, 0.14)',
+        borderColor: isDark ? 'rgba(40, 105, 199, 0.45)' : 'rgba(40, 105, 199, 0.3)',
         iconColor: colors.primary || '#2869C7',
       };
     }
     return {
-      bg: colors.surfaceRaised || '#F1F5F9',
+      bg: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)',
+      borderColor: isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.08)',
       iconColor: colors.primary || '#2869C7',
     };
   };
@@ -288,71 +298,89 @@ export default function InAppNotificationHost() {
     >
       <Animated.View
         style={[
-          styles.bannerCard,
+          styles.bannerAnimatedWrapper,
           {
-            backgroundColor: isDark ? '#202226' : '#FFFFFF',
-            borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)',
-            transform: [{ translateY }],
-            opacity,
+            transform: [{ translateY }, { scale }],
           },
         ]}
         {...panResponder.panHandlers}
       >
-        <View style={styles.contentRow}>
-          {/* Avatar / Icon Badge */}
-          <View style={styles.avatarContainer}>
-            {current.avatarUri ? (
-              <Image
-                source={{ uri: current.avatarUri }}
-                style={styles.avatarImage}
-                resizeMode="cover"
-              />
-            ) : (
-              <View
-                style={[
-                  styles.iconBadge,
-                  { backgroundColor: badgeStyle.bg },
-                ]}
-              >
-                <FeatureIcon
-                  name={current.icon || 'bell.fill'}
-                  size={20}
-                  color={badgeStyle.iconColor}
-                />
-              </View>
-            )}
-          </View>
+        <LiquidGlassView
+          glassEffectStyle="regular"
+          style={styles.bannerGlass}
+        >
+          {/* Specular highlight rim at top */}
+          <View
+            pointerEvents="none"
+            style={[
+              styles.specularTopLine,
+              {
+                backgroundColor: isDark
+                  ? 'rgba(255, 255, 255, 0.25)'
+                  : 'rgba(255, 255, 255, 0.85)',
+              },
+            ]}
+          />
 
-          {/* Text Content */}
-          <View style={styles.textContainer}>
-            <View style={[styles.headerLine, !current.message && styles.headerLineSingle]}>
-              <Text
-                style={[
-                  styles.title,
-                  { color: colors.ink || '#25272B' },
-                  !current.message && styles.titleSingleLine,
-                ]}
-                numberOfLines={!current.message ? 2 : 1}
-              >
-                {current.title}
-              </Text>
-              {current.showTimestamp && (
-                <>
-                  <View style={styles.dotSeparator} />
-                  <Text style={styles.timeLabel}>ตอนนี้</Text>
-                </>
+          <View style={styles.contentRow}>
+            {/* Avatar / Glass Icon Badge */}
+            <View style={styles.avatarContainer}>
+              {current.avatarUri ? (
+                <Image
+                  source={{ uri: current.avatarUri }}
+                  style={styles.avatarImage}
+                  resizeMode="cover"
+                />
+              ) : (
+                <View
+                  style={[
+                    styles.iconBadge,
+                    {
+                      backgroundColor: badgeStyle.bg,
+                      borderColor: badgeStyle.borderColor,
+                    },
+                  ]}
+                >
+                  <FeatureIcon
+                    name={current.icon || 'bell.fill'}
+                    size={20}
+                    color={badgeStyle.iconColor}
+                  />
+                </View>
               )}
             </View>
-            {Boolean(current.message) && (
-              <Text
-                style={[styles.message, { color: colors.inkMuted || '#6B7078' }]}
-                numberOfLines={2}
-              >
-                {current.message}
-              </Text>
-            )}
+
+            {/* Text Content */}
+            <View style={styles.textContainer}>
+              <View style={[styles.headerLine, !current.message && styles.headerLineSingle]}>
+                <Text
+                  style={[
+                    styles.title,
+                    { color: colors.ink || '#25272B' },
+                    !current.message && styles.titleSingleLine,
+                  ]}
+                  numberOfLines={!current.message ? 2 : 1}
+                >
+                  {current.title}
+                </Text>
+                {current.showTimestamp && (
+                  <>
+                    <View style={styles.dotSeparator} />
+                    <Text style={styles.timeLabel}>ตอนนี้</Text>
+                  </>
+                )}
+              </View>
+              {Boolean(current.message) && (
+                <Text
+                  style={[styles.message, { color: colors.inkMuted || '#6B7078' }]}
+                  numberOfLines={2}
+                >
+                  {current.message}
+                </Text>
+              )}
+            </View>
           </View>
-        </View>
+        </LiquidGlassView>
       </Animated.View>
     </View>
   );
@@ -368,18 +396,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 12,
   },
-  bannerCard: {
+  bannerAnimatedWrapper: {
     width: '100%',
     maxWidth: 440,
-    borderRadius: 22,
-    borderWidth: 1,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 7 },
-    shadowOpacity: 0.16,
-    shadowRadius: 16,
-    elevation: 12,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 22,
+    elevation: 14,
+  },
+  bannerGlass: {
+    width: '100%',
+    borderRadius: 24,
+    borderCurve: 'continuous',
+    paddingVertical: 11,
+    paddingHorizontal: 15,
+  },
+  specularTopLine: {
+    position: 'absolute',
+    top: 0,
+    left: 20,
+    right: 20,
+    height: 1,
+    borderRadius: 0.5,
   },
   contentRow: {
     flexDirection: 'row',
@@ -399,6 +438,7 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 21,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },

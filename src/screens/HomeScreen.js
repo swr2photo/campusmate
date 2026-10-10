@@ -430,7 +430,7 @@ export default function HomeScreen({ onOpenLikes }) {
 function CampusContextBar({ faculty, matchedCount, onOpenLikes }) {
   const { colors, isDark } = useTheme();
   return (
-    <View style={[styles.campusBar, { backgroundColor: isDark ? colors.surfaceRaised : colors.surface, borderColor: colors.line }]}>
+    <View style={[styles.campusBar, { backgroundColor: isDark ? colors.surfaceRaised : colors.surface }]}>
       <View style={styles.campusInfo}>
         <View style={[styles.campusBadgeIcon, { backgroundColor: colors.primarySoft }]}>
           <FeatureIcon color={colors.primary} name="building.columns.fill" size={16} />
@@ -450,7 +450,7 @@ function CampusContextBar({ faculty, matchedCount, onOpenLikes }) {
         onPress={onOpenLikes}
         style={({ pressed }) => [
           styles.campusLikesChip,
-          { backgroundColor: colors.primarySoft, borderColor: colors.line },
+          { backgroundColor: colors.primarySoft },
           pressed && styles.pressed,
         ]}
       >
@@ -599,7 +599,7 @@ function DiscoverProfileCard({ candidate, isMatched, onPress }) {
       onPress={onPress}
       style={({ pressed }) => [styles.profileCardWrapper, pressed && styles.cardPressed]}
     >
-      <View style={[styles.profileCard, { backgroundColor: candidate.avatarColor || colors.card, borderColor: colors.line }]}>
+      <View style={[styles.profileCard, { backgroundColor: candidate.avatarColor || colors.card }]}>
         {imageUri ? (
           <Image
             cachePolicy="memory-disk"
@@ -804,7 +804,7 @@ function MeetupBanner({ meetup, stats }) {
   const meetupSoft = colors.primarySoft;
   const meetupBorder = isDark ? 'rgba(112,178,255,0.28)' : 'rgba(35,123,231,0.16)';
   return (
-    <View style={[styles.meetupBanner, { backgroundColor: meetupSoft, borderColor: meetupBorder }]}>
+    <View style={[styles.meetupBanner, { backgroundColor: meetupSoft }]}>
       <Pressable accessibilityRole="button" onPress={() => router.navigate('/meetup')} style={({ pressed }) => [styles.meetupBannerMain, pressed && styles.pressed]}>
         <View style={[styles.meetupIcon, { backgroundColor: meetupColor }]}>
           <FeatureIcon color={colors.onPrimary} name="mappin.and.ellipse" size={13} />
@@ -841,7 +841,7 @@ function DiscoveryErrorState({ offline = false, stalled = false, onRetry }) {
     ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
     : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่';
   return (
-    <View accessibilityRole="alert" style={[styles.emptyState, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
+    <View accessibilityRole="alert" style={[styles.emptyState, { backgroundColor: colors.surfaceRaised }]}>
       <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}>
         <FeatureIcon color={colors.primary} name={offline ? 'wifi.slash' : 'exclamationmark.triangle'} size={28} />
       </View>
@@ -872,7 +872,7 @@ function DiscoveryErrorState({ offline = false, stalled = false, onRetry }) {
 function EmptyState({ loading = false, onReset }) {
   const { colors } = useTheme();
   return (
-    <View style={[styles.emptyState, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
+    <View style={[styles.emptyState, { backgroundColor: colors.surfaceRaised }]}>
       <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}>
         {loading ? (
           <ActivityIndicator color={colors.primary} />
@@ -931,8 +931,8 @@ const styles = StyleSheet.create({
   campusBar: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.md,
@@ -947,7 +947,7 @@ const styles = StyleSheet.create({
   },
   campusBadgeIcon: {
     alignItems: 'center',
-    borderRadius: radius.md,
+    borderRadius: 26,
     height: 36,
     justifyContent: 'center',
     width: 36,
@@ -969,7 +969,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderCurve: 'continuous',
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 0,
     flexDirection: 'row',
     gap: 5,
     paddingHorizontal: 10,
@@ -1096,8 +1096,8 @@ const styles = StyleSheet.create({
   },
   profileCard: {
     borderCurve: 'continuous',
-    borderRadius: radius.xxl,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     height: 460,
     overflow: 'hidden',
     position: 'relative',
@@ -1128,7 +1128,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(16,32,58,0.7)',
     borderColor: 'rgba(255,255,255,0.18)',
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 0,
     flexDirection: 'row',
     gap: 5,
     paddingHorizontal: 9,
@@ -1193,7 +1193,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.18)',
     borderColor: 'rgba(255,255,255,0.25)',
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 0,
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
@@ -1207,7 +1207,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(16,185,129,0.18)',
     borderColor: 'rgba(16,185,129,0.3)',
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 0,
     flexDirection: 'row',
     gap: 6,
     marginTop: 4,
@@ -1272,8 +1272,8 @@ const styles = StyleSheet.create({
   meetupBanner: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     flexDirection: 'row',
     gap: spacing.sm,
     paddingHorizontal: spacing.md,
@@ -1313,8 +1313,8 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     paddingHorizontal: 22,
     paddingVertical: 36,
   },
@@ -1346,7 +1346,7 @@ const styles = StyleSheet.create({
   resetButton: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.md,
+    borderRadius: 26,
     flex: 1,
     flexDirection: 'row',
     gap: 7,
@@ -1361,8 +1361,8 @@ const styles = StyleSheet.create({
   filterConfigButton: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     flex: 1,
     flexDirection: 'row',
     gap: 7,

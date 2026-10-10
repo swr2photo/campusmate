@@ -1680,8 +1680,10 @@ export default function ChatRoomScreen() {
           </Host>
         </View>
         <Host colorScheme={colorScheme} seedColor={palette.accent} style={{ flex: 1 }}>
-          <VStack spacing={16} modifiers={[padding({ top: 180, horizontal: 24 }), frame({ maxWidth: Infinity })]}>
-            <ContentUnavailableView description="ห้องสนทนานี้อาจถูกลบหรือไม่มีอยู่แล้ว" systemImage="bubble.left.and.exclamationmark.bubble.right" title="ไม่พบห้องสนทนา" />
+          <VStack spacing={12} modifiers={[padding({ top: 180, horizontal: 24 }), frame({ maxWidth: Infinity })]}>
+            <Image color={palette.secondary} size={48} systemName="bubble.left.and.exclamationmark.bubble.right" />
+            <Text modifiers={[font({ size: 18, weight: 'bold' }), foregroundStyle(palette.text), multilineTextAlignment('center')]}>ไม่พบห้องสนทนา</Text>
+            <Text modifiers={[font({ size: 14, weight: 'regular' }), foregroundStyle(palette.secondary), multilineTextAlignment('center')]}>ห้องสนทนานี้อาจถูกลบหรือไม่มีอยู่แล้ว</Text>
           </VStack>
         </Host>
       </View>
@@ -1848,7 +1850,11 @@ export default function ChatRoomScreen() {
               </HStack>
             </VStack>
             {renderedMessageRows || (
-                <ContentUnavailableView description="ส่งข้อความแรกเพื่อเริ่มทำความรู้จักกัน" systemImage="hand.wave.fill" title="เริ่มทักทายได้เลย" />
+                <VStack spacing={12} modifiers={[padding({ vertical: 40, horizontal: 24 }), frame({ maxWidth: Infinity })]}>
+                  <Image color={palette.secondary} size={44} systemName="hand.wave.fill" />
+                  <Text modifiers={[font({ size: 18, weight: 'bold' }), foregroundStyle(palette.text), multilineTextAlignment('center')]}>เริ่มทักทายได้เลย</Text>
+                  <Text modifiers={[font({ size: 14, weight: 'regular' }), foregroundStyle(palette.secondary), multilineTextAlignment('center')]}>ส่งข้อความแรกเพื่อเริ่มทำความรู้จักกัน</Text>
+                </VStack>
               )}
           </List>
 

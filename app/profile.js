@@ -1,18 +1,39 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import ProfileScreen from '../src/screens/ProfileScreen';
 import { useToast } from '../src/context/ToastContext';
 
 export default function ProfileRoute() {
   const { showToast } = useToast();
-  const { section } = useLocalSearchParams();
-  const closeGuardRef = React.useRef(null);
+  const params = useLocalSearchParams();
+  const closeGuardRef = useRef(null);
+  const [activeTab, setActiveTab] = useState(() => {
+    if (params?.tab === 'preview') return 'preview';
+    return 'edit';
+  });
+
+  useEffect(() => {
+    if (params?.tab && ['edit', 'preview'].includes(params.tab)) {
+      setActiveTab(params.tab);
+    }
+  }, [params?.tab]);
+
+  const getTitle = () => {
+    if (activeTab === 'preview') return 'ตัวอย่างโปรไฟล์';
+    return 'แก้ไขโปรไฟล์';
+  };
 
   return (
     <>
-      <Stack.Screen options={{ title: 'แก้ไขโปรไฟล์' }} />
+      <Stack.Screen
+        options={{
+          headerBackTitle: 'โปรไฟล์',
+          title: getTitle(),
+        }}
+      />
       <ProfileScreen
-        initialSection={section || 'basic'}
+        activeTab={activeTab}
+        initialSection={params?.section || 'basic'}
         onCloseGuardReady={(handler) => {
           closeGuardRef.current = handler;
         }}
@@ -20,7 +41,9 @@ export default function ProfileRoute() {
           if (router.canGoBack()) router.back();
           else router.replace('/me');
         }}
+        onTabChange={setActiveTab}
         onToast={showToast}
+        tabs={['edit', 'preview']}
       />
     </>
   );

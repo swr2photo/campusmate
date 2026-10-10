@@ -57,7 +57,7 @@ const CATEGORY_DEFAULT_PHOTOS = {
 
 const CAMPUS_FALLBACK_PHOTO = require('../assets/images/campus/DSC_1217.jpg');
 
-export default function PlacePhoto({ spot, style, contentFit = 'cover' }) {
+export default function PlacePhoto({ spot, style, contentFit = 'cover', showCredit = true }) {
   const { colors } = useTheme();
   const { campusSpots = [] } = useAppFeed();
   const current = campusSpots.find((entry) => entry.id === spot?.id) || spot;
@@ -87,7 +87,7 @@ export default function PlacePhoto({ spot, style, contentFit = 'cover' }) {
         onLoad={() => setFailedUri(null)}
         onError={() => setFailedUri(uri)}
       />
-      {photo?.credit && isUsingRemote ? (
+      {showCredit && photo?.credit && isUsingRemote ? (
         <Pressable
           accessibilityRole="link"
           accessibilityLabel={`เครดิตภาพ ${photo.credit} ${photo.license}`}

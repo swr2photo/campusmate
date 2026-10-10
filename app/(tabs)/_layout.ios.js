@@ -53,8 +53,8 @@ export default function NativeTabLayout() {
           disableTransparentOnScrollEdge
           iconColor={{ default: colors.inkSoft, selected: tabTint }}
           labelStyle={{
-            default: { color: colors.inkSoft },
-            selected: { color: tabTint },
+            default: { color: colors.inkSoft, fontFamily: 'NotoSansThai_500Medium' },
+            selected: { color: tabTint, fontFamily: 'NotoSansThai_600SemiBold' },
           }}
           tintColor={tabTint}
           badgeBackgroundColor={isDark ? colors.coral : '#FF3B30'}

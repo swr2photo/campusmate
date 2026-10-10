@@ -29,7 +29,8 @@ const ARRAY_LIMITS = {
   interests: 50,
 };
 
-const GALLERY_LIMIT = 5;
+// One main photo is stored separately in avatarUri.
+const GALLERY_LIMIT = 8;
 const GALLERY_URL_LIMIT = 5000;
 
 const MEETUP_FIELDS = [

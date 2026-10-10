@@ -1,4 +1,5 @@
 import Text from '../components/AppText';
+import { MAX_PROFILE_PHOTOS } from '../data/profilePhotos';
 import { AppTextInput as TextInput } from '../components/AppText';
 import { useToast } from '../context/ToastContext';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -26,6 +27,9 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import FeatureIcon from '../components/FeatureIcon';
 import AvailabilityModal from '../components/AvailabilityModal';
 import FaceVerificationModal from '../components/FaceVerificationModal';
+import LiquidGlassSegmentedControl from '../components/LiquidGlassSegmentedControl';
+import LiquidGlassView from '../components/LiquidGlassView';
+import ProfileSettingsScreen from './ProfileSettingsScreen';
 import { compressProfileImage, validateImageSize, MAX_PROFILE_IMAGE_SIZE_MB } from '../utils/compressImage';
 import { radius, spacing, type, useTheme } from '../theme';
 
@@ -100,8 +104,24 @@ function getProfileValidationError({ age, avatarUri, bio, faculty, gender, inter
   return null;
 }
 
-
-function ProfilePreview({ avatarUri, gallery, name, age, gender, faculty, year, bio, activities, activityDetails, skill, availabilitySlots, availability, favoriteTracks, colors }) {
+function ProfilePreview({
+  activityDetails,
+  activities,
+  age,
+  availability,
+  availabilitySlots,
+  avatarUri,
+  bio,
+  colors,
+  faculty,
+  favoriteTracks,
+  gallery,
+  gender,
+  name,
+  onNavigateToEdit,
+  skill,
+  year,
+}) {
   const { isDark } = useTheme();
   const discoverStyles = React.useMemo(() => getDiscoverStyles(colors, isDark), [colors, isDark]);
   const insets = useSafeAreaInsets();
@@ -133,17 +153,59 @@ function ProfilePreview({ avatarUri, gallery, name, age, gender, faculty, year, 
     scrollContent: {
       ...discoverStyles.scrollContent,
       paddingHorizontal: 12,
-      paddingTop: 12,
+      paddingTop: 8,
       paddingBottom: Math.max(insets.bottom + 24, 48),
     },
   }), [discoverStyles, insets.bottom]);
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.canvas }}>
+      <View style={{ paddingHorizontal: 14, paddingTop: 6, paddingBottom: 6 }}>
+        <LiquidGlassView
+          borderRadius={18}
+          borderWidth={StyleSheet.hairlineWidth}
+          contentStyle={{
+            width: '100%',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            paddingHorizontal: 14,
+            paddingVertical: 10,
+          }}
+          glassEffectStyle="clear"
+          specular
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+            <FeatureIcon color={colors.primary} name="eye.fill" size={17} />
+            <Text style={{ fontSize: 13, fontWeight: '700', color: colors.ink }}>
+              ตัวอย่างโปรไฟล์ของคุณ
+            </Text>
+          </View>
+          {onNavigateToEdit ? (
+            <Pressable
+              hitSlop={6}
+              onPress={onNavigateToEdit}
+              style={({ pressed }) => [
+                {
+                  backgroundColor: colors.primarySoft,
+                  paddingHorizontal: 10,
+                  paddingVertical: 4,
+                  borderRadius: 12,
+                },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>
+                แก้ไขข้อมูล
+              </Text>
+            </Pressable>
+          ) : null}
+        </LiquidGlassView>
+      </View>
       <ProfileCardView
         candidate={candidate}
         colors={colors}
-        insets={{ ...insets, top: -56, bottom: insets.bottom }}
+        insets={{ ...insets, top: 0, bottom: insets.bottom }}
         isDark={isDark}
         isViewOnly={true}
         myProfile={null}
@@ -154,14 +216,47 @@ function ProfilePreview({ avatarUri, gallery, name, age, gender, faculty, year, 
   );
 }
 
-export default function ProfileScreen({ initialSection = 'basic', onClose, onCloseGuardReady, onToast, overrideSave }) {
+export default function ProfileScreen({
+  activeTab: controlledActiveTab,
+  initialSection = 'basic',
+  initialTab = 'edit',
+  onClose,
+  onCloseGuardReady,
+  onLogout,
+  onTabChange,
+  onToast,
+  overrideSave,
+  tabs = ['edit', 'preview'],
+}) {
   const { showImageModeration } = useToast();
-  const { colors } = useTheme();
-  const styles = getStyles(colors);
+  const { colors, isDark } = useTheme();
+  const styles = getStyles(colors, isDark);
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const [photoGridWidth, setPhotoGridWidth] = useState(0);
   const isFirstSetup = Boolean(overrideSave);
+
+  const isControlled = controlledActiveTab !== undefined;
+  const [internalActiveTab, setInternalActiveTab] = useState(initialTab || 'edit');
+  const activeTab = isControlled ? controlledActiveTab : internalActiveTab;
+
+  const handleTabChange = useCallback((tabId) => {
+    Keyboard.dismiss();
+    if (isControlled) {
+      onTabChange?.(tabId);
+    } else {
+      setInternalActiveTab(tabId);
+    }
+  }, [isControlled, onTabChange]);
+
+  const tabConfigs = useMemo(() => {
+    const configMap = {
+      edit: { id: 'edit', label: 'แก้ไขโปรไฟล์', icon: 'square.and.pencil' },
+      preview: { id: 'preview', label: 'ตัวอย่าง', icon: 'eye.fill' },
+      settings: { id: 'settings', label: 'การตั้งค่า', icon: 'gearshape.fill' },
+    };
+    return tabs.map((t) => configMap[t] || { id: t, label: t });
+  }, [tabs]);
 
   const { profile } = useAppProfile();
   const { saveProfile, markFaceVerified } = useAppActions();
@@ -195,7 +290,6 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
   const [interests, setInterests] = useState(() => getInitialInterests(safeProfile));
   const [avatarUri, setAvatarUri] = useState(safeProfile.avatarUri || null);
   const [gallery, setGallery] = useState(() => Array.isArray(safeProfile.gallery) ? safeProfile.gallery : []);
-  const [activeTab, setActiveTab] = useState('edit');
   const [showSpotifySearch, setShowSpotifySearch] = useState(false);
   const [favoriteTracks, setFavoriteTracks] = useState(() => Array.isArray(safeProfile.favoriteTracks) ? safeProfile.favoriteTracks.slice(0, MAX_FAVORITE_TRACKS) : []);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
@@ -209,6 +303,23 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
   const [saving, setSaving] = useState(false);
   const editorScrollRef = useRef(null);
   const musicShortcutHandled = useRef(false);
+  const musicSectionYRef = useRef(0);
+  const pendingAvatarRef = useRef(null);
+  const verificationPassedRef = useRef(false);
+
+  useEffect(() => {
+    if (initialSection) {
+      setExpandedSection(initialSection);
+      if (initialSection === 'music') {
+        musicShortcutHandled.current = false;
+        if (musicSectionYRef.current > 0) {
+          setTimeout(() => {
+            editorScrollRef.current?.scrollTo({ y: musicSectionYRef.current, animated: true });
+          }, 150);
+        }
+      }
+    }
+  }, [initialSection]);
   const isRunningSelected = interests.includes('running');
   const pace = isRunningSelected ? getRunningPace(activityDetails) : '';
 
@@ -254,9 +365,9 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
     }
   }, [profile, derivedFacultyFromId, derivedYearFromId, academicProfile.faculty, academicProfile.year]);
 
-  const getValidationError = () => getProfileValidationError({
+  const getValidationError = (overrideValues = {}) => getProfileValidationError({
     age,
-    avatarUri,
+    avatarUri: overrideValues.avatarUri !== undefined ? overrideValues.avatarUri : avatarUri,
     bio,
     faculty,
     gender,
@@ -268,6 +379,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
     availability,
     availabilitySlots,
     requireComplete: isFirstSetup,
+    ...overrideValues,
   });
 
   const handleClose = () => {
@@ -325,7 +437,9 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
 
       try {
         const compressedUri = await compressProfileImage(asset.uri);
-        setAvatarUri(compressedUri);
+        pendingAvatarRef.current = compressedUri;
+        verificationPassedRef.current = false;
+        setShowFaceVerificationModal(true);
       } catch (compressionError) {
         console.warn('[Profile] Image compression failed:', compressionError);
         showAlert(
@@ -343,7 +457,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
     }
   };
 
-  const handleSave = async () => {
+  const handleSave = async (customOverrides = {}) => {
     if (saving) return;
     if (isProcessingImage) {
       onToast?.('กำลังประมวลผลรูปภาพ กรุณารอสักครู่...', 'info');
@@ -351,7 +465,8 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
     }
     setSaving(true);
     try {
-      const validationError = getValidationError();
+      const activeAvatar = customOverrides.avatarUri !== undefined ? customOverrides.avatarUri : avatarUri;
+      const validationError = getValidationError({ avatarUri: activeAvatar, ...customOverrides });
       if (validationError) throw new Error(validationError);
       const parsedAge = Number(age);
       const activities = interests.length > 0 ? interests : ['other'];
@@ -379,7 +494,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
         bio,
         interests: activities,
         favoriteTracks,
-        avatarUri,
+        avatarUri: activeAvatar,
         gallery,
         isDiscoverable: discoverable,
         notificationsEnabled: notifications,
@@ -387,11 +502,15 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
         matchingPreferences: {
           ...(safeProfile.matchingPreferences || {}),
         },
+        ...customOverrides,
       };
+      delete profileData.keepOpen;
+      delete profileData.successMessage;
+
       if (overrideSave) await overrideSave(profileData);
       else await saveProfile(profileData);
-      const successMessage = 'บันทึกโปรไฟล์เรียบร้อยแล้ว';
-      if (onClose) {
+      const successMessage = customOverrides.successMessage || 'บันทึกโปรไฟล์เรียบร้อยแล้ว';
+      if (onClose && !customOverrides.keepOpen) {
         onClose();
         setTimeout(() => onToast?.(successMessage), 350);
       } else {
@@ -416,69 +535,41 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
       style={styles.container}
     >
       {/* Sticky Tab Switcher */}
-      <View style={styles.stickyTabBarContainer}>
-        <View style={styles.tabSwitcher}>
-          <TouchableOpacity
-            accessibilityRole="tab"
-            accessibilityState={{ selected: activeTab === 'edit' }}
-            activeOpacity={0.7}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            onPress={() => {
-              Keyboard.dismiss();
-              setActiveTab('edit');
-            }}
-            style={[styles.tabButton, activeTab === 'edit' && styles.tabButtonActive]}
-          >
-            <Text
-              style={[
-                styles.tabButtonText,
-                activeTab === 'edit' ? styles.tabButtonTextActive : styles.tabButtonTextInactive,
-              ]}
-            >
-              แก้ไขโปรไฟล์
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            accessibilityRole="tab"
-            accessibilityState={{ selected: activeTab === 'preview' }}
-            activeOpacity={0.7}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            onPress={() => {
-              Keyboard.dismiss();
-              setActiveTab('preview');
-            }}
-            style={[styles.tabButton, activeTab === 'preview' && styles.tabButtonActive]}
-          >
-            <Text
-              style={[
-                styles.tabButtonText,
-                activeTab === 'preview' ? styles.tabButtonTextActive : styles.tabButtonTextInactive,
-              ]}
-            >
-              ตัวอย่าง
-            </Text>
-          </TouchableOpacity>
+      {tabs && tabs.length > 1 ? (
+        <View style={styles.stickyTabBarContainer}>
+          <LiquidGlassSegmentedControl
+            activeTab={activeTab}
+            onChangeTab={handleTabChange}
+            tabs={tabConfigs}
+          />
         </View>
-      </View>
+      ) : null}
 
-      {activeTab === 'preview' ? (
+      {activeTab === 'settings' ? (
+        <ProfileSettingsScreen
+          onLogout={onLogout}
+          onNavigateToEdit={() => handleTabChange('edit')}
+          onToast={onToast}
+        />
+      ) : activeTab === 'preview' ? (
         <View style={{ flex: 1, backgroundColor: colors.canvas }}>
           <ProfilePreview
-            avatarUri={avatarUri}
-            gallery={gallery}
-            name={name}
-            age={age}
-            gender={gender}
-            faculty={faculty}
-            year={year}
-            bio={bio}
-            activities={interests}
             activityDetails={activityDetails}
-            skill={skill}
-            availabilitySlots={availabilitySlots}
+            activities={interests}
+            age={age}
             availability={availability}
-            favoriteTracks={favoriteTracks}
+            availabilitySlots={availabilitySlots}
+            avatarUri={avatarUri}
+            bio={bio}
             colors={colors}
+            faculty={faculty}
+            favoriteTracks={favoriteTracks}
+            gallery={gallery}
+            gender={gender}
+            name={name}
+            onNavigateToEdit={() => handleTabChange('edit')}
+            skill={skill}
+            year={year}
           />
         </View>
       ) : (
@@ -501,7 +592,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
               </View>
               <View style={{ backgroundColor: colors.surfaceRaised, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: colors.line }}>
                 <Text style={{ fontSize: 12, fontWeight: '700', color: colors.inkMuted }}>
-                  {(avatarUri ? 1 : 0) + gallery.filter(Boolean).length}/6 รูป
+                  {(avatarUri ? 1 : 0) + gallery.filter(Boolean).length}/{MAX_PROFILE_PHOTOS} รูป
                 </Text>
               </View>
             </View>
@@ -518,7 +609,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
             }}
             style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: ((avatarUri ? 1 : 0) + gallery.filter(Boolean).length) < 3 ? 10 : 16 }}
           >
-            {[0, 1, 2, 3, 4, 5].map((index) => {
+            {Array.from({ length: MAX_PROFILE_PHOTOS }, (_, index) => {
               const availableWidth = photoGridWidth || Math.max(0, Math.min(windowWidth, 760) - spacing.md * 2);
               const slotWidth = Math.max(1, Math.floor((availableWidth - 20) / 3));
               const slotHeight = slotWidth * 1.5;
@@ -646,100 +737,6 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
             </View>
           ) : null}
 
-          {/* --- Face Verification Card --- */}
-          <View
-            style={{
-              backgroundColor: colors.surfaceRaised,
-              borderRadius: radius.lg || 16,
-              padding: spacing.md || 14,
-              borderWidth: 1,
-              borderColor: isFaceVerified ? '#10B98144' : colors.line,
-              marginBottom: 16,
-            }}
-          >
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 180 }}>
-                <View
-                  style={{
-                    width: 40,
-                    height: 40,
-                    borderRadius: 20,
-                    backgroundColor: isFaceVerified ? '#10B9811A' : '#2869C71A',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <FeatureIcon
-                    color={isFaceVerified ? '#10B981' : '#2869C7'}
-                    name={isFaceVerified ? 'checkmark.seal.fill' : 'lock.shield.fill'}
-                    size={22}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6 }}>
-                    <Text style={{ fontSize: 15, fontWeight: '700', color: colors.ink }}>
-                      {isFaceVerified ? 'ยืนยันใบหน้าจริงแล้ว' : 'ยืนยันใบหน้า'}
-                    </Text>
-                    {isFaceVerified && (
-                      <View style={{ backgroundColor: '#10B98122', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
-                        <Text style={{ color: '#10B981', fontSize: 11, fontWeight: '800' }}>
-                          {faceMatchScore ? `${faceMatchScore}%` : 'ผ่าน'}
-                        </Text>
-                      </View>
-                    )}
-                    {((safeProfile?.email || user?.email || '').toLowerCase() === '6710210317@psu.ac.th') && (
-                      <View style={{ backgroundColor: '#2563EB22', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 }}>
-                        <Text style={{ color: '#2563EB', fontSize: 11, fontWeight: '800' }}>
-                          👑 Super Admin
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                  <Text style={{ fontSize: 12, color: colors.inkMuted, marginTop: 2 }}>
-                    {isFaceVerified
-                      ? (((safeProfile?.email || user?.email || '').toLowerCase() === '6710210317@psu.ac.th')
-                        ? 'ได้รับการยืนยันใบหน้าอัตโนมัติด้วยสิทธิ์ Super Admin (100%)'
-                        : 'โปรไฟล์ของคุณได้รับตราสีฟ้า ยืนยันว่าตรงกับรูปหลัก')
-                      : 'สแกนใบหน้าสดเพื่อรับตราสัญลักษณ์ความถูกต้อง ป้องกันการแอบอ้าง'}
-                  </Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                accessibilityRole="button"
-                accessibilityState={{ disabled: isFaceVerified }}
-                activeOpacity={0.85}
-                disabled={isFaceVerified}
-                onPress={() => {
-                  if (isFaceVerified) return;
-                  if (!avatarUri) {
-                    showAlert('กรุณาตั้งรูปโปรไฟล์หลัก', 'ต้องตั้งรูปโปรไฟล์หลักก่อนทำการยืนยันใบหน้า', { tone: 'warning' });
-                    return;
-                  }
-                  setShowFaceVerificationModal(true);
-                }}
-                style={{
-                  backgroundColor: isFaceVerified ? colors.surface : colors.primary,
-                  justifyContent: 'center',
-                  minHeight: 48,
-                  paddingHorizontal: 12,
-                  paddingVertical: 10,
-                  borderRadius: 10,
-                  borderWidth: isFaceVerified ? 1 : 0,
-                  borderColor: colors.line,
-                }}
-              >
-                <Text
-                  style={{
-                    color: isFaceVerified ? colors.ink : colors.onPrimary,
-                    fontSize: 13,
-                    fontWeight: '700',
-                  }}
-                >
-                  {isFaceVerified ? 'ยืนยันแล้ว' : 'เริ่มยืนยัน'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
 
           <Card style={styles.formCard}>
           <SectionToggleHeader
@@ -886,18 +883,29 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
 
         {canUseSpotify ? (
           <View onLayout={({ nativeEvent }) => {
-            if (initialSection !== 'music' || musicShortcutHandled.current) return;
-            musicShortcutHandled.current = true;
-            editorScrollRef.current?.scrollTo({ y: nativeEvent.layout.y, animated: true });
+            musicSectionYRef.current = nativeEvent.layout.y;
+            if (initialSection === 'music' && !musicShortcutHandled.current) {
+              musicShortcutHandled.current = true;
+              setTimeout(() => {
+                editorScrollRef.current?.scrollTo({ y: nativeEvent.layout.y, animated: true });
+              }, 100);
+            }
           }}>
-          <Card style={styles.formCard}>
+          <LiquidGlassView
+            borderRadius={22}
+            borderWidth={StyleSheet.hairlineWidth}
+            contentStyle={{ width: '100%', alignItems: 'stretch' }}
+            glassEffectStyle="regular"
+            specular
+            style={[styles.formCard, styles.musicGlassCard]}
+          >
             <SectionToggleHeader
               colors={colors}
               expanded={expandedSection === 'music'}
               icon="music.note"
               onPress={() => setExpandedSection((current) => current === 'music' ? null : 'music')}
-              subtitle={favoriteTracks.length > 0 ? `เลือกไว้ ${favoriteTracks.length}/${MAX_FAVORITE_TRACKS} เพลง` : 'เชื่อมต่อ Spotify และเลือกเพลงโปรด'}
-              title="การตั้งค่าเพลงโปรด"
+              subtitle={favoriteTracks.length > 0 ? `เลือกไว้ ${favoriteTracks.length}/${MAX_FAVORITE_TRACKS} เพลง · แสดงบนโปรไฟล์` : 'เชื่อมต่อ Spotify และเลือกเพลงโปรดแสดงบนโปรไฟล์'}
+              title="เพลงและดนตรีโปรด"
             />
             {expandedSection === 'music' && (
               <View style={styles.formSectionSpacing}>
@@ -907,7 +915,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                 <View style={styles.fieldContainer}>
                   <FormLabel label={`เพลงโปรด (${favoriteTracks.length}/${MAX_FAVORITE_TRACKS})`} styles={styles} />
                   {favoriteTracks.map((track) => (
-                    <View key={track.id} style={styles.favoriteTrackRow}>
+                    <View key={track.id} style={[styles.favoriteTrackRow, isDark ? styles.favoriteTrackRowDark : styles.favoriteTrackRowLight]}>
                       {track.albumArt ? (
                         <Image source={{ uri: track.albumArt }} style={styles.favoriteTrackArt} />
                       ) : (
@@ -935,6 +943,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                         accessibilityLabel={`ลบ ${track.name}`}
                         hitSlop={8}
                         onPress={() => setFavoriteTracks((current) => current.filter((item) => item.id !== track.id))}
+                        style={({ pressed }) => pressed && { opacity: 0.6 }}
                       >
                         <FeatureIcon color={colors.danger} name="xmark.circle.fill" size={20} />
                       </Pressable>
@@ -944,7 +953,11 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                     <Pressable
                       accessibilityRole="button"
                       onPress={() => setShowSpotifySearch(true)}
-                      style={styles.addTrackButton}
+                      style={({ pressed }) => [
+                        styles.addTrackButton,
+                        isDark ? styles.addTrackButtonDark : styles.addTrackButtonLight,
+                        pressed && { opacity: 0.75 },
+                      ]}
                     >
                       <FeatureIcon color={colors.primary} name="music.note" size={16} />
                       <Text style={styles.addTrackButtonText}>ค้นหาและเพิ่มเพลงจาก Spotify</Text>
@@ -955,7 +968,7 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
                 </View>
               </View>
             )}
-          </Card>
+          </LiquidGlassView>
           </View>
         ) : null}
         </ScrollView>
@@ -971,11 +984,29 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
         }}
       />
       <FaceVerificationModal
-        avatarUri={avatarUri}
-        onClose={() => setShowFaceVerificationModal(false)}
-        onSuccess={(result) => {
+        avatarUri={pendingAvatarRef.current || avatarUri}
+        onClose={() => {
+          setShowFaceVerificationModal(false);
+          if (pendingAvatarRef.current && !verificationPassedRef.current) {
+            onToast?.('ยกเลิกการเปลี่ยนรูปโปรไฟล์ เนื่องจากยังไม่ได้ยืนยันใบหน้า', 'info');
+            pendingAvatarRef.current = null;
+          }
+        }}
+        onSuccess={async (result) => {
+          verificationPassedRef.current = true;
+          const newAvatar = pendingAvatarRef.current || avatarUri;
+          pendingAvatarRef.current = null;
+          setAvatarUri(newAvatar);
           markFaceVerified?.(result.similarity);
           onToast?.(`ยืนยันใบหน้าสำเร็จ ความตรงกัน ${result.similarity}%`, 'success');
+          await handleSave({
+            avatarUri: newAvatar,
+            isFaceVerified: true,
+            faceMatchScore: result.similarity,
+            faceVerificationStatus: 'verified',
+            keepOpen: true,
+            successMessage: 'ยืนยันใบหน้าและบันทึกรูปโปรไฟล์เรียบร้อยแล้ว',
+          });
         }}
         visible={showFaceVerificationModal}
       />
@@ -994,14 +1025,23 @@ export default function ProfileScreen({ initialSection = 'basic', onClose, onClo
         />
       ) : null}
       {activeTab === 'edit' && (
-        <View style={[styles.stickySaveBar, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
-          <PrimaryButton
-            iconName="checkmark.circle.fill"
-            label={isFirstSetup ? 'สร้างโปรไฟล์' : 'บันทึกโปรไฟล์'}
-            loading={saving}
-            onPress={handleSave}
-            style={styles.stickySaveButton}
-          />
+        <View pointerEvents="box-none" style={[styles.stickySaveBarContainer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
+          <LiquidGlassView
+            borderRadius={24}
+            borderWidth={StyleSheet.hairlineWidth}
+            contentStyle={{ width: '100%', alignItems: 'stretch' }}
+            glassEffectStyle="regular"
+            specular
+            style={styles.stickySaveBarGlass}
+          >
+            <PrimaryButton
+              iconName="checkmark.circle.fill"
+              label={isFirstSetup ? 'สร้างโปรไฟล์' : 'บันทึกโปรไฟล์'}
+              loading={saving}
+              onPress={handleSave}
+              style={styles.stickySaveButton}
+            />
+          </LiquidGlassView>
         </View>
       )}
     </KeyboardAvoidingView>
@@ -1014,7 +1054,7 @@ function SettingsListRow({ danger = false, icon, label, onPress, value, last = f
   const accentColor = danger ? colors.danger : colors.primary;
   const content = (
     <>
-      <View style={[styles.settingsIcon, { backgroundColor: danger ? colors.dangerSoft : colors.primarySoft }]}>
+      <View style={styles.settingsIcon}>
         <FeatureIcon color={accentColor} name={icon} size={18} />
       </View>
       <Text style={[styles.settingsLabel, { color: danger ? colors.danger : colors.ink }]}>{label}</Text>
@@ -1040,7 +1080,7 @@ function FormLabel({ label, required = false, styles }) {
   );
 }
 
-function SectionToggleHeader({ colors, expanded, icon, onPress, required = false, subtitle, title }) {
+function SectionToggleHeader({ colors, expanded, icon, onPress, required = false, title }) {
   const styles = getStyles(colors);
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ expanded }} onPress={onPress} style={styles.sectionToggleHeader}>
@@ -1049,7 +1089,6 @@ function SectionToggleHeader({ colors, expanded, icon, onPress, required = false
       </View>
       <View style={styles.sectionToggleCopy}>
         <Text style={styles.sectionToggleTitle}>{title}{required ? <Text style={styles.requiredMark}> {REQUIRED_MARK}</Text> : null}</Text>
-        <Text style={styles.sectionToggleSubtitle}>{subtitle}</Text>
       </View>
       <FeatureIcon color={colors.inkSoft} name={expanded ? 'chevron.up' : 'chevron.down'} size={19} />
     </Pressable>
@@ -1348,13 +1387,11 @@ const getStyles = (colors) => StyleSheet.create({
     optionPillTextSelected: { color: colors.onPrimary },
   container: { flex: 1, backgroundColor: colors.canvas },
   stickyTabBarContainer: {
-    backgroundColor: colors.canvas,
-    borderBottomColor: colors.line,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    backgroundColor: 'transparent',
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingTop: spacing.xs,
+    paddingBottom: spacing.xs,
     zIndex: 999,
-    elevation: 8,
   },
   tabSwitcher: {
     backgroundColor: colors.card,
@@ -1455,14 +1492,25 @@ const getStyles = (colors) => StyleSheet.create({
   uniformInterestChip: { width: '100%', minHeight: 46, paddingVertical: 10, justifyContent: 'center', alignItems: 'center' },
   formSectionSpacing: { marginTop: spacing.md },
   fieldContainer: { marginBottom: spacing.md },
-  favoriteTrackRow: { alignItems: 'center', backgroundColor: colors.surfaceRaised, borderCurve: 'continuous', borderRadius: radius.md, flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm, padding: spacing.sm },
+  favoriteTrackRow: { alignItems: 'center', backgroundColor: colors.surfaceRaised, borderCurve: 'continuous', borderRadius: 16, flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm, padding: spacing.sm },
+  favoriteTrackRowLight: {
+    backgroundColor: 'rgba(255, 255, 255, 0.75)',
+    borderColor: 'rgba(0, 0, 0, 0.06)',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  favoriteTrackRowDark: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: 'rgba(255, 255, 255, 0.14)',
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   favoriteTrackArt: { backgroundColor: colors.canvas, borderRadius: radius.sm, height: 44, width: 44 },
   favoriteTrackArtPlaceholder: { alignItems: 'center', justifyContent: 'center' },
   favoriteTrackMeta: { flex: 1, minWidth: 0 },
   favoriteTrackName: { color: colors.ink, fontSize: type.body, fontWeight: '700' },
   favoriteTrackArtists: { color: colors.inkSoft, fontSize: type.caption, marginTop: 2 },
-  addTrackButton: { alignItems: 'center', borderColor: colors.primary, borderCurve: 'continuous', borderRadius: radius.md, borderStyle: 'dashed', borderWidth: 1, flexDirection: 'row', gap: spacing.sm, justifyContent: 'center', minHeight: 44, paddingHorizontal: spacing.md },
-  addTrackButtonText: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
+  addTrackButton: { alignItems: 'center', borderColor: colors.primary, borderCurve: 'continuous', borderRadius: 16, borderStyle: 'dashed', borderWidth: 1, flexDirection: 'row', gap: spacing.sm, justifyContent: 'center', minHeight: 46, paddingHorizontal: spacing.md },
+  addTrackButtonLight: { backgroundColor: 'rgba(40, 105, 199, 0.05)' },
+  addTrackButtonDark: { backgroundColor: 'rgba(40, 105, 199, 0.14)' },
   favoriteTracksHint: { color: colors.inkSoft, fontSize: type.caption2, marginTop: spacing.xs },
   field: { marginBottom: spacing.md },
   label: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '800', marginBottom: 6 },
@@ -1483,17 +1531,44 @@ const getStyles = (colors) => StyleSheet.create({
   settingsTitle: { color: colors.ink, fontSize: type.section, fontWeight: '900', paddingHorizontal: spacing.lg, paddingTop: spacing.md },
   legalSubsection: { borderTopColor: colors.line, borderTopWidth: StyleSheet.hairlineWidth, marginTop: spacing.sm, paddingTop: spacing.sm },
   legalSubsectionTitle: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '800', paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
-  settingsRow: { alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', minHeight: 56, paddingHorizontal: spacing.lg },
-  settingsIcon: { alignItems: 'center', borderRadius: 16, height: 32, justifyContent: 'center', marginRight: spacing.md, width: 32 },
+  settingsRow: { alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', minHeight: 52, paddingHorizontal: spacing.lg },
+  settingsIcon: { alignItems: 'center', height: 28, justifyContent: 'center', marginRight: spacing.md, width: 28 },
   settingsLabel: { flex: 1, fontSize: type.body, fontWeight: '700' },
   settingsValue: { fontSize: type.caption, marginRight: spacing.sm },
   sectionToggleHeader: { alignItems: 'center', flexDirection: 'row', minHeight: 44 },
-  sectionToggleIcon: { alignItems: 'center', backgroundColor: colors.primarySoft, borderRadius: 16, height: 32, justifyContent: 'center', marginRight: spacing.sm, width: 32 },
+  sectionToggleIcon: { alignItems: 'center', height: 28, justifyContent: 'center', marginRight: spacing.sm, width: 28 },
   sectionToggleCopy: { flex: 1 },
   sectionToggleTitle: { color: colors.ink, fontSize: 16, fontWeight: '800' },
   sectionToggleSubtitle: { color: colors.inkMuted, fontSize: type.caption2, marginTop: 1 },
   aboutSettingsCard: { marginTop: spacing.md, padding: 0 },
   accountSettingsCard: { marginTop: spacing.md, padding: 0 },
+  musicGlassCard: {
+    borderRadius: 22,
+    borderCurve: 'continuous',
+    overflow: 'hidden',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  stickySaveBarContainer: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.xs,
+    backgroundColor: 'transparent',
+    zIndex: 999,
+  },
+  stickySaveBarGlass: {
+    borderRadius: 24,
+    borderCurve: 'continuous',
+    overflow: 'hidden',
+    padding: 4,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 6,
+  },
   stickySaveBar: { backgroundColor: colors.canvas, borderTopColor: colors.line, borderTopWidth: StyleSheet.hairlineWidth, elevation: 8, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, shadowColor: '#000000', shadowOffset: { height: -3, width: 0 }, shadowOpacity: 0.12, shadowRadius: 8 },
   stickySaveButton: { alignSelf: 'stretch' },
   accountSettingsTitle: { color: colors.ink, fontSize: type.section, fontWeight: '900', paddingHorizontal: spacing.lg, paddingTop: spacing.md },

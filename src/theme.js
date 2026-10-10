@@ -1,4 +1,5 @@
 import { useColorScheme } from 'react-native';
+import { usePreferences } from './context/PreferencesContext';
 
 export const lightColors = {
   ink: '#25272B',
@@ -35,11 +36,11 @@ export const darkColors = {
   ink: '#F7F8FA',
   inkMuted: '#B6BDC8',
   inkSoft: '#7F8896',
-  canvas: '#16171A',
-  card: '#202226',
-  surface: '#202226',
-  surfaceRaised: '#2B2D32',
-  glass: 'rgba(32,36,42,0.88)',
+  canvas: '#15120F',
+  card: '#26221E',
+  surface: '#26221E',
+  surfaceRaised: '#34302C',
+  glass: 'rgba(38,34,30,0.88)',
   glassBorder: 'rgba(255,255,255,0.1)',
   line: '#393C43',
   onPrimary: '#FFFFFF',
@@ -66,7 +67,9 @@ const darkTheme = { colors: darkColors, isDark: true };
 const lightTheme = { colors: lightColors, isDark: false };
 
 export const useTheme = () => {
-  const scheme = useColorScheme();
+  const systemScheme = useColorScheme();
+  const { preferences } = usePreferences();
+  const scheme = preferences.theme === 'system' ? systemScheme : preferences.theme;
   return scheme === 'dark' ? darkTheme : lightTheme;
 };
 

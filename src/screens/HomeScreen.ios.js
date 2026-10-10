@@ -43,7 +43,7 @@ import NativeTourTarget from '../components/NativeTourTarget.ios';
 import { useDiscoveryDeckState } from '../hooks/useDiscoveryDeckState';
 import { FEATURE_ADVANCED_FILTERS, FEATURE_UNLIMITED_REWIND, stripPaidMatchingPreferences } from '../data/plans';
 import { ContentUnavailableView, Host, HStack, Image, BottomSheet, Form, Section, Slider, Picker, Menu, Toggle, ScrollView, Spacer, VStack, ZStack, RNHostView, useNativeState } from '@expo/ui/swift-ui';
-import { accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollIndicators, scrollPosition, scrollTargetLayout, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
+import { accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, multilineTextAlignment, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollIndicators, scrollPosition, scrollTargetLayout, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
 import { useAppActions, useAppBadges, useAppFeed, useAppProfile } from '../context/AppContext';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
@@ -475,33 +475,50 @@ export default function HomeScreen() {
               </>
             ) : (
               <VStack
-                spacing={18}
-                modifiers={[
-                  padding({ vertical: 36, horizontal: 22 }),
-                  frame({ maxWidth: Infinity }),
-                  background(palette.card, cardShape),
-                ]}
-              >
-                <ContentUnavailableView
-                  description={deckFailed
-                    ? (deck.offline
-                      ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
-                      : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่')
-                    : isWaitingForProfiles
-                      ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
-                      : 'ตัวกรองของคุณยังคงอยู่ กด "เริ่มใหม่" เพื่อดูคนที่เคยข้ามอีกครั้ง หรือปรับตัวกรองจากมุมขวาบน'}
-                  systemImage={deckFailed
-                    ? (deck.offline ? 'wifi.slash' : 'exclamationmark.triangle')
-                    : isWaitingForProfiles ? 'arrow.triangle.2.circlepath' : 'person.2.slash'}
-                  title={deckFailed
-                    ? (deck.offline ? 'ไม่ได้เชื่อมต่ออินเทอร์เน็ต' : deck.stalled ? 'โหลดโปรไฟล์นานกว่าปกติ' : 'โหลดโปรไฟล์ไม่สำเร็จ')
-                    : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
-                />
+                  alignment="center"
+                  spacing={12}
+                  modifiers={[
+                    padding({ vertical: 36, horizontal: 22 }),
+                    frame({ maxWidth: Infinity }),
+                    background(palette.card, cardShape),
+                  ]}
+                >
+                  <Image
+                    color={palette.secondary}
+                    size={48}
+                    systemName={deckFailed
+                      ? (deck.offline ? 'wifi.slash' : 'exclamationmark.triangle')
+                      : isWaitingForProfiles ? 'arrow.triangle.2.circlepath' : 'person.2.slash'}
+                  />
+                  <Text
+                    modifiers={[
+                      font({ size: 18, weight: 'bold' }),
+                      foregroundStyle(palette.text),
+                      multilineTextAlignment('center'),
+                    ]}
+                  >
+                    {deckFailed
+                      ? (deck.offline ? 'ไม่ได้เชื่อมต่ออินเทอร์เน็ต' : deck.stalled ? 'โหลดโปรไฟล์นานกว่าปกติ' : 'โหลดโปรไฟล์ไม่สำเร็จ')
+                      : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
+                  </Text>
+                  <Text
+                    modifiers={[
+                      font({ size: 14, weight: 'regular' }),
+                      foregroundStyle(palette.secondary),
+                      multilineTextAlignment('center'),
+                    ]}
+                  >
+                    {deckFailed
+                      ? (deck.offline
+                        ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
+                        : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่')
+                      : isWaitingForProfiles
+                        ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
+                        : 'ตัวกรองของคุณยังคงอยู่ กด "เริ่มใหม่" เพื่อดูคนที่เคยข้ามอีกครั้ง หรือปรับตัวกรองจากมุมขวาบน'}
+                  </Text>
                 {deckFailed ? (
                   <Button
-                    label="ลองอีกครั้ง"
                     onPress={deck.retry}
-                    systemImage="arrow.clockwise"
                     modifiers={[
                       buttonStyle('glassProminent'),
                       buttonBorderShape('capsule'),
@@ -509,13 +526,23 @@ export default function HomeScreen() {
                       tint(palette.purple),
                       frame({ maxWidth: Infinity }),
                     ]}
-                  />
+                  >
+                    <HStack spacing={8} alignment="center">
+                      <Image systemName="arrow.clockwise" size={16} color={palette.white} />
+                      <Text
+                        modifiers={[
+                          font({ size: 16, weight: 'semibold' }),
+                          foregroundStyle(palette.white),
+                        ]}
+                      >
+                        ลองอีกครั้ง
+                      </Text>
+                    </HStack>
+                  </Button>
                 ) : null}
                 {!isWaitingForProfiles && !deckFailed ? (
                   <Button
-                    label="เริ่มใหม่"
                     onPress={handleReset}
-                    systemImage="arrow.triangle.2.circlepath"
                     modifiers={[
                       buttonStyle('glassProminent'),
                       buttonBorderShape('capsule'),
@@ -523,20 +550,42 @@ export default function HomeScreen() {
                       tint(palette.purple),
                       frame({ maxWidth: Infinity }),
                     ]}
-                  />
+                  >
+                    <HStack spacing={8} alignment="center">
+                      <Image systemName="arrow.triangle.2.circlepath" size={16} color={palette.white} />
+                      <Text
+                        modifiers={[
+                          font({ size: 16, weight: 'semibold' }),
+                          foregroundStyle(palette.white),
+                        ]}
+                      >
+                        เริ่มใหม่
+                      </Text>
+                    </HStack>
+                  </Button>
                 ) : null}
                 {!isWaitingForProfiles ? (
                   <Button
-                    label="ปรับตัวกรอง"
                     onPress={() => router.push('/matching-filters')}
-                    systemImage="slider.horizontal.3"
                     modifiers={[
                       buttonStyle('glass'),
                       buttonBorderShape('capsule'),
                       controlSize('large'),
                       frame({ maxWidth: Infinity }),
                     ]}
-                  />
+                  >
+                    <HStack spacing={8} alignment="center">
+                      <Image systemName="slider.horizontal.3" size={16} color={palette.text} />
+                      <Text
+                        modifiers={[
+                          font({ size: 16, weight: 'semibold' }),
+                          foregroundStyle(palette.text),
+                        ]}
+                      >
+                        ปรับตัวกรอง
+                      </Text>
+                    </HStack>
+                  </Button>
                 ) : null}
               </VStack>
             )}
@@ -791,7 +840,7 @@ function FilterChip({ dot = false, label, onPress }) {
       >
         <Text
           modifiers={[
-            font({ textStyle: 'subheadline', weight: 'semibold', design: 'rounded' }),
+            font({ size: 14, weight: 'semibold' }),
             foregroundStyle(palette.text),
           ]}
         >

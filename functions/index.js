@@ -491,6 +491,87 @@ export const sendBrandedPasswordReset = onCall({
   return { sent: true, sender: config.fromAddress };
 });
 
+export const sendAccountDeletionOtp = onCall({ region: REGION, maxInstances: 10 }, async (request) => {
+  const userId = requireSignedIn(request);
+  const userRecord = await auth.getUser(userId);
+  const email = normalizeCampusEmail(userRecord.email);
+  if (!email) {
+    throw new HttpsError('failed-precondition', 'ไม่พบบัญชีอีเมลปัจจุบัน');
+  }
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  const expiresAt = Timestamp.fromMillis(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  await db.collection('accountDeletionOtps').doc(userId).set({
+    code,
+    email,
+    userId,
+    createdAt: FieldValue.serverTimestamp(),
+    expiresAt,
+  });
+
+  if (isEmailSendingConfigured()) {
+    const config = getEmailSendingConfig();
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px; border: 1px solid #E2E8F0; border-radius: 16px;">
+        <h2 style="color: #E11D48; margin-top: 0; font-size: 20px;">ยืนยันการลบบัญชีผู้ใช้ CampusMate</h2>
+        <p style="color: #334155; font-size: 14px; line-height: 22px;">
+          คุณกำลังทำรายการลบบัญชีผู้ใช้ CampusMate อย่างถาวร หากคุณเป็นผู้ทำรายการ กรุณานำรหัสยืนยัน (OTP) ด้านล่างไปกรอกในแอป:
+        </p>
+        <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 18px; text-align: center; margin: 20px 0;">
+          <span style="font-size: 32px; font-weight: 800; letter-spacing: 6px; color: #0F172A;">${code}</span>
+        </div>
+        <p style="color: #64748B; font-size: 12px; line-height: 18px;">
+          ⏳ รหัสนี้มีอายุการใช้งาน 10 นาที<br/>
+          ⚠️ หากคุณไม่ได้เป็นผู้ขอทำรายการ กรุณาเปลี่ยนรหัสผ่านทันทีและอย่าเปิดเผยรหัสนี้แก่ผู้ใด
+        </p>
+      </div>
+    `;
+    const text = `รหัสยืนยันการลบบัญชีถาวร CampusMate ของคุณคือ: ${code} (รหัสมีอายุ 10 นาที)`;
+
+    try {
+      await sendCampusEmail(config, {
+        to: email,
+        subject: `[CampusMate] รหัสยืนยันการลบบัญชีถาวร: ${code}`,
+        html,
+        text,
+      });
+    } catch (sendErr) {
+      logger.error('[sendAccountDeletionOtp] send failed', sendErr);
+    }
+  }
+
+  return { sent: true, email };
+});
+
+export const verifyAccountDeletionOtp = onCall({ region: REGION, maxInstances: 10 }, async (request) => {
+  const userId = requireSignedIn(request);
+  const inputCode = String(request.data?.code || '').trim();
+  if (!inputCode || inputCode.length !== 6) {
+    throw new HttpsError('invalid-argument', 'กรุณาระบุรหัสยืนยัน 6 หลัก');
+  }
+
+  const otpDoc = await db.collection('accountDeletionOtps').doc(userId).get();
+  if (!otpDoc.exists) {
+    throw new HttpsError('not-found', 'ไม่พบคำขอลบบัญชี หรือรหัสยืนยันหมดอายุแล้ว กรุณากดขอรหัสใหม่');
+  }
+
+  const data = otpDoc.data();
+  const now = Date.now();
+  const expiresMs = data.expiresAt?.toMillis?.() || 0;
+  if (now > expiresMs) {
+    throw new HttpsError('deadline-exceeded', 'รหัสยืนยันหมดอายุแล้ว กรุณากดขอรหัสใหม่');
+  }
+
+  if (String(data.code).trim() !== inputCode) {
+    throw new HttpsError('permission-denied', 'รหัสยืนยันจากอีเมลไม่ถูกต้อง กรุณาตรวจสอบรหัสในอีเมลอีกครั้ง');
+  }
+
+  // Delete document once verified
+  await otpDoc.ref.delete().catch(() => {});
+  return { verified: true };
+});
+
 export const registerPushToken = onCall({ region: REGION }, async (request) => {
   const userId = requireVerifiedUser(request);
   const expoPushToken = cleanString(request.data?.expoPushToken, 300);

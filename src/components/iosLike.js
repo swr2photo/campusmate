@@ -42,7 +42,7 @@ export function IconButton({ icon, onPress, tintColor, accessibilityLabel, style
       disabled={!onPress}
       hitSlop={8}
       onPress={onPress}
-      style={({ pressed }) => [styles.iconButton, { backgroundColor: colors.card, borderColor: colors.line }, style, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.iconButton, { backgroundColor: colors.card }, style, pressed && styles.pressed]}
     >
       <FeatureIcon color={tintColor || colors.ink} name={icon} size={size} />
     </Pressable>
@@ -52,7 +52,7 @@ export function IconButton({ icon, onPress, tintColor, accessibilityLabel, style
 export function IosLikeCard({ children, style, accent, onPress }) {
   const { colors } = useTheme();
   const content = (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }, accent && { borderTopColor: accent, borderTopWidth: 2 }, style]}>
+    <View style={[styles.card, { backgroundColor: colors.card }, accent && { borderTopColor: accent, borderTopWidth: 2 }, style]}>
       {children}
     </View>
   );
@@ -202,7 +202,7 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: type.title1, fontWeight: '800', letterSpacing: -0.4 },
   headerSubtitle: { fontSize: type.micro, fontWeight: '600', marginTop: 3 },
   iconButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, height: 46, justifyContent: 'center', width: 46, ...shadow.card },
-  card: { borderRadius: radius.xl, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden', padding: spacing.lg },
+  card: { borderRadius: 26, borderCurve: 'continuous', borderWidth: 0, overflow: 'hidden', padding: spacing.lg },
   sectionHeader: { alignItems: 'flex-start', flexDirection: 'row', justifyContent: 'space-between' },
   sectionCopy: { flex: 1, paddingRight: spacing.sm },
   sectionTitle: { fontSize: type.section, fontWeight: '600' },

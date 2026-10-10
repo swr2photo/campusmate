@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Image, View } from 'react-native';
+import { Image, PixelRatio, View } from 'react-native';
 import { captureRef, releaseCapture } from 'react-native-view-shot';
 
 // Native tab items need an image source; render the circular crop into a
@@ -15,7 +15,7 @@ export default function CircularTabAvatar({ uri, onReady }) {
     const frame = requestAnimationFrame(async () => {
       try {
         capture = await captureRef(viewRef, { format: 'png', result: 'tmpfile', useRenderInContext: true });
-        if (active) onReady({ input: uri, source: { uri: capture, width: 28, height: 28, scale: 3 } });
+        if (active) onReady({ input: uri, source: { uri: capture, width: 28, height: 28, scale: PixelRatio.get() } });
         else releaseCapture(capture);
       } catch { /* A new avatar or remount retries the capture. */ }
     });

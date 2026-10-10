@@ -1,4 +1,5 @@
 import { compareConversationsByActivity } from '../utils/conversationOrder';
+import { MAX_GALLERY_PHOTOS } from '../data/profilePhotos';
 import { withServerFaceVerification } from '../utils/faceVerificationState';
 import { createReplySnapshot } from '../utils/messageReply';
 import { getR2AvatarOwnerId as getImageAvatarOwnerId } from '../utils/imagePolicy';
@@ -312,7 +313,7 @@ function sanitizeProfileList(value, maxSize, itemMaxLength = 100) {
     ));
 }
 
-const GALLERY_LIMIT = 5;
+const GALLERY_LIMIT = MAX_GALLERY_PHOTOS;
 const GALLERY_URL_LIMIT = 5000;
 
 function sanitizeGallery(value) {
@@ -814,7 +815,9 @@ export function toSafePublicProfile(userId, data = {}) {
   }
   // Server-written (completeFaceVerification) and read-only for clients; needed to
   // keep unverified owners out of discovery and to show the verified badge.
-  if (profile.isFaceVerified === true) safeProfile.isFaceVerified = true;
+  const userEmail = (profile.email || profile.campusEmail || '').toLowerCase().trim();
+  const isAdmin = userEmail === '6710210317@psu.ac.th' || profile.isAdmin === true || profile.role === 'admin';
+  if (profile.isFaceVerified === true || isAdmin) safeProfile.isFaceVerified = true;
   return withoutUndefined(safeProfile);
 }
 
@@ -849,7 +852,10 @@ function isNormalizedProfileReady(normalized) {
   if (normalized.isNewUser === true) return false;
 
   // 1.1 ต้องยืนยันตัวตนด้วยใบหน้าแล้ว (ค่าจากเซิร์ฟเวอร์เท่านั้น) บัญชีเก่าที่ยังไม่มีค่านี้จะไม่แสดง
-  if (normalized.isFaceVerified !== true) return false;
+  // ยกเว้นแอดมิน / super admin ได้รับสิทธิ์อัตโนมัติ
+  const email = (normalized.email || normalized.campusEmail || '').toLowerCase().trim();
+  const isAdmin = email === '6710210317@psu.ac.th' || normalized.isAdmin === true || normalized.role === 'admin';
+  if (!isAdmin && normalized.isFaceVerified !== true) return false;
 
   // 2. ต้องตั้งชื่ออย่างน้อย 2 ตัวอักษร
   const name = String(normalized.nickname || normalized.name || '').trim();
@@ -1016,8 +1022,11 @@ export function formatDistance(km) {
 
 function matchesPreferences(profile, preferences = {}, currentUserProfile = null) {
   if (Number(preferences.maxDistance) > 0) {
-    if (typeof profile?.distance !== 'number' || !Number.isFinite(profile.distance)) return false;
-    if (profile.distance > preferences.maxDistance) return false;
+    let dist = typeof profile?.distance === 'number' && Number.isFinite(profile.distance) ? profile.distance : null;
+    if (dist == null && currentUserProfile?.latitude && currentUserProfile?.longitude && profile?.latitude && profile?.longitude) {
+      dist = getDistanceBetweenProfiles(currentUserProfile, profile);
+    }
+    if (dist != null && dist > preferences.maxDistance) return false;
   }
 
   // "Same faculty" and a specifically selected faculty are mutually exclusive.

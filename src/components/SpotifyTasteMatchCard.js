@@ -95,8 +95,9 @@ export default function SpotifyTasteMatchCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 16,
-    borderWidth: 1,
+    borderRadius: 26,
+    borderCurve: 'continuous',
+    borderWidth: 0,
     marginVertical: 8,
     padding: 14,
   },
@@ -154,7 +155,7 @@ const styles = StyleSheet.create({
   },
   genreChip: {
     borderRadius: 8,
-    borderWidth: 1,
+    borderWidth: 0,
     paddingHorizontal: 8,
     paddingVertical: 3,
   },

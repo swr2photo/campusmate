@@ -1,4 +1,6 @@
 import Text from '../components/AppText';
+import Animated, { useAnimatedStyle, withSpring, useSharedValue } from 'react-native-reanimated';
+import { BlurView } from 'expo-blur';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
@@ -23,12 +25,12 @@ const TABS = [
 ];
 
 export default function LikesScreen({ onClose, onOpenChat, onToast }) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   // "ดูว่าใครกดถูกใจคุณ" is CampusMate Plus. While the plan is loading show the skeleton, not the paywall.
   const likesEntitlement = useEntitlement(FEATURE_INCOMING_LIKE_PROFILES);
   const locked = likesEntitlement.locked;
   const { confirm } = useConfirm();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const styles = useMemo(() => getStyles(colors, isDark), [colors]);
 
   const {
     acceptedIncomingLikes = [],
@@ -42,6 +44,12 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
   const incomingCount = pendingIncomingLikeCount ?? pendingIncomingLikes.length;
   const { ensureConversation, respondToLike, syncNow, loadMoreIncomingLikes } = useAppActions();
   const [activeTab, setActiveTab] = useState('pending');
+  const tabWidth = useSharedValue(0);
+  const activeIndex = TABS.findIndex(t => t.id === activeTab);
+  const animatedPillStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: withSpring(activeIndex * tabWidth.value, { damping: 24, stiffness: 400, damping: 30 }) }],
+    width: tabWidth.value,
+  }));
   const [processingId, setProcessingId] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -171,25 +179,29 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
         </View>
       </View>
 
-      <TourTarget id="likes.tabs" style={styles.tabs}>
-        {TABS.map((tab) => {
-          const isActive = activeTab === tab.id;
-          const count = tab.id === 'pending'
-            ? incomingCount
-            : acceptedIncomingLikes.length;
-          return (
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: isActive }}
-              key={tab.id}
-              onPress={() => setActiveTab(tab.id)}
-              style={[styles.tab, isActive && styles.tabActive]}
-            >
-              <Text style={[styles.tabText, isActive && styles.tabTextActive]}>{tab.label}</Text>
-              {count > 0 && <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}><Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>{count}</Text></View>}
-            </Pressable>
-          );
-        })}
+      <TourTarget id="likes.tabs" style={styles.tabsContainer}>
+        <BlurView intensity={isDark ? 30 : 60} tint={isDark ? 'dark' : 'light'} style={styles.tabsBlur}>
+          <Animated.View style={[styles.activePill, animatedPillStyle]} />
+          {TABS.map((tab, i) => {
+            const isActive = activeTab === tab.id;
+            const count = tab.id === 'pending'
+              ? incomingCount
+              : acceptedIncomingLikes.length;
+            return (
+              <Pressable
+                accessibilityRole="tab"
+                accessibilityState={{ selected: isActive }}
+                key={tab.id}
+                onLayout={i === 0 ? (e) => { tabWidth.value = e.nativeEvent.layout.width; } : undefined}
+                onPress={() => setActiveTab(tab.id)}
+                style={styles.tab}
+              >
+                <Text style={[styles.tabText, isActive && styles.tabTextActive]}>{tab.label}</Text>
+                {count > 0 && <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}><Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>{count}</Text></View>}
+              </Pressable>
+            );
+          })}
+        </BlurView>
       </TourTarget>
     </View>
   );
@@ -289,8 +301,8 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
 }
 
 const LikeCard = React.memo(function LikeCard({ accepted, like, onAccept, onOpenChat, onReject, onRemove, processing, styles }) {
-  const { colors } = useTheme();
-  const cardStyles = styles || getStyles(colors);
+  const { colors, isDark } = useTheme();
+  const cardStyles = styles || getStyles(colors, isDark);
   const imageUri = getDisplayImageUri(
     useRemoteImage(like.avatarUri, like.avatarRevision, like.id),
     like.avatarUri
@@ -345,7 +357,7 @@ const LikeCard = React.memo(function LikeCard({ accepted, like, onAccept, onOpen
 });
 
 function MetaChip({ icon, label, styles: cardStyles }) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   return (
     <View style={[cardStyles.metaChip, { backgroundColor: colors.surfaceRaised }]}>
       <FeatureIcon color={colors.inkSoft} name={icon} size={12} />
@@ -354,24 +366,25 @@ function MetaChip({ icon, label, styles: cardStyles }) {
   );
 }
 
-const getStyles = (colors) => StyleSheet.create({
+const getStyles = (colors, isDark) => StyleSheet.create({
   container: { backgroundColor: colors.canvas, flex: 1 },
   listContent: { padding: spacing.lg, paddingBottom: spacing.xxxl },
-  summaryCard: { alignItems: 'center', backgroundColor: colors.coralSoft, borderCurve: 'continuous', borderRadius: radius.lg, flexDirection: 'row', marginBottom: spacing.md, padding: spacing.md },
+  summaryCard: { alignItems: 'center', backgroundColor: colors.coralSoft, borderCurve: 'continuous', borderRadius: 26, flexDirection: 'row', marginBottom: spacing.md, padding: spacing.md },
   summaryIcon: { alignItems: 'center', backgroundColor: colors.card, borderRadius: 22, height: 44, justifyContent: 'center', marginRight: spacing.md, width: 44 },
   summaryIconText: { color: colors.coral, fontSize: 23, fontWeight: '900' },
   summaryCopy: { flex: 1 },
   summaryTitle: { color: colors.ink, fontSize: type.body, fontWeight: '900' },
   summaryText: { color: colors.inkMuted, fontSize: type.micro, lineHeight: 16, marginTop: 3 },
-  tabs: { backgroundColor: colors.card, borderColor: colors.line, borderRadius: radius.pill, borderWidth: 1, flexDirection: 'row', marginBottom: spacing.md, padding: 4 },
-  tab: { alignItems: 'center', borderRadius: radius.pill, flex: 1, flexDirection: 'row', justifyContent: 'center', minHeight: 40, paddingHorizontal: spacing.sm },
-  tabActive: { backgroundColor: colors.primary },
-  tabText: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '900' },
-  tabTextActive: { color: colors.onPrimary },
+  tabsContainer: { borderRadius: 9, marginBottom: spacing.md },
+  tabsBlur: { flexDirection: 'row', padding: 2, position: 'relative', backgroundColor: isDark ? 'rgba(118,118,128,0.24)' : 'rgba(118,118,128,0.12)', borderRadius: 9 },
+  activePill: { position: 'absolute', top: 2, bottom: 2, left: 2, borderRadius: 7, backgroundColor: isDark ? '#636366' : '#FFFFFF', shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 3 },
+  tab: { alignItems: 'center', borderRadius: 7, flex: 1, flexDirection: 'row', justifyContent: 'center', minHeight: 28, paddingVertical: 4, zIndex: 1 },
+  tabText: { color: isDark ? 'rgba(235, 235, 245, 0.6)' : 'rgba(60, 60, 67, 0.6)', fontSize: 13, fontWeight: '500' },
+  tabTextActive: { color: isDark ? '#FFFFFF' : '#000000', fontWeight: '600' },
   tabBadge: { alignItems: 'center', backgroundColor: colors.coralSoft, borderRadius: 10, marginLeft: 5, minWidth: 20, paddingHorizontal: 5, paddingVertical: 2 },
-  tabBadgeActive: { backgroundColor: 'rgba(255,255,255,0.2)' },
+  tabBadgeActive: { backgroundColor: colors.coral },
   tabBadgeText: { color: colors.coral, fontSize: 10, fontWeight: '900' },
-  tabBadgeTextActive: { color: colors.onPrimary },
+  tabBadgeTextActive: { color: '#FFFFFF' },
   likeCard: { marginBottom: spacing.md, overflow: 'hidden', padding: 0 },
   likeHero: { height: 180, overflow: 'hidden' },
   likeHeroCopy: { paddingHorizontal: spacing.md, paddingTop: spacing.md },

@@ -5,6 +5,14 @@ import RNText from '../components/AppText';
 import PlacePhoto from '../components/PlacePhoto';
 import PlacePreviewCard from '../components/PlacePreviewCard';
 import PlaceDetailSheet from '../components/PlaceDetailSheet';
+import SearchField from '../components/SearchField';
+import LiquidGlassCompactToolbar from '../components/LiquidGlassCompactToolbar';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  interpolate,
+  Extrapolation,
+} from 'react-native-reanimated';
 import { Keyboard, Modal, Pressable, useColorScheme, View, ScrollView as RNScrollView, useWindowDimensions, StyleSheet } from 'react-native';
 import ExpoImage from '../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -27,6 +35,7 @@ import usePartyFeed from '../hooks/usePartyFeed';
 import { approvePartyRequest, cancelParty, createParty, rejectPartyRequest, requestJoinParty, withdrawPartyRequest } from '../services/partyService';
 import { preparePartyApproval } from '../services/groupChatEncryption';
 import { useConfirm } from '../context/ConfirmContext';
+import { buildPartySchedule, defaultScheduleWindow } from '../utils/partySchedule';
 
 const CATEGORIES = [
   { id: 'all', label: 'ทั้งหมด', symbol: 'square.grid.2x2.fill' },
@@ -87,6 +96,62 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const [busyPartyId, setBusyPartyId] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [query, setQuery] = useState('');
+  const searchFieldRef = useRef(null);
+  const scrollY = useSharedValue(0);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const isCollapsedRef = useRef(false);
+
+  const handleScroll = useCallback((event) => {
+    const y = event.nativeEvent.contentOffset.y;
+    scrollY.value = y;
+    const shouldCollapse = y > 24;
+    if (shouldCollapse !== isCollapsedRef.current) {
+      isCollapsedRef.current = shouldCollapse;
+      setIsCollapsed(shouldCollapse);
+    }
+  }, [scrollY]);
+
+  const handleExpandSearch = useCallback(() => {
+    if (tourScrollRef.current?.scrollTo) {
+      tourScrollRef.current.scrollTo({ y: 0, animated: true });
+    }
+    setTimeout(() => {
+      searchFieldRef.current?.focus?.();
+    }, 280);
+  }, []);
+
+  const expandedHeaderStyle = useAnimatedStyle(() => {
+    const opacity = interpolate(scrollY.value, [0, 24], [1, 0], Extrapolation.CLAMP);
+    const translateY = interpolate(scrollY.value, [0, 24], [0, -6], Extrapolation.CLAMP);
+    return {
+      opacity,
+      transform: [{ translateY }],
+    };
+  });
+
+  const collapsedToolbarStyle = useAnimatedStyle(() => {
+    const opacity = interpolate(scrollY.value, [12, 28], [0, 1], Extrapolation.CLAMP);
+    const translateY = interpolate(scrollY.value, [12, 28], [4, 0], Extrapolation.CLAMP);
+    const scale = interpolate(scrollY.value, [12, 28], [0.97, 1], Extrapolation.CLAMP);
+    return {
+      opacity,
+      transform: [{ translateY }, { scale }],
+    };
+  });
+  const filteredParties = useMemo(() => {
+    if (!query.trim()) return parties;
+    const q = query.trim().toLowerCase();
+    return parties.filter((p) => {
+      const locationName = p.location?.name || '';
+      const creatorName = p.creator?.name || '';
+      const note = p.schedule?.note || '';
+      return (
+        locationName.toLowerCase().includes(q) ||
+        creatorName.toLowerCase().includes(q) ||
+        note.toLowerCase().includes(q)
+      );
+    });
+  }, [parties, query]);
   const [detailSpot, setDetailSpot] = useState(null);
   const resolvedDetailSpot = detailSpot ? {
     ...detailSpot,
@@ -104,9 +169,10 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const [isMapMounted, setIsMapMounted] = useState(false);
   const [pendingSpot, setPendingSpot] = useState(null);
   const [mapTargetSpot, setMapTargetSpot] = useState(null);
-  const [schedDate, setSchedDate] = useState(new Date());
-  const [schedStart, setSchedStart] = useState(() => { const d = new Date(); d.setHours(14, 0, 0, 0); return d; });
-  const [schedEnd, setSchedEnd] = useState(() => { const d = new Date(); d.setHours(16, 0, 0, 0); return d; });
+  const initialWindow = useMemo(() => defaultScheduleWindow(), []);
+  const [schedDate, setSchedDate] = useState(() => initialWindow.date);
+  const [schedStart, setSchedStart] = useState(() => initialWindow.start);
+  const [schedEnd, setSchedEnd] = useState(() => initialWindow.end);
   const maxPeopleState = useNativeState('2');
   const messageState = useNativeState('');
   const searchState = useNativeState('');
@@ -182,11 +248,10 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const openScheduleFor = useCallback((spot) => {
     if (scheduleSubmitLock.current) return;
     setPendingSpot(spot);
-    setSchedDate(new Date());
-    const start = new Date(); start.setHours(14, 0, 0, 0);
-    const end = new Date(); end.setHours(16, 0, 0, 0);
-    setSchedStart(start);
-    setSchedEnd(end);
+    const win = defaultScheduleWindow();
+    setSchedDate(win.date);
+    setSchedStart(win.start);
+    setSchedEnd(win.end);
     maxPeopleState.set('2');
     messageState.set('');
     setShowSchedule(true);
@@ -194,21 +259,18 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
 
   const confirmSchedule = async () => {
     if (!pendingSpot || scheduleSubmitLock.current) return;
-    if (schedEnd.getTime() <= schedStart.getTime()) {
-      onToast?.('เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม', 'info');
+    const scheduleValidation = buildPartySchedule({
+      day: schedDate,
+      start: schedStart,
+      end: schedEnd,
+    });
+    if (!scheduleValidation.ok) {
+      onToast?.(scheduleValidation.message, 'info');
       return;
     }
     
-    const year = schedDate.getFullYear();
-    const month = String(schedDate.getMonth() + 1).padStart(2, '0');
-    const day = String(schedDate.getDate()).padStart(2, '0');
-    const isoDate = `${year}-${month}-${day}`;
-    
-    const formatTime = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
     const schedule = { 
-      date: isoDate, 
-      startTime: formatTime(schedStart), 
-      endTime: formatTime(schedEnd),
+      ...scheduleValidation.schedule,
       maxPeople: parseInt(maxPeopleState.get(), 10) || 2,
       message: messageState.get().trim()
     };
@@ -269,37 +331,6 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       const nextWidth = nativeEvent.layout.width;
       if (nextWidth > 0) setMeasuredWidth(current => current != null && Math.abs(current - nextWidth) < 1 ? current : nextWidth);
     }} style={{ flex: 1, backgroundColor: palette.background }}>
-      {!partyOnly && <>
-      <View style={{ backgroundColor: palette.background, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 }}>
-        <Host ignoreSafeArea="container" colorScheme={colorScheme} seedColor={palette.coral} matchContents={{ vertical: true }} style={{ width: '100%' }}>
-          <HStack spacing={8} modifiers={[
-            padding({ horizontal: 13, vertical: 8 }),
-            frame({ maxWidth: Infinity, minHeight: 44 }),
-            background(palette.surface, insetShape),
-          ]}>
-            <Image color={palette.tertiary} size={16} systemName="magnifyingglass" />
-            <TextField
-              onTextChange={setQuery}
-              placeholder="ค้นหาสถานที่หรือกิจกรรม"
-              text={searchState}
-              modifiers={[textFieldStyle('plain'), font({ textStyle: 'subheadline' }), frame({ maxWidth: Infinity })]}
-            />
-            {query ? (
-              <Button
-                onPress={() => {
-                  setQuery('');
-                  searchState.set('');
-                }}
-                modifiers={[buttonStyle('plain'), frame({ width: 24, height: 24 }), accessibilityLabel('ลบการค้นหา')]}
-              >
-                <Image color={palette.tertiary} size={16} systemName="xmark.circle.fill" />
-              </Button>
-            ) : null}
-          </HStack>
-        </Host>
-      </View>
-
-      </>}
       {partyOnly ? <TourTarget id="party-finder.list" style={{ flex: 1 }}>
         <PartyFinderSection
           targetPartyId={targetPartyId}
@@ -308,7 +339,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
           hasMore={hasMoreParties}
           loadingMore={loadingMoreParties}
           onRetry={retryParties}
-          parties={parties}
+          parties={filteredParties}
           loading={partiesLoading && !parties?.length}
           error={partiesError}
           busyPartyId={busyPartyId}
@@ -321,63 +352,53 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
           onRetryActivation={(party) => retryLegacyActivation(party.id)}
           onOpenChat={(party) => router.push({ pathname: '/group-chat', params: { partyId: party.id } })}
           onOpenMap={openMapForSpot}
+          onScroll={handleScroll}
+          contentContainerStyle={{ paddingTop: 60 }}
         />
       </TourTarget> : <RNScrollView
         ref={tourScrollRef}
         style={{ flex: 1, width: '100%' }}
+        contentContainerStyle={{ paddingTop: 60, paddingBottom: 80, paddingHorizontal: 20 }}
         showsVerticalScrollIndicator={false}
-        contentInsetAdjustmentBehavior="automatic"
+        contentInsetAdjustmentBehavior="never"
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
       >
-        <Host ignoreSafeArea="container" colorScheme={colorScheme} seedColor={palette.coral} matchContents={{ vertical: true }} style={{ width: '100%' }}>
-          <VStack
-            alignment="leading"
-            spacing={16}
-            modifiers={[
-              padding({ top: 8, bottom: 38, horizontal: 20 }),
-              frame({ width: layoutWidth, alignment: 'topLeading' }),
-            ]}
-          >
+        {!partyOnly && (
+          <View style={{ gap: 16 }}>
+            <TourTarget id="meetup.party" scrollRef={tourScrollRef} scrollOffset={16}>
+              <PartyFinderEntry />
+            </TourTarget>
 
+            {selectedMeetup && (
+              <SelectedMeetup
+                meetup={{ ...selectedMeetup, ...campusSpots.find((spot) => spot.id === selectedMeetup.id) }}
+                onClear={handleClear}
+                onPress={setDetailSpot}
+              />
+            )}
 
-
-          {!partyOnly && <>
-          <RNHostView matchContents>
-            <View style={{ width: bannerWidth }}>
-              <TourTarget id="meetup.party" scrollRef={tourScrollRef} scrollOffset={16}>
-                <PartyFinderEntry />
-              </TourTarget>
-            </View>
-          </RNHostView>
-          {selectedMeetup && (
-            <RNHostView matchContents>
-              <View style={{ width: bannerWidth }}>
-                <SelectedMeetup
-                  meetup={{ ...selectedMeetup, ...campusSpots.find((spot) => spot.id === selectedMeetup.id) }}
-                  onClear={handleClear}
-                  onPress={setDetailSpot}
-                />
+            <TourTarget id="meetup.spots">
+              <View style={{ gap: 4 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <SymbolView name="mappin.and.ellipse" size={17} tintColor={palette.coral} />
+                  <RNText style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
+                    เลือกกิจกรรมที่สนใจ
+                  </RNText>
+                </View>
+                <RNText style={{ fontSize: 13, color: palette.secondary, fontWeight: '500' }}>
+                  สถานที่จริงใน ม.อ. เรียงจากใกล้ไปไกล
+                </RNText>
               </View>
-            </RNHostView>
-          )}
+            </TourTarget>
 
-          <NativeTourTarget id="meetup.spots">
-            <VStack alignment="leading" spacing={5}>
-              <HStack spacing={6} alignment="center">
-                <Image systemName="mappin.and.ellipse" color={palette.coral} />
-                <Text modifiers={[font({ textStyle: 'headline', weight: 'semibold', design: 'rounded' }), foregroundStyle(palette.text), lineLimit(1)]}>
-                  เลือกกิจกรรมที่สนใจ
-                </Text>
-              </HStack>
-              <Text modifiers={[font({ textStyle: 'caption2', weight: 'medium' }), foregroundStyle(palette.secondary), lineLimit(2)]}>
-                สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล
-              </Text>
-            </VStack>
-          </NativeTourTarget>
-
-          <ScrollView axes="horizontal" showsIndicators={false} modifiers={[scrollIndicators('never', 'horizontal')]}>
-            <HStack spacing={9}>
+            <RNScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 9, paddingVertical: 2 }}
+            >
               {CATEGORIES.map((category) => (
                 <CategoryChip
                   active={selectedCategory === category.id}
@@ -386,65 +407,101 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
                   onPress={() => setSelectedCategory(category.id)}
                 />
               ))}
-            </HStack>
-          </ScrollView>
+            </RNScrollView>
 
-          <HStack modifiers={[frame({ maxWidth: Infinity })]}>
-            <Text modifiers={[font({ textStyle: 'headline', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text), lineLimit(2)]}>
-              จุดนัดพบแนะนำ
-            </Text>
-            <Spacer />
-            <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(palette.coral), lineLimit(1)]}>
-              {visibleSpots.length} แห่ง · ใกล้สุดก่อน
-            </Text>
-          </HStack>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <RNText style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
+                จุดนัดพบแนะนำ
+              </RNText>
+              <RNText style={{ fontSize: 13, fontWeight: '600', color: palette.coral }}>
+                {visibleSpots.length} แห่ง · ใกล้สุดก่อน
+              </RNText>
+            </View>
 
-          {visibleSpots.length ? visibleSpots.map((spot) => (
-            <RNHostView key={spot.id} matchContents>
-              <View style={{ width: bannerWidth, alignItems: 'center' }}>
-                <PlacePreviewCard spot={spot} selected={selectedMeetup?.id === spot.id} onPress={setDetailSpot} />
+            {visibleSpots.length ? (
+              <View style={{ gap: 12 }}>
+                {visibleSpots.map((spot) => (
+                  <PlacePreviewCard
+                    key={spot.id}
+                    spot={spot}
+                    selected={selectedMeetup?.id === spot.id}
+                    onPress={setDetailSpot}
+                  />
+                ))}
               </View>
-            </RNHostView>
-          )) : (
-            <VStack
-              alignment="center"
-              spacing={12}
-              modifiers={[
-                padding({ vertical: 36, horizontal: 20 }),
-                frame({ maxWidth: Infinity }),
-                background(palette.surface, cardShape),
-              ]}
-            >
-              <Image
-                color={palette.secondary}
-                size={42}
-                systemName="mappin.slash.circle.fill"
-              />
-              <Text
-                modifiers={[
-                  font({ size: 18, weight: 'bold' }),
-                  foregroundStyle(palette.text),
-                  multilineTextAlignment('center'),
-                ]}
+            ) : (
+              <View
+                style={{
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingVertical: 36,
+                  paddingHorizontal: 20,
+                  backgroundColor: palette.surface,
+                  borderRadius: 24,
+                  gap: 12,
+                }}
               >
-                ยังไม่มีสถานที่ในหมวดนี้
-              </Text>
-              <Text
-                modifiers={[
-                  font({ size: 14, weight: 'regular' }),
-                  foregroundStyle(palette.secondary),
-                  multilineTextAlignment('center'),
-                ]}
-              >
-                ลองเลือกหมวดกิจกรรมอื่นเพื่อดูสถานที่เพิ่มเติม
-              </Text>
-            </VStack>
-          )}
-
-          </>}
-        </VStack>
-        </Host>
+                <SymbolView name="mappin.slash.circle.fill" size={42} tintColor={palette.secondary} />
+                <RNText style={{ fontSize: 18, fontWeight: '700', color: palette.text, textAlign: 'center' }}>
+                  {query ? 'ไม่พบสถานที่ที่ตรงกับการค้นหา' : 'ยังไม่มีสถานที่ในหมวดนี้'}
+                </RNText>
+                <RNText style={{ fontSize: 14, color: palette.secondary, textAlign: 'center' }}>
+                  {query ? 'ลองค้นหาด้วยคำอื่น หรือกดล้างการค้นหา' : 'ลองเลือกหมวดกิจกรรมอื่นเพื่อดูสถานที่เพิ่มเติม'}
+                </RNText>
+              </View>
+            )}
+          </View>
+        )}
       </RNScrollView>}
+
+      {/* Floating Liquid Glass Header — ลอยอยู่เหนือคอนเทนต์ ไม่ยึดติดกับพื้นหลัง */}
+      <View
+        pointerEvents="box-none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          paddingHorizontal: 16,
+          paddingTop: 8,
+          zIndex: 100,
+        }}
+      >
+        {/* Expanded Search Field (Floating Liquid Glass at top) */}
+        <Animated.View
+          style={[
+            expandedHeaderStyle,
+            isCollapsed && { pointerEvents: 'none' },
+          ]}
+        >
+          <SearchField
+            ref={searchFieldRef}
+            value={query}
+            onChangeText={setQuery}
+            placeholder={partyOnly ? 'ค้นหากิจกรรมหรือสถานที่ตี้' : 'ค้นหาสถานที่หรือกิจกรรม'}
+          />
+        </Animated.View>
+
+        {/* Collapsed Liquid Glass Toolbar (Floating Compact Toolbar on scroll) */}
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFillObject,
+            { paddingHorizontal: 16, paddingTop: 8 },
+            collapsedToolbarStyle,
+            !isCollapsed && { pointerEvents: 'none' },
+          ]}
+        >
+          <LiquidGlassCompactToolbar
+            query={query}
+            placeholder={partyOnly ? 'ค้นหากิจกรรมตี้...' : 'ค้นหากิจกรรมหรือสถานที่...'}
+            onPressSearch={handleExpandSearch}
+            onClearSearch={() => setQuery('')}
+            onOpenMap={() => openMapForSpot()}
+            onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
+            spotCount={visibleSpots.length}
+          />
+        </Animated.View>
+      </View>
 
       <PlaceDetailSheet
         spot={resolvedDetailSpot}
@@ -696,20 +753,38 @@ function SelectedMeetup({ meetup, onClear, onPress }) {
 function CategoryChip({ active, category, onPress }) {
   const palette = usePalette();
   return (
-    <Button onPress={onPress} modifiers={[buttonStyle('plain'), accessibilityLabel(category.label)]}>
-      <HStack
-        spacing={5}
-        modifiers={[
-          padding({ horizontal: 10, vertical: 7 }),
-          background(active ? palette.coralSoft : palette.surface, shapes.capsule()),
-        ]}
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={category.label}
+      onPress={onPress}
+      style={({ pressed }) => [
+        {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          paddingHorizontal: 12,
+          paddingVertical: 8,
+          borderRadius: 20,
+          backgroundColor: active ? palette.coralSoft : palette.surface,
+          opacity: pressed ? 0.75 : 1,
+        },
+      ]}
+    >
+      <SymbolView
+        name={category.symbol}
+        size={13}
+        tintColor={active ? palette.coral : palette.tertiary}
+      />
+      <RNText
+        style={{
+          fontSize: 13,
+          fontWeight: '600',
+          color: active ? palette.coral : palette.text,
+        }}
       >
-        <Image color={active ? palette.coral : palette.tertiary} size={12} systemName={category.symbol} />
-        <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(active ? palette.coral : palette.text), lineLimit(1)]}>
-          {category.label}
-        </Text>
-      </HStack>
-    </Button>
+        {category.label}
+      </RNText>
+    </Pressable>
   );
 }
 

@@ -568,6 +568,8 @@ export default function PartyFinderSection({
   onLoadMoreRequests,
   hasMore = false,
   loadingMore = false,
+  onScroll,
+  contentContainerStyle,
 }) {
   const { colors } = useTheme();
   const { campusSpots = [] } = useAppFeed();
@@ -706,13 +708,15 @@ export default function PartyFinderSection({
       <FlatList
         data={feedRows}
         keyExtractor={(item) => item.id}
-        contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={styles.feedContent}
+        contentInsetAdjustmentBehavior="never"
+        contentContainerStyle={[styles.feedContent, contentContainerStyle]}
         initialNumToRender={3}
         maxToRenderPerBatch={3}
         windowSize={5}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
         ListHeaderComponent={header}
         ListEmptyComponent={empty}
         ListFooterComponent={footer}

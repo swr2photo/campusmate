@@ -4,6 +4,7 @@ import { requireFeature } from './plusEntitlements.js';
 import { buildPublicProfile } from './discoveryProfile.js';
 import { toWire } from './secureProfileAccess.js';
 import { establishedMatch } from './profileRelationships.js';
+import { isSuperAdminEmail } from './adminPolicy.js';
 
 const UID = /^[A-Za-z0-9_-]{1,128}$/;
 const ACTION = /^[a-zA-Z0-9_-]{16,100}$/;
@@ -124,10 +125,17 @@ export function createMatchingActionApi({ db, now = Date.now, serverTimestamp })
       const uid = request.auth?.uid;
       if (!uid) throw new HttpsError('unauthenticated', 'ต้องเข้าสู่ระบบ');
       const id = actionId(request);
+      const isSuper = isSuperAdminEmail(request.auth.token?.email);
+      const isAdminClaim = request.auth.token?.admin === true;
+      const isAdmin = isSuper || isAdminClaim;
       return db.runTransaction(async (tx) => {
         const receiptRef = db.doc(`rewindReceipts/${uid}/entries/${id}`);
-        const [entitlement, receipt] = await tx.getAll(db.doc(`entitlements/${uid}`), receiptRef);
-        requireFeature(entitlement.data(), 'unlimitedRewind', now());
+        const [entitlement, receipt, userSnap] = await tx.getAll(db.doc(`entitlements/${uid}`), receiptRef, db.doc(`users/${uid}`));
+        const userEmail = request.auth.token?.email || userSnap.data()?.email || userSnap.data()?.campusEmail;
+        const isUserAdmin = isAdmin || isSuperAdminEmail(userEmail) || userSnap.data()?.isAdmin === true || userSnap.data()?.role === 'admin';
+        if (!isUserAdmin) {
+          requireFeature(entitlement.data(), 'unlimitedRewind', now());
+        }
         if (receipt.exists) return receipt.data().result;
         const history = await tx.get(db.collection(`discoveryActions/${uid}/entries`).where('undoable', '==', true).orderBy('sequence', 'desc').limit(20));
         const evaluated = [];
@@ -141,7 +149,9 @@ export function createMatchingActionApi({ db, now = Date.now, serverTimestamp })
           if (eligible) break;
         }
         // Entitlement is a transaction read; a concurrent revocation retries.
-        requireFeature(entitlement.data(), 'unlimitedRewind', now());
+        if (!isUserAdmin) {
+          requireFeature(entitlement.data(), 'unlimitedRewind', now());
+        }
         let result = { profile: null, hasMore: history.size === 20 };
         for (const item of evaluated) {
           tx.update(item.entry.ref, { undoable: false, undoneAt: serverTimestamp(), undoReason: item.eligible ? 'rewind' : 'unavailable' });

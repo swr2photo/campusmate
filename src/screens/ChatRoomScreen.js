@@ -247,7 +247,7 @@ function formatStatusTime(item, mine, isLatest, otherReadAt, otherUnread, mediaV
 }
 
 export default function ChatRoomScreen() {
-  useEffect(() => { prefetchBrowseMusicTracks(); }, []);
+  useEffect(() => { void prefetchBrowseMusicTracks().catch(() => {}); }, []);
   const { showImageModeration } = useToast();
   const { confirm } = useConfirm();
   const { activeCall, canCall, startVoiceCall, startVideoCall, acceptCall } = useCall();

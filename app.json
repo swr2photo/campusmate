@@ -150,8 +150,7 @@
     ],
     "experiments": {
       "reactCompiler": true,
-      "typedRoutes": true,
-      "noxcturnalTransformWorker": true
+      "typedRoutes": true
     },
     "extra": {
       "router": {},

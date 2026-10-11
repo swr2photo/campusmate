@@ -423,6 +423,34 @@ export default function HomeScreen({ onOpenLikes }) {
           </TourTarget>
         )}
       </ScrollView>
+
+      {/* Floating Action Button for Landmarks */}
+      <Pressable
+        accessibilityLabel="สถานที่"
+        accessibilityRole="button"
+        onPress={() => router.push('/landmarks')}
+        style={({ pressed }) => [
+          {
+            position: 'absolute',
+            bottom: 24,
+            right: 20,
+            backgroundColor: colors.primary,
+            width: 56,
+            height: 56,
+            borderRadius: 28,
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.25,
+            shadowRadius: 8,
+            elevation: 5,
+            opacity: pressed ? 0.8 : 1,
+          }
+        ]}
+      >
+        <Text style={{ fontSize: 24 }}>🗺️</Text>
+      </Pressable>
     </IosLikeScreen>
   );
 }

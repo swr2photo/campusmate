@@ -1,6 +1,6 @@
 import Text from './AppText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, Image, PanResponder, Platform, StyleSheet, View } from 'react-native';
+import { Animated, Image, Modal, PanResponder, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import FeatureIcon from './FeatureIcon';
@@ -292,101 +292,119 @@ export default function InAppNotificationHost() {
   const badgeStyle = getBadgeStyle(current);
 
   return (
-    <View
-      pointerEvents="box-none"
-      style={[styles.overlayContainer, { top: topInset + 6 }]}
+    <Modal
+      transparent
+      visible={Boolean(current)}
+      animationType="none"
+      statusBarTranslucent
+      presentationStyle="overFullScreen"
+      onRequestClose={() => dismiss()}
     >
-      <Animated.View
-        style={[
-          styles.bannerAnimatedWrapper,
-          {
-            transform: [{ translateY }, { scale }],
-          },
-        ]}
-        {...panResponder.panHandlers}
+      <Pressable
+        style={styles.modalBackdrop}
+        onPress={() => dismiss()}
       >
-        <LiquidGlassView
-          glassEffectStyle="regular"
-          style={styles.bannerGlass}
+        <View
+          pointerEvents="box-none"
+          style={[styles.overlayContainer, { top: topInset + 6 }]}
         >
-          {/* Specular highlight rim at top */}
-          <View
-            pointerEvents="none"
+          <Animated.View
             style={[
-              styles.specularTopLine,
+              styles.bannerAnimatedWrapper,
               {
-                backgroundColor: isDark
-                  ? 'rgba(255, 255, 255, 0.25)'
-                  : 'rgba(255, 255, 255, 0.85)',
+                transform: [{ translateY }, { scale }],
               },
             ]}
-          />
+            {...panResponder.panHandlers}
+          >
+            <LiquidGlassView
+              glassEffectStyle="regular"
+              style={styles.bannerGlass}
+            >
+              {/* Specular highlight rim at top */}
+              <View
+                pointerEvents="none"
+                style={[
+                  styles.specularTopLine,
+                  {
+                    backgroundColor: isDark
+                      ? 'rgba(255, 255, 255, 0.25)'
+                      : 'rgba(255, 255, 255, 0.85)',
+                  },
+                ]}
+              />
 
-          <View style={styles.contentRow}>
-            {/* Avatar / Glass Icon Badge */}
-            <View style={styles.avatarContainer}>
-              {current.avatarUri ? (
-                <Image
-                  source={{ uri: current.avatarUri }}
-                  style={styles.avatarImage}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View
-                  style={[
-                    styles.iconBadge,
-                    {
-                      backgroundColor: badgeStyle.bg,
-                      borderColor: badgeStyle.borderColor,
-                    },
-                  ]}
-                >
-                  <FeatureIcon
-                    name={current.icon || 'bell.fill'}
-                    size={20}
-                    color={badgeStyle.iconColor}
-                  />
+              <View style={styles.contentRow}>
+                {/* Avatar / Glass Icon Badge */}
+                <View style={styles.avatarContainer}>
+                  {current.avatarUri ? (
+                    <Image
+                      source={{ uri: current.avatarUri }}
+                      style={styles.avatarImage}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View
+                      style={[
+                        styles.iconBadge,
+                        {
+                          backgroundColor: badgeStyle.bg,
+                          borderColor: badgeStyle.borderColor,
+                        },
+                      ]}
+                    >
+                      <FeatureIcon
+                        name={current.icon || 'bell.fill'}
+                        size={20}
+                        color={badgeStyle.iconColor}
+                      />
+                    </View>
+                  )}
                 </View>
-              )}
-            </View>
 
-            {/* Text Content */}
-            <View style={styles.textContainer}>
-              <View style={[styles.headerLine, !current.message && styles.headerLineSingle]}>
-                <Text
-                  style={[
-                    styles.title,
-                    { color: colors.ink || '#25272B' },
-                    !current.message && styles.titleSingleLine,
-                  ]}
-                  numberOfLines={!current.message ? 2 : 1}
-                >
-                  {current.title}
-                </Text>
-                {current.showTimestamp && (
-                  <>
-                    <View style={styles.dotSeparator} />
-                    <Text style={styles.timeLabel}>ตอนนี้</Text>
-                  </>
-                )}
+                {/* Text Content */}
+                <View style={styles.textContainer}>
+                  <View style={[styles.headerLine, !current.message && styles.headerLineSingle]}>
+                    <Text
+                      style={[
+                        styles.title,
+                        { color: colors.ink || '#25272B' },
+                        !current.message && styles.titleSingleLine,
+                      ]}
+                      numberOfLines={!current.message ? 2 : 1}
+                    >
+                      {current.title}
+                    </Text>
+                    {current.showTimestamp && (
+                      <>
+                        <View style={styles.dotSeparator} />
+                        <Text style={styles.timeLabel}>ตอนนี้</Text>
+                      </>
+                    )}
+                  </View>
+                  {Boolean(current.message) && (
+                    <Text
+                      style={[styles.message, { color: colors.inkMuted || '#6B7078' }]}
+                      numberOfLines={2}
+                    >
+                      {current.message}
+                    </Text>
+                  )}
+                </View>
               </View>
-              {Boolean(current.message) && (
-                <Text
-                  style={[styles.message, { color: colors.inkMuted || '#6B7078' }]}
-                  numberOfLines={2}
-                >
-                  {current.message}
-                </Text>
-              )}
-            </View>
-          </View>
-        </LiquidGlassView>
-      </Animated.View>
-    </View>
+            </LiquidGlassView>
+          </Animated.View>
+        </View>
+      </Pressable>
+    </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'transparent',
+  },
   overlayContainer: {
     position: 'absolute',
     left: 0,

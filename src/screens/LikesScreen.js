@@ -7,6 +7,7 @@ import { router } from 'expo-router';
 import { Image } from 'expo-image';
 import { useAppActions, useAppFeed } from '../context/AppContext';
 import { useConfirm } from '../context/ConfirmContext';
+import LiquidGlassSegmentedControl from '../components/LiquidGlassSegmentedControl';
 import { Card, OutlineButton, PrimaryButton } from '../components/ui';
 import { IosLikeAvatar, IosLikeScreen } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';
@@ -44,12 +45,10 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
   const incomingCount = pendingIncomingLikeCount ?? pendingIncomingLikes.length;
   const { ensureConversation, respondToLike, syncNow, loadMoreIncomingLikes } = useAppActions();
   const [activeTab, setActiveTab] = useState('pending');
-  const tabWidth = useSharedValue(0);
-  const activeIndex = TABS.findIndex(t => t.id === activeTab);
-  const animatedPillStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: withSpring(activeIndex * tabWidth.value, { damping: 24, stiffness: 400, damping: 30 }) }],
-    width: tabWidth.value,
-  }));
+  const tabConfigs = useMemo(() => [
+    { id: 'pending', label: 'ถูกใจคุณ', badgeCount: incomingCount },
+    { id: 'accepted', label: 'จับคู่แล้ว', badgeCount: acceptedIncomingLikes.length },
+  ], [incomingCount, acceptedIncomingLikes.length]);
   const [processingId, setProcessingId] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -180,28 +179,11 @@ export default function LikesScreen({ onClose, onOpenChat, onToast }) {
       </View>
 
       <TourTarget id="likes.tabs" style={styles.tabsContainer}>
-        <BlurView intensity={isDark ? 30 : 60} tint={isDark ? 'dark' : 'light'} style={styles.tabsBlur}>
-          <Animated.View style={[styles.activePill, animatedPillStyle]} />
-          {TABS.map((tab, i) => {
-            const isActive = activeTab === tab.id;
-            const count = tab.id === 'pending'
-              ? incomingCount
-              : acceptedIncomingLikes.length;
-            return (
-              <Pressable
-                accessibilityRole="tab"
-                accessibilityState={{ selected: isActive }}
-                key={tab.id}
-                onLayout={i === 0 ? (e) => { tabWidth.value = e.nativeEvent.layout.width; } : undefined}
-                onPress={() => setActiveTab(tab.id)}
-                style={styles.tab}
-              >
-                <Text style={[styles.tabText, isActive && styles.tabTextActive]}>{tab.label}</Text>
-                {count > 0 && <View style={[styles.tabBadge, isActive && styles.tabBadgeActive]}><Text style={[styles.tabBadgeText, isActive && styles.tabBadgeTextActive]}>{count}</Text></View>}
-              </Pressable>
-            );
-          })}
-        </BlurView>
+        <LiquidGlassSegmentedControl
+          activeTab={activeTab}
+          onChangeTab={setActiveTab}
+          tabs={tabConfigs}
+        />
       </TourTarget>
     </View>
   );
@@ -375,7 +357,7 @@ const getStyles = (colors, isDark) => StyleSheet.create({
   summaryCopy: { flex: 1 },
   summaryTitle: { color: colors.ink, fontSize: type.body, fontWeight: '900' },
   summaryText: { color: colors.inkMuted, fontSize: type.micro, lineHeight: 16, marginTop: 3 },
-  tabsContainer: { borderRadius: 9, marginBottom: spacing.md },
+  tabsContainer: { marginBottom: spacing.md },
   tabsBlur: { flexDirection: 'row', padding: 2, position: 'relative', backgroundColor: isDark ? 'rgba(118,118,128,0.24)' : 'rgba(118,118,128,0.12)', borderRadius: 9 },
   activePill: { position: 'absolute', top: 2, bottom: 2, left: 2, borderRadius: 7, backgroundColor: isDark ? '#636366' : '#FFFFFF', shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 3 },
   tab: { alignItems: 'center', borderRadius: 7, flex: 1, flexDirection: 'row', justifyContent: 'center', minHeight: 28, paddingVertical: 4, zIndex: 1 },

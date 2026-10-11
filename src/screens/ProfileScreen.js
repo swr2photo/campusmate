@@ -251,9 +251,9 @@ export default function ProfileScreen({
 
   const tabConfigs = useMemo(() => {
     const configMap = {
-      edit: { id: 'edit', label: 'แก้ไขโปรไฟล์', icon: 'square.and.pencil' },
-      preview: { id: 'preview', label: 'ตัวอย่าง', icon: 'eye.fill' },
-      settings: { id: 'settings', label: 'การตั้งค่า', icon: 'gearshape.fill' },
+      edit: { id: 'edit', label: 'แก้ไขโปรไฟล์' },
+      preview: { id: 'preview', label: 'ตัวอย่าง' },
+      settings: { id: 'settings', label: 'การตั้งค่า' },
     };
     return tabs.map((t) => configMap[t] || { id: t, label: t });
   }, [tabs]);

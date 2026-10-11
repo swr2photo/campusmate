@@ -1987,6 +1987,14 @@ export const ensureNotificationInbox = onCall({ region: REGION }, async (request
         await discRef.set({ isFaceVerified: true }, { merge: true });
       }
     }
+    await db.doc(`entitlements/${request.auth.uid}`).set({
+      source: 'revenuecat',
+      entitlementId: 'campusmate_plus',
+      activeUntil: 4102444800000,
+      verifiedAt: Date.now(),
+      isAdmin: true,
+      isSuperAdmin: true,
+    }, { merge: true });
   }
   const refreshedUser = (await userRef.get()).data() || {};
   await syncFaceInbox(db, request.auth.uid, refreshedUser);

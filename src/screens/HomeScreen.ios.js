@@ -402,18 +402,22 @@ export default function HomeScreen() {
 
   // "เริ่มใหม่" brings skipped profiles back and refreshes the deck while
   // keeping every saved filter untouched.
-  const handleReset = () => {
+  const handleReset = async () => {
     // "เริ่มใหม่" brings skipped people back: CampusMate Plus (unlimited rewind).
     if (!rewind.guard()) return;
     pinnedDailyRef.current.id = null;
     setSelectedCategory('all');
-    void recycleSkippedProfiles()?.catch?.((error) => {
+    try {
+      await recycleSkippedProfiles();
+    } catch (error) {
       console.warn('[HomeScreen.ios] handleReset recycle error:', error?.message || error);
-    });
+    }
     if (hasMoreProfiles && !isLoadingMoreProfiles) {
       void loadMoreProfiles()?.catch?.((error) => {
         console.warn('[HomeScreen.ios] handleReset loadMore error:', error?.message || error);
       });
+    } else {
+      retryDiscovery?.();
     }
   };
 
@@ -801,6 +805,34 @@ export default function HomeScreen() {
           </Host>
         </BottomSheet>
       </Host>
+
+      {/* Floating Action Button for Landmarks */}
+      <Pressable
+        accessibilityLabel="สถานที่"
+        accessibilityRole="button"
+        onPress={() => router.push('/landmarks')}
+        style={({ pressed }) => [
+          {
+            position: 'absolute',
+            bottom: 24,
+            right: 20,
+            backgroundColor: palette.purple || '#007AFF',
+            width: 56,
+            height: 56,
+            borderRadius: 28,
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.25,
+            shadowRadius: 8,
+            elevation: 5,
+            opacity: pressed ? 0.8 : 1,
+          }
+        ]}
+      >
+        <RNText style={{ fontSize: 24 }}>🗺️</RNText>
+      </Pressable>
     </View>
   );
 }

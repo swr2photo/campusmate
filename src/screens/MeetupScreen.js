@@ -27,6 +27,7 @@ import usePartyFeed from '../hooks/usePartyFeed';
 import { approvePartyRequest, cancelParty, createParty, rejectPartyRequest, requestJoinParty, withdrawPartyRequest } from '../services/partyService';
 import { preparePartyApproval } from '../services/groupChatEncryption';
 import { useConfirm } from '../context/ConfirmContext';
+import { defaultScheduleWindow, validatePartySchedule } from '../utils/partySchedule';
 import CampusMapView from '../components/CampusMapView';
 import AppointmentPlacePicker from '../components/AppointmentPlacePicker';
 import {
@@ -229,11 +230,15 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
 
   const openScheduleFor = useCallback((spot) => {
     if (scheduleSubmitLock.current) return;
+    const win = defaultScheduleWindow();
+    const defaultDateStr = win.date.toISOString().slice(0, 10);
+    const defaultStartStr = `${String(win.start.getHours()).padStart(2, '0')}:${String(win.start.getMinutes()).padStart(2, '0')}`;
+    const defaultEndStr = `${String(win.end.getHours()).padStart(2, '0')}:${String(win.end.getMinutes()).padStart(2, '0')}`;
     const savedDate = spot?.schedule?.date || selectedMeetup?.schedule?.date;
     setPendingSpot(spot);
-    setSchedDate(nextDays.some((day) => day.value === savedDate) ? savedDate : nextDays[0].value);
-    setSchedStart(spot?.schedule?.startTime || selectedMeetup?.schedule?.startTime || '14:00');
-    setSchedEnd(spot?.schedule?.endTime || selectedMeetup?.schedule?.endTime || '16:00');
+    setSchedDate(nextDays.some((day) => day.value === savedDate) ? savedDate : (nextDays.some((day) => day.value === defaultDateStr) ? defaultDateStr : nextDays[0].value));
+    setSchedStart(spot?.schedule?.startTime || selectedMeetup?.schedule?.startTime || defaultStartStr);
+    setSchedEnd(spot?.schedule?.endTime || selectedMeetup?.schedule?.endTime || defaultEndStr);
     setMaxPeople(String(spot?.schedule?.maxPeople || selectedMeetup?.schedule?.maxPeople || 2));
     setMessage(spot?.schedule?.message || selectedMeetup?.schedule?.message || '');
     setScheduleModal(true);
@@ -241,13 +246,17 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
 
   const confirmSchedule = async () => {
     if (scheduleSubmitLock.current) return;
-    console.log('[MeetupScreen] confirmSchedule called', { pendingSpotName: pendingSpot?.name, schedDate, schedStart, schedEnd, maxPeople });
     if (!pendingSpot || !schedDate) {
       console.warn('[MeetupScreen] confirmSchedule missing pendingSpot or schedDate', { pendingSpot, schedDate });
       return;
     }
-    if (timeValueToMinutes(schedEnd) <= timeValueToMinutes(schedStart)) {
-      onToast?.('เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม', 'info');
+    const scheduleValidation = validatePartySchedule({
+      date: schedDate,
+      startTime: schedStart,
+      endTime: schedEnd,
+    });
+    if (!scheduleValidation.ok) {
+      onToast?.(scheduleValidation.message, 'info');
       return;
     }
     const schedule = {

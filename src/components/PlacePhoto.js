@@ -94,6 +94,7 @@ export default function PlacePhoto({ spot, style, contentFit = 'cover', showCred
         imageIdentity={`place:${current?.id || 'spot'}`}
         source={activeSource}
         contentFit={contentFit}
+        placeholderContentFit={contentFit}
         style={StyleSheet.absoluteFill}
         onError={isUsingRemote ? () => setFailedUri(uri) : undefined}
       />

@@ -704,21 +704,23 @@ function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
       ]}
     >
       <HStack spacing={12} alignment="top" modifiers={[frame({ maxWidth: Infinity })]}>
-        {/* รูปสถานที่ทางซ้าย */}
-        <RNHostView matchContents={false} style={{ width: 94, height: 104, borderRadius: 12, overflow: 'hidden' }}>
-          <View style={{ width: 94, height: 104, position: 'relative', backgroundColor: 'rgba(0,0,0,0.06)' }}>
-            <PlacePhoto
-              contentFit="cover"
-              recyclingKey={`selected-${meetup.id}`}
-              spot={meetup}
-              style={StyleSheet.absoluteFill}
-              transition={0}
-            />
-            <View style={{ position: 'absolute', top: 5, left: 5, width: 20, height: 20, borderRadius: 10, backgroundColor: palette.mint, alignItems: 'center', justifyContent: 'center' }}>
-              <SymbolView name="checkmark" size={10} tintColor="#FFFFFF" />
+        {/* รูปสถานที่ทางซ้าย: the SwiftUI frame sizes the host; its RN style is ignored and the photo got squeezed to half */}
+        <ZStack modifiers={[frame({ width: 94, height: 104 })]}>
+          <RNHostView matchContents={false}>
+            <View style={{ width: 94, height: 104, borderRadius: 12, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.06)' }}>
+              <PlacePhoto
+                contentFit="cover"
+                recyclingKey={`selected-${meetup.id}`}
+                spot={meetup}
+                style={StyleSheet.absoluteFill}
+                transition={0}
+              />
+              <View style={{ position: 'absolute', top: 5, left: 5, width: 20, height: 20, borderRadius: 10, backgroundColor: palette.mint, alignItems: 'center', justifyContent: 'center' }}>
+                <SymbolView name="checkmark" size={10} tintColor="#FFFFFF" />
+              </View>
             </View>
-          </View>
-        </RNHostView>
+          </RNHostView>
+        </ZStack>
 
         {/* รายละเอียดทางขวา */}
         <VStack alignment="leading" spacing={3} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
@@ -821,22 +823,24 @@ const SpotCard = React.memo(function SpotCard({ onChoose, onOpenMap, onSchedule,
     >
       {/* รูปสถานที่ทางซ้าย + รายละเอียดทางขวา */}
       <HStack spacing={12} alignment="top" modifiers={[frame({ maxWidth: Infinity })]}>
-        {/* ทางซ้าย: รูปสถานที่ */}
-        <RNHostView matchContents={false} style={{ width: 104, height: 118, borderRadius: 14, overflow: 'hidden' }}>
-          <View style={{ width: 104, height: 118, position: 'relative', backgroundColor: 'rgba(0,0,0,0.06)' }}>
-            <PlacePhoto
-              contentFit="cover"
-              recyclingKey={spot.id}
-              spot={spot}
-              style={StyleSheet.absoluteFill}
-              transition={0}
-            />
-            {/* Category icon badge */}
-            <View style={{ position: 'absolute', top: 6, left: 6, width: 22, height: 22, borderRadius: 11, backgroundColor: accent.color, alignItems: 'center', justifyContent: 'center' }}>
-              <SymbolView name={activitySymbol(spot.category)} size={11} tintColor="#FFFFFF" />
+        {/* ทางซ้าย: รูปสถานที่ (fixed SwiftUI frame, see SelectedMeetup) */}
+        <ZStack modifiers={[frame({ width: 104, height: 118 })]}>
+          <RNHostView matchContents={false}>
+            <View style={{ width: 104, height: 118, borderRadius: 14, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.06)' }}>
+              <PlacePhoto
+                contentFit="cover"
+                recyclingKey={spot.id}
+                spot={spot}
+                style={StyleSheet.absoluteFill}
+                transition={0}
+              />
+              {/* Category icon badge */}
+              <View style={{ position: 'absolute', top: 6, left: 6, width: 22, height: 22, borderRadius: 11, backgroundColor: accent.color, alignItems: 'center', justifyContent: 'center' }}>
+                <SymbolView name={activitySymbol(spot.category)} size={11} tintColor="#FFFFFF" />
+              </View>
             </View>
-          </View>
-        </RNHostView>
+          </RNHostView>
+        </ZStack>
 
         {/* ทางขวา: รายละเอียดสถานที่ */}
         <VStack alignment="leading" spacing={4} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>

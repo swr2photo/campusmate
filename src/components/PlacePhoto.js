@@ -57,10 +57,20 @@ const CATEGORY_DEFAULT_PHOTOS = {
 
 const CAMPUS_FALLBACK_PHOTO = require('../assets/images/campus/DSC_1217.jpg');
 
-export default function PlacePhoto({ spot, style, contentFit = 'cover' }) {
-  const { colors } = useTheme();
+function usePlaceSpot(spot) {
   const { campusSpots = [] } = useAppFeed();
-  const current = campusSpots.find((entry) => entry.id === spot?.id) || spot;
+  return campusSpots.find((entry) => entry.id === spot?.id) || spot;
+}
+
+function openPhotoSource(photo) {
+  if (/^https:\/\//.test(photo?.sourceUrl || '')) void Linking.openURL(photo.sourceUrl).catch(() => {});
+}
+
+// showCredit=false keeps small thumbnails clear; render PlacePhotoCredit next to
+// them instead so the photographer is still credited.
+export default function PlacePhoto({ spot, style, contentFit = 'cover', showCredit = true }) {
+  const { colors } = useTheme();
+  const current = usePlaceSpot(spot);
   const photo = current?.placePhoto;
   const uri = photo?.thumbnailUrl || photo?.url;
 
@@ -70,30 +80,28 @@ export default function PlacePhoto({ spot, style, contentFit = 'cover' }) {
       ? CATEGORY_DEFAULT_PHOTOS[current.category]
       : CAMPUS_FALLBACK_PHOTO);
 
+  // Stay on the bundled photo once a URL fails. Clearing this when the fallback
+  // loads would retry the broken URL forever and the photo would flicker.
   const [failedUri, setFailedUri] = useState(null);
-  const [retry, setRetry] = useState(0);
 
-  const activeSource = uri && failedUri !== uri ? { uri } : localDefault;
   const isUsingRemote = Boolean(uri && failedUri !== uri);
+  const activeSource = isUsingRemote ? { uri } : localDefault;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.surfaceRaised }, style]}>
       <Image
-        key={isUsingRemote ? `${uri}:${retry}` : `local:${current?.id || 'default'}`}
+        key={isUsingRemote ? uri : `local:${current?.id || 'default'}`}
         imageIdentity={`place:${current?.id || 'spot'}`}
         source={activeSource}
         contentFit={contentFit}
         style={StyleSheet.absoluteFill}
-        onLoad={() => setFailedUri(null)}
-        onError={() => setFailedUri(uri)}
+        onError={isUsingRemote ? () => setFailedUri(uri) : undefined}
       />
-      {photo?.credit && isUsingRemote ? (
+      {showCredit && photo?.credit && isUsingRemote ? (
         <Pressable
           accessibilityRole="link"
           accessibilityLabel={`เครดิตภาพ ${photo.credit} ${photo.license}`}
-          onPress={() => {
-            if (/^https:\/\//.test(photo.sourceUrl || '')) void Linking.openURL(photo.sourceUrl).catch(() => {});
-          }}
+          onPress={() => openPhotoSource(photo)}
           style={styles.credit}
         >
           <Text numberOfLines={1} style={styles.creditText}>
@@ -102,6 +110,24 @@ export default function PlacePhoto({ spot, style, contentFit = 'cover' }) {
         </Pressable>
       ) : null}
     </View>
+  );
+}
+
+export function PlacePhotoCredit({ spot, style }) {
+  const { colors } = useTheme();
+  const photo = usePlaceSpot(spot)?.placePhoto;
+  if (!photo?.credit || !(photo.thumbnailUrl || photo.url)) return null;
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={`เครดิตภาพ ${photo.credit} ${photo.license}`}
+      hitSlop={6}
+      onPress={() => openPhotoSource(photo)}
+    >
+      <Text numberOfLines={1} style={[styles.inlineCreditText, { color: colors.inkSoft }, style]}>
+        ภาพ: {photo.credit} · {photo.license}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -116,4 +142,5 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.5)',
   },
   creditText: { color: '#fff', fontSize: 9 },
+  inlineCreditText: { fontSize: 11 },
 });

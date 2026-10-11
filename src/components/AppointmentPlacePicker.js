@@ -22,7 +22,7 @@ try {
 }
 
 import FeatureIcon from './FeatureIcon';
-import PlacePhoto from './PlacePhoto';
+import PlacePhoto, { PlacePhotoCredit } from './PlacePhoto';
 import { resolveCampusPlace, searchCampusPlaces } from '../services/partyService';
 import { isWithinPartyRadius, PARTY_RADIUS_METERS, PSU_HAT_YAI } from '../utils/campusRadius';
 import { externalMapUrl, getSpotCoordinates } from '../utils/mapCoordinates';
@@ -158,7 +158,7 @@ export default function AppointmentPlacePicker({ visible, spots = [], initialSpo
           {local.map((spot) => (
             <Pressable key={spot.id} onPress={() => { setSelection(spot); setError(''); }} style={[styles.result, { borderBottomColor: colors.line }]}>
               <View style={styles.resultPhotoWrap}>
-                <PlacePhoto spot={spot} style={StyleSheet.absoluteFill} />
+                <PlacePhoto spot={spot} showCredit={false} style={StyleSheet.absoluteFill} />
               </View>
               <Text style={[styles.resultText, { color: colors.ink }]} numberOfLines={2}>{spot.name}</Text>
             </Pressable>
@@ -175,10 +175,13 @@ export default function AppointmentPlacePicker({ visible, spots = [], initialSpo
           <View style={styles.selectedRow}>
             {selection ? (
               <View style={styles.selectedPhotoWrap}>
-                <PlacePhoto spot={selection} style={StyleSheet.absoluteFill} />
+                <PlacePhoto spot={selection} showCredit={false} style={StyleSheet.absoluteFill} />
               </View>
             ) : null}
-            <Text style={[styles.selectedLabel, { color: colors.ink }]} numberOfLines={1}>{selection?.name || 'ยังไม่ได้เลือกสถานที่'}</Text>
+            <View style={styles.selectedCopy}>
+              <Text style={[styles.selectedLabel, { color: colors.ink }]} numberOfLines={1}>{selection?.name || 'ยังไม่ได้เลือกสถานที่'}</Text>
+              {selection ? <PlacePhotoCredit spot={selection} /> : null}
+            </View>
           </View>
           <Pressable accessibilityRole="button" disabled={!selectedPoint || busy} onPress={() => onSelect?.(selection)}
             style={[styles.confirm, { backgroundColor: colors.primary, opacity: !selectedPoint || busy ? 0.5 : 1 }]}>
@@ -213,7 +216,8 @@ const styles = StyleSheet.create({
   bottom: { borderTopWidth: 1, paddingHorizontal: spacing.lg, paddingVertical: 11, gap: 8 },
   selectedRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   selectedPhotoWrap: { width: 34, height: 34, borderRadius: 8, overflow: 'hidden' },
-  selectedLabel: { flex: 1, fontSize: 13, fontWeight: '600' },
+  selectedCopy: { flex: 1 },
+  selectedLabel: { fontSize: 13, fontWeight: '600' },
   confirm: { alignItems: 'center', justifyContent: 'center', borderRadius: radius.lg, minHeight: 46 },
   confirmText: { fontSize: 15, fontWeight: '800' },
 });

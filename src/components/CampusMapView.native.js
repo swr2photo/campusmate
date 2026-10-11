@@ -5,7 +5,7 @@ import Constants from 'expo-constants';
 import * as Location from 'expo-location';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import FeatureIcon from './FeatureIcon';
-import PlacePhoto from './PlacePhoto';
+import PlacePhoto, { PlacePhotoCredit } from './PlacePhoto';
 import { CAMPUS_CENTER, externalMapUrl, getSpotCoordinates } from '../utils/mapCoordinates';
 import { useTheme } from '../theme';
 
@@ -86,11 +86,12 @@ export default function CampusMapView({ spots = [], selectedSpot, onSelectSpot, 
     {selected ? <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
       <View style={styles.cardHeaderRow}>
         <View style={styles.cardPhotoWrap}>
-          <PlacePhoto spot={selected} style={StyleSheet.absoluteFill} />
+          <PlacePhoto spot={selected} showCredit={false} style={StyleSheet.absoluteFill} />
         </View>
         <View style={styles.cardDetails}>
           <Text style={[styles.cardName, { color: colors.ink }]} numberOfLines={1}>{selected.name}</Text>
           <Text numberOfLines={2} style={[styles.cardDesc, { color: colors.inkMuted }]}>{selected.description || selected.categoryLabel}</Text>
+          <PlacePhotoCredit spot={selected} />
         </View>
       </View>
       <View style={styles.actions}>

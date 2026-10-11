@@ -1,97 +1,23 @@
-import React, { useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, Pressable, ScrollView, SectionList, StyleSheet, View } from 'react-native';
-import { router, Stack } from 'expo-router';
+import React, { useMemo } from 'react';
+import { ActivityIndicator, Modal, Pressable, ScrollView, SectionList, StyleSheet, View } from 'react-native';
+import { Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AppText from '../src/components/AppText';
 import FeatureIcon from '../src/components/FeatureIcon';
 import { OutlineButton, PrimaryButton } from '../src/components/ui';
-import { useNotificationInbox } from '../src/context/NotificationInboxContext';
-import { useFaceVerificationFlow } from '../src/components/FaceVerificationPrompt';
-import { inboxTargetAvailable, timestampMillis } from '../src/services/notificationInboxService';
+import useNotificationsPage from '../src/hooks/useNotificationsPage';
+import { timestampMillis } from '../src/services/notificationInboxService';
+import { ANNOUNCEMENT_ROUTES, fullDateLabel, kindFor, timeLabel, TODO_SECTION, withAlpha } from '../src/utils/notificationDisplay';
 import { radius, spacing, useTheme } from '../src/theme';
 
-const DAY_MS = 86400000;
-const TODO_SECTION = 'สิ่งที่ต้องทำ';
-const ANNOUNCEMENT_ROUTES = ['/home', '/discover', '/meetup', '/me', '/chat'];
+const softFill = color => withAlpha(color, 0.12);
 
-// Icon, theme tint and short label for each inbox type.
-function kindFor(type) {
-  const value = String(type || '');
-  if (value === 'face_verification') return { icon: 'person.crop.circle.badge.checkmark', tint: 'primary', label: 'ยืนยันตัวตน' };
-  if (value === 'like') return { icon: 'heart.fill', tint: 'coral', label: 'ถูกใจ' };
-  if (value === 'match') return { icon: 'heart.circle.fill', tint: 'coral', label: 'จับคู่สำเร็จ' };
-  if (value === 'incoming_call') return { icon: 'phone.fill', tint: 'green', label: 'สายเรียกเข้า' };
-  if (value === 'group_message') return { icon: 'bubble.left.and.bubble.right.fill', tint: 'blue', label: 'แชตกลุ่ม' };
-  if (value.includes('message')) return { icon: 'bubble.left.fill', tint: 'blue', label: 'ข้อความ' };
-  if (value.includes('party')) return { icon: 'person.3.fill', tint: 'amber', label: 'ตี้' };
-  if (value === 'appointment') return { icon: 'calendar.badge.clock', tint: 'mint', label: 'นัดหมาย' };
-  if (value === 'admin_announcement') return { icon: 'bell.badge.fill', tint: 'primary', label: 'ประกาศจาก CampusMate' };
-  return { icon: 'bell.fill', tint: 'inkMuted', label: 'CampusMate' };
-}
-// Theme tints are 6-digit hex, so a 12% alpha suffix gives a soft fill in both modes.
-const softFill = color => `${color}1F`;
-const startOfDay = millis => { const day = new Date(millis); day.setHours(0, 0, 0, 0); return day.getTime(); };
-const isTodo = row => row.type === 'face_verification' && row.status === 'required';
-
-function sectionTitle(row, today) {
-  if (isTodo(row)) return TODO_SECTION;
-  const millis = timestampMillis(row.createdAt);
-  const days = millis ? Math.round((today - startOfDay(millis)) / DAY_MS) : 0;
-  if (days <= 0) return 'วันนี้';
-  if (days === 1) return 'เมื่อวาน';
-  if (days < 7) return new Date(millis).toLocaleDateString('th-TH', { weekday: 'long' });
-  return new Date(millis).toLocaleDateString('th-TH', { day: 'numeric', month: 'long', year: 'numeric' });
-}
-function timeLabel(millis, now) {
-  const minutes = Math.floor((now - millis) / 60000);
-  if (!millis || minutes < 1) return 'เมื่อสักครู่';
-  if (minutes < 60) return `${minutes} นาที`;
-  if (minutes < 360 && startOfDay(millis) === startOfDay(now)) return `${Math.floor(minutes / 60)} ชม.`;
-  return `${new Date(millis).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.`;
-}
-
+// iOS renders notifications.ios.js (SwiftUI); this page serves Android.
 export default function NotificationsRoute() {
-  const { colors, isDark } = useTheme(), inbox = useNotificationInbox(), face = useFaceVerificationFlow(), insets = useSafeAreaInsets();
-  const [unreadOnly, setUnreadOnly] = useState(false), [detail, setDetail] = useState(null), [busy, setBusy] = useState(false);
+  const { colors, isDark } = useTheme(), insets = useSafeAreaInsets();
+  const { inbox, face, sections, unreadOnly, setUnreadOnly, detail, detailOpen, busy, open, closeDetail, startFace, openRoute, canStartFace, allRead, loadMore } = useNotificationsPage();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const now = Date.now();
-  // Rows arrive newest first, so consecutive grouping yields one section per day.
-  const sections = useMemo(() => {
-    const today = startOfDay(Date.now()), out = [];
-    for (const row of inbox.rows) {
-      if (unreadOnly && row.readAt) continue;
-      const title = sectionTitle(row, today), last = out.at(-1);
-      if (last?.title === title) last.data.push(row); else out.push({ key: `${out.length}:${title}`, title, data: [row] });
-    }
-    return out;
-  }, [inbox.rows, unreadOnly]);
-
-  const report = () => Alert.alert('ยังเปิดรายการไม่ได้', 'ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง');
-  const open = async row => {
-    try {
-      if (!row.readAt) void inbox.markRead(row.id).catch(report);
-      if (row.type === 'face_verification' || row.type === 'admin_announcement' || row.type === 'system') { setDetail(row); return; }
-      if (!await inboxTargetAvailable(row, inbox.uid)) { Alert.alert('รายการนี้ไม่พร้อมใช้งานแล้ว', 'ข้อมูลอาจถูกลบ หรือคุณไม่มีสิทธิ์เปิดรายการนี้'); return; }
-      const target = row.target || {};
-      if (target.conversationId) router.push({ pathname: '/chat-room', params: { chatId: target.conversationId } });
-      else if (row.type === 'group_message' && target.partyId) router.push({ pathname: '/group-chat', params: { partyId: target.partyId } });
-      else if (target.partyId) router.push({ pathname: '/party-finder', params: { partyId: target.partyId } });
-      else if (target.appointmentId) router.push('/appointments');
-      else if (row.type === 'like') router.push('/likes');
-      else setDetail(row);
-    } catch (error) {
-      if (String(error.code).includes('permission-denied') || String(error.code).includes('not-found')) Alert.alert('รายการนี้ไม่พร้อมใช้งานแล้ว', 'คุณไม่มีสิทธิ์เปิดรายการนี้ หรือข้อมูลถูกลบแล้ว');
-      else report();
-    }
-  };
-  const startFace = row => {
-    if (!row.readAt) void inbox.markRead(row.id).catch(report);
-    setDetail(null); face.start();
-  };
-  const allRead = async () => { setBusy(true); try { await inbox.markAll(); } catch { report(); } finally { setBusy(false); } };
-  const loadMore = () => { if (inbox.hasMore && !inbox.loadingMore) inbox.loadMore().catch(report); };
-  const detailLive = detail ? inbox.rows.find(row => row.id === detail.id) || detail : null;
-  const canStartFace = row => row?.type === 'face_verification' && face.required && row.status !== 'completed';
 
   const renderItem = ({ item, index, section }) => {
     const kind = kindFor(item.type), tint = colors[kind.tint], unread = !item.readAt;
@@ -127,7 +53,7 @@ export default function NotificationsRoute() {
     </View>;
   };
 
-  const detailKind = kindFor(detailLive?.type), detailTint = colors[detailKind.tint], detailMillis = timestampMillis(detailLive?.createdAt);
+  const detailKind = kindFor(detail?.type), detailTint = colors[detailKind.tint], detailMillis = timestampMillis(detail?.createdAt);
   return <View style={styles.screen}>
     <Stack.Screen options={{ headerShown: true, title: 'แจ้งเตือน', headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="ทำเครื่องหมายว่าอ่านทั้งหมดแล้ว" disabled={busy || !inbox.count} onPress={allRead} hitSlop={8} style={styles.headerAction}>
       {busy ? <ActivityIndicator size="small" color={colors.primary} /> : <AppText style={[styles.headerActionText, { color: inbox.count ? colors.primary : colors.inkSoft }]}>อ่านทั้งหมด</AppText>}
@@ -164,9 +90,9 @@ export default function NotificationsRoute() {
       ListFooterComponent={sections.length ? <View style={styles.footer}>{inbox.loadingMore ? <ActivityIndicator color={colors.primary} /> : inbox.hasMore
         ? <Pressable accessibilityRole="button" onPress={loadMore} style={({ pressed }) => [styles.loadMore, pressed && styles.pressed]}><AppText style={styles.link}>โหลดเพิ่มเติม</AppText></Pressable>
         : <View style={styles.footerNote}><FeatureIcon name="clock.fill" size={13} color={colors.inkSoft} /><AppText style={styles.footerText}>เก็บประวัติย้อนหลัง 90 วัน</AppText></View>}</View> : null} />
-    <Modal visible={!!detail} transparent animationType="fade" onRequestClose={() => setDetail(null)}>
+    <Modal visible={detailOpen} transparent animationType="fade" onRequestClose={closeDetail}>
       <View style={styles.scrim}>
-        <Pressable accessibilityRole="button" accessibilityLabel="ปิด" onPress={() => setDetail(null)} style={StyleSheet.absoluteFill} />
+        <Pressable accessibilityRole="button" accessibilityLabel="ปิด" onPress={closeDetail} style={StyleSheet.absoluteFill} />
         <View style={[styles.sheet, { paddingBottom: insets.bottom + spacing.lg }]}>
           <View style={styles.handle} />
           <ScrollView contentContainerStyle={styles.sheetContent}>
@@ -174,16 +100,16 @@ export default function NotificationsRoute() {
               <View style={[styles.sheetIcon, { backgroundColor: softFill(detailTint) }]}><FeatureIcon name={detailKind.icon} size={26} color={detailTint} /></View>
               <View style={styles.copy}>
                 <AppText style={[styles.sheetKind, { color: detailTint }]}>{detailKind.label}</AppText>
-                {detailMillis ? <AppText style={styles.time}>{new Date(detailMillis).toLocaleString('th-TH', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</AppText> : null}
+                {detailMillis ? <AppText style={styles.time}>{fullDateLabel(detailMillis)}</AppText> : null}
               </View>
             </View>
-            <AppText style={styles.sheetTitle}>{detailLive?.title}</AppText>
-            <AppText style={styles.sheetBody}>{detailLive?.body}</AppText>
+            <AppText style={styles.sheetTitle}>{detail?.title}</AppText>
+            <AppText style={styles.sheetBody}>{detail?.body}</AppText>
           </ScrollView>
           <View style={styles.sheetActions}>
-            {canStartFace(detailLive) ? <PrimaryButton iconName="person.crop.circle.badge.checkmark" label="เริ่มยืนยันใบหน้า" onPress={() => startFace(detailLive)} /> : null}
-            {detailLive?.type === 'admin_announcement' && ANNOUNCEMENT_ROUTES.includes(detailLive?.target?.route) ? <PrimaryButton label="เปิดหน้าที่เกี่ยวข้อง" onPress={() => { setDetail(null); router.push(detailLive.target.route); }} /> : null}
-            <OutlineButton label="ปิด" onPress={() => setDetail(null)} />
+            {canStartFace(detail) ? <PrimaryButton iconName="person.crop.circle.badge.checkmark" label="เริ่มยืนยันใบหน้า" onPress={() => startFace(detail)} /> : null}
+            {detail?.type === 'admin_announcement' && ANNOUNCEMENT_ROUTES.includes(detail?.target?.route) ? <PrimaryButton label="เปิดหน้าที่เกี่ยวข้อง" onPress={() => openRoute(detail.target.route)} /> : null}
+            <OutlineButton label="ปิด" onPress={closeDetail} />
           </View>
         </View>
       </View>
@@ -216,7 +142,7 @@ function createStyles(c, isDark) {
     sliceFirst: { borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg },
     sliceLast: { borderBottomLeftRadius: radius.lg, borderBottomRightRadius: radius.lg },
     row: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, paddingHorizontal: 14, paddingVertical: 13 },
-    rowUnread: { backgroundColor: `${c.primary}${isDark ? '24' : '0F'}` },
+    rowUnread: { backgroundColor: withAlpha(c.primary, isDark ? 0.14 : 0.06) },
     rowPressed: { backgroundColor: c.surfaceRaised },
     separator: { position: 'absolute', left: 70, right: 0, bottom: 0, height: StyleSheet.hairlineWidth, backgroundColor: c.line },
     icon: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },

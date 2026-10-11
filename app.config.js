@@ -30,6 +30,7 @@ module.exports = {
   ...expo,
   plugins: [
     ...expo.plugins,
+    './plugins/withFirebaseSceneLifecycle',
     ...(androidMapsKey || iosMapsKey ? [[
       'react-native-maps',
       {

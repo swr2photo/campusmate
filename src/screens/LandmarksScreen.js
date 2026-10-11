@@ -22,11 +22,7 @@ export default function LandmarksScreen() {
 
   const handleSelectPlace = useCallback((place) => {
     console.log('[LandmarksScreen] Selected place:', place);
-    showToast({
-      title: place.name,
-      message: `พิกัด: ${place.latitude.toFixed(4)}, ${place.longitude.toFixed(4)}`,
-      preset: 'done',
-    });
+    showToast(`${place.name} · พิกัด: ${place.latitude.toFixed(4)}, ${place.longitude.toFixed(4)}`);
   }, [showToast]);
 
   const handleLibraryChange = useCallback((library) => {

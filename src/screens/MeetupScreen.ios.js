@@ -3,7 +3,17 @@ import { font } from '../components/brandFont';
 import { useNativePalette } from '../theme';
 import RNText from '../components/AppText';
 import PlacePhoto from '../components/PlacePhoto';
-import { Keyboard, Modal, Platform, Pressable, useColorScheme, View, Dimensions, Animated, ScrollView as RNScrollView, useWindowDimensions, StyleSheet } from 'react-native';
+import PlacePreviewCard from '../components/PlacePreviewCard';
+import PlaceDetailSheet from '../components/PlaceDetailSheet';
+import SearchField from '../components/SearchField';
+import LiquidGlassCompactToolbar from '../components/LiquidGlassCompactToolbar';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  interpolate,
+  Extrapolation,
+} from 'react-native-reanimated';
+import { Keyboard, Modal, Pressable, useColorScheme, View, ScrollView as RNScrollView, useWindowDimensions, StyleSheet } from 'react-native';
 import ExpoImage from '../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SymbolView } from 'expo-symbols';
@@ -15,14 +25,17 @@ import CampusMapView from '../components/CampusMapView';
 import AppointmentPlacePicker from '../components/AppointmentPlacePicker';
 import { Stack, useRouter } from 'expo-router';
 import { BottomSheet, ContentUnavailableView, DatePicker, Form, Host, HStack, Image, Picker, ScrollView, RNHostView, Section, Spacer, TextField, useNativeState, VStack, ZStack } from '@expo/ui/swift-ui';
-import { accessibilityLabel, background, buttonBorderShape, buttonStyle, controlSize, datePickerStyle, foregroundStyle, frame, labelStyle, lineLimit, padding, pickerStyle, presentationDetents, presentationDragIndicator, scrollDismissesKeyboard, scrollIndicators, shadow, shapes, textFieldStyle, tint } from '@expo/ui/swift-ui/modifiers';
+import { accessibilityLabel, background, buttonBorderShape, buttonStyle, controlSize, datePickerStyle, disabled, foregroundStyle, frame, fixedSize, labelStyle, lineLimit, multilineTextAlignment, padding, pickerStyle, presentationDetents, presentationDragIndicator, scrollDismissesKeyboard, scrollIndicators, shadow, shapes, textFieldStyle, tint } from '@expo/ui/swift-ui/modifiers';
 import { useAppActions, useAppFeed, useAppProfile } from '../context/AppContext';
 import PartyFinderSection, { sortAndRefitMeetups } from '../components/PartyFinderSection';
 import PartyFinderEntry from '../components/PartyFinderEntry';
+import NativeTourTarget from '../components/NativeTourTarget.ios';
+import { TourTarget } from '../context/AppTourContext';
 import usePartyFeed from '../hooks/usePartyFeed';
 import { approvePartyRequest, cancelParty, createParty, rejectPartyRequest, requestJoinParty, withdrawPartyRequest } from '../services/partyService';
 import { preparePartyApproval } from '../services/groupChatEncryption';
 import { useConfirm } from '../context/ConfirmContext';
+import { buildPartySchedule, defaultScheduleWindow } from '../utils/partySchedule';
 
 const CATEGORIES = [
   { id: 'all', label: 'ทั้งหมด', symbol: 'square.grid.2x2.fill' },
@@ -61,17 +74,17 @@ const insetShape = shapes.roundedRectangle({ cornerRadius: 16, roundedCornerStyl
 
 export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId = null }) {
   const router = useRouter();
+  const tourScrollRef = useRef(null);
   const palette = usePalette();
   const { confirm } = useConfirm();
   const colorScheme = useColorScheme();
   const { width: windowWidth } = useWindowDimensions();
-  // IPadAspectFrame in app/_layout.js clamps the screen layout canvas to 390pt on iPad
-  const isIPadFrame = Platform.OS === 'ios' && Platform.isPad && windowWidth > 430;
-  const layoutWidth = isIPadFrame ? 390 : windowWidth;
+  const [measuredWidth, setMeasuredWidth] = useState(null);
+  const layoutWidth = Math.min(measuredWidth || windowWidth, windowWidth, 760);
   const bannerWidth = layoutWidth - 40;
   const { campusSpots = [], selectedMeetup } = useAppFeed();
   const { profile: myProfile } = useAppProfile();
-  const { chooseMeetup, updateMeetupSchedule, clearMeetup } = useAppActions();
+  const { chooseMeetup, clearMeetup } = useAppActions();
   const { parties: feedParties, loading: partiesLoading, error: partiesError, retryLegacyActivation, loadMore: loadMoreParties, loadMoreRequests, hasMore: hasMoreParties, loadingMore: loadingMoreParties, retry: retryParties } = usePartyFeed(partyOnly ? myProfile : null, campusSpots, null, targetPartyId);
   const [partyClock, setPartyClock] = useState(Date.now());
   useEffect(() => {
@@ -83,17 +96,83 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const [busyPartyId, setBusyPartyId] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [query, setQuery] = useState('');
+  const searchFieldRef = useRef(null);
+  const scrollY = useSharedValue(0);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const isCollapsedRef = useRef(false);
+
+  const handleScroll = useCallback((event) => {
+    const y = event.nativeEvent.contentOffset.y;
+    scrollY.value = y;
+    const shouldCollapse = y > 24;
+    if (shouldCollapse !== isCollapsedRef.current) {
+      isCollapsedRef.current = shouldCollapse;
+      setIsCollapsed(shouldCollapse);
+    }
+  }, [scrollY]);
+
+  const handleExpandSearch = useCallback(() => {
+    if (tourScrollRef.current?.scrollTo) {
+      tourScrollRef.current.scrollTo({ y: 0, animated: true });
+    }
+    setTimeout(() => {
+      searchFieldRef.current?.focus?.();
+    }, 280);
+  }, []);
+
+  const expandedHeaderStyle = useAnimatedStyle(() => {
+    const opacity = interpolate(scrollY.value, [0, 24], [1, 0], Extrapolation.CLAMP);
+    const translateY = interpolate(scrollY.value, [0, 24], [0, -6], Extrapolation.CLAMP);
+    return {
+      opacity,
+      transform: [{ translateY }],
+    };
+  });
+
+  const collapsedToolbarStyle = useAnimatedStyle(() => {
+    const opacity = interpolate(scrollY.value, [12, 28], [0, 1], Extrapolation.CLAMP);
+    const translateY = interpolate(scrollY.value, [12, 28], [4, 0], Extrapolation.CLAMP);
+    const scale = interpolate(scrollY.value, [12, 28], [0.97, 1], Extrapolation.CLAMP);
+    return {
+      opacity,
+      transform: [{ translateY }, { scale }],
+    };
+  });
+  const filteredParties = useMemo(() => {
+    if (!query.trim()) return parties;
+    const q = query.trim().toLowerCase();
+    return parties.filter((p) => {
+      const locationName = p.location?.name || '';
+      const creatorName = p.creator?.name || '';
+      const note = p.schedule?.note || '';
+      return (
+        locationName.toLowerCase().includes(q) ||
+        creatorName.toLowerCase().includes(q) ||
+        note.toLowerCase().includes(q)
+      );
+    });
+  }, [parties, query]);
+  const [detailSpot, setDetailSpot] = useState(null);
+  const resolvedDetailSpot = detailSpot ? {
+    ...detailSpot,
+    ...(selectedMeetup?.id === detailSpot.id ? selectedMeetup : {}),
+    ...campusSpots.find((spot) => spot.id === detailSpot.id),
+    ...(selectedMeetup?.id === detailSpot.id ? { schedule: selectedMeetup.schedule, scheduledAt: selectedMeetup.scheduledAt } : {}),
+  } : null;
 
   // Schedule BottomSheet state
   const [showSchedule, setShowSchedule] = useState(false);
+  const scheduleSubmitLock = useRef(false);
+  const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
   const [placePickerVisible, setPlacePickerVisible] = useState(false);
   const [showMapModal, setShowMapModal] = useState(false);
   const [isMapMounted, setIsMapMounted] = useState(false);
   const [pendingSpot, setPendingSpot] = useState(null);
   const [mapTargetSpot, setMapTargetSpot] = useState(null);
-  const [schedDate, setSchedDate] = useState(new Date());
-  const [schedStart, setSchedStart] = useState(() => { const d = new Date(); d.setHours(14, 0, 0, 0); return d; });
-  const [schedEnd, setSchedEnd] = useState(() => { const d = new Date(); d.setHours(16, 0, 0, 0); return d; });
+  const initialWindow = useMemo(() => defaultScheduleWindow(), []);
+  const [schedDate, setSchedDate] = useState(() => initialWindow.date);
+  const [schedStart, setSchedStart] = useState(() => initialWindow.start);
+  const [schedEnd, setSchedEnd] = useState(() => initialWindow.end);
   const maxPeopleState = useNativeState('2');
   const messageState = useNativeState('');
   const searchState = useNativeState('');
@@ -167,33 +246,36 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   }, [selectedMeetup, visibleSpots]);
 
   const openScheduleFor = useCallback((spot) => {
+    if (scheduleSubmitLock.current) return;
     setPendingSpot(spot);
-    setSchedDate(new Date());
-    const start = new Date(); start.setHours(14, 0, 0, 0);
-    const end = new Date(); end.setHours(16, 0, 0, 0);
-    setSchedStart(start);
-    setSchedEnd(end);
+    const win = defaultScheduleWindow();
+    setSchedDate(win.date);
+    setSchedStart(win.start);
+    setSchedEnd(win.end);
     maxPeopleState.set('2');
     messageState.set('');
     setShowSchedule(true);
   }, [maxPeopleState, messageState]);
 
   const confirmSchedule = async () => {
-    if (!pendingSpot) return;
+    if (!pendingSpot || scheduleSubmitLock.current) return;
+    const scheduleValidation = buildPartySchedule({
+      day: schedDate,
+      start: schedStart,
+      end: schedEnd,
+    });
+    if (!scheduleValidation.ok) {
+      onToast?.(scheduleValidation.message, 'info');
+      return;
+    }
     
-    const year = schedDate.getFullYear();
-    const month = String(schedDate.getMonth() + 1).padStart(2, '0');
-    const day = String(schedDate.getDate()).padStart(2, '0');
-    const isoDate = `${year}-${month}-${day}`;
-    
-    const formatTime = (d) => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
     const schedule = { 
-      date: isoDate, 
-      startTime: formatTime(schedStart), 
-      endTime: formatTime(schedEnd),
+      ...scheduleValidation.schedule,
       maxPeople: parseInt(maxPeopleState.get(), 10) || 2,
       message: messageState.get().trim()
     };
+    scheduleSubmitLock.current = true;
+    setScheduleSubmitting(true);
     try {
       const location = pendingSpot?.location?.kind === 'google'
         ? { kind: 'google', placeId: pendingSpot.location.placeId }
@@ -206,6 +288,9 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
     } catch (error) {
       console.error('confirmSchedule error:', error);
       onToast?.(error?.message || 'สร้างตี้ไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    } finally {
+      scheduleSubmitLock.current = false;
+      setScheduleSubmitting(false);
     }
   };
 
@@ -241,183 +326,79 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
     }
   };
 
-  const scrollY = useRef(new Animated.Value(0)).current;
-
-  const largeHeaderOpacity = scrollY.interpolate({
-    inputRange: [0, 40],
-    outputRange: [1, 0],
-    extrapolate: 'clamp'
-  });
-  
-  const largeHeaderTranslateY = scrollY.interpolate({
-    inputRange: [0, 40],
-    outputRange: [0, -20],
-    extrapolate: 'clamp'
-  });
-
-  const smallHeaderOpacity = scrollY.interpolate({
-    inputRange: [30, 60],
-    outputRange: [0, 1],
-    extrapolate: 'clamp'
-  });
-
-  const blurIntensity = colorScheme === 'dark' ? 30 : 40;
-
   return (
-    <View style={{ flex: 1, backgroundColor: palette.background }}>
-      {!partyOnly && <>
-      <MaskedView
-        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 105, zIndex: 10 }}
-        pointerEvents="none"
-        maskElement={
-          <LinearGradient colors={['#FFFFFF', '#FFFFFF00']} style={{ flex: 1 }} />
-        }
-      >
-        <BlurView intensity={blurIntensity} tint={colorScheme} style={{ flex: 1 }} />
-      </MaskedView>
-
-      <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, opacity: largeHeaderOpacity, transform: [{ translateY: largeHeaderTranslateY }] }} pointerEvents="box-none">
-        <Host colorScheme={colorScheme} seedColor={palette.coral} style={{ width: '100%', height: 105 }}>
-          <VStack modifiers={[padding({ top: 45, bottom: 15, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
-            <HStack modifiers={[frame({ maxWidth: Infinity })]}>
-              <VStack alignment="leading" spacing={0} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-                <Text modifiers={[font({ textStyle: 'largeTitle', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text), lineLimit(1)]}>
-                  กิจกรรม
-                </Text>
-              </VStack>
-              <Spacer />
-              <Image
-                color={palette.coral}
-                size={24}
-                systemName="figure.2.and.child.holdinghands"
-                modifiers={[frame({ width: 44, height: 44 }), background(palette.coralSoft, shapes.circle())]}
-              />
-            </HStack>
-          </VStack>
-        </Host>
-      </Animated.View>
-
-      <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 95, zIndex: 21, opacity: smallHeaderOpacity, paddingTop: 45, paddingHorizontal: 20 }} pointerEvents="box-none">
-        <View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: -20 }}>
-          <MaskedView style={{ flex: 1 }} maskElement={<LinearGradient colors={['#FFFFFF', '#FFFFFF00']} locations={[0.6, 1]} style={{ flex: 1 }} />}>
-            <BlurView intensity={100} tint="prominent" style={{ flex: 1 }} />
-          </MaskedView>
-        </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', width: '100%' }}>
-          <RNText style={{ fontSize: 17, fontWeight: '600', color: colorScheme === 'dark' ? '#fff' : '#000', position: 'absolute' }}>
-            กิจกรรม
-          </RNText>
-          <View style={{ flex: 1 }} />
-          <Pressable style={{ width: 32, height: 32, backgroundColor: palette.coralSoft, borderRadius: 16, alignItems: 'center', justifyContent: 'center' }}>
-            <SymbolView name="figure.2.and.child.holdinghands" size={18} tintColor={palette.coral} />
-          </Pressable>
-        </View>
-      </Animated.View>
-
-      <View style={{ zIndex: 22, backgroundColor: palette.background, marginTop: 105, paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 }}>
-        <Host colorScheme={colorScheme} seedColor={palette.coral} matchContents={{ vertical: true }} style={{ width: '100%' }}>
-          <HStack spacing={8} modifiers={[
-            padding({ horizontal: 13, vertical: 8 }),
-            frame({ maxWidth: Infinity, minHeight: 44 }),
-            background(palette.surface, insetShape),
-          ]}>
-            <Image color={palette.tertiary} size={16} systemName="magnifyingglass" />
-            <TextField
-              onTextChange={setQuery}
-              placeholder="ค้นหาสถานที่หรือกิจกรรม"
-              text={searchState}
-              modifiers={[textFieldStyle('plain'), font({ textStyle: 'subheadline' }), frame({ maxWidth: Infinity })]}
-            />
-            {query ? (
-              <Button
-                onPress={() => {
-                  setQuery('');
-                  searchState.set('');
-                }}
-                modifiers={[buttonStyle('plain'), frame({ width: 24, height: 24 }), accessibilityLabel('ลบการค้นหา')]}
-              >
-                <Image color={palette.tertiary} size={16} systemName="xmark.circle.fill" />
-              </Button>
-            ) : null}
-          </HStack>
-        </Host>
-      </View>
-
-      </>}
-      <Animated.ScrollView
+    <View onLayout={({ nativeEvent }) => {
+      const nextWidth = nativeEvent.layout.width;
+      if (nextWidth > 0) setMeasuredWidth(current => current != null && Math.abs(current - nextWidth) < 1 ? current : nextWidth);
+    }} style={{ flex: 1, backgroundColor: palette.background }}>
+      {partyOnly ? <TourTarget id="party-finder.list" style={{ flex: 1 }}>
+        <PartyFinderSection
+          targetPartyId={targetPartyId}
+          onLoadMore={loadMoreParties}
+          onLoadMoreRequests={loadMoreRequests}
+          hasMore={hasMoreParties}
+          loadingMore={loadingMoreParties}
+          onRetry={retryParties}
+          parties={filteredParties}
+          loading={partiesLoading && !parties?.length}
+          error={partiesError}
+          busyPartyId={busyPartyId}
+          onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
+          onJoinParty={handleJoinParty}
+          onWithdrawRequest={handleWithdraw}
+          onApproveRequest={handleApprove}
+          onRejectRequest={handleReject}
+          onCancelParty={handleCancelParty}
+          onRetryActivation={(party) => retryLegacyActivation(party.id)}
+          onOpenChat={(party) => router.push({ pathname: '/group-chat', params: { partyId: party.id } })}
+          onOpenMap={openMapForSpot}
+          onScroll={handleScroll}
+          contentContainerStyle={{ paddingTop: 60 }}
+        />
+      </TourTarget> : <RNScrollView
+        ref={tourScrollRef}
         style={{ flex: 1, width: '100%' }}
+        contentContainerStyle={{ paddingTop: 60, paddingBottom: 80, paddingHorizontal: 20 }}
         showsVerticalScrollIndicator={false}
+        contentInsetAdjustmentBehavior="never"
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        onScroll={handleScroll}
         scrollEventThrottle={16}
-        onScroll={Animated.event(
-          [{ nativeEvent: { contentOffset: { y: scrollY } } }],
-          { useNativeDriver: true }
-        )}
       >
-        <Host colorScheme={colorScheme} seedColor={palette.coral} matchContents={{ vertical: true }} style={{ width: '100%' }}>
-          <VStack
-            alignment="leading"
-            spacing={16}
-            modifiers={[
-              padding({ top: 8, bottom: 38, horizontal: 20 }),
-              frame({ maxWidth: Infinity, alignment: 'topLeading' }),
-            ]}
-          >
+        {!partyOnly && (
+          <View style={{ gap: 16 }}>
+            <TourTarget id="meetup.party" scrollRef={tourScrollRef} scrollOffset={16}>
+              <PartyFinderEntry />
+            </TourTarget>
 
-          {!partyOnly && <CampusHero
-            bannerHeight={180}
-            bannerWidth={bannerWidth}
-            onOpenMap={() => openMapForSpot(selectedMeetup || visibleSpots[0])}
-            selectedMeetup={selectedMeetup}
-          />}
+            {selectedMeetup && (
+              <SelectedMeetup
+                meetup={{ ...selectedMeetup, ...campusSpots.find((spot) => spot.id === selectedMeetup.id) }}
+                onClear={handleClear}
+                onPress={setDetailSpot}
+              />
+            )}
 
-          <RNHostView matchContents={true} style={{ width: layoutWidth, marginLeft: -20, marginRight: -20 }}>
-            {partyOnly ? <PartyFinderSection
-        targetPartyId={targetPartyId}
-        onLoadMore={loadMoreParties}
-        onLoadMoreRequests={loadMoreRequests}
-        hasMore={hasMoreParties}
-        loadingMore={loadingMoreParties}
-        onRetry={retryParties}
-              parties={parties}
-              loading={partiesLoading && !parties?.length}
-              error={partiesError}
-              busyPartyId={busyPartyId}
-              onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
-              onJoinParty={handleJoinParty}
-              onWithdrawRequest={handleWithdraw}
-              onApproveRequest={handleApprove}
-              onRejectRequest={handleReject}
-              onCancelParty={handleCancelParty}
-              onRetryActivation={(party) => retryLegacyActivation(party.id)}
-              onOpenChat={(party) => router.push({ pathname: '/group-chat', params: { partyId: party.id } })}
-              onOpenMap={openMapForSpot}
-            /> : <PartyFinderEntry />}
-          </RNHostView>
+            <TourTarget id="meetup.spots">
+              <View style={{ gap: 4 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <SymbolView name="mappin.and.ellipse" size={17} tintColor={palette.coral} />
+                  <RNText style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
+                    เลือกกิจกรรมที่สนใจ
+                  </RNText>
+                </View>
+                <RNText style={{ fontSize: 13, color: palette.secondary, fontWeight: '500' }}>
+                  สถานที่จริงใน ม.อ. เรียงจากใกล้ไปไกล
+                </RNText>
+              </View>
+            </TourTarget>
 
-          {!partyOnly && <>
-          {selectedMeetup && (
-            <SelectedMeetup
-              meetup={selectedMeetup}
-              onClear={handleClear}
-              onChangeTime={() => openScheduleFor(selectedMeetup)}
-              onOpenMap={() => openMapForSpot(selectedMeetup)}
-            />
-          )}
-
-          <VStack alignment="leading" spacing={5}>
-              <HStack spacing={6} alignment="center">
-                <Image systemName="mappin.and.ellipse" color={palette.coral} />
-                <Text modifiers={[font({ textStyle: 'headline', weight: 'semibold', design: 'rounded' }), foregroundStyle(palette.text), lineLimit(1)]}>
-                  เลือกกิจกรรมที่สนใจ
-                </Text>
-              </HStack>
-            <Text modifiers={[font({ textStyle: 'caption2', weight: 'medium' }), foregroundStyle(palette.secondary), lineLimit(2)]}>
-              สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล
-            </Text>
-          </VStack>
-
-          <ScrollView axes="horizontal" showsIndicators={false} modifiers={[scrollIndicators('never', 'horizontal')]}>
-            <HStack spacing={9}>
+            <RNScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ gap: 9, paddingVertical: 2 }}
+            >
               {CATEGORIES.map((category) => (
                 <CategoryChip
                   active={selectedCategory === category.id}
@@ -426,45 +407,111 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
                   onPress={() => setSelectedCategory(category.id)}
                 />
               ))}
-            </HStack>
-          </ScrollView>
+            </RNScrollView>
 
-          <HStack modifiers={[frame({ maxWidth: Infinity })]}>
-            <Text modifiers={[font({ textStyle: 'headline', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text), lineLimit(2)]}>
-              จุดนัดพบแนะนำ
-            </Text>
-            <Spacer />
-            <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(palette.coral), lineLimit(1)]}>
-              {visibleSpots.length} แห่ง · ใกล้สุดก่อน
-            </Text>
-          </HStack>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <RNText style={{ fontSize: 17, fontWeight: '700', color: palette.text }}>
+                จุดนัดพบแนะนำ
+              </RNText>
+              <RNText style={{ fontSize: 13, fontWeight: '600', color: palette.coral }}>
+                {visibleSpots.length} แห่ง · ใกล้สุดก่อน
+              </RNText>
+            </View>
 
-          {visibleSpots.length ? visibleSpots.map((spot) => (
-            <SpotCard
-              key={spot.id}
-              onChoose={handleQuickChoose}
-              onOpenMap={openMapForSpot}
-              onSchedule={openScheduleFor}
-              selected={selectedMeetup?.id === spot.id}
-              spot={spot}
-            />
-          )) : (
-            <ContentUnavailableView
-              description="ลองเลือกหมวดกิจกรรมอื่นเพื่อดูสถานที่เพิ่มเติม"
-              systemImage="mappin.slash.circle.fill"
-              title="ยังไม่มีสถานที่ในหมวดนี้"
-              modifiers={[
-                padding({ vertical: 42, horizontal: 20 }),
-                frame({ maxWidth: Infinity }),
-                background(palette.surface, cardShape),
-              ]}
-            />
-          )}
+            {visibleSpots.length ? (
+              <View style={{ gap: 12 }}>
+                {visibleSpots.map((spot) => (
+                  <PlacePreviewCard
+                    key={spot.id}
+                    spot={spot}
+                    selected={selectedMeetup?.id === spot.id}
+                    onPress={setDetailSpot}
+                  />
+                ))}
+              </View>
+            ) : (
+              <View
+                style={{
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  paddingVertical: 36,
+                  paddingHorizontal: 20,
+                  backgroundColor: palette.surface,
+                  borderRadius: 24,
+                  gap: 12,
+                }}
+              >
+                <SymbolView name="mappin.slash.circle.fill" size={42} tintColor={palette.secondary} />
+                <RNText style={{ fontSize: 18, fontWeight: '700', color: palette.text, textAlign: 'center' }}>
+                  {query ? 'ไม่พบสถานที่ที่ตรงกับการค้นหา' : 'ยังไม่มีสถานที่ในหมวดนี้'}
+                </RNText>
+                <RNText style={{ fontSize: 14, color: palette.secondary, textAlign: 'center' }}>
+                  {query ? 'ลองค้นหาด้วยคำอื่น หรือกดล้างการค้นหา' : 'ลองเลือกหมวดกิจกรรมอื่นเพื่อดูสถานที่เพิ่มเติม'}
+                </RNText>
+              </View>
+            )}
+          </View>
+        )}
+      </RNScrollView>}
 
-          </>}
-        </VStack>
-        </Host>
-      </Animated.ScrollView>
+      {/* Floating Liquid Glass Header — ลอยอยู่เหนือคอนเทนต์ ไม่ยึดติดกับพื้นหลัง */}
+      <View
+        pointerEvents="box-none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          paddingHorizontal: 16,
+          paddingTop: 8,
+          zIndex: 100,
+        }}
+      >
+        {/* Expanded Search Field (Floating Liquid Glass at top) */}
+        <Animated.View
+          style={[
+            expandedHeaderStyle,
+            isCollapsed && { pointerEvents: 'none' },
+          ]}
+        >
+          <SearchField
+            ref={searchFieldRef}
+            value={query}
+            onChangeText={setQuery}
+            placeholder={partyOnly ? 'ค้นหากิจกรรมหรือสถานที่ตี้' : 'ค้นหาสถานที่หรือกิจกรรม'}
+          />
+        </Animated.View>
+
+        {/* Collapsed Liquid Glass Toolbar (Floating Compact Toolbar on scroll) */}
+        <Animated.View
+          style={[
+            StyleSheet.absoluteFillObject,
+            { paddingHorizontal: 16, paddingTop: 8 },
+            collapsedToolbarStyle,
+            !isCollapsed && { pointerEvents: 'none' },
+          ]}
+        >
+          <LiquidGlassCompactToolbar
+            query={query}
+            placeholder={partyOnly ? 'ค้นหากิจกรรมตี้...' : 'ค้นหากิจกรรมหรือสถานที่...'}
+            onPressSearch={handleExpandSearch}
+            onClearSearch={() => setQuery('')}
+            onOpenMap={() => openMapForSpot()}
+            onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
+            spotCount={visibleSpots.length}
+          />
+        </Animated.View>
+      </View>
+
+      <PlaceDetailSheet
+        spot={resolvedDetailSpot}
+        visible={Boolean(detailSpot)}
+        selected={Boolean(detailSpot && selectedMeetup?.id === detailSpot.id)}
+        onClose={() => setDetailSpot(null)}
+        onSchedule={openScheduleFor}
+        onChoose={handleQuickChoose}
+        onOpenMap={openMapForSpot}
+      />
 
       {/* Map Modal — uses RN Modal (UIKit) so WebView touch works */}
       <Modal
@@ -542,7 +589,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
               </Text>
             </HStack>
           )}
-          <Form>
+          <Form modifiers={[disabled(scheduleSubmitting)]}>
             <Section header={<Text>สถานที่นัดหมาย</Text>}>
               <Button
                 label={pendingSpot?.name || 'ค้นหาหรือปักหมุดบนแผนที่'}
@@ -577,18 +624,19 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
             </Section>
             <Section header={<Text>รายละเอียด (ไม่บังคับ)</Text>}>
               <TextField text={maxPeopleState} placeholder="จำนวนคน (รวมตัวเอง) เช่น 2, 4" />
-              <TextField text={messageState} placeholder="ประกาศ เช่น หาเพื่อนไปวิ่งครับ" axis="vertical" modifiers={[lineLimit(3)]} />
+              <TextField text={messageState} placeholder="ประกาศ เช่น หาเพื่อนไปวิ่งครับ" axis="vertical" modifiers={[lineLimit(3), fixedSize({ horizontal: false, vertical: true })]} />
             </Section>
           </Form>
           <Button
-            label="ยืนยันนัดหมาย"
+            label={scheduleSubmitting ? 'กำลังสร้างกิจกรรม…' : 'ยืนยันนัดหมาย'}
             onPress={confirmSchedule}
             systemImage="checkmark.circle.fill"
             modifiers={[
+              disabled(scheduleSubmitting || !pendingSpot || schedEnd.getTime() <= schedStart.getTime()),
               buttonStyle('glassProminent'),
               buttonBorderShape('capsule'),
               controlSize('large'),
-              tint(palette.coral),
+              tint(palette.primary),
               padding({ horizontal: 20, bottom: 24 }),
               frame({ maxWidth: Infinity }),
             ]}
@@ -609,13 +657,12 @@ const CAMPUS_PHOTOS = [
 ];
 
 
-function CampusHero({ bannerHeight = 180, bannerWidth, onOpenMap, selectedMeetup }) {
+function CampusHero({ bannerHeight, bannerWidth, onOpenMap, selectedMeetup }) {
   const palette = usePalette();
   const { width: windowWidth } = useWindowDimensions();
-  const isIPadFrame = Platform.OS === 'ios' && Platform.isPad && windowWidth > 430;
-  const layoutWidth = isIPadFrame ? 390 : windowWidth;
-  const width = Math.min(bannerWidth || (layoutWidth - 40), layoutWidth - 40);
-  const height = bannerHeight || 180;
+  const maxWidth = Math.max(0, Math.min(windowWidth, 760) - 40);
+  const width = Math.min(bannerWidth || maxWidth, maxWidth);
+  const height = bannerHeight || Math.round(width * 9 / 16);
 
 
   
@@ -690,255 +737,57 @@ function CampusHero({ bannerHeight = 180, bannerWidth, onOpenMap, selectedMeetup
   );
 }
 
-function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
+function SelectedMeetup({ meetup, onClear, onPress }) {
   const palette = usePalette();
-  return (
-    <VStack
-      alignment="leading"
-      spacing={10}
-      modifiers={[
-        padding({ all: 13 }),
-        frame({ maxWidth: Infinity, alignment: 'leading' }),
-        background(palette.mintSoft, cardShape),
-        shadow({ radius: 14, y: 5, color: 'rgba(0,0,0,0.1)' }),
-      ]}
-    >
-      <HStack spacing={12} alignment="top" modifiers={[frame({ maxWidth: Infinity })]}>
-        {/* รูปสถานที่ทางซ้าย: the SwiftUI frame sizes the host; its RN style is ignored and the photo got squeezed to half */}
-        <ZStack modifiers={[frame({ width: 94, height: 104 })]}>
-          <RNHostView matchContents={false}>
-            <View style={{ width: 94, height: 104, borderRadius: 12, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.06)' }}>
-              <PlacePhoto
-                contentFit="cover"
-                recyclingKey={`selected-${meetup.id}`}
-                spot={meetup}
-                style={StyleSheet.absoluteFill}
-                transition={0}
-              />
-              <View style={{ position: 'absolute', top: 5, left: 5, width: 20, height: 20, borderRadius: 10, backgroundColor: palette.mint, alignItems: 'center', justifyContent: 'center' }}>
-                <SymbolView name="checkmark" size={10} tintColor="#FFFFFF" />
-              </View>
-            </View>
-          </RNHostView>
-        </ZStack>
-
-        {/* รายละเอียดทางขวา */}
-        <VStack alignment="leading" spacing={3} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-          <HStack spacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
-            <Text modifiers={[font({ textStyle: 'caption2', weight: 'bold' }), foregroundStyle(palette.mint)]}>จุดนัดหมายของคุณ</Text>
-            <Spacer />
-            <Button
-              label="ยกเลิกจุดนัดหมาย"
-              onPress={onClear}
-              role="destructive"
-              systemImage="xmark"
-              modifiers={[buttonStyle('glass'), buttonBorderShape('circle'), controlSize('small'), labelStyle('iconOnly')]}
-            />
-          </HStack>
-          <Text modifiers={[font({ textStyle: 'subheadline', weight: 'bold', design: 'rounded' }), foregroundStyle(palette.text), lineLimit(1)]}>{meetup.name}</Text>
-          <HStack spacing={8}>
-            {meetup.distance ? <Meta icon="location.fill" text={meetup.distance} /> : null}
-            {meetup.scheduledAt ? <Meta icon="clock.fill" text={meetup.scheduledAt} /> : null}
-          </HStack>
-          {meetup.schedule?.date ? (
-            <HStack spacing={6} modifiers={[padding({ top: 2 })]}>
-              <Tag icon="calendar" text={meetup.schedule.date} />
-              <Tag icon="clock.fill" text={`${meetup.schedule.startTime}–${meetup.schedule.endTime}`} />
-            </HStack>
-          ) : null}
-        </VStack>
-      </HStack>
-
-      <HStack spacing={8} modifiers={[frame({ maxWidth: Infinity })]}>
-        <Button
-          label="เปลี่ยนวัน-เวลา"
-          onPress={onChangeTime}
-          systemImage="calendar.badge.clock"
-          modifiers={[
-            buttonStyle('glass'),
-            buttonBorderShape('capsule'),
-            controlSize('small'),
-            tint(palette.mint),
-            font({ textStyle: 'caption2', weight: 'semibold' }),
-            padding({ horizontal: 6, vertical: 2 }),
-          ]}
-        />
-        {onOpenMap && (
-          <Button
-            label="ดูพิกัดบนแผนที่"
-            onPress={onOpenMap}
-            systemImage="map.fill"
-            modifiers={[
-              buttonStyle('glass'),
-              buttonBorderShape('capsule'),
-              controlSize('small'),
-              tint(palette.blue),
-              font({ textStyle: 'caption2', weight: 'semibold' }),
-              padding({ horizontal: 6, vertical: 2 }),
-            ]}
-          />
-        )}
-      </HStack>
-    </VStack>
-  );
+  return <View style={{ gap: 8 }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+      <RNText style={{ color: palette.mint, fontSize: 13, fontWeight: '600' }}>จุดนัดหมายของคุณ</RNText>
+      <Pressable accessibilityRole="button" accessibilityLabel="ยกเลิกจุดนัดหมาย" onPress={onClear} hitSlop={8} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}>
+        <SymbolView name="xmark" size={16} tintColor={palette.secondary} />
+      </Pressable>
+    </View>
+    <PlacePreviewCard spot={meetup} selected onPress={onPress} />
+  </View>;
 }
 
 function CategoryChip({ active, category, onPress }) {
   const palette = usePalette();
   return (
-    <Button onPress={onPress} modifiers={[buttonStyle('plain'), accessibilityLabel(category.label)]}>
-      <HStack
-        spacing={5}
-        modifiers={[
-          padding({ horizontal: 10, vertical: 7 }),
-          background(active ? palette.coralSoft : palette.surface, shapes.capsule()),
-        ]}
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={category.label}
+      onPress={onPress}
+      style={({ pressed }) => [
+        {
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          paddingHorizontal: 12,
+          paddingVertical: 8,
+          borderRadius: 20,
+          backgroundColor: active ? palette.coralSoft : palette.surface,
+          opacity: pressed ? 0.75 : 1,
+        },
+      ]}
+    >
+      <SymbolView
+        name={category.symbol}
+        size={13}
+        tintColor={active ? palette.coral : palette.tertiary}
+      />
+      <RNText
+        style={{
+          fontSize: 13,
+          fontWeight: '600',
+          color: active ? palette.coral : palette.text,
+        }}
       >
-        <Image color={active ? palette.coral : palette.tertiary} size={12} systemName={category.symbol} />
-        <Text modifiers={[font({ textStyle: 'caption2', weight: 'semibold' }), foregroundStyle(active ? palette.coral : palette.text), lineLimit(1)]}>
-          {category.label}
-        </Text>
-      </HStack>
-    </Button>
+        {category.label}
+      </RNText>
+    </Pressable>
   );
 }
 
-const SpotCard = React.memo(function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
-  const palette = usePalette();
-  const accent = activityColor(spot.category);
-  const handleChoose = useCallback(() => onChoose?.(spot), [onChoose, spot]);
-  const handleOpenMap = useCallback(() => onOpenMap?.(spot), [onOpenMap, spot]);
-  const handleSchedule = useCallback(() => onSchedule?.(spot), [onSchedule, spot]);
-
-  return (
-    <VStack
-      alignment="leading"
-      spacing={11}
-      modifiers={[
-        padding({ all: 13 }),
-        frame({ maxWidth: Infinity, alignment: 'leading' }),
-        background(selected ? palette.mintSoft : palette.surface, cardShape),
-        shadow({ radius: 14, y: 5, color: 'rgba(0,0,0,0.12)' }),
-      ]}
-    >
-      {/* รูปสถานที่ทางซ้าย + รายละเอียดทางขวา */}
-      <HStack spacing={12} alignment="top" modifiers={[frame({ maxWidth: Infinity })]}>
-        {/* ทางซ้าย: รูปสถานที่ (fixed SwiftUI frame, see SelectedMeetup) */}
-        <ZStack modifiers={[frame({ width: 104, height: 118 })]}>
-          <RNHostView matchContents={false}>
-            <View style={{ width: 104, height: 118, borderRadius: 14, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.06)' }}>
-              <PlacePhoto
-                contentFit="cover"
-                recyclingKey={spot.id}
-                spot={spot}
-                style={StyleSheet.absoluteFill}
-                transition={0}
-              />
-              {/* Category icon badge */}
-              <View style={{ position: 'absolute', top: 6, left: 6, width: 22, height: 22, borderRadius: 11, backgroundColor: accent.color, alignItems: 'center', justifyContent: 'center' }}>
-                <SymbolView name={activitySymbol(spot.category)} size={11} tintColor="#FFFFFF" />
-              </View>
-            </View>
-          </RNHostView>
-        </ZStack>
-
-        {/* ทางขวา: รายละเอียดสถานที่ */}
-        <VStack alignment="leading" spacing={4} modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-          <HStack spacing={6} modifiers={[frame({ maxWidth: Infinity })]}>
-            <Text
-              modifiers={[
-                font({ textStyle: 'caption2', weight: 'bold' }),
-                foregroundStyle(accent.color),
-                padding({ horizontal: 8, vertical: 3 }),
-                background(accent.soft, shapes.capsule()),
-                lineLimit(1),
-              ]}
-            >
-              {spot.categoryLabel}
-            </Text>
-            <Spacer />
-            {spot.distance ? (
-              <HStack spacing={3} alignment="center">
-                <Image color={palette.coral} size={11} systemName="location.fill" />
-                <Text modifiers={[font({ textStyle: 'caption2', weight: 'bold' }), foregroundStyle(palette.coral), lineLimit(1)]}>
-                  {spot.distance}
-                </Text>
-              </HStack>
-            ) : null}
-          </HStack>
-
-          <Text
-            modifiers={[
-              font({ textStyle: 'subheadline', weight: 'bold', design: 'rounded' }),
-              foregroundStyle(palette.text),
-              lineLimit(2),
-            ]}
-          >
-            {spot.name}
-          </Text>
-
-          {spot.description ? (
-            <Text
-              modifiers={[
-                font({ textStyle: 'caption2', weight: 'regular' }),
-                foregroundStyle(palette.secondary),
-                lineLimit(2),
-              ]}
-            >
-              {spot.description}
-            </Text>
-          ) : null}
-
-        </VStack>
-      </HStack>
-
-      {/* ปุ่มกดดำเนินการด้านล่าง */}
-      <HStack alignment="center" spacing={8} modifiers={[frame({ maxWidth: Infinity, alignment: 'center' }), padding({ top: 4 })]}>
-        <Button
-          label="นัดหมาย"
-          onPress={handleSchedule}
-          systemImage="calendar.badge.clock"
-          modifiers={[
-            buttonStyle('glassProminent'),
-            buttonBorderShape('capsule'),
-            controlSize('small'),
-            tint(palette.coral),
-            font({ textStyle: 'caption2', weight: 'semibold' }),
-            padding({ horizontal: 6, vertical: 2 }),
-          ]}
-        />
-        <Button
-          label={selected ? 'เลือกแล้ว' : 'ปักหมุด'}
-          onPress={handleChoose}
-          systemImage={selected ? 'checkmark.circle.fill' : 'mappin.circle.fill'}
-          modifiers={[
-            buttonStyle('glass'),
-            buttonBorderShape('capsule'),
-            controlSize('small'),
-            tint(selected ? palette.mint : palette.secondary),
-            font({ textStyle: 'caption2', weight: 'semibold' }),
-            padding({ horizontal: 6, vertical: 2 }),
-          ]}
-        />
-        {onOpenMap && (
-          <Button
-            label="แผนที่"
-            onPress={handleOpenMap}
-            systemImage="map.fill"
-            modifiers={[
-              buttonStyle('glass'),
-              buttonBorderShape('capsule'),
-              controlSize('small'),
-              tint(palette.blue),
-              font({ textStyle: 'caption2', weight: 'semibold' }),
-              padding({ horizontal: 4, vertical: 2 }),
-            ]}
-          />
-        )}
-      </HStack>
-    </VStack>
-  );
-});
 
 function Tag({ icon, text }) {
   const palette = usePalette();
@@ -972,14 +821,4 @@ function activitySymbol(category) {
   if (category === 'cafe') return 'cup.and.saucer.fill';
   if (category === 'chill') return 'leaf.fill';
   return 'mappin.circle.fill';
-}
-
-function activityColor(category) {
-  const palette = usePalette();
-  if (category === 'running') return { color: palette.coral, soft: palette.coralSoft };
-  if (category === 'study') return { color: palette.blue, soft: palette.blueSoft };
-  if (category === 'gym') return { color: palette.violet, soft: palette.violetSoft };
-  if (category === 'sports') return { color: '#FF9F43', soft: 'rgba(255,159,67,0.16)' };
-  if (category === 'cafe') return { color: palette.coral, soft: palette.coralSoft };
-  return { color: palette.mint, soft: palette.mintSoft };
 }

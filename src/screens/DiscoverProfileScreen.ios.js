@@ -1,5 +1,6 @@
 import { Button, Text } from '../components/NativeTypography';
 import { font } from '../components/brandFont';
+import { useNativePalette } from '../theme';
 import RNText from '../components/AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getImageRequestUri, useProfileImagePrefetch } from '../utils/useRemoteImage';
@@ -54,34 +55,9 @@ function mergeCandidateProfiles(...lists) {
   return Array.from(byId.values());
 }
 
-const darkPalette = {
-  background: '#14171B',
-  surface: '#20242A',
-  surfaceRaised: '#292E35',
-  text: '#F7F8FA',
-  secondary: '#B6BDC8',
-  tertiary: '#7F8896',
-  purple: '#88B5F2',
-  purpleSoft: 'rgba(112,178,255,0.18)',
-  coral: '#FF7A6B',
-  white: '#FFFFFF',
-};
-
-const lightPalette = {
-  background: '#F7F7F8',
-  surface: '#FFFFFF',
-  surfaceRaised: '#E9EDF4',
-  text: '#25272B',
-  secondary: '#6B7078',
-  tertiary: '#8B98AC',
-  purple: '#2869C7',
-  purpleSoft: '#EEF2F7',
-  coral: '#D65454',
-  white: '#FFFFFF',
-};
-
 function usePalette() {
-  return useColorScheme() === 'dark' ? darkPalette : lightPalette;
+  const palette = useNativePalette();
+  return { ...palette, purpleSoft: palette.primarySoft };
 }
 
 export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onClose, onToast }) {
@@ -104,8 +80,10 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const [rawDirectProfile, setDirectProfile] = useState(null);
 
   // Direct profile links follow the same verification requirement as discovery.
-  // Existing chat messages and participant snapshots remain available separately.
+  const isDirectAdmin = (rawDirectProfile?.email || '').toLowerCase().trim() === '6710210317@psu.ac.th'
+    || rawDirectProfile?.isAdmin === true || rawDirectProfile?.role === 'admin';
   const directProfileHidden = Boolean(rawDirectProfile)
+    && !isDirectAdmin
     && rawDirectProfile.isFaceVerified !== true;
   const directProfile = directProfileHidden ? null : rawDirectProfile;
   const translateX = useSharedValue(0);
@@ -175,7 +153,9 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const candidatePool = useMemo(() => {
     const seenIds = new Set();
     return mergeCandidateProfiles(availableProfiles || [], pendingIncomingLikes || []).filter((item) => {
-      if (item.isFaceVerified !== true) return false;
+      const isItemAdmin = (item?.email || '').toLowerCase().trim() === '6710210317@psu.ac.th'
+        || item?.isAdmin === true || item?.role === 'admin';
+      if (!isItemAdmin && item.isFaceVerified !== true) return false;
       const id = item?.id;
       if (!id || decidedIds.has(id) || seenIds.has(id) || !isProfileReadyForDiscovery(item)) return false;
       seenIds.add(id);

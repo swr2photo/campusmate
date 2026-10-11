@@ -66,7 +66,7 @@ function isFeatureAllowed(user, profile, featureKey) {
   if (studentId && EXPERIMENTAL_STUDENT_IDS.includes(studentId)) return true;
 
   if (featureKey === 'call' && (profile?.canCall === true || profile?.isCallTester === true)) return true;
-  if (profile?.isTester === true || profile?.role === 'admin' || profile?.role === 'tester') return true;
+  if (profile?.isTester === true || profile?.role === 'admin' || profile?.role === 'tester' || profile?.isAdmin === true) return true;
 
   return false;
 }

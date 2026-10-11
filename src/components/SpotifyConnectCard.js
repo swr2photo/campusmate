@@ -206,8 +206,9 @@ export default function SpotifyConnectCard({ onConnectionChange, onSyncMusic }) 
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderCurve: 'continuous',
+    borderWidth: 0,
     marginHorizontal: 16,
     marginVertical: 8,
     padding: 16,

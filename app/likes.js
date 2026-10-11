@@ -1,5 +1,5 @@
 import React from 'react';
-import { router, usePathname } from 'expo-router';
+import { router, Stack, usePathname } from 'expo-router';
 import LikesScreen from '../src/screens/LikesScreen';
 import { useToast } from '../src/context/ToastContext';
 import { openChatRoom } from '../src/utils/openChatRoom';
@@ -9,7 +9,16 @@ export default function LikesRoute() {
   const pathname = usePathname();
 
   return (
-    <LikesScreen
+    <>
+      <Stack.Screen
+        options={{
+          title: 'ถูกใจ',
+          headerShown: true,
+          headerTransparent: false,
+          headerLargeTitle: false,
+        }}
+      />
+      <LikesScreen
       onClose={() => {
         if (router.canGoBack()) router.back();
         else router.replace('/home');
@@ -23,5 +32,6 @@ export default function LikesRoute() {
       }}
       onToast={showToast}
     />
+    </>
   );
 }

@@ -47,17 +47,17 @@ export async function sendNotification({db,auth,actor,id,client=new Expo()}){
   tx.set(job,record);tx.set(lock,{sentAt:FieldValue.serverTimestamp()});tx.set(log,{actor,action:'sendNotification',target:id,after:record,state:'started',createdAt:FieldValue.serverTimestamp()});return {data};
  });
  if(claim.duplicate)return {...claim.duplicate,duplicate:true};
- let persisted=0,accepted=0,failed=0;const tickets=[];
+ let persisted=0,accepted=0,failed=0;const tickets=[],inboxIds=new Map();
  try{
-  for (const uid of claim.data.uids) await persistInbox(db, 'announcement:' + id, uid, { title: claim.data.title, body: claim.data.body, data: { type: 'admin_announcement', route: claim.data.route } });
+  for (const uid of claim.data.uids) inboxIds.set(uid,await persistInbox(db, 'announcement:' + id, uid, { title: claim.data.title, body: claim.data.body, data: { type: 'admin_announcement', route: claim.data.route } }));
   // Recheck account status/preferences immediately before sending, using the frozen audience.
   const current=await notificationRecipients({db,auth,data:{...claim.data,audience:'selected'},policy,allowMissing:true});
   for(const ids of chunk(current.uids,200)){
-   const batch=db.batch();for(const uid of ids)batch.set(db.doc('accountRestrictions/'+uid),{latestAnnouncement:{id,title:claim.data.title,message:claim.data.body,route:claim.data.route,createdAt:FieldValue.serverTimestamp()}},{merge:true});await batch.commit();persisted+=ids.length;
+   const batch=db.batch();for(const uid of ids)batch.set(db.doc('accountRestrictions/'+uid),{latestAnnouncement:{id,notificationId:inboxIds.get(uid),title:claim.data.title,message:claim.data.body,route:claim.data.route,createdAt:FieldValue.serverTimestamp()}},{merge:true});await batch.commit();persisted+=ids.length;
   }
   const message={title:claim.data.title,body:claim.data.body,channelId:'social',data:{type:'admin_announcement',announcementId:id,route:claim.data.route}};
   for(const registrations of chunk(current.registrations,100)){
-   const response=await client.sendPushNotificationsAsync(registrations.map(r=>buildExpoPushMessage(r,message)));
+   const response=await client.sendPushNotificationsAsync(registrations.map(r=>buildExpoPushMessage(r,{...message,data:{...message.data,notificationId:inboxIds.get(r.userId)}})));
    if(!Array.isArray(response)||response.length!==registrations.length)throw new Error('Incomplete push ticket response');
    const invalid=db.batch();let invalidCount=0;
    response.forEach((t,i)=>{if(t.status==='ok'){accepted++;tickets.push({id:t.id,registrationPath:registrations[i].ref.path,tokenHash:createHash('sha256').update(registrations[i].expoPushToken).digest('hex')});}else {failed++;if(t.details?.error==='DeviceNotRegistered'){invalidCount++;invalid.set(registrations[i].ref,{enabled:false,lastError:'DeviceNotRegistered'},{merge:true});}}});

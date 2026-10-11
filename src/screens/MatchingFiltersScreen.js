@@ -1,64 +1,50 @@
 import Text from '../components/AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BackHandler, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
-import { router } from 'expo-router';
+import { ActivityIndicator, BackHandler, Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { router, Stack, useNavigation } from 'expo-router';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, {
-  cancelAnimation,
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-  withTiming,
-} from 'react-native-reanimated';
+import Animated, { cancelAnimation, Easing, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { project, rubberband } from '../utils/motion';
 import { FACULTIES } from '../data/faculties';
 import {
-  MATCHING_ACTIVITY_OPTIONS,
-  MATCHING_AGE_MAX,
-  MATCHING_AGE_MIN,
-  MATCHING_AGE_VALUES,
-  MATCHING_AVAILABILITY_OPTIONS,
-  MATCHING_DEFAULT_AGE_MAX,
-  MATCHING_DISTANCE_PRESETS,
-  MATCHING_GENDER_OPTIONS,
-  MATCHING_MORE_ACTIVITY_OPTIONS,
-  MATCHING_MORE_GENDER_OPTIONS,
-  MATCHING_PACE_OPTIONS,
-  MATCHING_PRIMARY_ACTIVITY_OPTIONS,
-  MATCHING_PRIMARY_GENDER_OPTIONS,
-  MATCHING_UNLIMITED_DISTANCE,
-  MATCHING_WEEKDAY_OPTIONS,
-  MATCHING_YEAR_OPTIONS,
-  clearActivityDetailFilter,
-  createMatchingOptionState,
-  getActivityDetailFilterOptions,
-  getSelectedMatchingValues,
-  hasActivityDetailFilters,
-  isMatchingOptionUnrestricted,
-  normalizeMatchingAge,
-  pruneActivityDetailFilters,
-  sanitizeActivityDetailFilters,
-  toggleActivityDetailFilter,
-  toggleMatchingOption,
+  MATCHING_ACTIVITY_OPTIONS, MATCHING_AGE_MAX, MATCHING_AGE_MIN,
+  MATCHING_AVAILABILITY_OPTIONS, MATCHING_DEFAULT_AGE_MAX, MATCHING_GENDER_OPTIONS,
+  MATCHING_PACE_OPTIONS, MATCHING_UNLIMITED_DISTANCE, MATCHING_WEEKDAY_OPTIONS,
+  MATCHING_YEAR_OPTIONS, clearActivityDetailFilter, createMatchingOptionState,
+  getActivityDetailFilterOptions, getSelectedMatchingValues, normalizeMatchingAge,
+  pruneActivityDetailFilters, toggleMatchingOption,
 } from '../data/matchingFilters';
 import { useAppActions, useAppProfile } from '../context/AppContext';
 import FeatureIcon from '../components/FeatureIcon';
+import { FilterSlider, FilterSwitch } from '../components/filter-controls';
+import AgeRangeSlider from '../components/age-range-slider';
 import { useEntitlement } from '../context/MembershipContext';
 import { FEATURE_ADVANCED_FILTERS } from '../data/plans';
-import { allowedMatchingPreferences } from '../services/secureDiscoveryService';
-import { radius, spacing, type, useTheme } from '../theme';
+import { spacing, useTheme } from '../theme';
+
+function optionSummary(options, state, allLabel = 'ทั้งหมด') {
+  const selected = getSelectedMatchingValues(options, state);
+  if (!selected.length) return allLabel;
+  const labels = options.filter(option => selected.includes(option.value)).map(option => option.longLabel || option.label);
+  return labels.length > 2 ? `${labels.slice(0, 2).join(', ')} +${labels.length - 2}` : labels.join(', ');
+}
 
 export default function MatchingFiltersScreen() {
   const { colors } = useTheme();
   const { profile } = useAppProfile();
-  // Faculty, year, availability and pace filters are CampusMate Plus (src/data/plans.js).
+  const { saveMatchingPreferences } = useAppActions();
+  const navigation = useNavigation();
   const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
   const canAdvanced = advancedFilters.allowed;
-  const paidChange = (setter) => (value) => { if (advancedFilters.guard()) setter(value); };
-  const { saveMatchingPreferences } = useAppActions();
+  const insets = useSafeAreaInsets();
+  const dirty = useRef(false);
+  const hydratedProfileId = useRef(null);
+  const submitLock = useRef(false);
+  const mounted = useRef(true);
+  const lastDistance = useRef(25);
+  const distanceSliderMax = useRef(100);
   const [faculty, setFaculty] = useState('all');
   const [sameFacultyOnly, setSameFacultyOnly] = useState(false);
   const [distance, setDistance] = useState(MATCHING_UNLIMITED_DISTANCE);
@@ -68,434 +54,265 @@ export default function MatchingFiltersScreen() {
   const [genders, setGenders] = useState(() => createMatchingOptionState(MATCHING_GENDER_OPTIONS));
   const [activities, setActivities] = useState(() => createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
   const [paces, setPaces] = useState(() => createMatchingOptionState(MATCHING_PACE_OPTIONS));
-  const [availabilityPeriods, setAvailabilityPeriods] = useState(() => (
-    createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS)
-  ));
+  const [availabilityPeriods, setAvailabilityPeriods] = useState(() => createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
   const [weekdays, setWeekdays] = useState(() => createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS));
   const [requirePhoto, setRequirePhoto] = useState(false);
   const [requireAvailability, setRequireAvailability] = useState(false);
-  const [showMoreGenders, setShowMoreGenders] = useState(false);
-  const [showMoreActivities, setShowMoreActivities] = useState(false);
   const [detailFilters, setDetailFilters] = useState({});
+  const [popup, setPopup] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
 
   useEffect(() => {
-    const preferences = allowedMatchingPreferences(profile?.matchingPreferences, canAdvanced);
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  useEffect(() => {
+    // An optimistic profile update or entitlement refresh must not overwrite
+    // an edited draft, especially while a failed save is waiting for a retry.
+    if (hydratedProfileId.current === profile?.id && dirty.current) return;
+    hydratedProfileId.current = profile?.id;
+    dirty.current = false;
+    // Keep stored Plus values in the draft even while entitlement is loading.
+    // Paid controls and AppContext's save action enforce the current entitlement.
+    const preferences = profile?.matchingPreferences || {};
     const selectedActivities = preferences.activities || [];
-    const selectedYears = preferences.years || [];
-    const selectedGenders = preferences.genders || [];
-    const selectedPaces = preferences.paces || [];
-    const selectedAvailabilityPeriods = preferences.availabilityPeriods || [];
-    const selectedWeekdays = preferences.weekdays || [];
-    const normalizedAgeMin = normalizeMatchingAge(preferences.ageMin, MATCHING_AGE_MIN);
-    const normalizedAgeMax = Math.max(
-      normalizedAgeMin,
-      normalizeMatchingAge(preferences.ageMax, MATCHING_DEFAULT_AGE_MAX)
-    );
+    const min = normalizeMatchingAge(preferences.ageMin, MATCHING_AGE_MIN);
+    const max = Math.max(min, normalizeMatchingAge(preferences.ageMax, MATCHING_DEFAULT_AGE_MAX));
+    const nextDistance = Number.isFinite(Number(preferences.maxDistance)) ? Math.max(0, Number(preferences.maxDistance)) : MATCHING_UNLIMITED_DISTANCE;
+    if (nextDistance > 0) lastDistance.current = nextDistance;
+    distanceSliderMax.current = Math.max(100, nextDistance);
     setFaculty(preferences.faculty || 'all');
     setSameFacultyOnly(preferences.sameFacultyOnly === true);
-    setDistance(Number.isFinite(Number(preferences.maxDistance)) ? Number(preferences.maxDistance) : MATCHING_UNLIMITED_DISTANCE);
-    setAgeMin(normalizedAgeMin);
-    setAgeMax(normalizedAgeMax);
+    setDistance(nextDistance);
+    setAgeMin(min);
+    setAgeMax(max);
     setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS, selectedActivities));
-    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS, selectedYears));
-    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS, selectedGenders));
-    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS, selectedPaces));
-    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS, selectedAvailabilityPeriods));
-    setWeekdays(createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS, selectedWeekdays));
+    setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS, preferences.years || []));
+    setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS, preferences.genders || []));
+    setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS, preferences.paces || []));
+    setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS, preferences.availabilityPeriods || []));
+    setWeekdays(createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS, preferences.weekdays || []));
     setRequirePhoto(preferences.requirePhoto === true);
     setRequireAvailability(preferences.requireAvailability === true);
-    setShowMoreGenders(MATCHING_MORE_GENDER_OPTIONS.some((option) => selectedGenders.includes(option.value)));
-    setShowMoreActivities(MATCHING_MORE_ACTIVITY_OPTIONS.some((option) => selectedActivities.includes(option.value)));
     setDetailFilters(pruneActivityDetailFilters(preferences.activityDetails, selectedActivities));
-  }, [profile?.id, profile?.matchingPreferences, canAdvanced]);
+    setSaveError(null);
+  }, [profile?.id, profile?.matchingPreferences]);
 
+  const change = setter => value => {
+    if (submitLock.current) return;
+    dirty.current = true;
+    setSaveError(null);
+    setter(value);
+  };
+  const paidChange = setter => value => {
+    if (advancedFilters.guard()) change(setter)(value);
+  };
   const selectedActivities = getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities);
-  const showPace = selectedActivities.length === 0 || selectedActivities.includes('running');
-  // Detail filters only make sense for a specific activity, so they appear
-  // once the user narrows the activity chips down.
-  const detailFilterSections = useMemo(
-    () => selectedActivities.map(getActivityDetailFilterOptions).filter(Boolean),
-    [selectedActivities]
-  );
-  const activeDetailFilters = useMemo(
-    () => pruneActivityDetailFilters(detailFilters, selectedActivities),
-    [detailFilters, selectedActivities]
-  );
-  const moreGenderActive = MATCHING_MORE_GENDER_OPTIONS.some((option) => genders[option.value]);
-  const moreActivityActive = MATCHING_MORE_ACTIVITY_OPTIONS.some((option) => activities[option.value]);
-
-  const hasActiveFilters = useMemo(() => (
-    ageMin !== MATCHING_AGE_MIN
-    || ageMax !== MATCHING_DEFAULT_AGE_MAX
-    || distance !== 25
-    || sameFacultyOnly
-    || (faculty !== 'all' && !sameFacultyOnly)
-    || requirePhoto
-    || requireAvailability
-    || !isMatchingOptionUnrestricted(MATCHING_YEAR_OPTIONS, years)
-    || !isMatchingOptionUnrestricted(MATCHING_GENDER_OPTIONS, genders)
-    || !isMatchingOptionUnrestricted(MATCHING_ACTIVITY_OPTIONS, activities)
-    || !isMatchingOptionUnrestricted(MATCHING_PACE_OPTIONS, paces)
-    || !isMatchingOptionUnrestricted(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods)
-    || !isMatchingOptionUnrestricted(MATCHING_WEEKDAY_OPTIONS, weekdays)
-    || hasActivityDetailFilters(activeDetailFilters)
-  ), [
-    activeDetailFilters,
-    activities,
-    ageMax,
-    ageMin,
-    availabilityPeriods,
-    distance,
-    faculty,
-    genders,
-    paces,
-    requireAvailability,
-    requirePhoto,
-    sameFacultyOnly,
-    weekdays,
-    years,
-  ]);
-
+  const showPace = !selectedActivities.length || selectedActivities.includes('running');
+  const detailSections = selectedActivities.map(getActivityDetailFilterOptions).filter(Boolean);
+  const activeDetailFilters = pruneActivityDetailFilters(detailFilters, selectedActivities);
   const resetFilters = () => {
-    setFaculty('all');
-    setSameFacultyOnly(false);
-    setDistance(25);
-    setAgeMin(MATCHING_AGE_MIN);
-    setAgeMax(MATCHING_DEFAULT_AGE_MAX);
+    if (submitLock.current) return;
+    dirty.current = true;
+    setSaveError(null);
+    setFaculty('all'); setSameFacultyOnly(false); setDistance(25); lastDistance.current = 25; distanceSliderMax.current = 100;
+    setAgeMin(MATCHING_AGE_MIN); setAgeMax(MATCHING_DEFAULT_AGE_MAX);
     setYears(createMatchingOptionState(MATCHING_YEAR_OPTIONS));
     setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS));
     setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS));
     setPaces(createMatchingOptionState(MATCHING_PACE_OPTIONS));
     setAvailabilityPeriods(createMatchingOptionState(MATCHING_AVAILABILITY_OPTIONS));
     setWeekdays(createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS));
-    setRequirePhoto(false);
-    setRequireAvailability(false);
-    setShowMoreGenders(false);
-    setShowMoreActivities(false);
-    setDetailFilters({});
+    setRequirePhoto(false); setRequireAvailability(false); setDetailFilters({});
   };
-
+  const closeSheet = () => {
+    if (submitLock.current) return;
+    if (router.canGoBack()) router.back();
+    else router.replace('/home');
+  };
   const saveSearchSettings = async () => {
-    setSaving(true);
+    if (submitLock.current || !mounted.current) return;
+    submitLock.current = true;
+    setSaving(true); setSaveError(null);
     try {
       const nextActivities = getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities);
-      const nextYears = getSelectedMatchingValues(MATCHING_YEAR_OPTIONS, years);
-      const nextGenders = getSelectedMatchingValues(MATCHING_GENDER_OPTIONS, genders);
-      const nextPaces = showPace ? getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces) : [];
-      const nextAvailabilityPeriods = getSelectedMatchingValues(
-        MATCHING_AVAILABILITY_OPTIONS,
-        availabilityPeriods
-      );
-      const nextWeekdays = getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays);
-      const normalizedAgeMin = Math.min(
-        MATCHING_AGE_MAX,
-        Math.max(MATCHING_AGE_MIN, Math.round(ageMin))
-      );
-      const normalizedAgeMax = Math.max(
-        normalizedAgeMin,
-        Math.min(MATCHING_AGE_MAX, Math.max(MATCHING_AGE_MIN, Math.round(ageMax)))
-      );
+      const min = normalizeMatchingAge(Math.round(ageMin), MATCHING_AGE_MIN);
+      const max = Math.max(min, normalizeMatchingAge(Math.round(ageMax), MATCHING_DEFAULT_AGE_MAX));
       await saveMatchingPreferences({
         ...(profile?.matchingPreferences || {}),
         activities: nextActivities,
         activityDetails: pruneActivityDetailFilters(detailFilters, nextActivities),
-        ageMin: normalizedAgeMin,
-        ageMax: normalizedAgeMax,
-        availabilityPeriods: nextAvailabilityPeriods,
+        ageMin: min, ageMax: max,
+        availabilityPeriods: getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods),
         faculty: sameFacultyOnly ? 'all' : faculty,
-        genders: nextGenders,
+        genders: getSelectedMatchingValues(MATCHING_GENDER_OPTIONS, genders),
         maxDistance: Math.round(distance),
-        paces: nextPaces,
-        requireAvailability,
-        requirePhoto,
-        sameFacultyOnly,
-        weekdays: nextWeekdays,
-        years: nextYears,
+        paces: showPace ? getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces) : [],
+        requireAvailability, requirePhoto, sameFacultyOnly,
+        weekdays: getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays),
+        years: getSelectedMatchingValues(MATCHING_YEAR_OPTIONS, years),
       });
+      if (!mounted.current || !navigation.isFocused()) return;
       if (router.canGoBack()) router.back();
       else router.replace('/home');
     } catch (error) {
-      console.error('[MatchingFilters] Failed to save search settings:', error);
+      if (mounted.current) setSaveError(error?.message || 'บันทึกไม่สำเร็จ ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง');
     } finally {
-      setSaving(false);
+      submitLock.current = false;
+      if (mounted.current) setSaving(false);
     }
   };
-
-  const closeSheet = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace('/home');
+  const openPopup = (key, paid = false) => {
+    if (submitLock.current || (paid && !advancedFilters.guard())) return;
+    setPopup(key);
   };
+  const popupOptions = {
+    gender: { title: 'คนที่คุณสนใจ', options: MATCHING_GENDER_OPTIONS, state: genders, onChange: change(setGenders) },
+    activities: { title: 'กิจกรรมที่สนใจ', options: MATCHING_ACTIVITY_OPTIONS, state: activities, onChange: change(setActivities) },
+    faculty: { title: 'คณะ', options: [{ value: 'all', label: 'ทุกคณะ' }, ...FACULTIES.map(item => ({ value: item, label: item }))], value: faculty, single: true, onChange: paidChange(value => { setFaculty(value); setSameFacultyOnly(false); }) },
+    years: { title: 'ชั้นปี', options: MATCHING_YEAR_OPTIONS, state: years, onChange: paidChange(setYears) },
+    paces: { title: 'เพซวิ่ง', options: MATCHING_PACE_OPTIONS, state: paces, onChange: paidChange(setPaces) },
+    weekdays: { title: 'วันที่สะดวก', options: MATCHING_WEEKDAY_OPTIONS, state: weekdays, onChange: paidChange(setWeekdays) },
+    availability: { title: 'ช่วงเวลาที่สะดวก', options: MATCHING_AVAILABILITY_OPTIONS, state: availabilityPeriods, onChange: paidChange(setAvailabilityPeriods) },
+  };
+  detailSections.forEach(section => section.fields.forEach(field => {
+    const selected = activeDetailFilters[section.id]?.[field.key] || [];
+    popupOptions[`detail:${section.id}:${field.key}`] = {
+      title: field.label, options: field.options,
+      state: createMatchingOptionState(field.options, selected),
+      onChange: change(next => {
+        const values = getSelectedMatchingValues(field.options, next);
+        setDetailFilters(current => values.length
+          ? { ...current, [section.id]: { ...(current[section.id] || {}), [field.key]: values } }
+          : clearActivityDetailFilter(current, section.id, field.key));
+      }),
+    };
+  }));
+  const header = <SheetHeader colors={colors} saving={saving} onClose={closeSheet} onSave={saveSearchSettings} />;
+  const body = <>
+    <View style={styles.body} pointerEvents={saving ? 'none' : 'auto'}>
+      <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={[styles.content, { paddingBottom: Math.max(32, insets.bottom + 24) }]}
+        showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.scroll}>
+        <Text style={[styles.intro, { color: colors.inkMuted }]}>เลือกคนที่คุณอยากเจอ และกิจกรรมที่อยากทำด้วยกัน</Text>
+        <SectionLabel label="การค้นหาพื้นฐาน" colors={colors} />
+        <SettingsCard colors={colors}>
+          <View style={[styles.sliderSection, { borderBottomColor: colors.line }]}>
+            <View style={styles.labelValue}><Text style={[styles.rowLabel, { color: colors.ink }]}>ระยะห่างสูงสุด</Text><Text style={[styles.rowValue, { color: colors.primary }]}>{distance === MATCHING_UNLIMITED_DISTANCE ? 'ไม่จำกัด' : `${Math.round(distance)} กม.`}</Text></View>
+            <FilterSlider label="ระยะห่างสูงสุด" value={distance || lastDistance.current} min={1} max={distanceSliderMax.current} onValueChange={change(value => { const next = Math.round(value); lastDistance.current = next; setDistance(next); })} />
+            <View style={styles.sliderLimits}><Text style={[styles.helper, { color: colors.inkMuted }]}>1 กม.</Text><Text style={[styles.helper, { color: colors.inkMuted }]}>{distanceSliderMax.current} กม.</Text></View>
+            <ToggleRow label="ไม่จำกัดระยะทาง" value={distance === MATCHING_UNLIMITED_DISTANCE} onValueChange={change(value => setDistance(value ? MATCHING_UNLIMITED_DISTANCE : lastDistance.current))} colors={colors} inset={false} />
+          </View>
+          <SelectionRow label="คนที่สนใจ" value={optionSummary(MATCHING_GENDER_OPTIONS, genders)} onPress={() => openPopup('gender')} colors={colors} />
+          <View style={[styles.sliderSection, { borderBottomColor: colors.line }]}>
+            <View style={styles.labelValue}><Text style={[styles.rowLabel, { color: colors.ink }]}>ช่วงอายุ</Text><Text style={[styles.rowValue, { color: colors.primary }]}>{ageMin}–{ageMax} ปี</Text></View>
+            <AgeRangeSlider min={MATCHING_AGE_MIN} max={MATCHING_AGE_MAX} minValue={ageMin} maxValue={ageMax}
+              onChangeMin={change(value => { const next = normalizeMatchingAge(value, ageMin); setAgeMin(next); if (next > ageMax) setAgeMax(next); })}
+              onChangeMax={change(value => { const next = normalizeMatchingAge(value, ageMax); setAgeMax(next); if (next < ageMin) setAgeMin(next); })} />
+          </View>
+          <ToggleRow label="ต้องมีรูปโปรไฟล์" value={requirePhoto} onValueChange={change(setRequirePhoto)} colors={colors} last />
+        </SettingsCard>
+        <Text style={[styles.note, { color: colors.inkMuted }]}>แสดงระยะใกล้กว่า 700 ม. เป็น 700 ม. เพื่อรักษาความเป็นส่วนตัว</Text>
 
-  const body = (
-    <>
-      <ScrollView
-        contentContainerStyle={styles.settingsContent}
-        contentInsetAdjustmentBehavior="automatic"
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-        style={styles.settingsScroll}
-      >
-        <View style={styles.introRow}>
-          <Text style={[styles.filterHelper, styles.introText, { color: colors.inkMuted }]}>
-            เลือกเฉพาะสิ่งที่ต้องการ กรองว่าง = แสดงทุกคน
-          </Text>
-          {hasActiveFilters ? (
-            <Pressable accessibilityRole="button" hitSlop={8} onPress={resetFilters}>
-              <Text style={[styles.resetText, { color: colors.primary }]}>ล้างทั้งหมด</Text>
-            </Pressable>
-          ) : null}
-        </View>
+        <SectionLabel label="กิจกรรมที่อยากทำ" colors={colors} />
+        <SettingsCard colors={colors}>
+          <SelectionRow label="กิจกรรม" value={optionSummary(MATCHING_ACTIVITY_OPTIONS, activities)} onPress={() => openPopup('activities')} colors={colors} last />
+        </SettingsCard>
+        {detailSections.map(section => <View key={section.id} style={styles.detailSection}>
+          <SectionLabel label={`รายละเอียด${section.label}`} colors={colors} />
+          <SettingsCard colors={colors}>{section.fields.map((field, index) => <SelectionRow key={field.key} label={field.label}
+            value={optionSummary(field.options, createMatchingOptionState(field.options, activeDetailFilters[section.id]?.[field.key] || []))}
+            onPress={() => openPopup(`detail:${section.id}:${field.key}`)} colors={colors} last={index === section.fields.length - 1} />)}</SettingsCard>
+        </View>)}
+        {!selectedActivities.length ? <Text style={[styles.note, { color: colors.inkMuted }]}>เลือกกิจกรรมเพื่อระบุรายละเอียด เช่น ชนิดกีฬา วิชาที่ติว หรือแนวเพลง</Text> : null}
 
-        <FilterSectionLabel label="เพศ" />
-        <ChipGrid count={4}>
-          <FilterChip
-            active={isMatchingOptionUnrestricted(MATCHING_GENDER_OPTIONS, genders)}
-            label="ทั้งหมด"
-            onPress={() => setGenders(createMatchingOptionState(MATCHING_GENDER_OPTIONS))}
-            quiet
-          />
-          {MATCHING_PRIMARY_GENDER_OPTIONS.map(({ label, value }) => (
-            <FilterChip
-              active={!!genders[value]}
-              key={value}
-              label={label}
-              onPress={() => setGenders((current) => toggleMatchingOption(MATCHING_GENDER_OPTIONS, current, value))}
-            />
-          ))}
-          <FilterChip
-            active={moreGenderActive}
-            label="เพิ่มเติม"
-            onPress={() => setShowMoreGenders((current) => !current)}
-          />
-        </ChipGrid>
-        {showMoreGenders || moreGenderActive ? (
-          <ChipGrid count={MATCHING_MORE_GENDER_OPTIONS.length}>
-            {MATCHING_MORE_GENDER_OPTIONS.map(({ label, value }) => (
-              <FilterChip
-                active={!!genders[value]}
-                key={value}
-                label={label}
-                onPress={() => setGenders((current) => toggleMatchingOption(MATCHING_GENDER_OPTIONS, current, value))}
-              />
-            ))}
-          </ChipGrid>
-        ) : null}
-
-        <FilterSectionLabel label="ช่วงอายุ" />
-        <View style={styles.agePickerRow}>
-          <AgePicker
-            label="อายุต่ำสุด"
-            onValueChange={(value) => {
-              const nextMin = normalizeMatchingAge(value, ageMin);
-              setAgeMin(nextMin);
-              if (nextMin > ageMax) setAgeMax(nextMin);
-            }}
-            value={ageMin}
-          />
-          <AgePicker
-            label="อายุสูงสุด"
-            onValueChange={(value) => {
-              const nextMax = normalizeMatchingAge(value, ageMax);
-              setAgeMax(nextMax);
-              if (nextMax < ageMin) setAgeMin(nextMax);
-            }}
-            value={ageMax}
-          />
-        </View>
-        <Text style={[styles.filterHelper, { color: colors.inkMuted }]}>
-          แสดงคนอายุ {ageMin}–{ageMax} ปี
-        </Text>
-
-        <FilterSectionLabel label="ระยะห่างจากคุณ" />
-        <View style={[styles.distanceCard, { backgroundColor: colors.surfaceRaised }]}>
-          <Text style={[styles.distanceValue, { color: colors.primary }]}>
-            {distance === MATCHING_UNLIMITED_DISTANCE ? 'ไม่จำกัดระยะ' : `${Math.round(distance)} กม.`}
-          </Text>
-          <ChipGrid count={MATCHING_DISTANCE_PRESETS.length + 1}>
-            {MATCHING_DISTANCE_PRESETS.map((value) => (
-              <FilterChip
-                active={Math.round(distance) === value}
-                key={value}
-                label={`${value} กม.`}
-                onPress={() => setDistance(value)}
-              />
-            ))}
-            <FilterChip
-              active={distance === MATCHING_UNLIMITED_DISTANCE}
-              label="ไม่จำกัด"
-              onPress={() => setDistance(MATCHING_UNLIMITED_DISTANCE)}
-            />
-          </ChipGrid>
-        </View>
-        <Text style={[styles.filterHelper, { color: colors.inkMuted }]}>
-          ระยะใกล้กว่า 700 ม. แสดงเป็น 700 ม. และไม่เปิดเผยพิกัด
-        </Text>
-
-        <FilterSectionLabel label="คณะ" />
-        {advancedFilters.locked ? <Pressable accessibilityRole="button" onPress={() => router.push('/membership')}>
-          <Text style={[styles.filterHelper, { color: colors.primary }]}>CampusMate Plus: คณะ ชั้นปี เวลาว่างและเพซ — ดูแพ็กเกจ</Text>
-        </Pressable> : null}
-        <ThemedSelect
-          enabled={canAdvanced && !sameFacultyOnly}
-          onValueChange={(value) => {
-            setFaculty(value);
-            setSameFacultyOnly(false);
-          }}
-          options={[{ value: 'all', label: 'ทุกคณะ' }, ...FACULTIES.map((item) => ({ value: item, label: item }))]}
-          value={sameFacultyOnly ? 'all' : faculty}
-        />
-        <SwitchRow
-          label="เฉพาะคณะเดียวกับฉัน"
-          onValueChange={(value) => {
-            if (!advancedFilters.guard()) return;
-            setSameFacultyOnly(value);
-            if (value) setFaculty('all');
-          }}
-          value={sameFacultyOnly}
-        />
-
-        <FilterSectionLabel label="ชั้นปี" />
-        <FilterChipGroup onChange={paidChange(setYears)} options={MATCHING_YEAR_OPTIONS} state={years} />
-
-        <FilterSectionLabel label="กิจกรรม" />
-        <ChipGrid count={MATCHING_PRIMARY_ACTIVITY_OPTIONS.length + 2}>
-          <FilterChip
-            active={isMatchingOptionUnrestricted(MATCHING_ACTIVITY_OPTIONS, activities)}
-            label="ทั้งหมด"
-            onPress={() => setActivities(createMatchingOptionState(MATCHING_ACTIVITY_OPTIONS))}
-            quiet
-          />
-          {MATCHING_PRIMARY_ACTIVITY_OPTIONS.map(({ label, value }) => (
-            <FilterChip
-              active={!!activities[value]}
-              key={value}
-              label={label}
-              onPress={() => setActivities((current) => toggleMatchingOption(MATCHING_ACTIVITY_OPTIONS, current, value))}
-            />
-          ))}
-          <FilterChip
-            active={moreActivityActive}
-            label="เพิ่มเติม"
-            onPress={() => setShowMoreActivities((current) => !current)}
-          />
-        </ChipGrid>
-        {showMoreActivities || moreActivityActive ? (
-          <ChipGrid count={MATCHING_MORE_ACTIVITY_OPTIONS.length}>
-            {MATCHING_MORE_ACTIVITY_OPTIONS.map(({ label, value }) => (
-              <FilterChip
-                active={!!activities[value]}
-                key={value}
-                label={label}
-                onPress={() => setActivities((current) => toggleMatchingOption(MATCHING_ACTIVITY_OPTIONS, current, value))}
-              />
-            ))}
-          </ChipGrid>
-        ) : null}
-
-        {showPace ? (
-          <>
-            <FilterSectionLabel label="เพซวิ่ง" />
-            <FilterChipGroup onChange={paidChange(setPaces)} options={MATCHING_PACE_OPTIONS} state={paces} />
-          </>
-        ) : null}
-
-        {detailFilterSections.map((section) => (
-          <ActivityDetailFilterCard
-            filters={activeDetailFilters[section.id] || {}}
-            key={section.id}
-            onClear={(fieldKey) => setDetailFilters((current) => clearActivityDetailFilter(current, section.id, fieldKey))}
-            onToggle={(fieldKey, option) => setDetailFilters((current) => (
-              toggleActivityDetailFilter(current, section.id, fieldKey, option)
-            ))}
-            section={section}
-          />
-        ))}
-        {selectedActivities.length === 0 ? (
-          <Text style={[styles.filterHelper, { color: colors.inkMuted }]}>
-            เลือกกิจกรรมเฉพาะเจาะจงเพื่อกรองรายละเอียด เช่น ชนิดกีฬา วิชาที่ติว หรือแนวเพลง
-          </Text>
-        ) : null}
-
-        <FilterSectionLabel label="วันที่สะดวก" />
-        <FilterChipGroup onChange={paidChange(setWeekdays)} options={MATCHING_WEEKDAY_OPTIONS} state={weekdays} />
-
-        <FilterSectionLabel label="ช่วงเวลา" />
-        <FilterChipGroup
-          onChange={paidChange(setAvailabilityPeriods)}
-          options={MATCHING_AVAILABILITY_OPTIONS}
-          state={availabilityPeriods}
-        />
-
-        <FilterSectionLabel label="เงื่อนไขเพิ่มเติม" />
-        <View style={[styles.switchCard, { backgroundColor: colors.card, borderColor: colors.line }]}>
-          <SwitchRow
-            label="ต้องมีรูปโปรไฟล์"
-            onValueChange={setRequirePhoto}
-            value={requirePhoto}
-          />
-          <SwitchRow
-            last
-            label="ต้องระบุเวลาว่าง"
-            onValueChange={paidChange(setRequireAvailability)}
-            value={requireAvailability}
-          />
-        </View>
+        <View style={styles.plusHeading}><SectionLabel label="ตัวกรองเพิ่มเติม" colors={colors} /><View style={[styles.plusBadge, { backgroundColor: colors.primarySoft }]}><FeatureIcon name="sparkles" size={12} color={colors.primary} /><Text style={[styles.plusBadgeText, { color: colors.primary }]}>CampusMate Plus</Text></View></View>
+        <SettingsCard colors={colors}>
+          <SelectionRow label="คณะ" value={sameFacultyOnly ? 'คณะเดียวกับฉัน' : faculty === 'all' ? 'ทุกคณะ' : faculty} onPress={() => openPopup('faculty', true)} colors={colors} locked={!canAdvanced} />
+          <ToggleRow label="เฉพาะคณะเดียวกับฉัน" value={sameFacultyOnly} onValueChange={paidChange(value => { setSameFacultyOnly(value); if (value) setFaculty('all'); })} colors={colors} locked={!canAdvanced} />
+          <SelectionRow label="ชั้นปี" value={optionSummary(MATCHING_YEAR_OPTIONS, years)} onPress={() => openPopup('years', true)} colors={colors} locked={!canAdvanced} />
+          {showPace ? <SelectionRow label="เพซวิ่ง" value={optionSummary(MATCHING_PACE_OPTIONS, paces)} onPress={() => openPopup('paces', true)} colors={colors} locked={!canAdvanced} /> : null}
+          <SelectionRow label="วันที่สะดวก" value={optionSummary(MATCHING_WEEKDAY_OPTIONS, weekdays)} onPress={() => openPopup('weekdays', true)} colors={colors} locked={!canAdvanced} />
+          <SelectionRow label="ช่วงเวลาที่สะดวก" value={optionSummary(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods)} onPress={() => openPopup('availability', true)} colors={colors} locked={!canAdvanced} />
+          <ToggleRow label="ต้องระบุเวลาว่าง" value={requireAvailability} onValueChange={paidChange(setRequireAvailability)} colors={colors} locked={!canAdvanced} last />
+        </SettingsCard>
+        {!canAdvanced ? <Text style={[styles.note, { color: colors.inkMuted }]}>{advancedFilters.loading ? 'กำลังตรวจสอบสถานะ CampusMate Plus…' : 'ตัวกรองเพิ่มเติมจะทำงานเมื่อใช้ CampusMate Plus'}</Text> : null}
+        <Pressable accessibilityRole="button" onPress={resetFilters} style={[styles.resetButton, { backgroundColor: colors.card }]}><Text style={[styles.resetText, { color: colors.primary }]}>รีเซ็ตตัวกรอง</Text></Pressable>
+        <Text style={[styles.note, { color: colors.inkMuted, textAlign: 'center' }]}>แตะ ✓ เพื่อบันทึก · ปิดหน้าต่างเพื่อยกเลิกการเปลี่ยนแปลง</Text>
       </ScrollView>
-      <View style={[styles.settingsFooter, { borderTopColor: colors.line, backgroundColor: colors.canvas }]}>
-        {saving ? <Text style={[styles.savingText, { color: colors.primary }]}>กำลังบันทึกการตั้งค่า…</Text> : null}
-        <Pressable
-          accessibilityRole="button"
-          disabled={saving}
-          onPress={saveSearchSettings}
-          style={({ pressed }) => [
-            styles.doneButton,
-            { backgroundColor: colors.primary },
-            pressed && styles.pressed,
-            saving && styles.disabled,
-          ]}
-        >
-          <Text style={[styles.doneButtonText, { color: colors.onPrimary }]}>{saving ? 'กำลังบันทึก…' : 'บันทึกตัวกรอง'}</Text>
-        </Pressable>
-      </View>
-    </>
-  );
-
-  if (Platform.OS === 'ios') {
-    return (
-      <View style={[styles.screen, { backgroundColor: colors.canvas }]}>
-        <SheetHeader colors={colors} showGrabber={false} />
-        {body}
-      </View>
-    );
-  }
-
-  return (
-    <DismissibleSheet colors={colors} onClose={closeSheet}>
-      {body}
-    </DismissibleSheet>
-  );
-}
-
-function SheetHeader({ colors, showGrabber }) {
-  return (
-    <View
-      accessibilityHint="ลากลงเพื่อปิดแผง"
-      accessibilityLabel="แถบลากปิด"
-      collapsable={false}
-      style={styles.sheetHeader}
-    >
-      {showGrabber ? (
-        <View style={styles.grabberHit}>
-          <View style={[styles.grabber, { backgroundColor: colors.inkSoft }]} />
-        </View>
-      ) : <View style={styles.iosGrabberSpacer} />}
-      <Text style={[styles.sheetTitle, { color: colors.ink }]}>ตั้งค่าการจับคู่</Text>
     </View>
-  );
+    {saveError ? <View accessibilityRole="alert" style={[styles.errorBar, { backgroundColor: colors.card, borderTopColor: colors.line }]}><Text style={[styles.errorText, { color: colors.danger }]}>{saveError}</Text><Pressable accessibilityRole="button" onPress={saveSearchSettings} style={styles.retry}><Text style={[styles.retryText, { color: colors.primary }]}>ลองบันทึกอีกครั้ง</Text></Pressable></View> : null}
+    <SelectionPopup config={popupOptions[popup]} onClose={() => setPopup(null)} />
+  </>;
+  return <>
+    <Stack.Screen options={{ gestureEnabled: Platform.OS === 'ios' && !saving }} />
+    {Platform.OS === 'ios'
+      ? <View style={[styles.screen, { backgroundColor: colors.canvas }]}>{header}{body}</View>
+      : <DismissibleSheet colors={colors} onClose={closeSheet} dismissDisabled={saving} header={header}>{body}</DismissibleSheet>}
+  </>;
 }
 
-function DismissibleSheet({ children, colors, onClose }) {
+function SheetHeader({ colors, saving, onClose, onSave }) {
+  return <View style={[styles.header, { backgroundColor: colors.canvas, borderBottomColor: colors.line }]}>
+    <Pressable accessibilityRole="button" accessibilityLabel="ปิดโดยไม่บันทึก" disabled={saving} onPress={onClose} style={styles.headerButton}><FeatureIcon name="xmark" size={21} color={colors.inkMuted} /></Pressable>
+    <Text style={[styles.headerTitle, { color: colors.ink }]}>ตั้งค่าการค้นหา</Text>
+    <Pressable accessibilityRole="button" accessibilityLabel="บันทึกการตั้งค่าค้นหา" accessibilityState={{ busy: saving }} disabled={saving} onPress={onSave} style={[styles.headerButton, styles.confirmButton, { backgroundColor: colors.primary }]}>{saving ? <ActivityIndicator color={colors.onPrimary} /> : <FeatureIcon name="checkmark" size={24} color={colors.onPrimary} />}</Pressable>
+  </View>;
+}
+
+function SettingsCard({ colors, children }) {
+  return <View style={[styles.card, { backgroundColor: colors.card }]}>{children}</View>;
+}
+function SectionLabel({ label, colors }) { return <Text style={[styles.sectionLabel, { color: colors.ink }]}>{label}</Text>; }
+function SelectionRow({ label, value, onPress, colors, locked, last }) {
+  return <Pressable accessibilityRole="button" accessibilityLabel={`${label}: ${value}${locked ? ' CampusMate Plus' : ''}`} onPress={onPress}
+    style={({ pressed }) => [styles.selectionRow, !last && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line }, pressed && styles.pressed]}>
+    <Text style={[styles.rowLabel, { color: colors.ink }]}>{label}</Text>
+    <View style={styles.rowTrailing}><Text numberOfLines={1} style={[styles.selectionValue, { color: colors.inkMuted }]}>{value}</Text><FeatureIcon name={locked ? 'lock.fill' : 'chevron.right'} size={locked ? 13 : 14} color={colors.inkMuted} /></View>
+  </Pressable>;
+}
+function ToggleRow({ label, value, onValueChange, colors, locked, last, inset = true }) {
+  const Container = locked ? Pressable : View;
+  return <Container accessibilityRole={locked ? 'button' : undefined} accessibilityLabel={locked ? `${label}: CampusMate Plus` : undefined} onPress={locked ? () => onValueChange(!value) : undefined}
+    style={[styles.toggleRow, !inset && styles.noInset, !last && inset && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line }]}>
+    <View style={styles.toggleLabel}><Text style={[styles.rowLabel, { color: colors.ink }]}>{label}</Text>{locked ? <FeatureIcon name="lock.fill" size={12} color={colors.inkMuted} /> : null}</View>
+    <View pointerEvents={locked ? 'none' : 'auto'} importantForAccessibility={locked ? 'no-hide-descendants' : 'auto'}><FilterSwitch label={label} value={value} onValueChange={onValueChange} disabled={locked} /></View>
+  </Container>;
+}
+
+function SelectionPopup({ config, onClose }) {
+  const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
+  const lastConfig = useRef(config);
+  if (config) lastConfig.current = config;
+  const current = config || lastConfig.current;
+  const options = current?.options || [];
+  const selected = current?.single ? [current.value] : getSelectedMatchingValues(options, current?.state || {});
+  const all = !current?.single && !selected.length;
+  const choose = option => {
+    if (current.single) { current.onChange(option.value); onClose(); }
+    else current.onChange(toggleMatchingOption(options, current.state, option.value));
+  };
+  return <Modal visible={Boolean(config)} transparent animationType="fade" onRequestClose={onClose}>
+    <View style={styles.popupOverlay}>
+      <Pressable accessibilityRole="button" accessibilityLabel="ปิดตัวเลือก" onPress={onClose} style={StyleSheet.absoluteFill} />
+      <View style={[styles.popup, { backgroundColor: colors.card, maxHeight: height * 0.78, paddingBottom: Math.max(12, insets.bottom + 8) }]}>
+        <View style={[styles.popupHeader, { borderBottomColor: colors.line }]}><Text style={[styles.popupTitle, { color: colors.ink }]}>{current?.title || 'เลือกตัวกรอง'}</Text><Pressable accessibilityRole="button" accessibilityLabel="เสร็จสิ้นการเลือก" onPress={onClose} style={styles.headerButton}><FeatureIcon name="checkmark" size={22} color={colors.primary} /></Pressable></View>
+        {!current?.single ? <Text style={[styles.popupHelper, { color: colors.inkMuted }]}>เลือกได้มากกว่าหนึ่งรายการ · ทั้งหมดหมายถึงไม่จำกัด</Text> : null}
+        <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={styles.popupList}>
+          {!current?.single ? <PopupOption label="ทั้งหมด" active={all} colors={colors} onPress={() => current.onChange(createMatchingOptionState(options))} /> : null}
+          {options.map(option => <PopupOption key={String(option.value)} label={option.longLabel || option.label} active={current?.single ? selected.includes(option.value) : !all && !!current?.state?.[option.value]} single={current?.single} colors={colors} onPress={() => choose(option)} />)}
+        </ScrollView>
+      </View>
+    </View>
+  </Modal>;
+}
+function PopupOption({ label, active, colors, onPress, single }) {
+  return <Pressable accessibilityRole={single ? 'radio' : 'checkbox'} accessibilityState={{ checked: active }} onPress={onPress} style={({ pressed }) => [styles.popupOption, { borderBottomColor: colors.line, backgroundColor: active ? colors.primarySoft : colors.card }, pressed && styles.pressed]}><Text style={[styles.popupOptionText, { color: active ? colors.primary : colors.ink }]}>{label}</Text>{active ? <FeatureIcon name="checkmark" size={18} color={colors.primary} /> : <View style={{ width: 18 }} />}</Pressable>;
+}
+function DismissibleSheet({ children, colors, onClose, dismissDisabled = false, header }) {
   const insets = useSafeAreaInsets();
   const translateY = useSharedValue(600);
   const fadeAnim = useSharedValue(0);
@@ -503,6 +320,8 @@ function DismissibleSheet({ children, colors, onClose }) {
   const isClosingRef = useRef(false);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const disabledRef = useRef(dismissDisabled);
+  disabledRef.current = dismissDisabled;
 
   const unlockClose = useCallback(() => {
     isClosingRef.current = false;
@@ -514,7 +333,7 @@ function DismissibleSheet({ children, colors, onClose }) {
   }, []);
 
   const closeWithAnimation = useCallback(() => {
-    if (isClosingRef.current) return;
+    if (isClosingRef.current || disabledRef.current) return;
     isClosingRef.current = true;
     translateY.set(withSpring(700, { duration: 300, dampingRatio: 0.8 }, (finished) => {
       if (finished) scheduleOnRN(finishClose);
@@ -540,6 +359,7 @@ function DismissibleSheet({ children, colors, onClose }) {
   }, [closeWithAnimation]);
 
   const panGesture = useMemo(() => Gesture.Pan()
+    .enabled(!dismissDisabled)
     .onStart(() => {
       cancelAnimation(translateY);
       dragStartY.set(translateY.get());
@@ -564,7 +384,7 @@ function DismissibleSheet({ children, colors, onClose }) {
         translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
         fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    }), [closeWithAnimation, dragStartY, fadeAnim, translateY, unlockClose]);
+    }), [closeWithAnimation, dismissDisabled, dragStartY, fadeAnim, translateY, unlockClose]);
 
   const fadeStyle = useAnimatedStyle(() => {
     const dragged = translateY.get();
@@ -576,7 +396,7 @@ function DismissibleSheet({ children, colors, onClose }) {
   return (
     <View style={styles.overlay}>
       <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(16,24,40,0.42)' }, fadeStyle]}>
-        <Pressable accessibilityLabel="ปิดแผง" onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
+        <Pressable accessibilityLabel="ปิดแผง" disabled={dismissDisabled} onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
       </Animated.View>
       <Animated.View
         style={[
@@ -586,300 +406,61 @@ function DismissibleSheet({ children, colors, onClose }) {
         ]}
       >
         <GestureDetector gesture={panGesture}>
-          <SheetHeader colors={colors} showGrabber />
+          <View style={styles.grabberHit}><View style={[styles.grabber, { backgroundColor: colors.inkMuted }]} /></View>
         </GestureDetector>
+        {header}
         {children}
       </Animated.View>
     </View>
   );
 }
 
-function pickChipColumns(count) {
-  if (count <= 5) return count;
-  if (count === 6) return 3;
-  if (count % 4 !== 1) return 4;
-  if (count % 3 !== 1) return 3;
-  return 5;
-}
-
-function ChipGrid({ children, count }) {
-  const columns = pickChipColumns(count ?? React.Children.count(children));
-  return (
-    <View style={styles.chipGrid}>
-      {React.Children.map(children, (child) => (
-        <View style={[styles.chipCell, { width: `${100 / columns}%` }]}>{child}</View>
-      ))}
-    </View>
-  );
-}
-
-function FilterChipGroup({ allLabel = 'ทั้งหมด', onChange, options, state }) {
-  const unrestricted = isMatchingOptionUnrestricted(options, state);
-  return (
-    <ChipGrid count={options.length + 1}>
-      <FilterChip
-        active={unrestricted}
-        label={allLabel}
-        onPress={() => onChange(createMatchingOptionState(options))}
-        quiet
-      />
-      {options.map(({ label, value }) => (
-        <FilterChip
-          active={!unrestricted && !!state[value]}
-          key={value}
-          label={label}
-          onPress={() => onChange(toggleMatchingOption(options, state, value))}
-        />
-      ))}
-    </ChipGrid>
-  );
-}
-
-function FilterChip({ active, label, onPress, quiet = false }) {
-  const { colors } = useTheme();
-  const filled = active && !quiet;
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected: active }}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.filterChip,
-        {
-          backgroundColor: filled ? colors.primary : colors.card,
-          borderColor: active ? colors.primary : colors.line,
-        },
-        pressed && styles.pressed,
-      ]}
-    >
-      <Text
-        numberOfLines={1}
-        style={[styles.filterChipText, { color: filled ? colors.onPrimary : active ? colors.primary : colors.inkMuted }]}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-function AgePicker({ label, onValueChange, value }) {
-  return (
-    <View style={styles.agePickerColumn}>
-      <ThemedSelect
-        label={label}
-        onValueChange={onValueChange}
-        options={MATCHING_AGE_VALUES.map((age) => ({ value: age, label: `${age} ปี` }))}
-        value={value}
-      />
-    </View>
-  );
-}
-
-function ThemedSelect({ enabled = true, label, onValueChange, options, value }) {
-  const { colors } = useTheme();
-  const [open, setOpen] = useState(false);
-  const selected = options.find((option) => option.value === value);
-  return (
-    <>
-      <Pressable
-        accessibilityRole="button"
-        disabled={!enabled}
-        onPress={() => setOpen(true)}
-        style={({ pressed }) => [
-          styles.selectField,
-          { backgroundColor: colors.card, borderColor: colors.line },
-          !enabled && styles.disabled,
-          pressed && styles.pressed,
-        ]}
-      >
-        <View style={styles.selectCopy}>
-          {label ? <Text style={[styles.agePickerLabel, { color: colors.inkMuted }]}>{label}</Text> : null}
-          <Text numberOfLines={1} style={[styles.selectValue, { color: colors.ink }]}>
-            {selected?.label || 'เลือก'}
-          </Text>
-        </View>
-        <FeatureIcon color={colors.inkMuted} name="chevron.down" size={16} />
-      </Pressable>
-      <Modal animationType="fade" onRequestClose={() => setOpen(false)} transparent visible={open}>
-        <View style={styles.selectOverlay}>
-          <Pressable onPress={() => setOpen(false)} style={StyleSheet.absoluteFill} />
-          <View style={[styles.selectSheet, { backgroundColor: colors.card, borderColor: colors.line }]}>
-            <Text style={[styles.selectSheetTitle, { color: colors.ink }]}>{label || 'เลือก'}</Text>
-            <ScrollView keyboardShouldPersistTaps="handled" style={styles.selectList}>
-              {options.map((option) => {
-                const active = option.value === value;
-                return (
-                  <Pressable
-                    key={String(option.value)}
-                    onPress={() => {
-                      onValueChange(option.value);
-                      setOpen(false);
-                    }}
-                    style={({ pressed }) => [
-                      styles.selectOption,
-                      { backgroundColor: active ? colors.primarySoft : 'transparent' },
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <Text style={[styles.selectOptionText, { color: active ? colors.primary : colors.ink }]}>
-                      {option.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-    </>
-  );
-}
-
-function FilterSectionLabel({ label }) {
-  const { colors } = useTheme();
-  return <Text style={[styles.settingLabel, { color: colors.inkMuted }]}>{label}</Text>;
-}
-
-// Detail filters for one selected activity (e.g. sports type, study subject).
-// Each field is a multi-select chip group; no selection means "any".
-function ActivityDetailFilterCard({ filters, onClear, onToggle, section }) {
-  const { colors } = useTheme();
-  const hasSelection = Object.keys(sanitizeActivityDetailFilters({ [section.id]: filters })).length > 0;
-  return (
-    <View style={[styles.detailFilterCard, { backgroundColor: colors.card, borderColor: colors.line }]}>
-      <View style={styles.detailFilterHeader}>
-        <FeatureIcon color={colors.primary} name={section.symbol} size={16} />
-        <Text style={[styles.detailFilterTitle, { color: colors.ink }]}>รายละเอียด{section.label}</Text>
-        {hasSelection ? (
-          <Pressable accessibilityRole="button" onPress={() => onClear()}>
-            <Text style={[styles.resetText, { color: colors.primary }]}>ล้าง</Text>
-          </Pressable>
-        ) : null}
-      </View>
-      {section.fields.map((field) => {
-        const selected = filters[field.key] || [];
-        return (
-          <View key={field.key}>
-            <Text style={[styles.detailFilterLabel, { color: colors.inkMuted }]}>{field.label}</Text>
-            <ChipGrid count={field.options.length + 1}>
-              <FilterChip
-                active={selected.length === 0}
-                label="ทั้งหมด"
-                onPress={() => onClear(field.key)}
-                quiet
-              />
-              {field.options.map(({ label, value }) => (
-                <FilterChip
-                  active={selected.includes(value)}
-                  key={value}
-                  label={label}
-                  onPress={() => onToggle(field.key, value)}
-                />
-              ))}
-            </ChipGrid>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
-function SwitchRow({ last = false, label, onValueChange, value }) {
-  const { colors, isDark } = useTheme();
-  return (
-    <View style={[styles.switchRow, !last && { borderBottomColor: colors.line, borderBottomWidth: StyleSheet.hairlineWidth }]}>
-      <Text style={[styles.switchLabel, { color: colors.ink }]}>{label}</Text>
-      <Switch
-        ios_backgroundColor={isDark ? colors.line : colors.surfaceRaised}
-        onValueChange={onValueChange}
-        thumbColor={colors.onPrimary}
-        trackColor={{ false: colors.line, true: colors.primary }}
-        value={value}
-      />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
+  screen: { flex: 1, width: '100%', borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
+  body: { flex: 1 },
+  scroll: { flex: 1 },
+  content: { width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 18, paddingTop: 18, gap: 12 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth },
+  headerButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  confirmButton: { borderRadius: 22 },
+  headerTitle: { flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '700' },
+  intro: { fontSize: 13, lineHeight: 22, paddingHorizontal: 2, marginBottom: 4 },
+  sectionLabel: { fontSize: 16, fontWeight: '700', paddingHorizontal: 3, paddingTop: 8 },
+  card: { borderRadius: 26, borderCurve: 'continuous', overflow: 'hidden', borderWidth: 0 },
+  sliderSection: { paddingHorizontal: 16, paddingTop: 17, paddingBottom: 11, gap: 8, borderBottomWidth: StyleSheet.hairlineWidth },
+  labelValue: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8 },
+  rowLabel: { fontSize: 14, lineHeight: 23, fontWeight: '500', flexShrink: 1 },
+  rowValue: { fontSize: 14, lineHeight: 23, fontWeight: '600' },
+  selectionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 16, minHeight: 58, paddingHorizontal: 16, paddingVertical: 14 },
+  rowTrailing: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8, maxWidth: '56%', flexShrink: 1 },
+  selectionValue: { fontSize: 14, lineHeight: 22, flexShrink: 1 },
+  toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 58, paddingHorizontal: 16, paddingVertical: 10 },
+  noInset: { paddingHorizontal: 0, paddingVertical: 0, minHeight: 44 },
+  toggleLabel: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  sliderLimits: { flexDirection: 'row', justifyContent: 'space-between' },
+  helper: { fontSize: 11, lineHeight: 18 },
+  note: { fontSize: 12, lineHeight: 20, paddingHorizontal: 4, marginBottom: 4 },
+  detailSection: { gap: 12 },
+  plusHeading: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, paddingTop: 4 },
+  plusBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8 },
+  plusBadgeText: { fontSize: 10, fontWeight: '600' },
+  resetButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 15, borderWidth: 0, marginTop: 8 },
+  resetText: { fontSize: 14, fontWeight: '600' },
+  errorBar: { borderTopWidth: StyleSheet.hairlineWidth, padding: 16, gap: 4 },
+  errorText: { fontSize: 13, lineHeight: 21 },
+  retry: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  retryText: { fontSize: 14, fontWeight: '600' },
+  pressed: { opacity: 0.72 },
+  popupOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center', backgroundColor: 'rgba(16,24,40,0.42)' },
+  popup: { width: '100%', maxWidth: 600, borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
+  popupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingLeft: 20, paddingRight: 10, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
+  popupTitle: { flex: 1, fontSize: 17, fontWeight: '700' },
+  popupHelper: { paddingHorizontal: 20, paddingVertical: 12, fontSize: 12, lineHeight: 20 },
+  popupList: { flexShrink: 1 },
+  popupOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 52, paddingHorizontal: 20, paddingVertical: 13, borderBottomWidth: StyleSheet.hairlineWidth },
+  popupOptionText: { flex: 1, fontSize: 15, lineHeight: 24 },
   overlay: { flex: 1, justifyContent: 'flex-end' },
-  jsSheet: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    height: '92%',
-    overflow: 'hidden',
-    width: '100%',
-  },
-  screen: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    flex: 1,
-    overflow: 'hidden',
-  },
-  settingsScroll: { flex: 1 },
-  sheetHeader: { alignItems: 'center', paddingBottom: spacing.sm, paddingTop: spacing.xs },
-  grabberHit: { alignItems: 'center', justifyContent: 'center', minHeight: 28, paddingVertical: 12, width: '100%' },
-  iosGrabberSpacer: { height: spacing.sm },
-  grabber: { borderRadius: 2, height: 5, width: 40 },
-  sheetTitle: { fontSize: type.headline, fontWeight: '700' },
-  settingsFooter: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    flexShrink: 0,
-    gap: spacing.sm,
-    paddingBottom: spacing.lg,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-  },
-  settingsContent: { gap: spacing.sm, paddingBottom: spacing.xl, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
-  introRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
-  introText: { flex: 1 },
-  resetText: { fontSize: type.caption, fontWeight: '700' },
-  settingLabel: { fontSize: type.caption, fontWeight: '600', marginTop: spacing.sm },
-  filterHelper: { fontSize: type.caption2, lineHeight: 18 },
-  detailFilterCard: { borderCurve: 'continuous', borderRadius: radius.lg, borderWidth: 1, gap: spacing.xs, marginTop: spacing.sm, padding: spacing.md, paddingBottom: spacing.xs },
-  detailFilterHeader: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.xs },
-  detailFilterTitle: { flex: 1, fontSize: type.caption, fontWeight: '800' },
-  detailFilterLabel: { fontSize: type.caption2, fontWeight: '600', marginBottom: spacing.xs, marginTop: spacing.xs },
-  chipGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 },
-  chipCell: { paddingBottom: 8, paddingHorizontal: 4 },
-  filterChip: {
-    alignItems: 'center',
-    borderCurve: 'continuous',
-    borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
-    justifyContent: 'center',
-    minHeight: 36,
-    paddingHorizontal: 6,
-    width: '100%',
-  },
-  filterChipText: { fontSize: type.caption2, fontWeight: '700' },
-  agePickerRow: { flexDirection: 'row', gap: spacing.sm },
-  agePickerColumn: { flex: 1, gap: spacing.xs },
-  agePickerLabel: { fontSize: type.caption2, fontWeight: '600' },
-  selectField: {
-    alignItems: 'center',
-    borderCurve: 'continuous',
-    borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    minHeight: 52,
-    paddingHorizontal: spacing.md,
-  },
-  selectCopy: { flex: 1, gap: 2, paddingRight: spacing.sm },
-  selectValue: { fontSize: type.body, fontWeight: '600' },
-  selectOverlay: { alignItems: 'center', backgroundColor: 'rgba(16,24,40,0.45)', flex: 1, justifyContent: 'center', padding: spacing.lg },
-  selectSheet: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, maxHeight: '70%', overflow: 'hidden', width: '100%' },
-  selectSheetTitle: { fontSize: type.headline, fontWeight: '700', paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
-  selectList: { maxHeight: 360, marginTop: spacing.sm },
-  selectOption: { minHeight: 48, justifyContent: 'center', paddingHorizontal: spacing.lg },
-  selectOptionText: { fontSize: type.body, fontWeight: '600' },
-  distanceCard: { borderRadius: radius.lg, gap: spacing.md, padding: spacing.md },
-  distanceValue: { fontSize: type.title, fontWeight: '600' },
-  switchCard: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
-  switchRow: { alignItems: 'center', flexDirection: 'row', minHeight: 52, paddingHorizontal: spacing.md },
-  switchLabel: { flex: 1, fontSize: type.body, fontWeight: '600' },
-  savingText: { fontSize: type.caption, fontWeight: '600' },
-  doneButton: { alignItems: 'center', borderCurve: 'continuous', borderRadius: radius.md, justifyContent: 'center', minHeight: 48 },
-  doneButtonText: { fontSize: type.body, fontWeight: '600' },
-  disabled: { opacity: 0.5 },
-  pressed: { opacity: 0.76 },
+  jsSheet: { width: '100%', height: '92%', borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
+  grabberHit: { alignItems: 'center', justifyContent: 'center', minHeight: 24, paddingTop: 10, paddingBottom: 6 },
+  grabber: { width: 38, height: 4, borderRadius: 2 },
 });

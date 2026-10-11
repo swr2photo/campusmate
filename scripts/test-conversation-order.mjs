@@ -20,12 +20,13 @@ assert.deepEqual(retainLoadingConversations([room('cached', 1), room('deleted', 
 
 // Exercise the actual subscription with in-memory Firestore listeners.
 const path = 'src/services/firestoreService.js';
-const source = readFileSync(path, 'utf8');
+const source = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
 const start = source.indexOf('export function subscribeToConversations(');
 const end = source.indexOf('\n}\n', start) + 2;
 const listeners = new Map();
 const outputs = [];
 const errors = [];
+const listenerOptions = new Map();
 let releaseOlder;
 const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
 const dependencies = {
@@ -34,7 +35,11 @@ const dependencies = {
   collection: (_db, ...parts) => parts.join('/'),
   where: () => ({}), orderBy: () => ({}), limit: () => ({}),
   query: (path) => path,
-  onSnapshot: (path, callback) => { listeners.set(path, callback); return () => listeners.delete(path); },
+  onSnapshot: (path, optionsOrCallback, callback) => {
+    listenerOptions.set(path, typeof optionsOrCallback === 'function' ? {} : optionsOrCallback);
+    listeners.set(path, typeof optionsOrCallback === 'function' ? optionsOrCallback : callback);
+    return () => listeners.delete(path);
+  },
   toMillis: (value) => typeof value === 'number' ? value : 0,
   isValidConversationEncryption: () => true,
   hasCurrentDeviceEnvelope: () => true,
@@ -90,6 +95,20 @@ root();
 await until(() => !outputs.at(-1).rooms.some(({ id }) => id === 'r3'));
 assert.equal(listeners.has('conversations/r3/messages'), false);
 stop();
+assert.equal(listeners.size, 0);
+// Firestore delivers an empty cache -> empty server transition only when
+// metadata changes are requested. This transition must resolve loading.
+const emptyOutputs = [];
+const stopEmpty = subscribe('empty-user', (rooms, info) => emptyOutputs.push({ rooms, info }), error => errors.push(error));
+assert.equal(listenerOptions.get('conversations').includeMetadataChanges, true);
+listeners.get('conversations')({ docs: [], docChanges: () => [], metadata: { fromCache: true, hasPendingWrites: false } });
+await until(() => emptyOutputs.length > 0);
+assert.equal(emptyOutputs.at(-1).info.fromCache, true);
+listeners.get('conversations')({ docs: [], docChanges: () => [], metadata: { fromCache: false, hasPendingWrites: false } });
+await until(() => emptyOutputs.at(-1)?.info.fromCache === false);
+assert.deepEqual(emptyOutputs.at(-1).rooms, []);
+assert.deepEqual(emptyOutputs.at(-1).info.loadingConversationIds, []);
+stopEmpty();
 assert.equal(listeners.size, 0);
 for (const file of [path, 'src/context/AppContext.js', 'src/screens/ChatScreen.js', 'src/screens/ChatScreen.ios.js']) {
   babel.parseSync(readFileSync(file, 'utf8'), { babelrc: false, configFile: false, parserOpts: { sourceType: 'module', plugins: ['jsx'] } });

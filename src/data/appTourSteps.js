@@ -26,6 +26,10 @@ export const APP_TOUR_STEPS = [
   },
   {
     id: 'activities',
+    ios: {
+      title: 'ทางลัดในหน้าหาเพื่อน',
+      body: 'แตะ “ถูกใจ” เพื่อดูคนที่สนใจคุณ หรือ “เริ่มใหม่” เพื่อกลับไปดูโปรไฟล์ที่เคยข้าม เลือกกิจกรรมที่สนใจได้จากปุ่มตัวกรองมุมขวาบน',
+    },
     route: '/home',
     target: 'home.activities',
     tab: 'หาเพื่อน',
@@ -45,6 +49,7 @@ export const APP_TOUR_STEPS = [
   },
   {
     id: 'deck',
+    ios: { optional: true },
     route: '/home',
     target: 'home.deck',
     tab: 'หาเพื่อน',
@@ -93,7 +98,7 @@ export const APP_TOUR_STEPS = [
   {
     id: 'places',
     route: '/meetup',
-    target: 'meetup.hero',
+    target: 'meetup.spots',
     tab: 'กิจกรรม',
     icon: 'mappin.and.ellipse',
     title: 'จุดนัดพบในมหาวิทยาลัย',

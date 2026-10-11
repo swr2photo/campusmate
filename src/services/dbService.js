@@ -1,6 +1,7 @@
 import { initializeApp, getApp, getApps } from 'firebase/app';
 import { initializeFirestore, getFirestore, setLogLevel } from 'firebase/firestore';
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import androidGoogleServices from '../../google-services.json';
 
 // The Firebase Web SDK still makes REST requests when it runs in a native
@@ -26,26 +27,31 @@ const androidAuthDomain = androidProjectId
 const androidMessagingSenderId = androidProjectInfo.project_number
   || process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
 
+const iosFirebaseConfig = Constants.expoConfig?.extra?.iosFirebaseConfig || {};
+
 const firebaseConfig = {
   apiKey: Platform.select({
-    ios: process.env.EXPO_PUBLIC_FIREBASE_IOS_API_KEY,
+    ios: iosFirebaseConfig.apiKey || process.env.EXPO_PUBLIC_FIREBASE_IOS_API_KEY,
     android: androidApiKey,
     default: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
   }),
   authDomain: Platform.select({
+    ios: iosFirebaseConfig.authDomain || process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
     android: androidAuthDomain,
     default: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
   }),
   projectId: Platform.select({
+    ios: iosFirebaseConfig.projectId || process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
     android: androidProjectId,
     default: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
   }),
   messagingSenderId: Platform.select({
+    ios: iosFirebaseConfig.messagingSenderId || process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
     android: androidMessagingSenderId,
     default: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
   }),
   appId: Platform.select({
-    ios: process.env.EXPO_PUBLIC_FIREBASE_IOS_APP_ID,
+    ios: iosFirebaseConfig.appId || process.env.EXPO_PUBLIC_FIREBASE_IOS_APP_ID,
     android: androidAppId,
     default: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
   }),

@@ -1,8 +1,28 @@
 import { collection, doc, getDoc, getDocs, getCountFromServer, limit, onSnapshot, orderBy, query, serverTimestamp, startAfter, updateDoc, where, or, Timestamp } from 'firebase/firestore';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { requireFirebase } from './dbService';
 import { waitForAuthReady } from './secureDiscoveryService';
+import { createNotificationReadOutbox } from '../utils/notificationReadOutbox';
+
+let readOutbox;
+function getReadOutbox() {
+  if (!readOutbox) readOutbox = createNotificationReadOutbox({
+    storage: AsyncStorage,
+    currentUid: () => getAuth(requireFirebase().app).currentUser?.uid || null,
+    write: async (uid, id) => {
+      const { app, db } = requireFirebase();
+      if (getAuth(app).currentUser?.uid !== uid) throw Object.assign(new Error('บัญชีเปลี่ยนแล้ว'), { code: 'permission-denied' });
+      await updateDoc(doc(db, 'users', uid, 'notifications', id), { readAt: serverTimestamp() });
+    },
+  });
+  return readOutbox;
+}
+export const watchPendingInboxReads = (uid, callback) => getReadOutbox().subscribe(uid, callback);
+export const clearPendingInboxReads = uid => getReadOutbox().clear(uid);
+export const retryInboxReadWrites = uid => getReadOutbox().flush(uid);
 
 export const timestampMillis = value => value?.toMillis?.() || (value?.seconds ? value.seconds * 1000 : 0);
 export const visibleNotification = row => !row.expiresAt || timestampMillis(row.expiresAt) > Date.now();
@@ -21,14 +41,25 @@ export function watchInbox(uid, onRows, onCount, onError, onFace, pageSize = 30)
     offAuth = onAuthStateChanged(getAuth(app), current => {
       disconnect();
       if (!alive || current?.uid !== uid) return;
+      void retryInboxReadWrites(uid).catch(onError);
       const source = inbox(db, uid);
       const refreshCount = async () => {
         const ticket = ++revision;
         try {
           const count = await getCountFromServer(query(source, where('readAt', '==', null), or(where('expiresAt', '==', null), where('expiresAt', '>', Timestamp.now()))));
           if (alive && ticket === revision) onCount(count.data().count);
-        } catch (error) { if (alive) onError(error); }
+        } catch (error) { if (alive && ticket === revision) onError(error); }
       };
+      // Expiry is a clock event: Firestore does not emit a new snapshot when
+      // a document merely crosses expiresAt. Refresh while the app is active,
+      // and immediately when returning from the background.
+      const expiryTimer = setInterval(() => {
+        if (AppState.currentState === 'active') { void refreshCount(); void retryInboxReadWrites(uid).catch(onError); }
+      }, 60000);
+      const foreground = AppState.addEventListener('change', state => {
+        if (state === 'active') { void refreshCount(); void retryInboxReadWrites(uid).catch(onError); }
+      });
+      stops.push(() => { clearInterval(expiryTimer); foreground.remove(); });
       stops.push(onSnapshot(doc(db, 'users', uid, 'notifications', 'face-verification'), { includeMetadataChanges: true }, snap => {
         if (!alive || (snap.metadata?.fromCache && !snap.exists())) return;
         onFace?.(snap.exists() ? { id: snap.id, ...snap.data({ serverTimestamps: 'estimate' }) } : null, snap.metadata?.fromCache === true);
@@ -50,8 +81,7 @@ export async function loadInboxPage(uid, cursor) {
   return { rows: snap.docs.map(row => ({ id: row.id, ...row.data() })), cursor: snap.docs.at(-1), hasMore: snap.size === 30 };
 }
 export function markInboxRead(uid, id) {
-  const { db } = requireFirebase();
-  return updateDoc(doc(db, 'users', uid, 'notifications', id), { readAt: serverTimestamp() });
+  return getReadOutbox().enqueue(uid, id);
 }
 export async function inboxTargetAvailable(row, uid) {
   const { db } = requireFirebase(), target = row.target || {};

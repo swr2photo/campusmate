@@ -67,7 +67,7 @@ export default function FallbackTabLayout() {
     tabBarInactiveTintColor: colors.inkSoft,
     tabBarHideOnKeyboard: true,
     tabBarButton: SilentTabBarButton,
-    tabBarLabelStyle: { color: colors.inkSoft, fontSize: type.micro, fontWeight: '600' },
+    tabBarLabelStyle: { color: colors.inkSoft, fontSize: type.micro, fontWeight: 'normal', fontFamily: 'NotoSansThai_600SemiBold' },
     tabBarItemStyle: { paddingVertical: 2 },
     tabBarBadgeStyle: {
       backgroundColor: colors.coral,

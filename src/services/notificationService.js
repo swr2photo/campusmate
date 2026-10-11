@@ -1,5 +1,5 @@
 import Constants from 'expo-constants';
-import * as TaskManager from 'expo-task-manager';
+import { getTaskManager } from './optionalTaskManager';
 import { AppState, Platform } from 'react-native';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService';
@@ -293,6 +293,9 @@ export async function handleBackgroundNotificationTask({ data, error } = {}) {
 
 function registerBackgroundNotificationTask() {
   if (Platform.OS !== 'android' || !Notifications || !notifyKitModule?.notifee) return;
+
+  const TaskManager = getTaskManager();
+  if (!TaskManager) return;
 
   // defineTask lives in notificationBackgroundTask.js (imported from index.js).
   // Registration is persistent on the device.

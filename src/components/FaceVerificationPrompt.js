@@ -6,9 +6,18 @@ import FeatureIcon from './FeatureIcon';
 import FaceVerificationModal from './FaceVerificationModal';
 import { useTheme } from '../theme';
 import { useOverlayGate } from '../utils/overlayGate';
+import { useAuth } from '../context/AuthContext';
 export const FACE_VERIFY_PROMPT = 'ยืนยันใบหน้าเพื่อให้คนอื่นเห็นโปรไฟล์ของคุณ';
+
+function isUserAdmin(user, profile) {
+  const email = (user?.email || profile?.email || '').toLowerCase().trim();
+  return email === '6710210317@psu.ac.th' || profile?.isAdmin === true || profile?.role === 'admin';
+}
+
 export function useFaceVerificationRequired() {
   const { profile, profileLoading } = useAppProfile();
+  const { user } = useAuth();
+  if (isUserAdmin(user, profile)) return false;
   return Boolean(profile?.id) && !profileLoading && !profile.isNewUser && profile.isFaceVerified !== true;
 }
 
@@ -35,16 +44,58 @@ export function useFaceVerificationFlow() {
 /** Compact profile status. Verification reminders live in the notification inbox. */
 export default function FaceVerificationBanner({ style }) {
   const { colors } = useTheme(), { profile, profileLoading } = useAppProfile();
+  const { user } = useAuth();
   const { required, start, modal } = useFaceVerificationFlow();
   if (profileLoading || !profile?.id || profile.isNewUser) return null;
-  return <><Pressable disabled={!required} accessibilityRole="button" accessibilityLabel={required ? 'เริ่มยืนยันใบหน้า' : 'ยืนยันใบหน้าแล้ว'} onPress={start}
-    style={[styles.row, { backgroundColor: colors.card, borderColor: colors.line }, style]}>
-    <View style={[styles.icon, { backgroundColor: colors.surfaceRaised }]}><FeatureIcon name="lock.shield.fill" size={22} color={colors.ink} /></View>
-    <View style={styles.copy}><AppText style={[styles.title, { color: colors.ink }]}>{required ? 'ยืนยันใบหน้า' : 'ยืนยันใบหน้าแล้ว'}</AppText>
-      <AppText style={[styles.body, { color: colors.inkMuted }]}>{required ? 'โปรไฟล์ยังไม่แสดงให้คนอื่นเห็น' : 'ตรวจสอบตัวตนเรียบร้อยแล้ว'}</AppText></View>
-    <FeatureIcon name={required ? 'chevron.right' : 'checkmark.circle.fill'} size={18} color={required ? colors.inkMuted : colors.green} />
-  </Pressable>{modal}</>;
+
+  const userEmail = (user?.email || profile?.email || '').toLowerCase().trim();
+  const isSuperAdmin = userEmail === '6710210317@psu.ac.th';
+  const isAdmin = isSuperAdmin || profile?.isAdmin === true || profile?.role === 'admin';
+
+  // Do not show the banner if already verified or if the user is an admin
+  if (!required || isAdmin) return null;
+
+  const title = 'ยืนยันใบหน้า';
+
+  return (
+    <>
+      <Pressable
+        accessibilityLabel={title}
+        accessibilityRole="button"
+        onPress={start}
+        style={[styles.row, { backgroundColor: colors.card, borderColor: colors.line }, style]}
+      >
+        <View style={styles.icon}>
+          <FeatureIcon color={colors.ink} name="lock.shield.fill" size={20} />
+        </View>
+        <View style={styles.copy}>
+          <AppText style={[styles.title, { color: colors.ink }]}>{title}</AppText>
+        </View>
+        <FeatureIcon color={colors.inkMuted} name="chevron.right" size={18} />
+      </Pressable>
+      {modal}
+    </>
+  );
 }
 // Kept for compatibility with older callers; automatic reminders are retired.
 export function FaceVerificationNoticeHost() { return null; }
-const styles = StyleSheet.create({ row: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, minHeight: 76, borderRadius: 16, borderWidth: StyleSheet.hairlineWidth }, icon: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }, copy: { flex: 1, minWidth: 0, gap: 4 }, title: { fontSize: 15, fontWeight: '600' }, body: { fontSize: 13, lineHeight: 20 } });
+const styles = StyleSheet.create({
+  row: {
+    alignItems: 'center',
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: 12,
+    minHeight: 52,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  icon: {
+    alignItems: 'center',
+    height: 28,
+    justifyContent: 'center',
+    width: 28,
+  },
+  copy: { flex: 1, minWidth: 0 },
+  title: { fontSize: 15, fontWeight: '700' },
+});

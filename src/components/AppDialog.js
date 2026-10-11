@@ -4,19 +4,19 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { FullWindowOverlay } from 'react-native-screens';
+import { BlurView } from 'expo-blur';
 import FeatureIcon from './FeatureIcon';
+import LiquidGlassView from './LiquidGlassView';
 import { useTheme } from '../theme';
 
 /**
- * CampusMate in-app dialog (replaces the native system AlertDialog).
+ * CampusMate Apple Liquid Glass Dialog (System Alert & Confirm Modal).
  *
- * Presentational only: the imperative queue lives in src/utils/appAlert.js and is
- * rendered by AppAlertHost; ConfirmContext and AppAlert reuse this same visual.
- *
- * Android renders inside a transparent Modal (its own window, so it stacks above
- * any Modal already open). iOS renders inside react-native-screens'
- * FullWindowOverlay so it also appears above presented modals (a second RN Modal
- * presented from the root view controller would fail while another is open).
+ * Implements Apple Liquid Glass design language:
+ * - Crystal translucent frosted glass card with continuous curves (iOS HIG)
+ * - Single luminous glass icon capsule (no heavy double bullseye rings)
+ * - Unclipped typography with full support for Thai vowels and tone marks
+ * - Refined Apple glass action buttons with specular reflections and haptic press states
  */
 
 export const DIALOG_TONES = {
@@ -31,16 +31,39 @@ export const DIALOG_ICONS = {
   megaphone: { ios: 'megaphone.fill', android: 'megaphone' },
 };
 
-function toneColors(colors, tone) {
+function toneColors(colors, tone, icon) {
+  if (icon === 'crown.fill') {
+    return {
+      accent: '#FF9500',
+      soft: 'rgba(255, 149, 0, 0.15)',
+      softBorder: 'rgba(255, 149, 0, 0.35)',
+    };
+  }
   switch (tone) {
     case 'success':
-      return { accent: colors.green, soft: colors.greenSoft };
+      return {
+        accent: '#34C759',
+        soft: 'rgba(52, 199, 89, 0.15)',
+        softBorder: 'rgba(52, 199, 89, 0.35)',
+      };
     case 'warning':
-      return { accent: colors.amber, soft: colors.amberSoft };
+      return {
+        accent: '#FF9500',
+        soft: 'rgba(255, 149, 0, 0.15)',
+        softBorder: 'rgba(255, 149, 0, 0.35)',
+      };
     case 'danger':
-      return { accent: colors.danger, soft: colors.dangerSoft };
+      return {
+        accent: '#FF3B30',
+        soft: 'rgba(255, 59, 48, 0.15)',
+        softBorder: 'rgba(255, 59, 48, 0.35)',
+      };
     default:
-      return { accent: colors.primary, soft: colors.primarySoft };
+      return {
+        accent: colors.primary || '#007AFF',
+        soft: 'rgba(0, 122, 255, 0.14)',
+        softBorder: 'rgba(0, 122, 255, 0.3)',
+      };
   }
 }
 
@@ -76,19 +99,29 @@ function DialogButton({ button, colors, isDark, primary, stacked }) {
   const style = button.style || 'default';
   const isCancel = style === 'cancel';
   const isDestructive = style === 'destructive';
-  let backgroundColor = isDark ? colors.primaryDark : colors.primary;
-  let textColor = colors.onPrimary;
-  let borderColor = 'transparent';
+
+  let backgroundColor = colors.primary || '#007AFF';
+  let textColor = '#FFFFFF';
+  let borderColor = isDark ? 'rgba(255, 255, 255, 0.25)' : 'rgba(255, 255, 255, 0.4)';
+  let shadowStyle = styles.buttonPrimaryShadow;
+
   if (isDestructive) {
-    backgroundColor = isDark ? '#E5534B' : colors.danger;
+    backgroundColor = '#FF3B30';
+    borderColor = 'rgba(255, 255, 255, 0.35)';
+    textColor = '#FFFFFF';
+    shadowStyle = styles.buttonDestructiveShadow;
   } else if (isCancel) {
-    backgroundColor = isDark ? colors.surfaceRaised : '#F1F5FA';
-    borderColor = colors.line;
+    backgroundColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)';
+    borderColor = isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(0, 0, 0, 0.08)';
     textColor = colors.ink;
+    shadowStyle = null;
   } else if (!primary) {
-    backgroundColor = colors.primarySoft;
-    textColor = colors.primary;
+    backgroundColor = isDark ? 'rgba(0, 122, 255, 0.18)' : 'rgba(0, 122, 255, 0.1)';
+    borderColor = isDark ? 'rgba(0, 122, 255, 0.35)' : 'rgba(0, 122, 255, 0.2)';
+    textColor = colors.primary || '#007AFF';
+    shadowStyle = null;
   }
+
   const disabled = Boolean(button.disabled || button.loading);
   return (
     <Pressable
@@ -102,7 +135,7 @@ function DialogButton({ button, colors, isDark, primary, stacked }) {
         styles.button,
         !stacked && styles.buttonFlex,
         { backgroundColor, borderColor },
-        isCancel && styles.buttonOutline,
+        shadowStyle,
         pressed && styles.buttonPressed,
         button.disabled && !button.loading && styles.buttonDisabled,
       ]}
@@ -110,7 +143,7 @@ function DialogButton({ button, colors, isDark, primary, stacked }) {
       {button.loading ? (
         <ActivityIndicator color={textColor} />
       ) : (
-        <Text numberOfLines={2} style={[styles.buttonText, { color: textColor }]}>
+        <Text numberOfLines={1} style={[styles.buttonText, { color: textColor }]}>
           {button.text}
         </Text>
       )}
@@ -159,9 +192,9 @@ export default function AppDialog({
           useNativeDriver: true,
         }),
         Animated.spring(scale, {
-          damping: 16,
+          damping: 17,
           mass: 0.9,
-          stiffness: 220,
+          stiffness: 240,
           toValue: 1,
           useNativeDriver: true,
         }),
@@ -194,7 +227,7 @@ export default function AppDialog({
 
   if (!mounted && !visible) return null;
 
-  const { accent, soft } = toneColors(colors, content.tone);
+  const { accent, soft, softBorder } = toneColors(colors, content.tone, content.icon);
   const ordered = orderButtons(content.buttons);
   const stacked = ordered.length > 2;
   const lastPrimaryIndex = ordered.reduce(
@@ -202,15 +235,29 @@ export default function AppDialog({
     -1,
   );
 
+  const isLongMessage = typeof content.message === 'string' && content.message.length > 220;
+
   const card = (
     <View style={styles.root}>
       <Animated.View
         pointerEvents="none"
         style={[
           StyleSheet.absoluteFill,
-          { backgroundColor: isDark ? 'rgba(0, 0, 0, 0.62)' : 'rgba(12, 22, 40, 0.5)', opacity: progress },
+          { opacity: progress },
         ]}
-      />
+      >
+        <BlurView
+          intensity={isDark ? 36 : 24}
+          style={StyleSheet.absoluteFill}
+          tint={isDark ? 'dark' : 'systemMaterial'}
+        />
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            { backgroundColor: isDark ? 'rgba(0, 0, 0, 0.42)' : 'rgba(15, 23, 42, 0.24)' },
+          ]}
+        />
+      </Animated.View>
       <Pressable
         accessibilityElementsHidden
         disabled={!onBackdropPress || !visible}
@@ -222,11 +269,8 @@ export default function AppDialog({
         accessibilityViewIsModal
         accessibilityRole="alert"
         style={[
-          styles.card,
+          styles.cardWrapper,
           {
-            backgroundColor: colors.card,
-            borderColor: isDark ? colors.line : 'rgba(16, 32, 58, 0.06)',
-            opacity: progress,
             transform: [
               { scale },
               { translateY: progress.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) },
@@ -234,58 +278,75 @@ export default function AppDialog({
           },
         ]}
       >
-        <View style={[styles.badgeRing, { backgroundColor: soft }]}>
-          <View style={[styles.badge, { backgroundColor: accent }]}>
-            <DialogIcon color={isDark ? '#0B1424' : '#FFFFFF'} markColor={accent} icon={content.icon} size={28} tone={content.tone} />
+        <LiquidGlassView
+          glassEffectStyle="regular"
+          style={styles.cardGlass}
+        >
+          {/* Frosted Glass Icon Badge */}
+          <View style={[styles.badgePill, { backgroundColor: soft, borderColor: softBorder }]}>
+            <DialogIcon color={accent} markColor={accent} icon={content.icon} size={26} tone={content.tone} />
           </View>
-        </View>
-        {content.title ? (
-          <Text accessibilityRole="header" style={[styles.title, { color: colors.ink }]}>
-            {content.title}
-          </Text>
-        ) : null}
-        {content.message ? (
-          <ScrollView
-            bounces={false}
-            contentContainerStyle={styles.messageContent}
-            showsVerticalScrollIndicator={false}
-            style={styles.messageScroll}
-          >
-            <Text style={[styles.message, { color: colors.inkMuted }]}>{content.message}</Text>
-          </ScrollView>
-        ) : null}
-        {content.input ? (
-          <TextInput
-            autoFocus
-            keyboardType={content.input.keyboardType || 'default'}
-            onChangeText={content.input.onChangeText}
-            onSubmitEditing={content.input.onSubmitEditing}
-            placeholder={content.input.placeholder}
-            placeholderTextColor={colors.inkSoft}
-            secureTextEntry={Boolean(content.input.secureTextEntry)}
-            selectionColor={colors.primary}
-            style={[
-              styles.input,
-              { backgroundColor: isDark ? colors.surfaceRaised : '#F4F8FC', borderColor: colors.line, color: colors.ink },
-            ]}
-            value={content.input.value}
-          />
-        ) : null}
-        {content.children || null}
-        {ordered.length ? (
-          <View style={[styles.buttons, stacked ? styles.buttonsStacked : styles.buttonsRow]}>
-            {ordered.map((button, index) => (
-              <DialogButton
-                button={button}
-                colors={colors}
-                isDark={isDark}
-                key={`${button.text}-${index}`}
-                primary={index === lastPrimaryIndex}
-                stacked={stacked}
-              />
-            ))}
-          </View>
-        ) : null}
+
+          {content.title ? (
+            <Text accessibilityRole="header" style={[styles.title, { color: colors.ink }]}>
+              {content.title}
+            </Text>
+          ) : null}
+
+          {content.message ? (
+            isLongMessage ? (
+              <ScrollView
+                bounces={false}
+                contentContainerStyle={styles.messageContent}
+                showsVerticalScrollIndicator
+                style={styles.messageScroll}
+              >
+                <Text style={[styles.message, { color: colors.inkMuted }]}>{content.message}</Text>
+              </ScrollView>
+            ) : (
+              <View style={styles.messageStaticContainer}>
+                <Text style={[styles.message, { color: colors.inkMuted }]}>{content.message}</Text>
+              </View>
+            )
+          ) : null}
+
+          {content.input ? (
+            <TextInput
+              autoFocus
+              keyboardType={content.input.keyboardType || 'default'}
+              onChangeText={content.input.onChangeText}
+              onSubmitEditing={content.input.onSubmitEditing}
+              placeholder={content.input.placeholder}
+              placeholderTextColor={colors.inkSoft}
+              secureTextEntry={Boolean(content.input.secureTextEntry)}
+              selectionColor={colors.primary}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.65)',
+                  borderColor: isDark ? 'rgba(255, 255, 255, 0.14)' : 'rgba(0, 0, 0, 0.08)',
+                  color: colors.ink,
+                },
+              ]}
+              value={content.input.value}
+            />
+          ) : null}
+          {content.children || null}
+          {ordered.length ? (
+            <View style={[styles.buttons, stacked ? styles.buttonsStacked : styles.buttonsRow]}>
+              {ordered.map((button, index) => (
+                <DialogButton
+                  button={button}
+                  colors={colors}
+                  isDark={isDark}
+                  key={`${button.text}-${index}`}
+                  primary={index === lastPrimaryIndex}
+                  stacked={stacked}
+                />
+              ))}
+            </View>
+          ) : null}
+        </LiquidGlassView>
       </Animated.View>
     </View>
   );
@@ -320,113 +381,127 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: 28,
+    paddingHorizontal: 24,
   },
-  card: {
+  cardWrapper: {
     alignItems: 'center',
-    borderCurve: 'continuous',
+    maxWidth: 320,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.22,
+    shadowRadius: 30,
+    elevation: 20,
+  },
+  cardGlass: {
+    alignItems: 'center',
     borderRadius: 24,
-    borderWidth: StyleSheet.hairlineWidth,
-    elevation: 24,
-    maxHeight: '86%',
-    maxWidth: 380,
-    overflow: 'hidden',
+    borderCurve: 'continuous',
     paddingBottom: 20,
-    paddingHorizontal: 22,
-    paddingTop: 26,
-    shadowColor: '#0B1424',
-    shadowOffset: { width: 0, height: 18 },
-    shadowOpacity: 0.24,
-    shadowRadius: 32,
+    paddingHorizontal: 20,
+    paddingTop: 24,
     width: '100%',
   },
-  badgeRing: {
+  badgePill: {
     alignItems: 'center',
-    borderRadius: 38,
-    height: 76,
+    borderRadius: 20,
+    borderCurve: 'continuous',
+    borderWidth: 1,
+    height: 52,
     justifyContent: 'center',
-    marginBottom: 14,
-    width: 76,
-  },
-  badge: {
-    alignItems: 'center',
-    borderRadius: 28,
-    height: 56,
-    justifyContent: 'center',
-    width: 56,
+    marginBottom: 2,
+    width: 52,
   },
   shieldMark: {
     position: 'absolute',
     top: '18%',
   },
   title: {
-    fontSize: 19,
-    fontWeight: '800',
-    letterSpacing: -0.2,
-    lineHeight: 28,
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: -0.3,
+    lineHeight: 24,
+    marginTop: 12,
     textAlign: 'center',
+  },
+  messageStaticContainer: {
+    alignSelf: 'stretch',
+    marginTop: 6,
+    paddingHorizontal: 2,
   },
   messageScroll: {
     alignSelf: 'stretch',
-    flexGrow: 0,
+    maxHeight: 180,
     marginTop: 6,
   },
   messageContent: {
     paddingHorizontal: 2,
   },
   message: {
-    fontSize: 15,
-    lineHeight: 24,
+    fontSize: 14,
+    lineHeight: 22,
     textAlign: 'center',
   },
   input: {
     alignSelf: 'stretch',
-    borderRadius: 14,
+    borderRadius: 12,
     borderWidth: 1,
-    fontSize: 16,
-    marginTop: 16,
-    minHeight: 48,
-    paddingHorizontal: 14,
+    fontSize: 15,
+    marginTop: 14,
+    minHeight: 44,
+    paddingHorizontal: 12,
     paddingVertical: 10,
   },
   buttons: {
     alignSelf: 'stretch',
-    marginTop: 22,
+    marginTop: 20,
   },
   buttonsRow: {
     flexDirection: 'row',
     gap: 10,
   },
   buttonsStacked: {
-    gap: 10,
+    gap: 8,
   },
   button: {
     alignItems: 'center',
-    borderRadius: 16,
+    borderRadius: 14,
     borderCurve: 'continuous',
+    borderWidth: 1,
     justifyContent: 'center',
-    minHeight: 50,
+    minHeight: 46,
     overflow: 'hidden',
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 10,
   },
   buttonFlex: {
     flex: 1,
   },
-  buttonOutline: {
-    borderWidth: 1,
+  buttonPrimaryShadow: {
+    shadowColor: '#007AFF',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  buttonDestructiveShadow: {
+    shadowColor: '#FF3B30',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    elevation: 3,
   },
   buttonPressed: {
-    opacity: 0.86,
-    transform: [{ scale: 0.98 }],
+    opacity: 0.85,
+    transform: [{ scale: 0.975 }],
   },
   buttonDisabled: {
-    opacity: 0.5,
+    opacity: 0.45,
   },
   buttonText: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '700',
-    lineHeight: 22,
+    lineHeight: 20,
     textAlign: 'center',
   },
 });

@@ -1,9 +1,9 @@
 import { useMemo, useRef, useState } from 'react';
-import { Alert } from 'react-native';
 import { router } from 'expo-router';
 import { useNotificationInbox } from '../context/NotificationInboxContext';
 import { useFaceVerificationFlow } from '../components/FaceVerificationPrompt';
 import { inboxTargetAvailable } from '../services/notificationInboxService';
+import { showAlert } from '../utils/appAlert';
 import { groupInboxRows } from '../utils/notificationDisplay';
 
 // State and actions shared by the React Native and SwiftUI notification pages.
@@ -18,14 +18,14 @@ export default function useNotificationsPage() {
   if (live) lastDetail.current = live;
   const detail = lastDetail.current;
 
-  const report = () => Alert.alert('ยังเปิดรายการไม่ได้', 'ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง');
+  const report = () => showAlert('ยังเปิดรายการไม่ได้', 'ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง', { tone: 'danger' });
   const markRead = row => { if (!row.readAt) void inbox.markRead(row.id).catch(report); };
   const showDetail = row => { lastDetail.current = row; setDetailId(row.id); };
   const open = async row => {
     try {
       markRead(row);
       if (row.type === 'face_verification' || row.type === 'admin_announcement' || row.type === 'system') { showDetail(row); return; }
-      if (!await inboxTargetAvailable(row, inbox.uid)) { Alert.alert('รายการนี้ไม่พร้อมใช้งานแล้ว', 'ข้อมูลอาจถูกลบ หรือคุณไม่มีสิทธิ์เปิดรายการนี้'); return; }
+      if (!await inboxTargetAvailable(row, inbox.uid)) { showAlert('รายการนี้ไม่พร้อมใช้งานแล้ว', 'ข้อมูลอาจถูกลบ หรือคุณไม่มีสิทธิ์เปิดรายการนี้', { tone: 'warning' }); return; }
       const target = row.target || {};
       if (target.conversationId) router.push({ pathname: '/chat-room', params: { chatId: target.conversationId } });
       else if (row.type === 'group_message' && target.partyId) router.push({ pathname: '/group-chat', params: { partyId: target.partyId } });
@@ -34,7 +34,7 @@ export default function useNotificationsPage() {
       else if (row.type === 'like') router.push('/likes');
       else showDetail(row);
     } catch (error) {
-      if (String(error.code).includes('permission-denied') || String(error.code).includes('not-found')) Alert.alert('รายการนี้ไม่พร้อมใช้งานแล้ว', 'คุณไม่มีสิทธิ์เปิดรายการนี้ หรือข้อมูลถูกลบแล้ว');
+      if (String(error.code).includes('permission-denied') || String(error.code).includes('not-found')) showAlert('รายการนี้ไม่พร้อมใช้งานแล้ว', 'คุณไม่มีสิทธิ์เปิดรายการนี้ หรือข้อมูลถูกลบแล้ว', { tone: 'warning' });
       else report();
     }
   };

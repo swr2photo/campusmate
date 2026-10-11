@@ -72,7 +72,7 @@ export default function AppointmentPlacePicker({ visible, spots = [], initialSpo
   }).slice(0, 8), [spots, query]);
   const selectedPoint = pointOf(selection);
   const mapsAvailable = Boolean(isMapsSupported && (Platform.OS === 'ios'
-    ? Constants.expoConfig?.extra?.iosMapsConfigured
+    ? true
     : Constants.expoConfig?.extra?.androidMapsConfigured));
   useEffect(() => {
     if (!visible || !mapsAvailable || mapLoaded) return undefined;
@@ -126,10 +126,11 @@ export default function AppointmentPlacePicker({ visible, spots = [], initialSpo
         </View>
         <View style={styles.mapWrap}>
           {mapsAvailable && visible ? <MapView key={mapRetry}
-            provider={PROVIDER_GOOGLE}
+            provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
             style={StyleSheet.absoluteFill}
             initialRegion={{ ...PSU_HAT_YAI, latitudeDelta: 0.055, longitudeDelta: 0.055 }}
             onPress={selectPin}
+            onMapReady={() => { setMapLoaded(true); setMapError(''); }}
             onMapLoaded={() => { setMapLoaded(true); setMapError(''); }}
           >
             <Circle center={PSU_HAT_YAI} radius={PARTY_RADIUS_METERS} strokeColor={colors.primary} fillColor="rgba(35,123,231,0.08)" />

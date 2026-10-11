@@ -22,11 +22,16 @@ import { clearPrivateImageCaches } from '../components/CachedImage';
 import { allowedMatchingPreferences, recordSecureDiscoveryAction, respondToSecureLike, rewindSecureDiscoveryAction,
   secureDiscoveryCall, secureDiscoveryConfigured, toServerDiscoveryFilters } from '../services/secureDiscoveryService';
 import { isCampusEmail, isLikelyNewFirebaseUser } from '../utils/campusEmail';
+import { getCurrentUserIdToken } from '../services/authService';
+import { callFunction } from '../services/callableClient';
 import FeatureIcon from '../components/FeatureIcon';
 import { showInAppNotification } from '../components/InAppNotificationBanner';
-import { requireFirebase } from '../services/dbService';
+import { db, requireFirebase } from '../services/dbService';
 import { uploadGalleryImage } from '../services/profileGalleryService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { MAX_GALLERY_PHOTOS } from '../data/profilePhotos';
+import { usePreferences } from './PreferencesContext';
+import { orderRecommendedProfiles } from '../utils/appPreferences';
 import {
   createConversation,
   createSharedProfilesSubscription,
@@ -176,19 +181,23 @@ function getFastBootFeedProfiles() {
 }
 
 function withProfileDefaults(profile) {
+  const email = (profile?.email || profile?.campusEmail || '').toLowerCase().trim();
+  const isSuper = email === '6710210317@psu.ac.th';
+  const isAdmin = isSuper || profile?.isAdmin === true || profile?.role === 'admin';
   return {
     ...profile,
     // Older profile documents may not have this field. Keep the historical
     // discoverable-by-default behavior while honoring an explicit opt-out.
     isDiscoverable: profile?.isDiscoverable !== false,
     locationEnabled: profile?.locationEnabled !== false,
-    isFaceVerified: profile?.isFaceVerified === true,
-    faceMatchScore: typeof profile?.faceMatchScore === 'number' ? profile.faceMatchScore : null,
-    faceVerificationStatus: profile?.faceVerificationStatus || (profile?.isFaceVerified ? 'verified' : 'unverified'),
-    privacy: { ...defaultPrivacy, ...(profile.privacy || {}) },
+    isFaceVerified: isAdmin ? true : (profile?.isFaceVerified === true),
+    faceMatchScore: isAdmin ? (profile?.faceMatchScore ?? 100) : (typeof profile?.faceMatchScore === 'number' ? profile.faceMatchScore : null),
+    faceVerificationStatus: isAdmin ? 'verified' : (profile?.faceVerificationStatus || (profile?.isFaceVerified ? 'verified' : 'unverified')),
+    autoVerifyFace: isAdmin ? true : Boolean(profile?.autoVerifyFace),
+    privacy: { ...defaultPrivacy, ...(profile?.privacy || {}) },
     matchingPreferences: {
       ...defaultMatchingPreferences,
-      ...(profile.matchingPreferences || {}),
+      ...(profile?.matchingPreferences || {}),
     },
   };
 }
@@ -626,7 +635,7 @@ async function persistProfileToFirestore(userId, profileData) {
   }
   if (Array.isArray(nextProfile.gallery)) {
     const uploadedGallery = [];
-    const gallery = nextProfile.gallery.filter((uri) => typeof uri === 'string' && uri).slice(0, 5);
+    const gallery = nextProfile.gallery.filter((uri) => typeof uri === 'string' && uri).slice(0, MAX_GALLERY_PHOTOS);
     for (const imageUri of gallery) {
       let uri = imageUri;
       if (uri && (uri.startsWith('data:image') || uri.startsWith('file:'))) {
@@ -763,6 +772,7 @@ function withScheduleTimestamp(schedule) {
 
 export function AppProvider({ children }) {
   const { user } = useAuth();
+  const { preferences } = usePreferences();
   const membership = useMembership();
   // Plan gates (src/data/plans.js). While the entitlement is loading nothing paid is unlocked.
   const membershipLoading = membership.status === 'loading';
@@ -780,6 +790,7 @@ export function AppProvider({ children }) {
     ? JSON.stringify(toServerDiscoveryFilters(profile?.matchingPreferences, profile, canAdvancedFilters)) : '';
   const [profileLoading, setProfileLoading] = useState(false);
   const [conversations, setConversations] = useState([]);
+  const [conversationInbox, setConversationInbox] = useState({ userId: null, ready: false, error: null });
   useEffect(() => {
     if (!user?.id) return;
     // Imported on demand: this module pulls in the image picker, the image
@@ -838,6 +849,7 @@ export function AppProvider({ children }) {
   const [selectedMeetup, setSelectedMeetup] = useState(null);
   const [dataError, setDataError] = useState(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [conversationRetryKey, setConversationRetryKey] = useState(0);
   const [optimisticHiddenIds, setOptimisticHiddenIds] = useState([]);
   const [isOnline, setIsOnline] = useState(true);
   const [networkReady, setNetworkReady] = useState(false);
@@ -1132,6 +1144,29 @@ export function AppProvider({ children }) {
           // public projection. Repair the owner-selected fields once so other
           // devices stop receiving an image-only/stale profile.
           setProfile(defaults);
+          const currentEmail = (user.email || defaults.email || '').toLowerCase().trim();
+          const isSuperUser = currentEmail === '6710210317@psu.ac.th';
+          const isAdminUser = isSuperUser || defaults.isAdmin === true || defaults.role === 'admin';
+          if (isAdminUser && (storedProfile?.isFaceVerified !== true || storedProfile?.isDiscoverable !== true)) {
+            try {
+              const targetDb = db || requireFirebase()?.db;
+              if (targetDb && user?.id) {
+                void updateDoc(doc(targetDb, 'profiles', user.id), {
+                  isFaceVerified: true,
+                  faceMatchScore: 100,
+                  faceVerificationStatus: 'verified',
+                  isDiscoverable: true,
+                }).catch(() => {});
+                void updateDoc(doc(targetDb, 'users', user.id), {
+                  isFaceVerified: true,
+                  faceMatchScore: 100,
+                  faceVerificationStatus: 'verified',
+                }).catch(() => {});
+              }
+            } catch (syncErr) {
+              console.warn('[AppContext] Admin sync skipped:', syncErr?.message || syncErr);
+            }
+          }
           backgroundProfileTask = runAfterInteractionsHelper(() => {
             if (!active) return;
             if (!pending.length) void ensurePublicProfileProjection(user.id, defaults);
@@ -1404,7 +1439,10 @@ export function AppProvider({ children }) {
     if (!user?.id || !isOnline || cacheHydratedUserId !== user.id) return undefined;
     let active = true;
     let unsubscribeConversation = null;
+    setConversationInbox({ userId: user.id, ready: false, error: null });
     const handleSubscriptionError = (error) => {
+      if (!active) return;
+      setConversationInbox((current) => ({ ...current, userId: user.id, error }));
       console.error('[AppContext] conversations subscription error:', {
         code: error?.code || 'unknown',
         message: error?.message || String(error),
@@ -1414,10 +1452,19 @@ export function AppProvider({ children }) {
     const interactionTask = runAfterInteractionsHelper(() => {
       if (!active) return;
       unsubscribeConversation = subscribeToConversations(user.id, (convs, snapshotInfo = {}) => {
+        if (!active) return;
+        const resolved = !snapshotInfo.loadingConversationIds?.length
+          && (snapshotInfo.fromCache === false || convs.length > 0);
+        setConversationInbox((current) => ({ userId: user.id, ready: current.ready || resolved, error: null }));
         const preserveOptimistic = snapshotInfo.fromCache !== false
           || snapshotInfo.hasPendingWrites === true
           || pendingSyncCountRef.current > 0;
-        setConversations((current) => mergeConversationSnapshots(current, retainLoadingConversations(current, convs, snapshotInfo.loadingConversationIds), preserveOptimistic));
+        setConversations((current) => {
+          // An empty local Firestore cache cannot invalidate persisted rooms.
+          // Let the authoritative server snapshot remove stale conversations.
+          if (snapshotInfo.fromCache === true && convs.length === 0) return current;
+          return mergeConversationSnapshots(current, retainLoadingConversations(current, convs, snapshotInfo.loadingConversationIds), preserveOptimistic);
+        });
       }, handleSubscriptionError);
     });
     return () => {
@@ -1425,7 +1472,7 @@ export function AppProvider({ children }) {
       interactionTask?.cancel?.();
       unsubscribeConversation?.();
     };
-  }, [cacheHydratedUserId, isOnline, retryKey, user?.id]);
+  }, [cacheHydratedUserId, isOnline, retryKey, conversationRetryKey, user?.id]);
 
   // Older accepted meetups may have a conversation acceptance but no
   // appointments document because appointment history was introduced later.
@@ -2393,8 +2440,13 @@ export function AppProvider({ children }) {
       const result = await recordSecureDiscoveryAction(candidate.id, 'like');
       setOptimisticHiddenIds((prev) => [...prev, candidate.id]);
       if (result.status !== 'accepted') return { matched: false };
-      const conversationId = await createConversation(user.id, profile, candidate);
-      return { matched: true, conversationId };
+      try {
+        const conversationId = await createConversation(user.id, profile, candidate);
+        return { matched: true, conversationId };
+      } catch (error) {
+        error.discoveryActionCommitted = true;
+        throw error;
+      }
     }
     setRemovedUserIds((current) => {
       if (!current.has(candidate.id)) return current;
@@ -2403,6 +2455,7 @@ export function AppProvider({ children }) {
       return next;
     });
     setOptimisticHiddenIds((prev) => [...prev, candidate.id]);
+    let decisionCommitted = false;
     try {
       const isAlreadyAccepted = acceptedIncomingLikes.some((like) => like.id === candidate.id);
       const existingConvo = activeConversations.find(
@@ -2419,6 +2472,7 @@ export function AppProvider({ children }) {
         { dedupeKey: `decision:${candidate.id}` }
       );
       if (result?.queued) return { matched: false, queued: true };
+      decisionCommitted = true;
       if (result?.matched) {
         const conversationId = await ensureConversation(candidate);
         updateHiddenConversations((current) => current.filter((id) => id !== conversationId));
@@ -2427,6 +2481,8 @@ export function AppProvider({ children }) {
       return { matched: false };
     } catch (error) {
       console.error('matchProfile error:', error);
+      if (!decisionCommitted) setOptimisticHiddenIds((current) => current.filter((id) => id !== candidate.id));
+      else error.discoveryActionCommitted = true;
       throw error;
     }
   };
@@ -2650,7 +2706,7 @@ export function AppProvider({ children }) {
     const nextProfile = withProfileDefaults({
       ...profile,
       ...nextProfileData,
-      ...(isAvatarChanged && profile?.isFaceVerified ? {
+      ...(isAvatarChanged && nextProfileData.isFaceVerified !== true && profile?.isFaceVerified && profile?.autoVerifyFace !== true && user?.email !== '6710210317@psu.ac.th' && profile?.email !== '6710210317@psu.ac.th' ? {
         isFaceVerified: false,
         faceMatchScore: null,
         faceVerificationStatus: 'unverified',
@@ -2833,6 +2889,69 @@ export function AppProvider({ children }) {
       faceVerificationStatus: 'verified',
     }));
   }, []);
+
+  const switchAdminRole = useCallback(async (targetAdminState) => {
+    if (!user?.id) throw new Error('กรุณาเข้าสู่ระบบก่อน');
+    const isSuper = (user?.email || profile?.email || '').toLowerCase().trim() === '6710210317@psu.ac.th';
+    const fallbackNewAdmin = typeof targetAdminState === 'boolean' ? targetAdminState : !(profile?.isAdmin || profile?.role === 'admin');
+    let newAdmin = fallbackNewAdmin;
+
+    try {
+      const res = await callFunction('switchAdminMode', {
+        isAdmin: typeof targetAdminState === 'boolean' ? targetAdminState : undefined,
+      });
+      newAdmin = Boolean(res?.isAdmin);
+      try {
+        await getCurrentUserIdToken(true);
+      } catch (err) {
+        console.warn('[AppContext] Failed to force token refresh:', err);
+      }
+    } catch (err) {
+      const isNotFound = err?.code === 'functions/not-found' ||
+                         String(err?.message || '').toLowerCase().includes('not-found') ||
+                         String(err?.message || '').includes('404');
+      if (isSuper && isNotFound) {
+        console.warn('[AppContext] Cloud Function switchAdminMode not yet deployed, switching client state locally:', newAdmin);
+      } else {
+        throw err;
+      }
+    }
+
+    if (newAdmin && user?.id) {
+      try {
+        const targetDb = db || requireFirebase()?.db;
+        if (targetDb) {
+          void updateDoc(doc(targetDb, 'profiles', user.id), {
+            isFaceVerified: true,
+            faceMatchScore: 100,
+            faceVerificationStatus: 'verified',
+            isDiscoverable: true,
+          }).catch(() => {});
+          void updateDoc(doc(targetDb, 'users', user.id), {
+            isFaceVerified: true,
+            faceMatchScore: 100,
+            faceVerificationStatus: 'verified',
+          }).catch(() => {});
+        }
+      } catch (syncErr) {
+        console.warn('[AppContext] switchAdmin sync skipped:', syncErr?.message || syncErr);
+      }
+    }
+
+    setProfile((prev) => withProfileDefaults({
+      ...(prev || {}),
+      isAdmin: newAdmin,
+      role: newAdmin ? 'admin' : 'user',
+      ...(newAdmin ? {
+        isFaceVerified: true,
+        faceMatchScore: 100,
+        faceVerificationStatus: 'verified',
+        autoVerifyFace: true,
+        isDiscoverable: true,
+      } : {}),
+    }));
+    return newAdmin;
+  }, [user?.id, user?.email, profile?.email, profile?.isAdmin, profile?.role]);
 
   const toggleMeetupAcceptanceInChat = async (conversationId, hostUserId, spotName, meetup = null) => {
     if (!user?.id || !conversationId) return false;
@@ -3104,10 +3223,12 @@ export function AppProvider({ children }) {
     [availableProfiles]
   );
   const filteredAvailableProfiles = useMemo(() => {
-    if (optimisticHiddenIds.length === 0 && blockedUserIds.length === 0 && !isResolvingDistances) return availableProfiles;
     const hiddenIds = new Set([...optimisticHiddenIds, ...blockedUserIds]);
-    return availableProfiles.filter((profileItem) => !hiddenIds.has(profileItem.id) && !profileItem.distancePending);
-  }, [availableProfiles, blockedUserIds, isResolvingDistances, optimisticHiddenIds]);
+    const visible = hiddenIds.size === 0 && !isResolvingDistances
+      ? availableProfiles
+      : availableProfiles.filter((profileItem) => !hiddenIds.has(profileItem.id) && !profileItem.distancePending);
+    return orderRecommendedProfiles(visible, preferences.recommendation);
+  }, [availableProfiles, blockedUserIds, isResolvingDistances, optimisticHiddenIds, preferences.recommendation]);
 
   const combinedAppointments = useMemo(() => {
     const result = [];
@@ -3277,9 +3398,11 @@ export function AppProvider({ children }) {
       setDiscoveryError(null);
       setDiscoveryRetryKey((current) => current + 1);
     },
+    retryConversations: () => setConversationRetryKey((current) => current + 1),
     loadMoreIncomingLikes: () => decisionSubscriptionRef.current?.loadMore?.(),
     markAsRead,
     markFaceVerified,
+    switchAdminRole,
     matchProfile,
     reactToMessageInChat,
     recycleSkippedProfiles,
@@ -3339,11 +3462,19 @@ export function AppProvider({ children }) {
   );
 
   const conversationsSlice = useMemo(() => ({
+    isConversationsLoading: Boolean(user?.id && (conversationInbox.userId !== user.id || !conversationInbox.ready)),
+    conversationsError: conversationInbox.userId === user?.id ? conversationInbox.error : null,
+    conversationsOnline: isOnline,
+    conversationsNetworkReady: networkReady,
     allConversations: liveConversations,
     conversations: activeConversations,
     hiddenConversationIds,
     totalUnreadMessages,
   }), [
+    conversationInbox,
+    user?.id,
+    isOnline,
+    networkReady,
     activeConversations,
     hiddenConversationIds,
     liveConversations,

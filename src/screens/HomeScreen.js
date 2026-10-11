@@ -1,4 +1,5 @@
 import Text from '../components/AppText';
+import { useToast } from '../context/ToastContext';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Image from '../components/CachedImage';
@@ -83,6 +84,7 @@ function formatRemainingTime(milliseconds) {
 }
 
 export default function HomeScreen({ onOpenLikes }) {
+  const { showToast } = useToast();
   const { colors, isDark } = useTheme();
   const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
   const rewind = useEntitlement(FEATURE_UNLIMITED_REWIND);
@@ -278,30 +280,34 @@ export default function HomeScreen({ onOpenLikes }) {
     setActionInProgress(true);
     try {
       const result = await matchProfile(currentProfile);
+      if (result?.queued) showToast('บันทึกถูกใจไว้แล้ว จะส่งเมื่อเชื่อมต่ออินเทอร์เน็ต', 'info');
       if (result?.matched && result?.conversationId) {
         router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
       }
     } catch (error) {
       console.warn('[HomeScreen] matchProfile error:', error?.message || error);
+      showToast(error?.discoveryActionCommitted ? 'บันทึกถูกใจแล้ว แต่เปิดแชตไม่สำเร็จ ลองเปิดจากหน้าแชตอีกครั้ง' : 'ส่งถูกใจไม่สำเร็จ กรุณาลองอีกครั้ง', 'info');
     } finally {
       setActionInProgress(false);
     }
-  }, [actionInProgress, currentProfile, matchProfile]);
+  }, [actionInProgress, currentProfile, matchProfile, showToast]);
 
   const handleSuperLike = useCallback(async () => {
     if (!currentProfile || actionInProgress) return;
     setActionInProgress(true);
     try {
       const result = await matchProfile(currentProfile);
+      if (result?.queued) showToast('บันทึกถูกใจไว้แล้ว จะส่งเมื่อเชื่อมต่ออินเทอร์เน็ต', 'info');
       if (result?.matched && result?.conversationId) {
         router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
       }
     } catch (error) {
       console.warn('[HomeScreen] superLike error:', error?.message || error);
+      showToast(error?.discoveryActionCommitted ? 'บันทึกถูกใจแล้ว แต่เปิดแชตไม่สำเร็จ ลองเปิดจากหน้าแชตอีกครั้ง' : 'ส่งถูกใจไม่สำเร็จ กรุณาลองอีกครั้ง', 'info');
     } finally {
       setActionInProgress(false);
     }
-  }, [actionInProgress, currentProfile, matchProfile]);
+  }, [actionInProgress, currentProfile, matchProfile, showToast]);
 
   const handleDirectChat = useCallback(async () => {
     if (!currentProfile || actionInProgress) return;
@@ -417,6 +423,34 @@ export default function HomeScreen({ onOpenLikes }) {
           </TourTarget>
         )}
       </ScrollView>
+
+      {/* Floating Action Button for Landmarks */}
+      <Pressable
+        accessibilityLabel="สถานที่"
+        accessibilityRole="button"
+        onPress={() => router.push('/landmarks')}
+        style={({ pressed }) => [
+          {
+            position: 'absolute',
+            bottom: 24,
+            right: 20,
+            backgroundColor: colors.primary,
+            width: 56,
+            height: 56,
+            borderRadius: 28,
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.25,
+            shadowRadius: 8,
+            elevation: 5,
+            opacity: pressed ? 0.8 : 1,
+          }
+        ]}
+      >
+        <Text style={{ fontSize: 24 }}>🗺️</Text>
+      </Pressable>
     </IosLikeScreen>
   );
 }
@@ -424,7 +458,7 @@ export default function HomeScreen({ onOpenLikes }) {
 function CampusContextBar({ faculty, matchedCount, onOpenLikes }) {
   const { colors, isDark } = useTheme();
   return (
-    <View style={[styles.campusBar, { backgroundColor: isDark ? colors.surfaceRaised : colors.surface, borderColor: colors.line }]}>
+    <View style={[styles.campusBar, { backgroundColor: isDark ? colors.surfaceRaised : colors.surface }]}>
       <View style={styles.campusInfo}>
         <View style={[styles.campusBadgeIcon, { backgroundColor: colors.primarySoft }]}>
           <FeatureIcon color={colors.primary} name="building.columns.fill" size={16} />
@@ -444,7 +478,7 @@ function CampusContextBar({ faculty, matchedCount, onOpenLikes }) {
         onPress={onOpenLikes}
         style={({ pressed }) => [
           styles.campusLikesChip,
-          { backgroundColor: colors.primarySoft, borderColor: colors.line },
+          { backgroundColor: colors.primarySoft },
           pressed && styles.pressed,
         ]}
       >
@@ -593,7 +627,7 @@ function DiscoverProfileCard({ candidate, isMatched, onPress }) {
       onPress={onPress}
       style={({ pressed }) => [styles.profileCardWrapper, pressed && styles.cardPressed]}
     >
-      <View style={[styles.profileCard, { backgroundColor: candidate.avatarColor || colors.card, borderColor: colors.line }]}>
+      <View style={[styles.profileCard, { backgroundColor: candidate.avatarColor || colors.card }]}>
         {imageUri ? (
           <Image
             cachePolicy="memory-disk"
@@ -798,7 +832,7 @@ function MeetupBanner({ meetup, stats }) {
   const meetupSoft = colors.primarySoft;
   const meetupBorder = isDark ? 'rgba(112,178,255,0.28)' : 'rgba(35,123,231,0.16)';
   return (
-    <View style={[styles.meetupBanner, { backgroundColor: meetupSoft, borderColor: meetupBorder }]}>
+    <View style={[styles.meetupBanner, { backgroundColor: meetupSoft }]}>
       <Pressable accessibilityRole="button" onPress={() => router.navigate('/meetup')} style={({ pressed }) => [styles.meetupBannerMain, pressed && styles.pressed]}>
         <View style={[styles.meetupIcon, { backgroundColor: meetupColor }]}>
           <FeatureIcon color={colors.onPrimary} name="mappin.and.ellipse" size={13} />
@@ -835,7 +869,7 @@ function DiscoveryErrorState({ offline = false, stalled = false, onRetry }) {
     ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
     : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่';
   return (
-    <View accessibilityRole="alert" style={[styles.emptyState, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
+    <View accessibilityRole="alert" style={[styles.emptyState, { backgroundColor: colors.surfaceRaised }]}>
       <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}>
         <FeatureIcon color={colors.primary} name={offline ? 'wifi.slash' : 'exclamationmark.triangle'} size={28} />
       </View>
@@ -866,7 +900,7 @@ function DiscoveryErrorState({ offline = false, stalled = false, onRetry }) {
 function EmptyState({ loading = false, onReset }) {
   const { colors } = useTheme();
   return (
-    <View style={[styles.emptyState, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
+    <View style={[styles.emptyState, { backgroundColor: colors.surfaceRaised }]}>
       <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}>
         {loading ? (
           <ActivityIndicator color={colors.primary} />
@@ -925,8 +959,8 @@ const styles = StyleSheet.create({
   campusBar: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.md,
@@ -941,7 +975,7 @@ const styles = StyleSheet.create({
   },
   campusBadgeIcon: {
     alignItems: 'center',
-    borderRadius: radius.md,
+    borderRadius: 26,
     height: 36,
     justifyContent: 'center',
     width: 36,
@@ -963,7 +997,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderCurve: 'continuous',
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 0,
     flexDirection: 'row',
     gap: 5,
     paddingHorizontal: 10,
@@ -1090,8 +1124,8 @@ const styles = StyleSheet.create({
   },
   profileCard: {
     borderCurve: 'continuous',
-    borderRadius: radius.xxl,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     height: 460,
     overflow: 'hidden',
     position: 'relative',
@@ -1122,7 +1156,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(16,32,58,0.7)',
     borderColor: 'rgba(255,255,255,0.18)',
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 0,
     flexDirection: 'row',
     gap: 5,
     paddingHorizontal: 9,
@@ -1187,7 +1221,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.18)',
     borderColor: 'rgba(255,255,255,0.25)',
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 0,
     paddingHorizontal: 9,
     paddingVertical: 4,
   },
@@ -1201,7 +1235,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(16,185,129,0.18)',
     borderColor: 'rgba(16,185,129,0.3)',
     borderRadius: radius.pill,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 0,
     flexDirection: 'row',
     gap: 6,
     marginTop: 4,
@@ -1266,8 +1300,8 @@ const styles = StyleSheet.create({
   meetupBanner: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     flexDirection: 'row',
     gap: spacing.sm,
     paddingHorizontal: spacing.md,
@@ -1307,8 +1341,8 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.xl,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     paddingHorizontal: 22,
     paddingVertical: 36,
   },
@@ -1340,7 +1374,7 @@ const styles = StyleSheet.create({
   resetButton: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.md,
+    borderRadius: 26,
     flex: 1,
     flexDirection: 'row',
     gap: 7,
@@ -1355,8 +1389,8 @@ const styles = StyleSheet.create({
   filterConfigButton: {
     alignItems: 'center',
     borderCurve: 'continuous',
-    borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 26,
+    borderWidth: 0,
     flex: 1,
     flexDirection: 'row',
     gap: 7,

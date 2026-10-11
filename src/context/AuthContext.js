@@ -17,6 +17,7 @@ import {
 import { showAlert } from '../utils/appAlert';
 import { router } from 'expo-router';
 import { showInAppNotification } from '../components/InAppNotificationBanner';
+import { markPushInboxRead } from '../services/notificationInboxService';
 
 const AuthContext = createContext(null);
 const AUTH_READY_TIMEOUT_MS = 6000;
@@ -171,6 +172,7 @@ export function AuthProvider({ children }) {
       const notice = noticeQueue.shift();
       showingNotice = true;
       showAlert(notice.title, notice.message, [{ text: 'รับทราบ', onPress: () => {
+        void markPushInboxRead(notice.notificationId).catch(() => {});
         showingNotice = false;
         showNextNotice();
       } }], {
@@ -219,8 +221,9 @@ export function AuthProvider({ children }) {
               title: notice.title || 'ประกาศจาก CampusMate',
               message: notice.message || '',
               type: 'admin_announcement',
-              data: { route: notice.route },
+              data: { route: notice.route, notificationId: notice.notificationId },
               onPress: () => {
+                void markPushInboxRead(notice.notificationId).catch(() => {});
                 if (notice.route && ['/home', '/discover', '/meetup', '/me', '/chat', '/likes'].includes(notice.route)) {
                   router.push(notice.route);
                 }
@@ -230,6 +233,7 @@ export function AuthProvider({ children }) {
             // Moderation warning
             noticeQueue.push({
               id: notice.id,
+              notificationId: notice.notificationId,
               kind,
               message: notice.message,
               title: 'คำเตือนจากผู้ดูแล CampusMate',

@@ -38,6 +38,6 @@ try{
 }catch(e){if(page){await page.screenshot({path:'artifacts/admin-moderation-qa-failure.png',fullPage:true});console.error((await page.locator('body').innerText()).slice(-2400));}throw e;}
 finally{
  await browser?.close();await request(`${domain}/moderate/${key}`,{method:'DELETE',headers:{Authorization:'Bearer '+createDeleteTicket(key,secret)}}).catch(()=>{});
- await db.recursiveDelete(c);await r.delete();for(const uid of [actor,alice,bob]){await db.doc('users/'+uid).delete();await db.doc('accountRestrictions/'+uid).delete();await auth.deleteUser(uid).catch(()=>{});await db.doc('profiles/'+uid).delete();await db.doc('discoveryProfiles/'+uid).delete();}
+ await db.recursiveDelete(c);await r.delete();for(const uid of [actor,alice,bob]){await db.recursiveDelete(db.doc('users/'+uid));await db.doc('accountRestrictions/'+uid).delete();await auth.deleteUser(uid).catch(()=>{});await db.doc('profiles/'+uid).delete();await db.doc('discoveryProfiles/'+uid).delete();}
  for(const collection of ['adminAudit','adminModerationEvidence']){const docs=await db.collection(collection).where('actor','==',actor).get();for(const doc of docs.docs)await doc.ref.delete();}await db.terminate();await deleteApp(app);
 }

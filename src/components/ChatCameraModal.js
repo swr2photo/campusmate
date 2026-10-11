@@ -373,9 +373,14 @@ export default function ChatCameraModal({ recipientName, recipientAvatar, onCapt
               videoBitrate={4_500_000}
               animateShutter={Platform.OS === 'ios'}
               onCameraReady={handleCameraReady}
-              onMountError={() => {
-                setReady(false);
-                showAlert('เปิดกล้องไม่สำเร็จ', 'ลองปิดแล้วเปิดกล้องอีกครั้ง', { tone: 'danger' });
+              onMountError={(err) => {
+                console.warn('[ChatCamera] Camera mount error:', err);
+                if (facing === 'back') {
+                  setFacing('front');
+                } else {
+                  setReady(false);
+                  showAlert('เปิดกล้องไม่สำเร็จ', 'ลองปิดแล้วเปิดกล้องอีกครั้ง', { tone: 'danger' });
+                }
               }}
             />
           ) : (

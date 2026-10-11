@@ -10,12 +10,18 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VIDEO_MODES } from '../utils/chatVideoPolicy';
 import ChatImageEditorModal from './ChatImageEditorModal';
 import { showAlert } from '../utils/appAlert';
+import useAutoplayPreference from '../hooks/useAutoplayPreference';
 
 const modeIcons = { once: 'radio-button-on-outline', replay: 'play-circle-outline', chat: 'chatbubble-outline' };
 const descriptions = { once: 'เปิดได้ครั้งเดียว ปิดแล้วจะเปิดซ้ำไม่ได้', replay: 'เปิดดูซ้ำได้ พร้อมป้องกันแคปหน้าจอ', chat: 'เก็บรูปหรือวิดีโอไว้ในบทสนทนา' };
 
 function VideoPreview({ uri }) {
-  const player = useVideoPlayer(uri, p => { p.loop = true; p.play(); });
+  const autoplay = useAutoplayPreference();
+  const player = useVideoPlayer(uri, p => { p.loop = true; });
+  React.useEffect(() => {
+    if (autoplay) player.play();
+    else player.pause();
+  }, [autoplay, player]);
   return <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="contain"
     allowsPictureInPicture={false} fullscreenOptions={{ enable: false }} />;
 }

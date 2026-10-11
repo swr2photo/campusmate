@@ -20,14 +20,13 @@ import {
 import FeatureIcon from '../components/FeatureIcon';
 import LegalAuthNotice from '../components/LegalAuthNotice';
 import {
-  CAMPUS_EMAIL_PLACEHOLDER,
-  isCampusEmail,
+  CAMPUS_EMAIL_DOMAIN,
   isCampusStudentEmail,
   isLoginEmailAllowed,
 } from '../utils/campusEmail';
 import { getPasswordError, PASSWORD_MISMATCH_MESSAGE } from '../utils/passwordPolicy';
 import { useRemoteImage } from '../utils/useRemoteImage';
-import { radius, shadow, spacing, type, useTheme } from '../theme';
+import { radius, spacing, type, useTheme } from '../theme';
 
 // Keep the login artwork distinct from the first onboarding illustration.
 const loginStoryset = require('../../assets/login-storyset.png');
@@ -42,7 +41,11 @@ function scheduleWhenIdle(callback) {
 }
 
 function getInlineAuthFeedback(error, { mode = 'login' } = {}) {
-  const code = String(error?.code || '').replace(/^functions\//, '');
+  let code = String(error?.code || '').replace(/^functions\//, '');
+  if (!code && error?.message) {
+    const match = String(error.message).match(/auth\/[a-z0-9-]+/i);
+    if (match) code = match[0].toLowerCase();
+  }
   if (code === 'auth/campus-email-required') return { field: 'email', message: 'ใช้อีเมล @psu.ac.th' };
   if (code === 'auth/student-id-required') return { field: 'email', message: 'อีเมลต้องขึ้นต้นด้วยรหัสนักศึกษา 10 หลัก' };
   if (code === 'auth/campus-email-login-only') return { field: 'email', message: 'ใช้ @psu.ac.th หรือ Gmail ที่สมัครไว้' };
@@ -51,13 +54,19 @@ function getInlineAuthFeedback(error, { mode = 'login' } = {}) {
   if (code === 'auth/campus-email-not-found' || code === 'not-found') return { field: 'email', message: 'ไม่พบอีเมลนี้ใน Google Workspace' };
   if (code === 'auth/campus-email-check-unavailable' || code === 'failed-precondition') return { field: 'email', message: 'ระบบตรวจสอบอีเมลมหาวิทยาลัยยังไม่พร้อม' };
   if (code === 'auth/email-already-in-use' || code === 'already-exists') return { field: 'email', message: 'อีเมลนี้มีบัญชีแล้ว' };
-  if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') return { field: 'password', message: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง' };
+  if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+    return {
+      field: 'password',
+      message: 'รหัสผ่านไม่ถูกต้อง (หากเคยเข้าด้วย Google ให้กดปุ่ม Google หรือกด "ลืมรหัสผ่าน?" ด้านล่าง)',
+    };
+  }
   if (code === 'auth/weak-password' || code === 'auth/password-does-not-meet-requirements') return { field: 'password', message: 'รหัสผ่านไม่ตรงตามเงื่อนไข' };
   if (code === 'auth/too-many-requests' || code === 'resource-exhausted') return { message: 'ลองใหม่อีกครั้งภายหลัง' };
   if (code === 'auth/network-request-failed' || code === 'unavailable') return { message: 'เชื่อมต่อไม่ได้ ลองใหม่อีกครั้ง' };
   if (code === 'auth/user-disabled') return { message: 'บัญชีนี้ถูกปิดใช้งาน' };
-  if (getFirebaseConfigurationErrorMessage(error)) return { message: 'ระบบยังตั้งค่าไม่ครบ ลองใหม่ภายหลัง' };
-  return { message: mode === 'signup' ? 'สมัครสมาชิกไม่สำเร็จ ลองใหม่' : 'เข้าสู่ระบบไม่สำเร็จ ลองใหม่' };
+  const configurationMessage = getFirebaseConfigurationErrorMessage(error);
+  if (configurationMessage) return { message: configurationMessage };
+  return { message: mode === 'signup' ? 'สมัครสมาชิกไม่สำเร็จ ลองใหม่' : 'เข้าสู่ระบบไม่สำเร็จ ตรวจสอบอีเมลหรือรหัสผ่าน แล้วลองใหม่อีกครั้ง' };
 }
 
 function getShortPasswordMessage(passwordError) {
@@ -138,6 +147,9 @@ export default function LoginScreen({ onLoginSuccess }) {
   const [unverifiedEmail, setUnverifiedEmail] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [inlineNotice, setInlineNotice] = useState(null);
+  const isSavedLegacyAccount = mode === 'login' && selectedAccount
+    && !isCampusStudentEmail(selectedAccount.email);
+  const studentId = email.split('@')[0];
 
   const clearFeedback = () => {
     setFieldErrors({});
@@ -194,6 +206,11 @@ export default function LoginScreen({ onLoginSuccess }) {
   }, []);
 
   const showMode = (nextMode) => {
+    if (nextMode === 'google' || nextMode === 'signup') {
+      setSelectedAccount(null);
+      if (!isCampusStudentEmail(email)) setEmail('');
+      setUnverifiedEmail(null);
+    }
     setPassword('');
     setConfirmPassword('');
     setShowPassword(false);
@@ -306,11 +323,11 @@ export default function LoginScreen({ onLoginSuccess }) {
     if (loading) return;
     const cleanEmail = String(email || '').trim();
     if (!cleanEmail) {
-      showFieldError('email', 'กรอกอีเมลก่อน');
+      showFieldError('email', 'กรอกรหัสนักศึกษาก่อน');
       return;
     }
-    if (!isLoginEmailAllowed(cleanEmail)) {
-      showFieldError('email', 'ใช้ @psu.ac.th หรือ Gmail ที่สมัครไว้');
+    if (isSavedLegacyAccount ? !isLoginEmailAllowed(cleanEmail) : !isCampusStudentEmail(cleanEmail)) {
+      showFieldError('email', 'กรอกรหัสนักศึกษาให้ครบ 10 หลัก');
       return;
     }
 
@@ -368,13 +385,9 @@ export default function LoginScreen({ onLoginSuccess }) {
     const cleanEmail = email.trim();
 
     if (!cleanEmail) {
-      errors.email = 'กรอกอีเมล';
-    } else if (mode === 'signup' && !isCampusEmail(cleanEmail)) {
-      errors.email = 'ใช้อีเมล @psu.ac.th';
-    } else if (mode === 'signup' && !isCampusStudentEmail(cleanEmail)) {
-      errors.email = 'อีเมลต้องขึ้นต้นด้วยรหัสนักศึกษา 10 หลัก';
-    } else if (mode === 'login' && !isLoginEmailAllowed(cleanEmail)) {
-      errors.email = 'ใช้ @psu.ac.th หรือ Gmail ที่สมัครไว้';
+      errors.email = 'กรอกรหัสนักศึกษา';
+    } else if (isSavedLegacyAccount ? !isLoginEmailAllowed(cleanEmail) : !isCampusStudentEmail(cleanEmail)) {
+      errors.email = 'กรอกรหัสนักศึกษาให้ครบ 10 หลัก';
     }
 
     if (!password) {
@@ -449,13 +462,12 @@ export default function LoginScreen({ onLoginSuccess }) {
             style={styles.loginScroll}
           >
             <View style={styles.contentFrame}>
-              <View style={styles.loginHero}>
-                <View style={[styles.loginHeroBlob, { backgroundColor: colors.primarySoft }]} />
+              <View style={[styles.loginHero, isEmailMode && styles.formHero]}>
                 <Image
                   accessibilityLabel="ภาพประกอบการเข้าสู่ระบบ"
                   resizeMode="contain"
                   source={loginStoryset}
-                  style={styles.loginIllustration}
+                  style={[styles.loginIllustration, isEmailMode && styles.formIllustration]}
                 />
               </View>
 
@@ -485,23 +497,26 @@ export default function LoginScreen({ onLoginSuccess }) {
 
                       {savedAccounts.map((acc) => (
                         <View key={acc.id || acc.email} style={styles.savedAccountCard}>
+                          <View style={styles.savedIdentityRow}>
                           <View style={[styles.savedAvatar, acc.avatarColor && { backgroundColor: acc.avatarColor }]}>
                             <SavedAccountAvatar account={acc} colors={colors} style={styles.savedAvatarImage} />
                           </View>
                           <View style={styles.savedInfo}>
-                            <Text numberOfLines={1} style={styles.savedName}>
+                            <Text style={styles.savedName}>
                               {acc.displayName || acc.email}
                             </Text>
-                            <Text numberOfLines={1} style={styles.savedEmail}>
+                            <Text style={styles.savedEmail}>
                               {acc.faculty ? `${acc.faculty} · ` : ''}{acc.email}
                             </Text>
                           </View>
+                          </View>
+                          <View style={styles.savedActions}>
                           <Pressable
                             accessibilityRole="button"
                             onPress={() => handleSelectAccount(acc)}
                             style={({ pressed }) => [styles.quickLoginButton, pressed && styles.pressed]}
                           >
-                            <Text numberOfLines={1} style={styles.quickLoginText}>เข้าใช้</Text>
+                            <Text style={styles.quickLoginText}>เข้าใช้</Text>
                             <FeatureIcon color="#FFFFFF" name="arrow.right" size={11} />
                           </Pressable>
                           <Pressable
@@ -513,6 +528,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                           >
                             <FeatureIcon color={colors.inkSoft} name="xmark" size={13} />
                           </Pressable>
+                          </View>
                         </View>
                       ))}
 
@@ -562,27 +578,33 @@ export default function LoginScreen({ onLoginSuccess }) {
                       ) : null}
 
                       <Text style={styles.campusHint}>
-                        {mode === 'signup' ? 'สมัครใหม่ด้วยอีเมล @psu.ac.th' : 'ใช้ @psu.ac.th หรือ Gmail เดิมที่ยืนยันแล้ว'}
+                        {isSavedLegacyAccount ? 'เข้าสู่ระบบด้วยบัญชีที่บันทึกไว้' : 'กรอกรหัสนักศึกษา 10 หลัก ระบบเติม @psu.ac.th ให้อัตโนมัติ'}
                       </Text>
-                      <Text style={styles.inputLabel}>อีเมล</Text>
+                      <Text style={styles.inputLabel}>{isSavedLegacyAccount ? 'อีเมล' : 'รหัสนักศึกษา'}</Text>
                       <View style={[styles.inputShell, fieldErrors.email && styles.inputShellError]}>
                         <FeatureIcon color={colors.inkSoft} name="envelope.fill" size={17} />
                         <TextInput
                           autoCapitalize="none"
-                          autoComplete="email"
-                          keyboardType="email-address"
+                          accessibilityLabel={isSavedLegacyAccount ? 'อีเมลบัญชีที่บันทึกไว้' : 'รหัสนักศึกษา 10 หลัก'}
+                          autoComplete="off"
+                          editable={!isSavedLegacyAccount && !loading}
+                          keyboardType="number-pad"
+                          maxLength={isSavedLegacyAccount ? undefined : 10}
                           keyboardAppearance={isDark ? 'dark' : 'light'}
                           cursorColor={colors.primary}
                           selectionColor={colors.primary}
                           onChangeText={(value) => {
-                            setEmail(value);
+                            const digits = value.split('@')[0].replace(/[^0-9]/g, '').slice(0, 10);
+                            setEmail(digits ? `${digits}@${CAMPUS_EMAIL_DOMAIN}` : '');
+                            setUnverifiedEmail(null);
                             clearFieldError('email');
                           }}
-                          placeholder={CAMPUS_EMAIL_PLACEHOLDER}
+                          placeholder="6912345678"
                           placeholderTextColor={colors.inkSoft}
                           style={styles.input}
-                          value={email}
+                          value={isSavedLegacyAccount ? email : studentId}
                         />
+                        {!isSavedLegacyAccount ? <Text style={styles.emailSuffix}>@{CAMPUS_EMAIL_DOMAIN}</Text> : null}
                       </View>
                       {fieldErrors.email ? <Text accessibilityRole="alert" style={styles.fieldError}>{fieldErrors.email}</Text> : null}
 
@@ -798,21 +820,16 @@ const getStyles = (colors, isDark) => StyleSheet.create({
   },
   loginHero: {
     alignItems: 'center',
-    height: 260,
+    height: 220,
     justifyContent: 'center',
     marginBottom: spacing.md,
-    marginTop: spacing.xxl,
+    marginTop: spacing.sm,
     position: 'relative',
     width: '100%',
   },
-  loginHeroBlob: {
-    borderRadius: 120,
-    height: 190,
-    position: 'absolute',
-    transform: [{ rotate: '-8deg' }, { translateY: 20 }],
-    width: 250,
-  },
-  loginIllustration: { height: 238, transform: [{ translateY: 16 }], width: 244 },
+  loginIllustration: { height: 210, maxWidth: '100%', width: 244 },
+  formHero: { height: 100, marginBottom: 0, marginTop: 0 },
+  formIllustration: { height: 100, width: 116 },
   inlineNotice: {
     alignItems: 'center',
     borderRadius: 12,
@@ -841,17 +858,16 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     textAlign: 'center',
   },
   loginPanel: {
-    backgroundColor: isDark ? 'rgba(28, 32, 44, 0.85)' : 'rgba(255, 255, 255, 0.92)',
-    borderColor: isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(255, 255, 255, 0.60)',
+    backgroundColor: colors.card,
+    borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 24,
+    borderRadius: radius.xl,
     paddingBottom: spacing.md,
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
     width: '100%',
     marginBottom: spacing.sm,
-    marginTop: spacing.xl,
-    ...shadow.card,
+    marginTop: spacing.sm,
   },
   legalNotice: { marginTop: 'auto' },
   actions: { gap: spacing.sm, marginTop: spacing.xs },
@@ -860,20 +876,20 @@ const getStyles = (colors, isDark) => StyleSheet.create({
   panelSubtitle: { color: colors.inkMuted, fontSize: type.caption2, lineHeight: 17, textAlign: 'center' },
   primaryButton: {
     alignItems: 'center',
-    backgroundColor: isDark ? colors.primary : '#111318',
+    backgroundColor: colors.primary,
     borderRadius: radius.pill,
     flexDirection: 'row',
     gap: spacing.sm,
     justifyContent: 'center',
     minHeight: 48,
     paddingHorizontal: spacing.lg,
-    ...shadow.card,
+    paddingVertical: 10,
   },
-  primaryButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  primaryButtonText: { color: colors.onPrimary, flexShrink: 1, fontSize: 14, fontWeight: '800', textAlign: 'center' },
   secondaryButton: {
     alignItems: 'center',
-    backgroundColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(17, 19, 24, 0.05)',
-    borderColor: isDark ? 'rgba(255,255,255,0.2)' : '#111318',
+    backgroundColor: colors.card,
+    borderColor: colors.line,
     borderRadius: radius.pill,
     borderWidth: 1.5,
     flexDirection: 'row',
@@ -881,9 +897,10 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     justifyContent: 'center',
     minHeight: 48,
     paddingHorizontal: spacing.lg,
+    paddingVertical: 10,
   },
-  secondaryButtonText: { color: colors.ink, fontSize: 14, fontWeight: '800' },
-  signupRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'center', minHeight: 30 },
+  secondaryButtonText: { color: colors.ink, flexShrink: 1, fontSize: 14, fontWeight: '800', textAlign: 'center' },
+  signupRow: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', minHeight: 44, paddingVertical: 6 },
   signupHint: { color: colors.inkMuted, fontSize: type.caption2 },
   signupLink: { color: colors.primary, fontSize: type.caption2, fontWeight: '800' },
   form: { marginTop: spacing.xs },
@@ -895,7 +912,7 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     borderRadius: 18,
     borderWidth: 1,
     flexDirection: 'row',
-    gap: spacing.md,
+    gap: spacing.sm,
     marginBottom: spacing.sm,
     minHeight: 48,
     paddingHorizontal: spacing.md,
@@ -904,6 +921,8 @@ const getStyles = (colors, isDark) => StyleSheet.create({
   passwordToggle: {
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 44,
+    minWidth: 44,
     padding: spacing.xs,
   },
   fieldError: {
@@ -914,16 +933,19 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     marginBottom: spacing.xs,
     marginTop: -spacing.xs,
   },
-  input: { color: colors.ink, flex: 1, fontSize: type.body, minHeight: 46 },
+  emailSuffix: { color: colors.inkMuted, fontSize: type.body, flexShrink: 0 },
+  input: { color: colors.ink, flex: 1, fontSize: type.body, minHeight: 46, minWidth: 0 },
   actionRow: {
     alignItems: 'center',
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
     justifyContent: 'space-between',
     marginBottom: spacing.sm,
     marginTop: -4,
     width: '100%',
   },
-  forgotPasswordButton: { alignSelf: 'flex-end', padding: 4, zIndex: 10 },
+  forgotPasswordButton: { alignSelf: 'flex-end', justifyContent: 'center', minHeight: 44, padding: 4, zIndex: 10 },
   forgotPasswordText: { color: colors.primary, fontSize: type.caption2, fontWeight: '700' },
   textButton: {
     alignItems: 'center',
@@ -931,9 +953,9 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     flexDirection: 'row',
     gap: 5,
     marginTop: spacing.sm,
-    minHeight: 32,
+    minHeight: 44,
   },
-  textButtonText: { color: colors.primary, fontSize: type.caption, fontWeight: '700' },
+  textButtonText: { color: colors.primary, flexShrink: 1, fontSize: type.caption, fontWeight: '700', textAlign: 'center' },
   savedSection: { gap: spacing.xs },
   savedHeader: {
     alignItems: 'center',
@@ -944,15 +966,17 @@ const getStyles = (colors, isDark) => StyleSheet.create({
   },
   savedTitle: { color: colors.inkMuted, fontSize: 13, fontWeight: '700', textAlign: 'center' },
   savedAccountCard: {
-    alignItems: 'center',
+    alignItems: 'stretch',
     backgroundColor: colors.canvas,
     borderColor: colors.line,
     borderRadius: 18,
     borderWidth: 1,
-    flexDirection: 'row',
+    flexDirection: 'column',
     gap: spacing.xs,
     padding: spacing.sm,
   },
+  savedIdentityRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  savedActions: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, justifyContent: 'flex-end' },
   savedAvatar: {
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
@@ -977,16 +1001,16 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     flexDirection: 'row',
     gap: 3,
     justifyContent: 'center',
-    minHeight: 26,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   quickLoginText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
   removeButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 28,
-    minWidth: 24,
+    minHeight: 44,
+    minWidth: 44,
   },
   otherAccountButton: {
     alignItems: 'center',
@@ -994,9 +1018,9 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     gap: spacing.xs,
     justifyContent: 'center',
     marginTop: spacing.sm,
-    minHeight: 40,
+    minHeight: 44,
   },
-  otherAccountText: { color: colors.ink, fontSize: type.caption, fontWeight: '800' },
+  otherAccountText: { color: colors.ink, flexShrink: 1, fontSize: type.caption, fontWeight: '800', textAlign: 'center' },
   backToLoginButton: {
     alignItems: 'center',
     borderColor: colors.line,
@@ -1006,17 +1030,17 @@ const getStyles = (colors, isDark) => StyleSheet.create({
     gap: spacing.xs,
     justifyContent: 'center',
     marginTop: spacing.xs,
-    minHeight: 40,
+    minHeight: 44,
     paddingHorizontal: spacing.md,
   },
-  backToLoginText: { color: colors.primary, fontSize: type.caption, fontWeight: '800' },
+  backToLoginText: { color: colors.primary, flexShrink: 1, fontSize: type.caption, fontWeight: '800', textAlign: 'center' },
   selectedAccountNotice: {
     alignItems: 'center',
     flexDirection: 'row',
     gap: spacing.xs,
     marginBottom: spacing.sm,
   },
-  selectedAccountNoticeText: { color: colors.ink, fontSize: type.caption, fontWeight: '800' },
+  selectedAccountNoticeText: { color: colors.ink, flex: 1, fontSize: type.caption, fontWeight: '800' },
   privacyRow: {
     alignItems: 'flex-start',
     borderTopColor: colors.line,

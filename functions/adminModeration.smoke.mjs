@@ -26,7 +26,7 @@ try{
  assert.throws(()=>mediaObjectKey({...base,mediaUrl:'https://media.getcampusmate.app/chat_media/another-room/fixture.enc'}));checks.push('foreign-room media rejected');
  console.log(JSON.stringify({passed:true,checks,externalNotificationsSent:0,externalEmailsSent:0,realUserDataChanged:false}));
 }finally{
- await db.recursiveDelete(c);await r.delete();for(const uid of [actor,alice,bob]){await db.doc('accountRestrictions/'+uid).delete();await auth.deleteUser(uid).catch(()=>{});}
+ await db.recursiveDelete(c);await r.delete();for(const uid of [actor,alice,bob]){await db.recursiveDelete(db.doc('users/'+uid));await db.doc('accountRestrictions/'+uid).delete();await auth.deleteUser(uid).catch(()=>{});}
  for(const collection of ['adminAudit','adminModerationEvidence']){const docs=await db.collection(collection).where('actor','==',actor).get();for(const doc of docs.docs)await doc.ref.delete();}
  await db.terminate();await deleteApp(app);
 }

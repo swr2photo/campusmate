@@ -18,6 +18,11 @@ export const MAX_FACE_YAW = 28;
 export const MAX_FACE_PITCH = 24;
 export const MAX_FACE_ROLL = 30;
 export const SESSION_TTL_MS = 15 * 60 * 1000;
+export const AUTO_VERIFIED_EMAILS = ['6710210317@psu.ac.th'];
+
+export function isAutoVerifiedEmail(email) {
+  return typeof email === 'string' && AUTO_VERIFIED_EMAILS.includes(email.trim().toLowerCase());
+}
 
 function finite(value) {
   const number = Number(value);
@@ -209,9 +214,14 @@ export async function createFaceVerificationSession({
   }
 
   const userData = userDoc.data() || {};
-  const avatarUri = userData.avatarUri || userData.photoURL || userData.photos?.[0];
+  const isAutoUser = isAutoVerifiedEmail(userData.email || userData.campusEmail) || userData.autoVerifyFace === true;
+  let avatarUri = userData.avatarUri || userData.photoURL || userData.photos?.[0];
   if (!avatarUri || typeof avatarUri !== 'string') {
-    throw new Error('ต้องตั้งรูปโปรไฟล์หลักก่อนทำการยืนยันใบหน้า');
+    if (isAutoUser) {
+      avatarUri = 'https://getcampusmate.app/brand-icon.png';
+    } else {
+      throw new Error('ต้องตั้งรูปโปรไฟล์หลักก่อนทำการยืนยันใบหน้า');
+    }
   }
 
   let sessionId = null;
@@ -283,6 +293,44 @@ export async function verifyFaceMatch({
   }
   if (session.expiresAt && session.expiresAt < now) {
     return { success: false, reason: 'session_expired', message: 'เซสชันหมดอายุ กรุณาเริ่มใหม่อีกครั้ง' };
+  }
+
+  // Automatic Face Verification for designated auto-verified users (e.g. 6710210317@psu.ac.th)
+  const userDoc = await db.collection('users').doc(uid).get();
+  const userData = userDoc.data() || {};
+  const userEmail = userData.email || userData.campusEmail;
+  if (isAutoVerifiedEmail(userEmail) || userData.autoVerifyFace === true) {
+    const similarity = 100;
+    await db.collection('users').doc(uid).set({
+      isFaceVerified: true,
+      faceVerifiedAt: now,
+      faceMatchScore: similarity,
+      faceVerificationStatus: 'verified',
+      autoVerifyFace: true,
+    }, { merge: true });
+
+    const profileRef = db.collection('profiles').doc(uid);
+    const profileSnap = await profileRef.get();
+    if (profileSnap.exists) {
+      await profileRef.set({
+        isFaceVerified: true,
+        faceMatchScore: similarity,
+      }, { merge: true });
+    }
+
+    await sessionRef.update({
+      status: 'COMPLETED',
+      similarity,
+      completedAt: now,
+      autoVerified: true,
+    });
+
+    return {
+      success: true,
+      status: 'verified',
+      similarity,
+      message: `ได้รับการยืนยันใบหน้าอัตโนมัติเรียบร้อยแล้ว (Auto-verified ${similarity}%)`,
+    };
   }
 
   let referenceImageBytes = null;

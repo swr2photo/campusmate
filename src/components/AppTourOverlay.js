@@ -1,8 +1,7 @@
 import Text from './AppText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, BackHandler, Dimensions, Easing, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { Animated, BackHandler, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { router, usePathname } from 'expo-router';
-import { FullWindowOverlay } from 'react-native-screens';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FeatureIcon from './FeatureIcon';
 import { useAppTour } from '../context/AppTourContext';
@@ -16,6 +15,13 @@ import { useTheme } from '../theme';
  */
 const HOLE_PADDING = 6;
 const MEASURE_ATTEMPTS = 8;
+const TOUR_TABS = [
+  { route: '/home', label: 'หาเพื่อน', icon: 'person.2.fill' },
+  { route: '/discover', label: 'ถูกใจ', icon: 'heart.fill' },
+  { route: '/chat', label: 'แชต', icon: 'bubble.left.fill' },
+  { route: '/meetup', label: 'กิจกรรม', icon: 'calendar' },
+  { route: '/me', label: 'โปรไฟล์', icon: 'person.crop.circle.fill' },
+];
 
 function measureNode(node) {
   return new Promise((resolve) => {
@@ -76,7 +82,8 @@ function TourOverlay({ tour }) {
   const pathnameRef = useRef(pathname);
   pathnameRef.current = pathname;
   const rootRef = useRef(null);
-  const [size, setSize] = useState(() => Dimensions.get('window'));
+  const windowSize = useWindowDimensions();
+  const [size, setSize] = useState({ width: windowSize.width, height: windowSize.height });
   const sizeRef = useRef(size);
   sizeRef.current = size;
   const [hole, setHole] = useState(null);
@@ -92,7 +99,7 @@ function TourOverlay({ tour }) {
   const hh = useRef(new Animated.Value(0)).current;
 
   const close = useCallback(() => {
-    Animated.timing(fade, { duration: 180, easing: Easing.in(Easing.quad), toValue: 0, useNativeDriver: true }).start(() => {
+    Animated.timing(fade, { duration: 180, easing: Easing.out(Easing.quad), toValue: 0, useNativeDriver: true }).start(() => {
       finishTour();
       if (pathnameRef.current !== '/home') router.navigate('/home');
     });
@@ -137,16 +144,23 @@ function TourOverlay({ tour }) {
           router.navigate(step.route);
           navigated = true;
         }
-        await wait(navigated ? 480 : 90);
+        if (navigated) {
+          for (let attempt = 0; attempt < 20 && !cancelled && pathnameRef.current !== step.route; attempt += 1) await wait(100);
+        }
+        if (cancelled) return;
+        await wait(navigated ? 300 : 90);
         let measured = null;
         if (step.target) {
-          const entry = registry?.get(step.target);
-          if (entry?.ensureVisible) {
-            entry.ensureVisible();
-            await wait(380);
-          }
+          let preparedNode = null;
           for (let attempt = 0; attempt < MEASURE_ATTEMPTS && !cancelled && !measured; attempt += 1) {
-            measured = await measureTarget(registry?.get(step.target), rootRef.current, sizeRef.current);
+            const entry = registry?.get(step.target);
+            if (entry?.node && entry.node !== preparedNode) {
+              preparedNode = entry.node;
+              await entry.ensureVisible?.();
+              await wait(380);
+            }
+            if (cancelled) return;
+            measured = await measureTarget(entry, rootRef.current, sizeRef.current);
             if (!measured) await wait(150);
           }
         }
@@ -215,9 +229,8 @@ function TourOverlay({ tour }) {
         const { width, height } = event.nativeEvent.layout;
         if (width && height && (width !== size.width || height !== size.height)) setSize({ width, height });
       }}
-      onStartShouldSetResponder={() => true}
       ref={rootRef}
-      style={StyleSheet.absoluteFill}
+      style={[StyleSheet.absoluteFill, Platform.OS === 'ios' && { width: windowSize.width, height: windowSize.height }]}
     >
     <Animated.View style={[StyleSheet.absoluteFill, { opacity: fade }]}>
       <Animated.View style={[styles.dim, { backgroundColor: dim, height: hy, left: 0, right: 0, top: 0 }]} />
@@ -229,6 +242,7 @@ function TourOverlay({ tour }) {
         style={[styles.ring, { borderColor: isDark ? colors.primary : '#FFFFFF', height: hh, left: hx, opacity: ring, top: hy, width: hw }]}
       />
       <Animated.View
+        pointerEvents={showCard ? 'auto' : 'none'}
         accessibilityLiveRegion="polite"
         accessibilityViewIsModal
         onLayout={(event) => {
@@ -242,18 +256,20 @@ function TourOverlay({ tour }) {
             borderColor: isDark ? colors.line : 'rgba(16, 32, 58, 0.06)',
             left: cardLeft,
             opacity: showCard ? cardFade : 0,
-            top: Math.max(insets.top + 8, cardTop),
+            top: Math.max(insets.top + 8, Math.min(cardTop, size.height - insets.bottom - 12 - cardHeight)),
             transform: [{ translateY: cardFade.interpolate({ inputRange: [0, 1], outputRange: [arrow === 'down' ? -8 : 8, 0] }) }],
             width: cardWidth,
+            maxHeight: size.height - insets.top - insets.bottom - 24,
           },
         ]}
       >
         {arrow ? (
           <View style={[styles.arrow, arrow === 'up' ? styles.arrowUp : styles.arrowDown, { backgroundColor: colors.card, left: arrowLeft }]} />
         ) : null}
+        <ScrollView key={step.id} bounces={false} showsVerticalScrollIndicator={false} contentContainerStyle={styles.cardContent}>
         <View style={styles.metaRow}>
           <View style={[styles.chip, { backgroundColor: colors.primarySoft }]}>
-            <Text style={[styles.chipText, { color: colors.primary }]}>{`${index + 1}/${total}`}</Text>
+            <Text style={[styles.chipText, { color: colors.primary }]}>{`${index + 1} / ${total}`}</Text>
           </View>
           {step.tab ? (
             <View style={[styles.chip, { backgroundColor: isDark ? colors.surfaceRaised : '#F1F5FA' }]}>
@@ -276,17 +292,28 @@ function TourOverlay({ tour }) {
           <Text accessibilityRole="header" style={[styles.title, { color: colors.ink }]}>{step.title}</Text>
         </View>
         <Text style={[styles.body, { color: colors.inkMuted }]}>{step.body}</Text>
-        <View style={styles.dots}>
-          {steps.map((item, dotIndex) => (
-            <View
-              key={item.id}
-              style={[
-                styles.dot,
-                { backgroundColor: dotIndex === index ? colors.primary : colors.line },
-                dotIndex === index && styles.dotActive,
-              ]}
-            />
-          ))}
+        <View accessibilityRole="progressbar" accessibilityValue={{ min: 1, max: total, now: index + 1 }} style={[styles.progressTrack, { backgroundColor: colors.line }]}>
+          <View style={{ backgroundColor: colors.primary, width: `${((index + 1) / total) * 100}%`, height: '100%', borderRadius: 3 }} />
+        </View>
+        <View style={styles.tabNavigation}>
+          {TOUR_TABS.map((tab) => {
+            const selected = step.route === tab.route;
+            const targetIndex = steps.findIndex((item) => item.route === tab.route && item.tab);
+            return (
+              <Pressable
+                key={tab.route}
+                accessibilityRole="button"
+                accessibilityLabel={`แนะนำแท็บ${tab.label}`}
+                accessibilityState={{ selected, disabled: !ready }}
+                disabled={!ready || targetIndex < 0}
+                onPress={() => { directionRef.current = targetIndex < index ? -1 : 1; goToStep(targetIndex); }}
+                style={({ pressed }) => [styles.tabItem, { backgroundColor: selected ? colors.primarySoft : 'transparent' }, pressed && styles.pressed]}
+              >
+                <FeatureIcon name={tab.icon} size={18} color={selected ? colors.primary : colors.inkSoft} />
+                <Text numberOfLines={1} style={[styles.tabLabel, { color: selected ? colors.primary : colors.inkMuted }]}>{tab.label}</Text>
+              </Pressable>
+            );
+          })}
         </View>
         <View style={styles.buttons}>
           {index > 0 ? (
@@ -308,6 +335,7 @@ function TourOverlay({ tour }) {
             </Text>
           </Pressable>
         </View>
+        </ScrollView>
       </Animated.View>
     </Animated.View>
     </View>
@@ -315,9 +343,9 @@ function TourOverlay({ tour }) {
 
   if (Platform.OS === 'ios') {
     return (
-      <FullWindowOverlay>
-        <View style={StyleSheet.absoluteFill}>{content}</View>
-      </FullWindowOverlay>
+      <Modal transparent visible animationType="none" presentationStyle="overFullScreen" onRequestClose={close}>
+        <View style={{ flex: 1 }}>{content}</View>
+      </Modal>
     );
   }
   return content;
@@ -334,16 +362,11 @@ const styles = StyleSheet.create({
     borderCurve: 'continuous',
     borderRadius: 22,
     borderWidth: StyleSheet.hairlineWidth,
-    elevation: 18,
-    paddingBottom: 16,
-    paddingHorizontal: 18,
-    paddingTop: 14,
+    boxShadow: '0 12px 36px rgba(11, 20, 36, 0.22)',
     position: 'absolute',
-    shadowColor: '#0B1424',
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.22,
-    shadowRadius: 26,
+
   },
+  cardContent: { paddingBottom: 16, paddingHorizontal: 18, paddingTop: 14 },
   arrow: {
     height: 16,
     position: 'absolute',
@@ -362,11 +385,12 @@ const styles = StyleSheet.create({
   iconBadge: { alignItems: 'center', borderRadius: 18, height: 36, justifyContent: 'center', width: 36 },
   title: { flex: 1, fontSize: 18, fontWeight: '800', lineHeight: 27 },
   body: { fontSize: 15, lineHeight: 24, marginTop: 8 },
-  dots: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 14 },
-  dot: { borderRadius: 3, height: 6, width: 6 },
-  dotActive: { width: 18 },
+  progressTrack: { height: 4, borderRadius: 3, marginTop: 16, overflow: 'hidden' },
+  tabNavigation: { flexDirection: 'row', gap: 3, marginTop: 12 },
+  tabItem: { flex: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 12, minHeight: 54, gap: 4, paddingVertical: 6 },
+  tabLabel: { fontSize: 10, lineHeight: 15, fontWeight: '600' },
   buttons: { flexDirection: 'row', gap: 10, marginTop: 14 },
-  button: { alignItems: 'center', borderCurve: 'continuous', borderRadius: 14, justifyContent: 'center', minHeight: 46, paddingHorizontal: 16 },
+  button: { alignItems: 'center', borderCurve: 'continuous', borderRadius: 14, justifyContent: 'center', minHeight: 48, paddingHorizontal: 16 },
   buttonPrimary: { flex: 1 },
   buttonSecondary: { minWidth: 104 },
   buttonText: { fontSize: 15, fontWeight: '800', lineHeight: 22 },

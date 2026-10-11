@@ -46,6 +46,6 @@ function EligibleAd({ adUnitId, style }) {
     <NativeAsset assetType={NativeAssetType.CALL_TO_ACTION}><Text style={[styles.cta, { color: colors.onPrimary, backgroundColor: colors.primary }]}>{nativeAd.callToAction}</Text></NativeAsset>
   </NativeAdView>;
 }
-const styles = StyleSheet.create({ card: { borderWidth: 1, borderRadius: 20, padding: 16, gap: 12 }, label: { fontSize: 11, alignSelf: 'flex-start' },
+const styles = StyleSheet.create({ card: { borderWidth: 0, borderRadius: 26, borderCurve: 'continuous', padding: 16, gap: 12 }, label: { fontSize: 11, alignSelf: 'flex-start' },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12 }, icon: { width: 44, height: 44, borderRadius: 10 },
   headline: { flex: 1, fontSize: 17, fontWeight: '700' }, media: { height: 180, width: '100%' }, cta: { padding: 12, textAlign: 'center', borderRadius: 12 } });

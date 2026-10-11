@@ -1,15 +1,17 @@
-import * as TaskManager from 'expo-task-manager';
+import { getTaskManager } from './optionalTaskManager';
 import { Platform } from 'react-native';
 import { BACKGROUND_NOTIFICATION_TASK } from './notificationConstants';
 
-if (!TaskManager.isTaskDefined(BACKGROUND_NOTIFICATION_TASK)) {
+const TaskManager = getTaskManager();
+
+if (TaskManager && !TaskManager.isTaskDefined(BACKGROUND_NOTIFICATION_TASK)) {
   TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => {
     const { handleBackgroundNotificationTask } = require('./notificationService');
     await handleBackgroundNotificationTask({ data, error });
   });
 }
 
-if (Platform.OS === 'android') {
+if (Platform.OS === 'android' && TaskManager) {
   try {
     const Notifications = require('expo-notifications');
     if (typeof Notifications.registerTaskAsync === 'function') {

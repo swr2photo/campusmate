@@ -1,6 +1,8 @@
 import Text from '../components/AppText';
 import { AppTextInput as TextInput } from '../components/AppText';
 import PlacePhoto from '../components/PlacePhoto';
+import PlacePreviewCard from '../components/PlacePreviewCard';
+import PlaceDetailSheet from '../components/PlaceDetailSheet';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, TouchableWithoutFeedback, useWindowDimensions, View } from 'react-native';
 import Image from '../components/CachedImage';
@@ -25,6 +27,7 @@ import usePartyFeed from '../hooks/usePartyFeed';
 import { approvePartyRequest, cancelParty, createParty, rejectPartyRequest, requestJoinParty, withdrawPartyRequest } from '../services/partyService';
 import { preparePartyApproval } from '../services/groupChatEncryption';
 import { useConfirm } from '../context/ConfirmContext';
+import { defaultScheduleWindow, validatePartySchedule } from '../utils/partySchedule';
 import CampusMapView from '../components/CampusMapView';
 import AppointmentPlacePicker from '../components/AppointmentPlacePicker';
 import {
@@ -115,32 +118,13 @@ function matchesSpotQuery(spot, query) {
     .some((value) => String(value).toLowerCase().includes(query));
 }
 
-function activitySymbol(category) {
-  if (category === 'running') return 'figure.run';
-  if (category === 'study') return 'book.closed.fill';
-  if (category === 'gym') return 'dumbbell.fill';
-  if (category === 'sports') return 'sportscourt.fill';
-  if (category === 'cafe') return 'cup.and.saucer.fill';
-  if (category === 'chill') return 'leaf.fill';
-  return 'mappin.circle.fill';
-}
-
-function activityColor(category, colors) {
-  if (category === 'running') return { color: colors.coral, soft: colors.coralSoft };
-  if (category === 'study') return { color: colors.blue, soft: colors.blueSoft };
-  if (category === 'gym') return { color: colors.violet, soft: colors.violetSoft };
-  if (category === 'sports') return { color: colors.amber, soft: colors.amberSoft };
-  if (category === 'cafe' || category === 'chill') return { color: colors.green, soft: colors.greenSoft };
-  return { color: colors.primary, soft: colors.primarySoft };
-}
-
 export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId = null }) {
   const { colors, isDark } = useTheme();
   const router = useRouter();
   const { confirm } = useConfirm();
   const { campusSpots = [], selectedMeetup } = useAppFeed();
   const { profile: myProfile } = useAppProfile();
-  const { chooseMeetup, updateMeetupSchedule, clearMeetup } = useAppActions();
+  const { chooseMeetup, clearMeetup } = useAppActions();
   const { parties: feedParties, loading: partiesLoading, error: partiesError, retryLegacyActivation, loadMore: loadMoreParties, loadMoreRequests, hasMore: hasMoreParties, loadingMore: loadingMoreParties, retry: retryParties } = usePartyFeed(partyOnly ? myProfile : null, campusSpots, null, targetPartyId);
   const [partyClock, setPartyClock] = useState(Date.now());
   useEffect(() => {
@@ -152,9 +136,12 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const [busyPartyId, setBusyPartyId] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [detailSpot, setDetailSpot] = useState(null);
   const [mapTargetSpot, setMapTargetSpot] = useState(null);
   const [mapModal, setMapModal] = useState(false);
   const [scheduleModal, setScheduleModal] = useState(false);
+  const scheduleSubmitLock = useRef(false);
+  const [scheduleSubmitting, setScheduleSubmitting] = useState(false);
   const [placePickerVisible, setPlacePickerVisible] = useState(false);
   const [pendingSpot, setPendingSpot] = useState(null);
   const [schedDate, setSchedDate] = useState(null);
@@ -164,6 +151,20 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const [message, setMessage] = useState('');
 
   const nextDays = useMemo(() => getNextDays(7), []);
+  const selectedSpot = useMemo(() => {
+    if (!selectedMeetup) return null;
+    return {
+      ...selectedMeetup,
+      ...campusSpots.find((spot) => spot.id === selectedMeetup.id),
+      schedule: selectedMeetup.schedule,
+      scheduledAt: selectedMeetup.scheduledAt,
+    };
+  }, [campusSpots, selectedMeetup]);
+  const placeDetailSpot = useMemo(() => (
+    detailSpot && selectedSpot?.id === detailSpot.id
+      ? { ...detailSpot, ...selectedSpot }
+      : detailSpot
+  ), [detailSpot, selectedSpot]);
 
   const handleJoinParty = useCallback(async (party) => {
     if (!party) return;
@@ -228,24 +229,34 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   }, [selectedMeetup, visibleSpots]);
 
   const openScheduleFor = useCallback((spot) => {
+    if (scheduleSubmitLock.current) return;
+    const win = defaultScheduleWindow();
+    const defaultDateStr = win.date.toISOString().slice(0, 10);
+    const defaultStartStr = `${String(win.start.getHours()).padStart(2, '0')}:${String(win.start.getMinutes()).padStart(2, '0')}`;
+    const defaultEndStr = `${String(win.end.getHours()).padStart(2, '0')}:${String(win.end.getMinutes()).padStart(2, '0')}`;
     const savedDate = spot?.schedule?.date || selectedMeetup?.schedule?.date;
     setPendingSpot(spot);
-    setSchedDate(nextDays.some((day) => day.value === savedDate) ? savedDate : nextDays[0].value);
-    setSchedStart(spot?.schedule?.startTime || selectedMeetup?.schedule?.startTime || '14:00');
-    setSchedEnd(spot?.schedule?.endTime || selectedMeetup?.schedule?.endTime || '16:00');
+    setSchedDate(nextDays.some((day) => day.value === savedDate) ? savedDate : (nextDays.some((day) => day.value === defaultDateStr) ? defaultDateStr : nextDays[0].value));
+    setSchedStart(spot?.schedule?.startTime || selectedMeetup?.schedule?.startTime || defaultStartStr);
+    setSchedEnd(spot?.schedule?.endTime || selectedMeetup?.schedule?.endTime || defaultEndStr);
     setMaxPeople(String(spot?.schedule?.maxPeople || selectedMeetup?.schedule?.maxPeople || 2));
     setMessage(spot?.schedule?.message || selectedMeetup?.schedule?.message || '');
     setScheduleModal(true);
   }, [nextDays, selectedMeetup]);
 
   const confirmSchedule = async () => {
-    console.log('[MeetupScreen] confirmSchedule called', { pendingSpotName: pendingSpot?.name, schedDate, schedStart, schedEnd, maxPeople });
+    if (scheduleSubmitLock.current) return;
     if (!pendingSpot || !schedDate) {
       console.warn('[MeetupScreen] confirmSchedule missing pendingSpot or schedDate', { pendingSpot, schedDate });
       return;
     }
-    if (timeValueToMinutes(schedEnd) <= timeValueToMinutes(schedStart)) {
-      onToast?.('เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม', 'info');
+    const scheduleValidation = validatePartySchedule({
+      date: schedDate,
+      startTime: schedStart,
+      endTime: schedEnd,
+    });
+    if (!scheduleValidation.ok) {
+      onToast?.(scheduleValidation.message, 'info');
       return;
     }
     const schedule = {
@@ -255,6 +266,8 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       maxPeople: parseInt(maxPeople, 10) || 2,
       message: message.trim(),
     };
+    scheduleSubmitLock.current = true;
+    setScheduleSubmitting(true);
     try {
       const location = pendingSpot?.location?.kind === 'google'
         ? { kind: 'google', placeId: pendingSpot.location.placeId }
@@ -269,6 +282,9 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
     } catch (error) {
       console.error('[MeetupScreen] createParty error:', error);
       onToast?.(error?.message || 'สร้างตี้ไม่สำเร็จ ลองใหม่อีกครั้ง', 'info');
+    } finally {
+      scheduleSubmitLock.current = false;
+      setScheduleSubmitting(false);
     }
   };
 
@@ -301,14 +317,12 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   };
 
   const renderSpot = useCallback(({ item }) => (
-    <SpotCard
-      onChoose={handleQuickChoose}
-      onOpenMap={openMapForSpot}
-      onSchedule={openScheduleFor}
+    <PlacePreviewCard
+      onPress={setDetailSpot}
       selected={selectedMeetup?.id === item.id}
       spot={item}
     />
-  ), [handleQuickChoose, openMapForSpot, openScheduleFor, selectedMeetup?.id]);
+  ), [selectedMeetup?.id]);
 
   // Lets the first-run tour scroll the hero / party finder into view.
   const listRef = useRef(null);
@@ -318,38 +332,14 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
 
   const header = (
     <View>
-      {!partyOnly && <TourTarget id="meetup.hero" scrollRef={tourScrollRef} scrollOffset={0}>
-        <CampusHero onOpenMap={() => openMapForSpot(selectedMeetup || visibleSpots[0])} selectedMeetup={selectedMeetup} />
-      </TourTarget>}
-
-      <TourTarget id={partyOnly ? 'party-finder.list' : 'meetup.party'} scrollRef={tourScrollRef} scrollOffset={24}>
-      {partyOnly ? <PartyFinderSection
-        targetPartyId={targetPartyId}
-        onLoadMore={loadMoreParties}
-        onLoadMoreRequests={loadMoreRequests}
-        hasMore={hasMoreParties}
-        loadingMore={loadingMoreParties}
-        onRetry={retryParties}
-        parties={parties}
-        loading={partiesLoading && !parties?.length}
-        error={partiesError}
-        busyPartyId={busyPartyId}
-        onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
-        onJoinParty={handleJoinParty}
-        onWithdrawRequest={handleWithdraw}
-        onApproveRequest={handleApprove}
-        onRejectRequest={handleReject}
-        onCancelParty={handleCancelParty}
-        onRetryActivation={(party) => retryLegacyActivation(party.id)}
-        onOpenChat={(party) => router.push({ pathname: '/group-chat', params: { partyId: party.id } })}
-        onOpenMap={openMapForSpot}
-      /> : <PartyFinderEntry />}
+      <TourTarget id="meetup.party" scrollRef={tourScrollRef} scrollOffset={24}>
+        <PartyFinderEntry />
       </TourTarget>
+      {selectedSpot ? <SelectedMeetup meetup={selectedSpot} onClear={handleClear} onPress={() => setDetailSpot(selectedSpot)} /> : null}
 
-      {!partyOnly && <>
-      {selectedMeetup ? <SelectedMeetup meetup={selectedMeetup} onChangeTime={() => openScheduleFor(selectedMeetup)} onClear={handleClear} onOpenMap={() => openMapForSpot(selectedMeetup)} /> : null}
-
-      <IosLikeSectionTitle subtitle="สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล" title="เลือกกิจกรรมที่สนใจ" />
+      <TourTarget id="meetup.spots" scrollRef={tourScrollRef} scrollOffset={30}>
+        <IosLikeSectionTitle subtitle="สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล" title="เลือกกิจกรรมที่สนใจ" />
+      </TourTarget>
       <ScrollView contentContainerStyle={styles.categoryRow} horizontal showsHorizontalScrollIndicator={false}>
         {SPOT_CATEGORIES.map((category) => (
           <IosLikePill
@@ -367,14 +357,13 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
         <Text style={[styles.resultTitle, { color: colors.ink }]}>จุดนัดพบแนะนำ</Text>
         <Text style={[styles.resultCount, { color: colors.coral }]}>{visibleSpots.length} แห่ง · ใกล้สุดก่อน</Text>
       </View>
-      </>}
     </View>
   );
 
   return (
     <IosLikeScreen>
       {!partyOnly && <View style={[styles.searchSticky, { backgroundColor: colors.canvas, borderBottomColor: colors.line }]}>
-        <View style={[styles.searchBar, { backgroundColor: colors.card, borderColor: colors.line }]}>
+        <View style={[styles.searchBar, { backgroundColor: colors.card }]}>
           <FeatureIcon color={colors.inkSoft} name="magnifyingglass" size={18} />
           <TextInput
             accessibilityLabel="ค้นหาสถานที่หรือกิจกรรม"
@@ -392,21 +381,56 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
           {searchQuery ? <IconButton accessibilityLabel="ล้างคำค้นหา" icon="xmark.circle.fill" onPress={() => setSearchQuery('')} size={18} style={styles.clearButton} tintColor={colors.inkSoft} /> : null}
         </View>
       </View>}
-      <FlatList
+      {partyOnly ? (
+        <TourTarget id="party-finder.list" style={{ flex: 1 }}>
+          <PartyFinderSection
+            targetPartyId={targetPartyId}
+            onLoadMore={loadMoreParties}
+            onLoadMoreRequests={loadMoreRequests}
+            hasMore={hasMoreParties}
+            loadingMore={loadingMoreParties}
+            onRetry={retryParties}
+            parties={parties}
+            loading={partiesLoading && !parties?.length}
+            error={partiesError}
+            busyPartyId={busyPartyId}
+            onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
+            onJoinParty={handleJoinParty}
+            onWithdrawRequest={handleWithdraw}
+            onApproveRequest={handleApprove}
+            onRejectRequest={handleReject}
+            onCancelParty={handleCancelParty}
+            onRetryActivation={(party) => retryLegacyActivation(party.id)}
+            onOpenChat={(party) => router.push({ pathname: '/group-chat', params: { partyId: party.id } })}
+            onOpenMap={openMapForSpot}
+          />
+        </TourTarget>
+      ) : <FlatList
         ref={listRef}
         contentContainerStyle={styles.listContent}
         contentInsetAdjustmentBehavior="automatic"
-        data={partyOnly ? [] : visibleSpots}
+        data={visibleSpots}
         keyExtractor={(item) => item.id}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
-        ListEmptyComponent={partyOnly ? null : <EmptySpots query={searchQuery} />}
+        ItemSeparatorComponent={SpotSeparator}
+        ListEmptyComponent={<EmptySpots query={searchQuery} />}
         ListHeaderComponent={header}
         initialNumToRender={6}
         removeClippedSubviews={Platform.OS === 'android'}
         renderItem={renderSpot}
         showsVerticalScrollIndicator={false}
         windowSize={7}
+      />}
+
+      <PlaceDetailSheet
+        onChoose={handleQuickChoose}
+        onClose={() => setDetailSpot(null)}
+        onOpenMap={openMapForSpot}
+        onSchedule={openScheduleFor}
+        selected={Boolean(detailSpot && selectedMeetup?.id === detailSpot.id)}
+        spot={placeDetailSpot}
+        visible={Boolean(detailSpot)}
       />
 
       <MapModal
@@ -426,6 +450,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       />
 
       <ScheduleModal
+        submitting={scheduleSubmitting}
         maxPeople={maxPeople}
         message={message}
         nextDays={nextDays}
@@ -470,12 +495,12 @@ function CampusHero({ onOpenMap, selectedMeetup }) {
   const isTablet = !isIPad && windowWidth >= 700;
   const maxContentWidth = isTablet ? Math.min(windowWidth - 64, 620) : layoutWidth;
   const heroWidth = maxContentWidth - (spacing.lg * 2);
-  const heroHeight = Platform.OS === 'android' && windowWidth < 600 ? 156 : 200;
+  const heroHeight = Math.round(heroWidth * 9 / 16);
 
 
   
   return (
-    <View style={[styles.hero, { backgroundColor: colors.card, borderColor: colors.line, width: heroWidth, height: heroHeight, alignSelf: 'center' }]}>
+    <View style={[styles.hero, { backgroundColor: colors.card, width: heroWidth, height: heroHeight, alignSelf: 'center' }]}>
       <ScrollView
         horizontal
         pagingEnabled
@@ -504,7 +529,7 @@ function CampusHero({ onOpenMap, selectedMeetup }) {
   );
 }
 
-function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
+function SelectedMeetup({ meetup, onClear, onPress }) {
   const { colors, isDark } = useTheme();
 
   return (
@@ -517,7 +542,23 @@ function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
         },
       ]}
     >
-      <View style={styles.selectedMainRow}>
+      <View style={styles.selectedHeader}>
+        <Text style={[styles.selectedEyebrow, { color: colors.mint }]}>จุดนัดหมายของคุณ</Text>
+        <IconButton
+          accessibilityLabel="ยกเลิกจุดนัดหมาย"
+          icon="xmark"
+          onPress={onClear}
+          size={14}
+          style={styles.smallIconButton}
+          tintColor={colors.inkMuted}
+        />
+      </View>
+      <Pressable
+        accessibilityLabel={`ดูรายละเอียด ${meetup.name}`}
+        accessibilityRole="button"
+        onPress={onPress}
+        style={({ pressed }) => [styles.selectedMainRow, pressed && styles.pressed]}
+      >
         <View style={[styles.selectedPhotoWrap, { backgroundColor: colors.surfaceRaised }]}>
           <PlacePhoto
             contentFit="cover"
@@ -532,18 +573,7 @@ function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
         </View>
 
         <View style={styles.selectedCopy}>
-          <View style={styles.selectedHeader}>
-            <Text style={[styles.selectedEyebrow, { color: colors.mint }]}>จุดนัดหมายของคุณ</Text>
-            <IconButton
-              accessibilityLabel="ยกเลิกจุดนัดหมาย"
-              icon="xmark"
-              onPress={onClear}
-              size={14}
-              style={styles.smallIconButton}
-              tintColor={colors.inkMuted}
-            />
-          </View>
-          <Text numberOfLines={1} style={[styles.selectedTitle, { color: colors.ink }]}>{meetup.name}</Text>
+          <Text numberOfLines={2} style={[styles.selectedTitle, { color: colors.ink }]}>{meetup.name}</Text>
           <View style={styles.selectedMetaRow}>
             {meetup.distance ? (
               <View style={styles.selectedMetaChip}>
@@ -564,105 +594,15 @@ function SelectedMeetup({ meetup, onChangeTime, onClear, onOpenMap }) {
               <Tag icon="clock.fill" text={`${meetup.schedule.startTime}–${meetup.schedule.endTime}`} />
             </View>
           ) : null}
+          <View style={styles.selectedDetailsHint}>
+            <Text style={[styles.selectedMetaText, { color: colors.primary }]}>ดูรายละเอียดสถานที่</Text>
+            <FeatureIcon color={colors.primary} name="chevron.right" size={12} />
+          </View>
         </View>
-      </View>
-      <View style={[styles.selectedActions, { borderTopColor: isDark ? 'rgba(32, 201, 151, 0.22)' : 'rgba(32, 201, 151, 0.25)' }]}>
-        <ActionButton icon="calendar.badge.clock" label="เปลี่ยนเวลา" onPress={onChangeTime} tintColor={colors.mint} />
-        <ActionButton icon="map.fill" label="ดูแผนที่" onPress={onOpenMap} tintColor={colors.blue} />
-      </View>
+      </Pressable>
     </IosLikeCard>
   );
 }
-
-const SpotCard = React.memo(function SpotCard({ onChoose, onOpenMap, onSchedule, selected, spot }) {
-  const { colors, isDark } = useTheme();
-  const accent = activityColor(spot.category, colors);
-
-  const handleChoose = () => { void onChoose?.(spot); };
-  const handleOpenMap = () => onOpenMap?.(spot);
-  const handleSchedule = () => onSchedule?.(spot);
-
-  return (
-    <IosLikeCard
-      style={[
-        styles.spotCard,
-        selected && {
-          backgroundColor: isDark ? 'rgba(32, 201, 151, 0.12)' : 'rgba(32, 201, 151, 0.08)',
-          borderColor: colors.mint,
-        },
-      ]}
-    >
-      {/* รูปสถานที่ในมหาวิทยาลัยทางซ้าย + รายละเอียดทางขวา */}
-      <View style={styles.spotMainRow}>
-        {/* ทางซ้าย: รูปสถานที่ */}
-        <View style={[styles.spotPhotoContainer, { backgroundColor: colors.surfaceRaised }]}>
-          <PlacePhoto
-            contentFit="cover"
-            recyclingKey={`spot-${spot.id}`}
-            spot={spot}
-            style={styles.spotPhotoImage}
-            transition={0}
-          />
-          <View style={[styles.photoIconBadge, { backgroundColor: accent.color }]}>
-            <FeatureIcon color="#FFFFFF" name={activitySymbol(spot.category)} size={11} />
-          </View>
-        </View>
-
-        {/* ทางขวา: รายละเอียดสถานที่ */}
-        <View style={styles.spotDetailsColumn}>
-          <View style={styles.spotMetaTop}>
-            <View style={[styles.spotCategoryTag, { backgroundColor: accent.soft }]}>
-              <Text numberOfLines={1} style={[styles.spotCategoryText, { color: accent.color }]}>
-                {spot.categoryLabel}
-              </Text>
-            </View>
-            {spot.distance ? (
-              <View style={styles.spotDistanceTag}>
-                <FeatureIcon color={colors.coral} name="location.fill" size={10} />
-                <Text numberOfLines={1} style={[styles.spotDistanceText, { color: colors.coral }]}>
-                  {spot.distance}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-
-          <Text numberOfLines={2} style={[styles.spotName, { color: colors.ink }]}>
-            {spot.name}
-          </Text>
-
-          {spot.description ? (
-            <Text numberOfLines={2} style={[styles.spotDescription, { color: colors.inkMuted }]}>
-              {spot.description}
-            </Text>
-          ) : null}
-
-        </View>
-      </View>
-
-      <View style={[styles.spotButtonRow, { borderTopColor: colors.line }]}>
-        <ActionButton
-          emphasized
-          icon="calendar.badge.clock"
-          label="นัดหมาย"
-          onPress={handleSchedule}
-          tintColor={colors.coral}
-        />
-        <ActionButton
-          icon={selected ? 'checkmark.circle.fill' : 'mappin.circle.fill'}
-          label={selected ? 'เลือกแล้ว' : 'ปักหมุด'}
-          onPress={handleChoose}
-          tintColor={selected ? colors.mint : colors.inkMuted}
-        />
-        <ActionButton
-          icon="map.fill"
-          label="แผนที่"
-          onPress={handleOpenMap}
-          tintColor={colors.blue}
-        />
-      </View>
-    </IosLikeCard>
-  );
-});
 
 function Meta({ accent = false, icon, text }) {
   const { colors } = useTheme();
@@ -687,6 +627,10 @@ function ActionButton({ disabled = false, emphasized = false, icon, label, onPre
       <Text style={[styles.actionText, { color: emphasized ? '#FFFFFF' : tintColor }]}>{label}</Text>
     </Pressable>
   );
+}
+
+function SpotSeparator() {
+  return <View style={{ height: spacing.md }} />;
 }
 
 function EmptySpots({ query }) {
@@ -816,7 +760,7 @@ function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedM
   );
 }
 
-function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDate, onEnd, onMaxPeople, onMessage, onPickPlace, onSelectSpot, onStart, pendingSpot, schedDate, schedEnd, schedStart, spots = [], visible }) {
+function ScheduleModal({ submitting = false, maxPeople, message, nextDays, onClose, onConfirm, onDate, onEnd, onMaxPeople, onMessage, onPickPlace, onSelectSpot, onStart, pendingSpot, schedDate, schedEnd, schedStart, spots = [], visible }) {
   const { colors, isDark } = useTheme();
   const [activePicker, setActivePicker] = useState(null);
   const [keyboardOffset, setKeyboardOffset] = useState(0);
@@ -884,7 +828,7 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
   }, [visible]);
 
   const panGesture = useMemo(() => Gesture.Pan()
-    .enabled(keyboardOffset <= 0)
+    .enabled(keyboardOffset <= 0 && !submitting)
     .onStart(() => {
       cancelAnimation(translateY);
       dragStartY.set(translateY.get());
@@ -909,17 +853,17 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
         translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
         fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    }), [closeWithAnimation, dragStartY, fadeAnim, keyboardOffset, translateY, unlockClose]);
+    }), [closeWithAnimation, dragStartY, fadeAnim, keyboardOffset, submitting, translateY, unlockClose]);
 
   const fadeStyle = useAnimatedStyle(() => ({ opacity: fadeAnim.get() }));
   const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.get() }] }));
 
   return (
-    <Modal animationType="none" transparent visible={visible} onRequestClose={closeWithAnimation}>
+    <Modal animationType="none" transparent visible={visible} onRequestClose={submitting ? () => {} : closeWithAnimation}>
       <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={styles.modalOverlay}>
         <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.45)' }, fadeStyle]}>
-          <Pressable accessibilityLabel="ปิดหน้าต่างนัดหมาย" onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
+          <Pressable disabled={submitting} accessibilityLabel="ปิดหน้าต่างนัดหมาย" onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
         </Animated.View>
         <View style={[styles.scheduleKeyboardAvoiding, { paddingBottom: keyboardOffset }]}>
           <Animated.View
@@ -947,6 +891,7 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
             </View>
             </GestureDetector>
             <ScrollView
+              pointerEvents={submitting ? 'none' : 'auto'}
               contentContainerStyle={styles.scheduleScroll}
               keyboardDismissMode="on-drag"
               keyboardShouldPersistTaps="handled"
@@ -992,14 +937,14 @@ function ScheduleModal({ maxPeople, message, nextDays, onClose, onConfirm, onDat
               {!validTimeRange ? <View style={[styles.timeError, { backgroundColor: colors.dangerSoft }]}><FeatureIcon color={colors.danger} name="exclamationmark.circle.fill" size={14} /><Text style={[styles.timeErrorText, { color: colors.danger }]}>เวลาสิ้นสุดต้องอยู่หลังเวลาเริ่ม</Text></View> : null}
 
               <PickerLabel icon="person.2.fill" label="จำนวนคน (รวมตัวเอง)" />
-              <TextInput keyboardAppearance={isDark ? 'dark' : 'light'} cursorColor={colors.primary} selectionColor={colors.primary} keyboardType="number-pad" onChangeText={onMaxPeople} placeholder="เช่น 2, 4" placeholderTextColor={colors.inkSoft} style={[styles.textInput, { backgroundColor: colors.surfaceRaised, borderColor: colors.line, color: colors.ink }]} value={maxPeople} />
+              <TextInput keyboardAppearance={isDark ? 'dark' : 'light'} cursorColor={colors.primary} selectionColor={colors.primary} keyboardType="number-pad" onChangeText={onMaxPeople} placeholder="เช่น 2, 4" placeholderTextColor={colors.inkSoft} style={[styles.textInput, { backgroundColor: colors.surfaceRaised, color: colors.ink }]} value={maxPeople} />
               <PickerLabel icon="text.bubble.fill" label="ประกาศ/รายละเอียด" />
-              <TextInput keyboardAppearance={isDark ? 'dark' : 'light'} cursorColor={colors.primary} selectionColor={colors.primary} multiline numberOfLines={3} onChangeText={onMessage} placeholder="เช่น หาเพื่อนไปวิ่งครับ" placeholderTextColor={colors.inkSoft} style={[styles.textInput, styles.textArea, { backgroundColor: colors.surfaceRaised, borderColor: colors.line, color: colors.ink }]} textAlignVertical="top" value={message} />
+              <TextInput keyboardAppearance={isDark ? 'dark' : 'light'} cursorColor={colors.primary} selectionColor={colors.primary} multiline numberOfLines={3} onChangeText={onMessage} placeholder="เช่น หาเพื่อนไปวิ่งครับ" placeholderTextColor={colors.inkSoft} style={[styles.textInput, styles.textArea, { backgroundColor: colors.surfaceRaised, color: colors.ink }]} textAlignVertical="top" value={message} />
               <View style={[styles.summaryBox, { backgroundColor: validTimeRange ? colors.coralSoft : colors.dangerSoft }]}><Text style={[styles.summaryText, { color: validTimeRange ? colors.coral : colors.danger }]}>{selectedDay?.label || '—'} · {schedStart}–{schedEnd}</Text></View>
             </ScrollView>
             <View style={styles.modalActions}>
-              <ActionButton disabled={!validTimeRange} emphasized icon="checkmark.circle.fill" label="ยืนยันนัดหมาย" onPress={onConfirm} tintColor={colors.coral} />
-              <Pressable accessibilityRole="button" onPress={closeWithAnimation} style={({ pressed }) => [styles.cancelModalButton, { borderColor: colors.line }, pressed && styles.pressed]}>
+              <ActionButton disabled={submitting || !pendingSpot || !validTimeRange} emphasized icon="checkmark.circle.fill" label={submitting ? 'กำลังสร้างกิจกรรม…' : 'ยืนยันนัดหมาย'} onPress={onConfirm} tintColor={colors.primary} />
+              <Pressable disabled={submitting} accessibilityRole="button" accessibilityState={{ disabled: submitting }} onPress={closeWithAnimation} style={({ pressed }) => [styles.cancelModalButton, { borderColor: colors.line }, pressed && styles.pressed, submitting && styles.disabled]}>
                 <Text style={[styles.cancelModalText, { color: colors.inkMuted }]}>ยกเลิก</Text>
               </Pressable>
             </View>
@@ -1068,7 +1013,7 @@ function PickerField({ compact = false, icon, label, onPress, value }) {
       accessibilityLabel={`${label} ${value}`}
       accessibilityRole="button"
       onPress={onPress}
-      style={({ pressed }) => [styles.pickerField, compact && styles.pickerFieldCompact, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.pickerField, compact && styles.pickerFieldCompact, { backgroundColor: colors.surfaceRaised }, pressed && styles.pressed]}
     >
       <View style={[styles.pickerFieldIcon, { backgroundColor: colors.coralSoft }]}><FeatureIcon color={colors.coral} name={icon} size={17} /></View>
       <View style={styles.pickerFieldCopy}><Text style={[styles.pickerFieldLabel, { color: colors.inkMuted }]}>{label}</Text><Text numberOfLines={1} style={[styles.pickerFieldValue, { color: colors.ink }]}>{value}</Text></View>
@@ -1084,7 +1029,7 @@ function PickerLabel({ icon, label }) {
 
 const styles = StyleSheet.create({
   listContent: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, width: '100%', maxWidth: 620, alignSelf: 'center' },
-  hero: { borderRadius: radius.xl, borderWidth: 1, height: 156, marginBottom: spacing.md, overflow: 'hidden', position: 'relative' },
+  hero: { borderRadius: 26, borderCurve: 'continuous', borderWidth: 0, height: 156, marginBottom: spacing.md, overflow: 'hidden', position: 'relative' },
   heroImage: { height: 156 },
   heroGradient: { bottom: 0, height: 130, left: 0, position: 'absolute', right: 0 },
   heroCopy: { bottom: spacing.md, left: spacing.md, position: 'absolute', right: spacing.md },
@@ -1102,7 +1047,7 @@ const styles = StyleSheet.create({
   selectedMainRow: { alignItems: 'stretch', flexDirection: 'row', gap: 12 },
   selectedPhotoWrap: { borderRadius: radius.md, height: 104, overflow: 'hidden', position: 'relative', width: 94 },
   selectedCheckBadge: { alignItems: 'center', borderRadius: radius.pill, height: 20, justifyContent: 'center', left: 6, position: 'absolute', top: 6, width: 20 },
-  selectedHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  selectedHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.sm },
   selectedCopy: { flex: 1, justifyContent: 'space-between', minWidth: 0 },
   selectedEyebrow: { fontSize: type.caption2, fontWeight: '800' },
   selectedTitle: { fontSize: type.body, fontWeight: '900', marginTop: 1 },
@@ -1110,6 +1055,7 @@ const styles = StyleSheet.create({
   selectedMetaChip: { alignItems: 'center', flexDirection: 'row', gap: 3 },
   selectedMetaText: { fontSize: type.caption2, fontWeight: '700' },
   selectedScheduleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 6 },
+  selectedDetailsHint: { alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: spacing.sm },
   smallIconButton: { elevation: 0, height: 28, shadowOpacity: 0, width: 28 },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
   metaItem: { alignItems: 'flex-start', flexDirection: 'row', flexShrink: 1, gap: 6, maxWidth: '100%' },
@@ -1117,29 +1063,10 @@ const styles = StyleSheet.create({
   scheduleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
   tag: { alignItems: 'center', borderRadius: radius.sm, flexDirection: 'row', gap: 5, maxWidth: '100%', paddingHorizontal: 9, paddingVertical: 5 },
   tagText: { flexShrink: 1, fontSize: type.caption2, fontWeight: '800' },
-  selectedActions: { borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, paddingTop: spacing.sm },
   categoryRow: { gap: spacing.sm, paddingBottom: spacing.lg, paddingTop: spacing.sm, paddingRight: spacing.md },
   resultMeta: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.md, marginTop: spacing.xs },
   resultTitle: { fontSize: type.headline, fontWeight: '900' },
   resultCount: { flexShrink: 1, fontSize: type.caption2, fontWeight: '800', marginLeft: spacing.sm, textAlign: 'right' },
-  spotCard: { marginBottom: spacing.md, padding: spacing.md },
-  spotMainRow: { alignItems: 'stretch', flexDirection: 'row', gap: 12 },
-  spotPhotoContainer: { borderRadius: radius.md, height: 118, overflow: 'hidden', position: 'relative', width: 104 },
-  spotPhotoImage: { height: 118, width: 104 },
-  photoIconBadge: { alignItems: 'center', borderRadius: radius.pill, height: 22, justifyContent: 'center', left: 6, position: 'absolute', top: 6, width: 22 },
-  photoRatingBadge: { alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.64)', borderRadius: radius.pill, bottom: 6, flexDirection: 'row', gap: 3, left: 6, paddingHorizontal: 6, paddingVertical: 2, position: 'absolute' },
-  photoRatingText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
-  spotDetailsColumn: { flex: 1, justifyContent: 'space-between', minWidth: 0 },
-  spotMetaTop: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', gap: 6, marginBottom: 2 },
-  spotCategoryTag: { borderRadius: radius.xs, paddingHorizontal: 7, paddingVertical: 2.5 },
-  spotCategoryText: { fontSize: 11, fontWeight: '800' },
-  spotDistanceTag: { alignItems: 'center', flexDirection: 'row', gap: 3 },
-  spotDistanceText: { fontSize: 11, fontWeight: '800' },
-  spotName: { fontSize: 15, fontWeight: '900', lineHeight: 19, marginBottom: 3 },
-  spotDescription: { fontSize: 12, lineHeight: 16, marginBottom: 4 },
-  spotBusyRow: { alignItems: 'center', flexDirection: 'row', gap: 4, marginTop: 'auto' },
-  spotBusyText: { fontSize: 11, lineHeight: 14 },
-  spotButtonRow: { borderTopWidth: StyleSheet.hairlineWidth, flexDirection: 'row', gap: spacing.sm, marginTop: spacing.sm, paddingTop: spacing.sm },
   actionButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 4, justifyContent: 'center', minHeight: 48, paddingHorizontal: spacing.sm, paddingVertical: 10 },
   actionText: { fontSize: type.caption2, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
   emptySpots: { alignItems: 'center', marginTop: spacing.sm, padding: spacing.xxl },

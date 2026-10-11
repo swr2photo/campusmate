@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, AppState, Dimensions, Modal, Platform, Pressable, SafeAreaView, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import FeatureIcon from './FeatureIcon';
 import FaceVerificationDetails from './FaceVerificationDetails';
 import { startFaceVerificationSession, submitFaceVerification } from '../services/faceVerificationService';
@@ -40,6 +41,7 @@ export default function FaceVerificationModal({
   const { colors, isDark } = useTheme();
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef(null);
+  const [facing, setFacing] = useState('front');
   const [introduced, setIntroduced] = useState(false);
   const generation = useRef(0);
   const capturing = useRef(false);
@@ -224,13 +226,22 @@ export default function FaceVerificationModal({
         ) : (
           <View style={styles.cameraWrapper}>
             {modalReady && foreground && step !== 'verifying' && step !== 'success' && <CameraView
-              facing="front"
+              facing={facing}
               ref={cameraRef}
               style={StyleSheet.absoluteFill}
               mode="picture"
               animateShutter={false}
               onCameraReady={() => setCameraReady(true)}
-              onMountError={() => { setCameraReady(false); setErrorMessage('เปิดกล้องไม่ได้ กรุณาปิดแล้วลองอีกครั้ง'); setStep('error'); }}
+              onMountError={(err) => {
+                console.warn('[FaceVerification] Camera mount error:', err);
+                if (facing === 'front') {
+                  setFacing('back');
+                } else {
+                  setCameraReady(false);
+                  setErrorMessage('เปิดกล้องไม่ได้ กรุณาปิดแล้วลองอีกครั้ง');
+                  setStep('error');
+                }
+              }}
             />}
 
             <View style={styles.overlay} pointerEvents="box-none">
@@ -243,7 +254,14 @@ export default function FaceVerificationModal({
                   <FeatureIcon color="#FFFFFF" name="xmark" size={20} />
                 </TouchableOpacity>
                 <Text style={styles.headerTitle}>ยืนยันใบหน้า</Text>
-                <View style={styles.headerSpacer} />
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => setFacing((f) => (f === 'front' ? 'back' : 'front'))}
+                  style={styles.closeButton}
+                  accessibilityLabel="สลับกล้อง"
+                >
+                  <Ionicons color="#FFFFFF" name="camera-reverse-outline" size={22} />
+                </TouchableOpacity>
               </SafeAreaView>
 
               <View style={styles.ovalStage} pointerEvents="none">

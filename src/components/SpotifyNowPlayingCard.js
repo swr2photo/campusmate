@@ -140,8 +140,9 @@ export default function SpotifyNowPlayingCard({
 
 const styles = StyleSheet.create({
   card: {
-    borderRadius: 14,
-    borderWidth: 1,
+    borderRadius: 26,
+    borderCurve: 'continuous',
+    borderWidth: 0,
     marginVertical: 6,
     padding: 12,
   },

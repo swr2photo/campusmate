@@ -1,5 +1,4 @@
 import { Button, Text } from '../components/NativeTypography';
-import NotificationBell from '../components/NotificationBell';
 import { font } from '../components/brandFont';
 import { useNativePalette } from '../theme';
 import RNText from '../components/AppText';
@@ -40,16 +39,16 @@ import {
 } from '../data/matchingFilters';
 import { router, useFocusEffect } from 'expo-router';
 import { useEntitlement } from '../context/MembershipContext';
-import { TourTarget } from '../context/AppTourContext';
+import NativeTourTarget from '../components/NativeTourTarget.ios';
 import { useDiscoveryDeckState } from '../hooks/useDiscoveryDeckState';
 import { FEATURE_ADVANCED_FILTERS, FEATURE_UNLIMITED_REWIND, stripPaidMatchingPreferences } from '../data/plans';
-import { ContentUnavailableView, Host, HStack, Image, BottomSheet, Form, Section, Slider, Picker, Menu, Toggle, ScrollView, Spacer, VStack, ZStack, RNHostView } from '@expo/ui/swift-ui';
-import { accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollIndicators, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
+import { ContentUnavailableView, Host, HStack, Image, BottomSheet, Form, Section, Slider, Picker, Menu, Toggle, ScrollView, Spacer, VStack, ZStack, RNHostView, useNativeState } from '@expo/ui/swift-ui';
+import { accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, multilineTextAlignment, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollIndicators, scrollPosition, scrollTargetLayout, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
 import { useAppActions, useAppBadges, useAppFeed, useAppProfile } from '../context/AppContext';
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import { View, Pressable, useColorScheme, Animated } from 'react-native';
+import { View, Pressable, useColorScheme } from 'react-native';
 
 const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -101,7 +100,7 @@ export default function HomeScreen() {
   // CampusMate Plus gates (src/data/plans.js).
   const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
   const rewind = useEntitlement(FEATURE_UNLIMITED_REWIND);
-  const scrollY = useRef(new Animated.Value(0)).current;
+  const tourScrollPosition = useNativeState(null);
   const myMeetupStats = useMemo(() => (profile ? getMeetupStats(profile) : null), [profile, getMeetupStats]);
   const matchedCount = Math.max(matchedProfileCount, conversationCount);
 
@@ -403,18 +402,22 @@ export default function HomeScreen() {
 
   // "เริ่มใหม่" brings skipped profiles back and refreshes the deck while
   // keeping every saved filter untouched.
-  const handleReset = () => {
+  const handleReset = async () => {
     // "เริ่มใหม่" brings skipped people back: CampusMate Plus (unlimited rewind).
     if (!rewind.guard()) return;
     pinnedDailyRef.current.id = null;
     setSelectedCategory('all');
-    void recycleSkippedProfiles()?.catch?.((error) => {
+    try {
+      await recycleSkippedProfiles();
+    } catch (error) {
       console.warn('[HomeScreen.ios] handleReset recycle error:', error?.message || error);
-    });
+    }
     if (hasMoreProfiles && !isLoadingMoreProfiles) {
       void loadMoreProfiles()?.catch?.((error) => {
         console.warn('[HomeScreen.ios] handleReset loadMore error:', error?.message || error);
       });
+    } else {
+      retryDiscovery?.();
     }
   };
 
@@ -424,42 +427,8 @@ export default function HomeScreen() {
   const meetupAccent = colorScheme === 'dark' ? '#7966FF' : '#4546B8';
   const meetupSoft = colorScheme === 'dark' ? 'rgba(112,178,255,0.16)' : '#EEF2F7';
 
-  const smallHeaderOpacity = scrollY.interpolate({
-    inputRange: [30, 60],
-    outputRange: [0, 1],
-    extrapolate: 'clamp',
-  });
-
-  const largeHeaderOpacity = scrollY.interpolate({
-    inputRange: [0, 30],
-    outputRange: [1, 0],
-    extrapolate: 'clamp',
-  });
-
-  const largeHeaderTranslateY = scrollY.interpolate({
-    inputRange: [0, 40],
-    outputRange: [0, -20],
-    extrapolate: 'clamp',
-  });
-
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
-      <MaskedView
-        pointerEvents="none"
-        style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 104, zIndex: 10 }}
-        maskElement={
-          <LinearGradient colors={['#FFFFFF', '#FFFFFF00']} style={{ flex: 1 }} />
-        }
-      >
-        <BlurView intensity={blurIntensity} tint={colorScheme} style={{ flex: 1 }} />
-      </MaskedView>
-      <TourTarget id="home.filters" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 }} pointerEvents="box-none">
-        <Host colorScheme={colorScheme} seedColor={palette.purple} style={{ width: '100%', height: 85 }}>
-          <VStack modifiers={[padding({ top: 35, bottom: 15, horizontal: 20 }), frame({ maxWidth: Infinity, alignment: 'topLeading' })]}>
-            <Header onSettings={() => router.push('/matching-filters')} />
-          </VStack>
-        </Host>
-      </TourTarget>
       <Host
         colorScheme={colorScheme}
         seedColor={palette.purple}
@@ -467,17 +436,20 @@ export default function HomeScreen() {
       >
         <ScrollView
           showsIndicators={false}
-          modifiers={[scrollIndicators('never', 'vertical')]}
+          modifiers={[scrollIndicators('never', 'vertical'), scrollPosition(tourScrollPosition, { anchor: 'top' })]}
         >
           <VStack
             alignment="leading"
             spacing={22}
             modifiers={[
-              padding({ top: 60, bottom: 36, horizontal: 20 }),
+              scrollTargetLayout(),
+              padding({ top: 12, bottom: 36, horizontal: 20 }),
               frame({ maxWidth: Infinity, alignment: 'topLeading' }),
             ]}
           >
-            <FilterChips onAll={handleReset} />
+            <NativeTourTarget id="home.activities" ensureVisible={() => tourScrollPosition.set('home.activities')}>
+              <FilterChips onAll={handleReset} />
+            </NativeTourTarget>
 
             {showFilters && (
               <SmartFilters
@@ -490,6 +462,7 @@ export default function HomeScreen() {
 
             {currentProfile ? (
               <>
+                <NativeTourTarget id="home.deck" ensureVisible={() => tourScrollPosition.set('home.deck')}>
                 <ProfileCard
                   candidate={currentProfile}
                   imageUri={imageUri}
@@ -498,6 +471,7 @@ export default function HomeScreen() {
                     params: { profileId: currentProfile.id },
                   })}
                 />
+                </NativeTourTarget>
                 <DiscoveryShortcuts
                   matchedCount={matchedCount}
                   resetKey={currentProfile.id}
@@ -505,33 +479,50 @@ export default function HomeScreen() {
               </>
             ) : (
               <VStack
-                spacing={18}
-                modifiers={[
-                  padding({ vertical: 36, horizontal: 22 }),
-                  frame({ maxWidth: Infinity }),
-                  background(palette.card, cardShape),
-                ]}
-              >
-                <ContentUnavailableView
-                  description={deckFailed
-                    ? (deck.offline
-                      ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
-                      : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่')
-                    : isWaitingForProfiles
-                      ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
-                      : 'ตัวกรองของคุณยังคงอยู่ กด "เริ่มใหม่" เพื่อดูคนที่เคยข้ามอีกครั้ง หรือปรับตัวกรองจากมุมขวาบน'}
-                  systemImage={deckFailed
-                    ? (deck.offline ? 'wifi.slash' : 'exclamationmark.triangle')
-                    : isWaitingForProfiles ? 'arrow.triangle.2.circlepath' : 'person.2.slash'}
-                  title={deckFailed
-                    ? (deck.offline ? 'ไม่ได้เชื่อมต่ออินเทอร์เน็ต' : deck.stalled ? 'โหลดโปรไฟล์นานกว่าปกติ' : 'โหลดโปรไฟล์ไม่สำเร็จ')
-                    : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
-                />
+                  alignment="center"
+                  spacing={12}
+                  modifiers={[
+                    padding({ vertical: 36, horizontal: 22 }),
+                    frame({ maxWidth: Infinity }),
+                    background(palette.card, cardShape),
+                  ]}
+                >
+                  <Image
+                    color={palette.secondary}
+                    size={48}
+                    systemName={deckFailed
+                      ? (deck.offline ? 'wifi.slash' : 'exclamationmark.triangle')
+                      : isWaitingForProfiles ? 'arrow.triangle.2.circlepath' : 'person.2.slash'}
+                  />
+                  <Text
+                    modifiers={[
+                      font({ size: 18, weight: 'bold' }),
+                      foregroundStyle(palette.text),
+                      multilineTextAlignment('center'),
+                    ]}
+                  >
+                    {deckFailed
+                      ? (deck.offline ? 'ไม่ได้เชื่อมต่ออินเทอร์เน็ต' : deck.stalled ? 'โหลดโปรไฟล์นานกว่าปกติ' : 'โหลดโปรไฟล์ไม่สำเร็จ')
+                      : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
+                  </Text>
+                  <Text
+                    modifiers={[
+                      font({ size: 14, weight: 'regular' }),
+                      foregroundStyle(palette.secondary),
+                      multilineTextAlignment('center'),
+                    ]}
+                  >
+                    {deckFailed
+                      ? (deck.offline
+                        ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
+                        : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่')
+                      : isWaitingForProfiles
+                        ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
+                        : 'ตัวกรองของคุณยังคงอยู่ กด "เริ่มใหม่" เพื่อดูคนที่เคยข้ามอีกครั้ง หรือปรับตัวกรองจากมุมขวาบน'}
+                  </Text>
                 {deckFailed ? (
                   <Button
-                    label="ลองอีกครั้ง"
                     onPress={deck.retry}
-                    systemImage="arrow.clockwise"
                     modifiers={[
                       buttonStyle('glassProminent'),
                       buttonBorderShape('capsule'),
@@ -539,13 +530,23 @@ export default function HomeScreen() {
                       tint(palette.purple),
                       frame({ maxWidth: Infinity }),
                     ]}
-                  />
+                  >
+                    <HStack spacing={8} alignment="center">
+                      <Image systemName="arrow.clockwise" size={16} color={palette.white} />
+                      <Text
+                        modifiers={[
+                          font({ size: 16, weight: 'semibold' }),
+                          foregroundStyle(palette.white),
+                        ]}
+                      >
+                        ลองอีกครั้ง
+                      </Text>
+                    </HStack>
+                  </Button>
                 ) : null}
                 {!isWaitingForProfiles && !deckFailed ? (
                   <Button
-                    label="เริ่มใหม่"
                     onPress={handleReset}
-                    systemImage="arrow.triangle.2.circlepath"
                     modifiers={[
                       buttonStyle('glassProminent'),
                       buttonBorderShape('capsule'),
@@ -553,20 +554,42 @@ export default function HomeScreen() {
                       tint(palette.purple),
                       frame({ maxWidth: Infinity }),
                     ]}
-                  />
+                  >
+                    <HStack spacing={8} alignment="center">
+                      <Image systemName="arrow.triangle.2.circlepath" size={16} color={palette.white} />
+                      <Text
+                        modifiers={[
+                          font({ size: 16, weight: 'semibold' }),
+                          foregroundStyle(palette.white),
+                        ]}
+                      >
+                        เริ่มใหม่
+                      </Text>
+                    </HStack>
+                  </Button>
                 ) : null}
                 {!isWaitingForProfiles ? (
                   <Button
-                    label="ปรับตัวกรอง"
                     onPress={() => router.push('/matching-filters')}
-                    systemImage="slider.horizontal.3"
                     modifiers={[
                       buttonStyle('glass'),
                       buttonBorderShape('capsule'),
                       controlSize('large'),
                       frame({ maxWidth: Infinity }),
                     ]}
-                  />
+                  >
+                    <HStack spacing={8} alignment="center">
+                      <Image systemName="slider.horizontal.3" size={16} color={palette.text} />
+                      <Text
+                        modifiers={[
+                          font({ size: 16, weight: 'semibold' }),
+                          foregroundStyle(palette.text),
+                        ]}
+                      >
+                        ปรับตัวกรอง
+                      </Text>
+                    </HStack>
+                  </Button>
                 ) : null}
               </VStack>
             )}
@@ -782,37 +805,35 @@ export default function HomeScreen() {
           </Host>
         </BottomSheet>
       </Host>
-    </View>
-  );
-}
 
-function Header({ onSettings }) {
-  const palette = usePalette();
-  return (
-    <HStack alignment="center" spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
-      <Text
-        modifiers={[
-          font({ textStyle: 'title1', weight: 'bold', design: 'rounded' }),
-          foregroundStyle(palette.text),
+      {/* Floating Action Button for Landmarks */}
+      <Pressable
+        accessibilityLabel="สถานที่"
+        accessibilityRole="button"
+        onPress={() => router.push('/landmarks')}
+        style={({ pressed }) => [
+          {
+            position: 'absolute',
+            bottom: 24,
+            right: 20,
+            backgroundColor: palette.purple || '#007AFF',
+            width: 56,
+            height: 56,
+            borderRadius: 28,
+            alignItems: 'center',
+            justifyContent: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.25,
+            shadowRadius: 8,
+            elevation: 5,
+            opacity: pressed ? 0.8 : 1,
+          }
         ]}
       >
-        หาเพื่อน
-      </Text>
-      <Spacer />
-      <RNHostView matchContents><NotificationBell /></RNHostView>
-      <Button
-        label="ตัวกรอง"
-        onPress={onSettings}
-        systemImage="slider.horizontal.3"
-        modifiers={[
-          buttonStyle('glass'),
-          buttonBorderShape('circle'),
-          controlSize('regular'),
-          labelStyle('iconOnly'),
-          tint(palette.text),
-        ]}
-      />
-    </HStack>
+        <RNText style={{ fontSize: 24 }}>🗺️</RNText>
+      </Pressable>
+    </View>
   );
 }
 
@@ -851,7 +872,7 @@ function FilterChip({ dot = false, label, onPress }) {
       >
         <Text
           modifiers={[
-            font({ textStyle: 'subheadline', weight: 'semibold', design: 'rounded' }),
+            font({ size: 14, weight: 'semibold' }),
             foregroundStyle(palette.text),
           ]}
         >

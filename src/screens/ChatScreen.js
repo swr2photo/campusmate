@@ -1,5 +1,8 @@
 import Text from '../components/AppText';
+import ConversationInboxStatus from '../components/ConversationInboxStatus';
 import { AppTextInput as TextInput } from '../components/AppText';
+import SearchField from '../components/SearchField';
+import LiquidGlassSegmentedControl from '../components/LiquidGlassSegmentedControl';
 import { compareConversationsByActivity } from '../utils/conversationOrder';
 import { chatPreviewText } from '../utils/chatPreviewText';
 import React, { useCallback, useContext, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
@@ -136,12 +139,15 @@ function formatListTime(conversation, currentUserId, unreadCount = 0) {
 }
 
 export default function ChatScreen() {
-  useEffect(() => { prefetchBrowseMusicTracks(); }, []);
+  // Background warm-up only: a slow/cold function (deadline-exceeded) must not
+  // become an unhandled promise rejection. The search sheet retries on open.
+  useEffect(() => { void prefetchBrowseMusicTracks().catch(() => {}); }, []);
   const { colors, isDark } = useTheme();
   const { confirm } = useConfirm();
-  const { conversations = [] } = useAppConversations();
+  const conversationInbox = useAppConversations();
+  const { conversations = [] } = conversationInbox;
   const { profile } = useAppProfile();
-  const { removeConversation } = useAppActions();
+  const { removeConversation, retryConversations } = useAppActions();
   const params = useLocalSearchParams();
   const pathname = usePathname();
   const [query, setQuery] = useState('');
@@ -172,6 +178,18 @@ export default function ChatScreen() {
       return `${conversation.name || ''} ${conversation.lastMessage || ''}`.toLowerCase().includes(normalizedQuery);
     }).sort(compareConversationsByActivity);
   }, [conversations, currentUserId, deferredQuery, unreadOnly]);
+
+  const unreadConversationsCount = useMemo(() => {
+    return conversations.reduce((count, conv) => {
+      const unread = conv.unreadCounts?.[currentUserId] || conv.unread || 0;
+      return unread > 0 ? count + 1 : count;
+    }, 0);
+  }, [conversations, currentUserId]);
+
+  const filterTabs = useMemo(() => [
+    { id: 'all', label: 'ทั้งหมด' },
+    { id: 'unread', label: 'ยังไม่อ่าน', badgeCount: unreadConversationsCount },
+  ], [unreadConversationsCount]);
 
   const handleDeleteConversation = useCallback(async (conversation) => {
     const otherUserId = conversation.profileId
@@ -229,37 +247,24 @@ export default function ChatScreen() {
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={(
           <TourTarget id="chat.search" style={styles.listHeader}>
-            <View style={[styles.searchBox, { backgroundColor: colors.card, borderColor: colors.line }]}>
-              <FeatureIcon color={colors.inkSoft} name="magnifyingglass" size={19} />
-              <TextInput
-                autoCapitalize="none"
-                keyboardAppearance={isDark ? 'dark' : 'light'}
-                cursorColor={colors.primary}
-                selectionColor={colors.primary}
-                onChangeText={setQuery}
-                placeholder="ค้นหาชื่อหรือข้อความ"
-                placeholderTextColor={colors.inkSoft}
-                style={[styles.searchInput, { color: colors.ink }]}
-                value={query}
+            <SearchField
+              value={query}
+              onChangeText={setQuery}
+              placeholder="ค้นหาชื่อหรือข้อความ"
+              onClear={() => setQuery('')}
+            />
+            <View style={styles.tabsContainer}>
+              <LiquidGlassSegmentedControl
+                activeTab={unreadOnly ? 'unread' : 'all'}
+                onChangeTab={(tabId) => setUnreadOnly(tabId === 'unread')}
+                tabs={filterTabs}
               />
-              {query ? <IconButton accessibilityLabel="ล้างการค้นหา" icon="xmark.circle.fill" onPress={() => setQuery('')} size={18} style={styles.clearButton} tintColor={colors.inkSoft} /> : null}
             </View>
-            <View style={styles.filterRow}>
-              <FilterButton active={!unreadOnly} icon="tray.full.fill" label="ทั้งหมด" onPress={() => setUnreadOnly(false)} />
-              <FilterButton active={unreadOnly} icon="circle.fill" label="ยังไม่อ่าน" onPress={() => setUnreadOnly(true)} />
-            </View>
-
           </TourTarget>
         )}
-        ListEmptyComponent={(
-          <View style={styles.emptyState}>
-            <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}><FeatureIcon color={colors.primary} name={query || unreadOnly ? 'search' : 'message.fill'} size={30} /></View>
-            <Text style={[styles.emptyTitle, { color: colors.ink }]}>{query || unreadOnly ? 'ไม่พบข้อความ' : 'ยังไม่มีแชตคู่'}</Text>
-            <Text style={[styles.emptyText, { color: colors.inkMuted }]}>{query || unreadOnly ? 'ลองเปลี่ยนคำค้นหาหรือตัวกรอง' : 'เมื่อคุณรับคำขอถูกใจ ห้องสนทนาจะปรากฏที่นี่'}</Text>
-          </View>
-        )}
+        ListEmptyComponent={<ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} empty filtered={Boolean(query || unreadOnly)} groupLoading={groupInbox.loading} groupError={groupInbox.error} />}
         renderItem={(props) => props.item.kind === 'group' ? <GroupChatRow group={props.item} /> : renderConversation(props)}
-        ListFooterComponent={<GroupChatInboxStatus inbox={groupInbox} />}
+        ListFooterComponent={<>{groupInbox.items.length + visibleConversations.length > 0 ? <ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} /> : null}<GroupChatInboxStatus inbox={groupInbox} /></>}
         showsVerticalScrollIndicator={false}
       />
     </IosLikeScreen>
@@ -443,6 +448,7 @@ const styles = StyleSheet.create({
   blurTarget: { flex: 1 },
   content: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg },
   listHeader: { gap: spacing.md, paddingBottom: spacing.lg, paddingTop: spacing.sm },
+  tabsContainer: { width: '100%', marginTop: 2 },
   searchBox: { alignItems: 'center', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, minHeight: 50, paddingHorizontal: spacing.md },
   searchInput: { flex: 1, fontSize: type.body, paddingVertical: 0 },
   clearButton: { elevation: 0, height: 30, shadowOpacity: 0, width: 30 },

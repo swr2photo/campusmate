@@ -96,8 +96,8 @@ test('buildPublicProfile rebuilds an owner document without private fields', () 
   assert.equal(profile.matchingPreferences, undefined);
 });
 
-test('gallery image URLs survive public and discovery projections within the five-photo limit', () => {
-  const photos = Array.from({ length: 6 }, (_, index) => `https://cdn.example.test/gallery/${index}.jpg`);
+test('gallery image URLs survive public and discovery projections within the eight-photo limit', () => {
+  const photos = Array.from({ length: 9 }, (_, index) => `https://cdn.example.test/gallery/${index}.jpg`);
   const gallery = [
     `  ${photos[0]}  `,
     'file:///local/photo.jpg',
@@ -114,10 +114,10 @@ test('gallery image URLs survive public and discovery projections within the fiv
     gallery,
     privacy: { showActivity: false, showFaculty: false },
   });
-  assert.deepEqual(publicProfile.gallery, photos.slice(0, 5));
+  assert.deepEqual(publicProfile.gallery, photos.slice(0, 8));
 
   const discoveryProfile = buildDiscoveryProfile('user-gallery', publicProfile);
-  assert.deepEqual(discoveryProfile.gallery, photos.slice(0, 5));
+  assert.deepEqual(discoveryProfile.gallery, photos.slice(0, 8));
   assert.equal(buildPublicProfile('user-empty', { gallery: ['file:///local/photo.jpg'] }).gallery, undefined);
   assert.equal(buildDiscoveryProfile('user-empty', { isFaceVerified: true, gallery: ['file:///local/photo.jpg'] }).gallery, undefined);
 });

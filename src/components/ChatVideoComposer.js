@@ -13,6 +13,7 @@ import { VIDEO_MODES } from '../utils/chatVideoPolicy';
 import { scheduleIdleTask } from '../utils/scheduleIdleTask';
 import { initialVideoRange, moveVideoHandle, videoTime } from '../utils/videoEdit';
 import { showAlert } from '../utils/appAlert';
+import useAutoplayPreference from '../hooks/useAutoplayPreference';
 
 function moveHandleWorklet(startMs, endMs, handle, value, duration) {
   'worklet';
@@ -93,6 +94,7 @@ export default function ChatVideoComposer({ asset, recipientName, recipientAvata
   const [caption, setCaption] = useState(asset.caption || '');
   const [showCaption, setShowCaption] = useState(Boolean(asset.caption));
   const [sending, setSending] = useState(false);
+  const autoplay = useAutoplayPreference();
   const [ready, setReady] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
@@ -107,6 +109,11 @@ export default function ChatVideoComposer({ asset, recipientName, recipientAvata
   const durationSV = useSharedValue(duration);
   const widthSV = useSharedValue(width);
   const player = useVideoPlayer(asset.uri, p => { p.timeUpdateEventInterval = 0.1; p.staysActiveInBackground = false; });
+  useEffect(() => {
+    if (!ready) return;
+    if (autoplay && AppState.currentState === 'active') player.play();
+    else player.pause();
+  }, [autoplay, player, ready]);
   useEffect(() => {
     startMsSV.set(range.startMs);
     endMsSV.set(range.endMs);

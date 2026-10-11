@@ -153,6 +153,8 @@ const ANDROID_ICON_MAP = {
   'rectangle.portrait.and.arrow.right': 'log-out',
   'rotate.right.fill': 'refresh',
   'shield.slash': 'shield-outline',
+  'shield.fill': 'shield',
+  'shield.lefthalf.filled': 'shield-half-outline',
   'stop.fill': 'square',
   paperplane: 'send',
   'paperplane.fill': 'send',

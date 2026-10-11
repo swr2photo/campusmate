@@ -4,10 +4,11 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppActions, useAppSync } from '../context/AppContext';
 import FeatureIcon from './FeatureIcon';
+import LiquidGlassView from './LiquidGlassView';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 
 export default function OfflineBanner() {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const { syncNow } = useAppActions();
   const {
@@ -21,32 +22,43 @@ export default function OfflineBanner() {
 
   let icon = 'wifi.slash';
   let label = 'ออฟไลน์ · กำลังแสดงข้อมูลล่าสุดในเครื่อง';
-  let backgroundColor = colors.amber;
+  let glassTint = isDark ? 'rgba(216, 144, 27, 0.42)' : 'rgba(216, 144, 27, 0.35)';
   let canRetry = false;
 
   if (isOnline && isSyncing && pendingSyncCount > 0) {
     icon = 'arrow.triangle.2.circlepath';
     label = `กำลังซิงก์ ${pendingSyncCount} รายการ`;
-    backgroundColor = colors.blue;
+    glassTint = isDark ? 'rgba(40, 105, 199, 0.42)' : 'rgba(40, 105, 199, 0.35)';
   } else if (isOnline && pendingSyncCount > 0) {
     icon = 'arrow.triangle.2.circlepath';
     label = `รอซิงก์ ${pendingSyncCount} รายการ · แตะเพื่อลองใหม่`;
-    backgroundColor = colors.coral;
+    glassTint = isDark ? 'rgba(244, 124, 107, 0.42)' : 'rgba(244, 124, 107, 0.35)';
     canRetry = true;
   } else if (isOnline && lastSyncError) {
     icon = 'exclamationmark.triangle.fill';
     label = 'บางรายการซิงก์ไม่สำเร็จ · แตะเพื่อลองใหม่';
-    backgroundColor = colors.danger;
+    glassTint = isDark ? 'rgba(214, 84, 84, 0.42)' : 'rgba(214, 84, 84, 0.35)';
     canRetry = true;
   } else if (pendingSyncCount > 0) {
     label = `ออฟไลน์ · เก็บไว้รอส่ง ${pendingSyncCount} รายการ`;
   }
 
   const content = (
-    <View style={[styles.banner, { backgroundColor, top: insets.top + spacing.sm }]}>
-      <FeatureIcon color="#FFFFFF" name={icon} size={16} />
-      <Text numberOfLines={2} style={styles.text}>{label}</Text>
-    </View>
+    <LiquidGlassView
+      glassEffectStyle="regular"
+      style={[
+        styles.banner,
+        {
+          backgroundColor: glassTint,
+          top: insets.top + spacing.sm,
+        },
+      ]}
+    >
+      <View style={styles.innerRow}>
+        <FeatureIcon color="#FFFFFF" name={icon} size={16} />
+        <Text numberOfLines={2} style={styles.text}>{label}</Text>
+      </View>
+    </LiquidGlassView>
   );
 
   if (!canRetry) return <View pointerEvents="none" style={StyleSheet.absoluteFill}>{content}</View>;
@@ -64,14 +76,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     alignSelf: 'center',
     borderRadius: radius.pill,
-    flexDirection: 'row',
-    gap: spacing.sm,
+    borderCurve: 'continuous',
     maxWidth: '92%',
     minHeight: 38,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     position: 'absolute',
     ...shadow.card,
+  },
+  innerRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: spacing.sm,
   },
   text: {
     color: '#FFFFFF',

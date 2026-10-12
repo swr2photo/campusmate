@@ -485,7 +485,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
         {/* Collapsed Liquid Glass Toolbar (Floating Compact Toolbar on scroll) */}
         <Animated.View
           style={[
-            StyleSheet.absoluteFillObject,
+            StyleSheet.absoluteFill,
             { paddingHorizontal: 16, paddingTop: 8 },
             collapsedToolbarStyle,
             !isCollapsed && { pointerEvents: 'none' },

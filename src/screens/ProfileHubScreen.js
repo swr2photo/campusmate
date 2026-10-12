@@ -409,7 +409,7 @@ const styles = StyleSheet.create({
   photoCard: { borderRadius: 26, borderCurve: 'continuous', padding: 8, gap: 12 },
   photoStrip: { borderRadius: 19, borderCurve: 'continuous', overflow: 'hidden', flexDirection: 'row', height: 86 },
   photoSlot: { flex: 1, alignItems: 'center', justifyContent: 'center', borderRightWidth: 1, minWidth: 0 },
-  morePhotos: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.48)' },
+  morePhotos: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.48)' },
   morePhotosText: { color: '#FFFFFF', fontSize: 23, fontWeight: '600' },
   photoCardFooter: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 5, paddingBottom: 8 },
   photoCardCopy: { flex: 1, fontSize: 14 },

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { router } from 'expo-router';
 import { useNotificationInbox } from '../context/NotificationInboxContext';
 import { useFaceVerificationFlow } from '../components/FaceVerificationPrompt';
@@ -10,7 +10,10 @@ import { groupInboxRows } from '../utils/notificationDisplay';
 export default function useNotificationsPage() {
   const inbox = useNotificationInbox(), face = useFaceVerificationFlow();
   const [unreadOnly, setUnreadOnly] = useState(false), [detailId, setDetailId] = useState(null), [busy, setBusy] = useState(false);
-  const lastDetail = useRef(null);
+  const lastDetail = useRef(null), pendingAction = useRef(null);
+  // Relative times ("5 นาที") must advance while the page stays mounted under a pushed screen.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 60000); return () => clearInterval(timer); }, []);
   const sections = useMemo(() => groupInboxRows(inbox.rows, unreadOnly), [inbox.rows, unreadOnly]);
   // Track live changes to the open row, and keep the last one so a sheet
   // still has content while it animates closed.
@@ -39,13 +42,15 @@ export default function useNotificationsPage() {
     }
   };
   const closeDetail = () => setDetailId(null);
-  // `delay` lets a native sheet finish dismissing before the next presentation.
-  const after = (delay, run) => { if (delay) setTimeout(run, delay); else run(); };
-  const startFace = (row, delay = 0) => { markRead(row); closeDetail(); after(delay, face.start); };
-  const openRoute = (route, delay = 0) => { closeDetail(); after(delay, () => router.push(route)); };
+  // A native sheet must finish dismissing before the next modal or push, so the iOS
+  // page defers these to BottomSheet onDismiss and calls flushPending there.
+  const afterClose = (afterDismiss, run) => { closeDetail(); if (afterDismiss) pendingAction.current = run; else run(); };
+  const flushPending = () => { const run = pendingAction.current; pendingAction.current = null; run?.(); };
+  const startFace = (row, afterDismiss = false) => { markRead(row); afterClose(afterDismiss, face.start); };
+  const openRoute = (route, afterDismiss = false) => afterClose(afterDismiss, () => router.push(route));
   const canStartFace = row => row?.type === 'face_verification' && face.required && row.status !== 'completed';
   const allRead = async () => { setBusy(true); try { await inbox.markAll(); } catch { report(); } finally { setBusy(false); } };
   const loadMore = () => { if (inbox.hasMore && !inbox.loadingMore) inbox.loadMore().catch(report); };
 
-  return { inbox, face, sections, unreadOnly, setUnreadOnly, detail, detailOpen: !!detailId, busy, open, markRead, closeDetail, startFace, openRoute, canStartFace, allRead, loadMore };
+  return { inbox, face, now, sections, unreadOnly, setUnreadOnly, detail, detailOpen: !!detailId, busy, open, markRead, closeDetail, flushPending, startFace, openRoute, canStartFace, allRead, loadMore };
 }

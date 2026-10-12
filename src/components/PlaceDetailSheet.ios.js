@@ -17,7 +17,6 @@ export default function PlaceDetailSheet({ spot, visible, onClose, onSchedule, o
   const pendingAction = useRef(null);
   if (spot) lastSpot.current = spot;
   const current = spot || lastSpot.current;
-  const contentWidth = Math.min(width, 600) - 40;
   // Open the next native presentation only after this sheet has fully dismissed.
   const runAction = (callback) => {
     if (pendingAction.current || !callback) return;
@@ -26,9 +25,9 @@ export default function PlaceDetailSheet({ spot, visible, onClose, onSchedule, o
   };
   return <Host colorScheme={isDark ? 'dark' : 'light'} style={{ position: 'absolute', width: 0, height: 0 }}>
     <BottomSheet isPresented={Boolean(visible && current)} onIsPresentedChange={(presented) => { if (!presented) onClose(); }}
-      onDismiss={() => { const action = pendingAction.current; pendingAction.current = null; action?.(); }}
-      modifiers={[presentationDetents(['large']), presentationDragIndicator('visible')]}>
-      <VStack spacing={0} modifiers={[background(colors.card), frame({ maxWidth: Infinity, maxHeight: Infinity })]}>
+      onDismiss={() => { const action = pendingAction.current; pendingAction.current = null; action?.(); }}>
+      {/* Presentation modifiers only take effect on the sheet's content, not on BottomSheet. */}
+      <VStack spacing={0} modifiers={[background(colors.card), frame({ maxWidth: Infinity, maxHeight: Infinity }), presentationDetents(['large']), presentationDragIndicator('visible')]}>
         <HStack modifiers={[padding({ horizontal: 20, top: 16, bottom: 10 }), frame({ maxWidth: Infinity })]}>
           <Text modifiers={[font({ textStyle: 'headline', weight: 'bold' }), foregroundStyle(colors.ink)]}>รายละเอียดสถานที่</Text>
           <Spacer />
@@ -37,9 +36,10 @@ export default function PlaceDetailSheet({ spot, visible, onClose, onSchedule, o
         </HStack>
         <ScrollView>
           <VStack alignment="leading" spacing={20} modifiers={[padding({ horizontal: 20, bottom: 24 }), frame({ maxWidth: 600, alignment: 'leading' })]}>
-            {/* Fixed SwiftUI frame: with matchContents the sheet laid out the description and
-                detail card before the photo's RN size arrived, so they covered half the photo. */}
-            <ZStack modifiers={[frame({ width: contentWidth, height: 210 })]}>
+            {/* Fixed-height SwiftUI frame: with matchContents the sheet laid out the description and
+                detail card before the photo's RN size arrived, so they covered half the photo.
+                Width and height are separate frames because frame() ignores maxWidth once height is set. */}
+            <ZStack modifiers={[frame({ maxWidth: Infinity }), frame({ height: 210 })]}>
               <RNHostView matchContents={false}><View style={{ flex: 1, borderRadius: 20, overflow: 'hidden' }}><PlacePhoto spot={current} style={StyleSheet.absoluteFill} /></View></RNHostView>
             </ZStack>
             <Text modifiers={[font({ textStyle: 'title2', weight: 'bold' }), foregroundStyle(colors.ink), fixedSize({ horizontal: false, vertical: true }), textSelection(true)]}>{current?.name || 'สถานที่นัดหมาย'}</Text>

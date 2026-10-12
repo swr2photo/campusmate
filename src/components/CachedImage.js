@@ -22,7 +22,8 @@ export default function CachedImage(props) {
   return <CachedImageSource key={sourceId} {...props} sourceId={sourceId} imageIdentity={identity} />;
 }
 
-function CachedImageSource({ sourceId, imageIdentity, onError, onLoad, ...props }) {
+// onFinalError fires only once the automatic retries are exhausted.
+function CachedImageSource({ sourceId, imageIdentity, onError, onFinalError, onLoad, ...props }) {
   const generation = useRef(cacheGeneration);
   const [attempt, setAttempt] = useState(0);
   const failed = useRef(false);
@@ -68,7 +69,7 @@ function CachedImageSource({ sourceId, imageIdentity, onError, onLoad, ...props 
         if (attempt < 2) {
           clearTimeout(timer.current);
           timer.current = setTimeout(() => setAttempt((value) => value + 1), 600 * (attempt + 1));
-        }
+        } else onFinalError?.(event);
         onError?.(event);
       }}
     />

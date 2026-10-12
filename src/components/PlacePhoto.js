@@ -1,6 +1,6 @@
 import Text from './AppText';
-import React, { useState } from 'react';
-import { Linking, Pressable, StyleSheet, View } from 'react-native';
+import React, { useSyncExternalStore } from 'react';
+import { AppState, Linking, Pressable, StyleSheet, View } from 'react-native';
 import Image from './CachedImage';
 import { useAppFeed } from '../context/AppContext';
 import { useTheme } from '../theme';
@@ -57,6 +57,31 @@ const CATEGORY_DEFAULT_PHOTOS = {
 
 const CAMPUS_FALLBACK_PHOTO = require('../assets/images/campus/DSC_1217.jpg');
 
+// Remote URLs that still failed after CachedImage's retries. Shared so every
+// PlacePhoto and PlacePhotoCredit for a photo agree on whether it is shown.
+// Only a return to the foreground clears it, so a broken URL never flickers.
+const failedUris = new Set();
+const failureListeners = new Set();
+let appStateSubscription = null;
+function notifyFailures() { failureListeners.forEach((listener) => listener()); }
+function setUriFailed(uri) {
+  if (!uri || failedUris.has(uri)) return;
+  failedUris.add(uri);
+  notifyFailures();
+}
+function subscribeFailures(listener) {
+  failureListeners.add(listener);
+  if (!appStateSubscription) {
+    appStateSubscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && failedUris.size) { failedUris.clear(); notifyFailures(); }
+    });
+  }
+  return () => failureListeners.delete(listener);
+}
+function useUriFailed(uri) {
+  return useSyncExternalStore(subscribeFailures, () => Boolean(uri) && failedUris.has(uri));
+}
+
 function usePlaceSpot(spot) {
   const { campusSpots = [] } = useAppFeed();
   return campusSpots.find((entry) => entry.id === spot?.id) || spot;
@@ -80,11 +105,8 @@ export default function PlacePhoto({ spot, style, contentFit = 'cover', showCred
       ? CATEGORY_DEFAULT_PHOTOS[current.category]
       : CAMPUS_FALLBACK_PHOTO);
 
-  // Stay on the bundled photo once a URL fails. Clearing this when the fallback
-  // loads would retry the broken URL forever and the photo would flicker.
-  const [failedUri, setFailedUri] = useState(null);
-
-  const isUsingRemote = Boolean(uri && failedUri !== uri);
+  const failed = useUriFailed(uri);
+  const isUsingRemote = Boolean(uri) && !failed;
   const activeSource = isUsingRemote ? { uri } : localDefault;
 
   return (
@@ -96,7 +118,7 @@ export default function PlacePhoto({ spot, style, contentFit = 'cover', showCred
         contentFit={contentFit}
         placeholderContentFit={contentFit}
         style={StyleSheet.absoluteFill}
-        onError={isUsingRemote ? () => setFailedUri(uri) : undefined}
+        onFinalError={isUsingRemote ? () => setUriFailed(uri) : undefined}
       />
       {showCredit && photo?.credit && isUsingRemote ? (
         <Pressable
@@ -117,7 +139,10 @@ export default function PlacePhoto({ spot, style, contentFit = 'cover', showCred
 export function PlacePhotoCredit({ spot, style }) {
   const { colors } = useTheme();
   const photo = usePlaceSpot(spot)?.placePhoto;
-  if (!photo?.credit || !(photo.thumbnailUrl || photo.url)) return null;
+  const uri = photo?.thumbnailUrl || photo?.url;
+  // Don't credit a remote photo that fell back to a bundled one.
+  const failed = useUriFailed(uri);
+  if (!photo?.credit || !uri || failed) return null;
   return (
     <Pressable
       accessibilityRole="link"

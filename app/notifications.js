@@ -15,9 +15,8 @@ const softFill = color => withAlpha(color, 0.12);
 // iOS renders notifications.ios.js (SwiftUI); this page serves Android.
 export default function NotificationsRoute() {
   const { colors, isDark } = useTheme(), insets = useSafeAreaInsets();
-  const { inbox, face, sections, unreadOnly, setUnreadOnly, detail, detailOpen, busy, open, closeDetail, startFace, openRoute, canStartFace, allRead, loadMore } = useNotificationsPage();
+  const { inbox, face, now, sections, unreadOnly, setUnreadOnly, detail, detailOpen, busy, open, closeDetail, startFace, openRoute, canStartFace, allRead, loadMore } = useNotificationsPage();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
-  const now = Date.now();
 
   const renderItem = ({ item, index, section }) => {
     const kind = kindFor(item.type), tint = colors[kind.tint], unread = !item.readAt;
@@ -33,15 +32,16 @@ export default function NotificationsRoute() {
         {canStartFace(item) ? <PrimaryButton compact iconName="person.crop.circle.badge.checkmark" label="เริ่มยืนยันใบหน้า" onPress={() => startFace(item)} /> : null}
       </View>;
     }
-    const first = index === 0, last = index === section.data.length - 1;
+    const first = index === 0, last = index === section.data.length - 1, time = timeLabel(timestampMillis(item.createdAt), now);
+    const label = [unread ? 'ยังไม่อ่าน' : '', kind.label, item.title, item.body, time, item.status === 'completed' ? 'สำเร็จแล้ว' : ''].filter(Boolean).join(' ');
     return <View style={[styles.slice, first && styles.sliceFirst, last && styles.sliceLast]}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`${unread ? 'ยังไม่อ่าน ' : ''}${kind.label} ${item.title} ${item.body || ''}`}
+      <Pressable accessibilityRole="button" accessibilityLabel={label}
         onPress={() => open(item)} style={({ pressed }) => [styles.row, unread && styles.rowUnread, pressed && styles.rowPressed]}>
         <View style={[styles.icon, { backgroundColor: softFill(tint) }]}><FeatureIcon name={kind.icon} size={20} color={tint} /></View>
         <View style={styles.copy}>
           <View style={styles.meta}>
             <AppText style={[styles.kind, { color: tint }]} numberOfLines={1}>{kind.label}</AppText>
-            <AppText style={styles.time}>{timeLabel(timestampMillis(item.createdAt), now)}</AppText>
+            <AppText style={styles.time}>{time}</AppText>
             {unread ? <View style={styles.dot} /> : null}
           </View>
           <AppText style={[styles.title, unread && styles.titleUnread]} numberOfLines={2}>{item.title}</AppText>
@@ -83,8 +83,10 @@ export default function NotificationsRoute() {
         <View style={[styles.emptyIcon, { backgroundColor: softFill(unreadOnly ? colors.green : colors.primary) }]}>
           <FeatureIcon name={unreadOnly ? 'checkmark.circle.fill' : 'bell.fill'} size={34} color={unreadOnly ? colors.green : colors.primary} />
         </View>
-        <AppText style={styles.emptyTitle}>{unreadOnly ? 'อ่านครบแล้ว' : 'ยังไม่มีแจ้งเตือน'}</AppText>
-        <AppText style={styles.emptyText}>{unreadOnly ? 'ไม่มีแจ้งเตือนที่ยังไม่ได้อ่าน' : 'เมื่อมีคนถูกใจ ส่งข้อความ หรือมีความเคลื่อนไหวของตี้และนัดหมาย จะแสดงที่นี่'}</AppText>
+        {/* Only the newest page is loaded; older unread rows may still be on the server. */}
+        <AppText style={styles.emptyTitle}>{unreadOnly ? (inbox.hasMore ? 'ยังไม่มีรายการที่ยังไม่อ่านในประวัติที่โหลดไว้' : 'อ่านครบแล้ว') : 'ยังไม่มีแจ้งเตือน'}</AppText>
+        <AppText style={styles.emptyText}>{unreadOnly ? (inbox.hasMore ? 'โหลดเพิ่มเติมเพื่อตรวจรายการก่อนหน้า' : 'ไม่มีแจ้งเตือนที่ยังไม่ได้อ่าน') : 'เมื่อมีคนถูกใจ ส่งข้อความ หรือมีความเคลื่อนไหวของตี้และนัดหมาย จะแสดงที่นี่'}</AppText>
+        {unreadOnly && inbox.hasMore ? (inbox.loadingMore ? <ActivityIndicator color={colors.primary} /> : <Pressable accessibilityRole="button" onPress={loadMore} style={({ pressed }) => [styles.loadMore, pressed && styles.pressed]}><AppText style={styles.link}>โหลดเพิ่มเติม</AppText></Pressable>) : null}
         {unreadOnly ? <Pressable accessibilityRole="button" onPress={() => setUnreadOnly(false)} style={styles.headerAction}><AppText style={styles.link}>ดูแจ้งเตือนทั้งหมด</AppText></Pressable> : null}
       </>}</View>}
       ListFooterComponent={sections.length ? <View style={styles.footer}>{inbox.loadingMore ? <ActivityIndicator color={colors.primary} /> : inbox.hasMore
@@ -159,7 +161,7 @@ function createStyles(c, isDark) {
     pressed: { opacity: 0.7 },
     empty: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 72, paddingHorizontal: spacing.xl, gap: spacing.md },
     emptyIcon: { width: 76, height: 76, borderRadius: 38, alignItems: 'center', justifyContent: 'center', marginBottom: spacing.xs },
-    emptyTitle: { fontSize: 18, fontWeight: '700', color: c.ink },
+    emptyTitle: { fontSize: 18, fontWeight: '700', color: c.ink, textAlign: 'center' },
     emptyText: { fontSize: 14, lineHeight: 21, color: c.inkMuted, textAlign: 'center', maxWidth: 300 },
     link: { fontSize: 14, fontWeight: '600', color: c.primary },
     footer: { paddingTop: spacing.xl, alignItems: 'center' },

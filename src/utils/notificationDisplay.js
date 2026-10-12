@@ -43,12 +43,15 @@ function sectionTitle(row, today) {
 
 // Rows arrive newest first, so consecutive grouping yields one section per day.
 export function groupInboxRows(rows, unreadOnly) {
-  const today = startOfDay(Date.now()), sections = [];
+  const today = startOfDay(Date.now()), sections = [], used = new Set();
   for (const row of rows) {
     if (unreadOnly && row.readAt) continue;
     const title = sectionTitle(row, today), last = sections.at(-1);
-    if (last?.title === title) last.data.push(row);
-    else sections.push({ key: `${sections.length}:${title}`, title, data: [row] });
+    if (last?.title === title) { last.data.push(row); continue; }
+    // Day titles are unique in newest-first order; a stable key keeps rows mounted
+    // when a new section appears above them.
+    sections.push({ key: used.has(title) ? `${title}:${sections.length}` : title, title, data: [row] });
+    used.add(title);
   }
   return sections;
 }

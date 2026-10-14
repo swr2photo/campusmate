@@ -13,7 +13,7 @@ function service(realOutbox = false) {
   let acknowledge;
   const pendingWrite = new Promise(resolve => { acknowledge = resolve; });
   const storage = { async getItem(key) { return disk.get(key) ?? null; }, async setItem(key, value) { disk.set(key, value); }, async removeItem(key) { disk.delete(key); } };
-  const context = vm.createContext({ console, Date, Promise, AppState: appState,
+  const context = vm.createContext({ RUST_BACKEND: false, console, Date, Promise, AppState: appState,
     AsyncStorage: storage, createNotificationReadOutbox: realOutbox ? createNotificationReadOutbox : () => ({ flush: async () => {}, enqueue: async () => {}, subscribe: () => () => {}, clear: async () => {} }),
     updateDoc: (reference, value) => { writes.push({ reference, value }); return pendingWrite; }, serverTimestamp: () => 'SERVER_TIMESTAMP',
     setInterval: callback => { timers.add(callback); return callback; }, clearInterval: callback => timers.delete(callback),

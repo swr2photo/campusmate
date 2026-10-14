@@ -1,0 +1,246 @@
+[
+  {
+    "Result": "PASS",
+    "EvaluationResults": [
+      {
+        "EvalActionName": "rekognition:CreateFaceLivenessSession",
+        "EvalResourceName": "*",
+        "EvalDecision": "allowed",
+        "MatchedStatements": [
+          {
+            "SourcePolicyId": "role_campusmate-backend_CampusMateFaceVerificationThailand",
+            "SourcePolicyType": "IAM Policy",
+            "StartPosition": {
+              "Line": 3,
+              "Column": 17
+            },
+            "EndPosition": {
+              "Line": 16,
+              "Column": 6
+            }
+          }
+        ],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:GetFaceLivenessSessionResults",
+        "EvalResourceName": "*",
+        "EvalDecision": "allowed",
+        "MatchedStatements": [
+          {
+            "SourcePolicyId": "role_campusmate-backend_CampusMateFaceVerificationThailand",
+            "SourcePolicyType": "IAM Policy",
+            "StartPosition": {
+              "Line": 3,
+              "Column": 17
+            },
+            "EndPosition": {
+              "Line": 16,
+              "Column": 6
+            }
+          }
+        ],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:CompareFaces",
+        "EvalResourceName": "*",
+        "EvalDecision": "allowed",
+        "MatchedStatements": [
+          {
+            "SourcePolicyId": "role_campusmate-backend_CampusMateFaceVerificationThailand",
+            "SourcePolicyType": "IAM Policy",
+            "StartPosition": {
+              "Line": 3,
+              "Column": 17
+            },
+            "EndPosition": {
+              "Line": 16,
+              "Column": 6
+            }
+          }
+        ],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:StartFaceLivenessSession",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      }
+    ],
+    "CheckedAtUtc": "2026-10-12T15:48:19.2498656+00:00",
+    "RequestedRegion": "ap-southeast-7",
+    "Role": "campusmate-backend"
+  },
+  {
+    "Result": "PASS",
+    "EvaluationResults": [
+      {
+        "EvalActionName": "rekognition:CreateFaceLivenessSession",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:GetFaceLivenessSessionResults",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:CompareFaces",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:StartFaceLivenessSession",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      }
+    ],
+    "CheckedAtUtc": "2026-10-12T15:48:21.6089913+00:00",
+    "RequestedRegion": "ap-southeast-2",
+    "Role": "campusmate-backend"
+  },
+  {
+    "Result": "PASS",
+    "EvaluationResults": [
+      {
+        "EvalActionName": "rekognition:CreateFaceLivenessSession",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:GetFaceLivenessSessionResults",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:CompareFaces",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:StartFaceLivenessSession",
+        "EvalResourceName": "*",
+        "EvalDecision": "allowed",
+        "MatchedStatements": [
+          {
+            "SourcePolicyId": "role_campusmate-liveness-stream_CampusMateFaceVerificationThailand",
+            "SourcePolicyType": "IAM Policy",
+            "StartPosition": {
+              "Line": 3,
+              "Column": 17
+            },
+            "EndPosition": {
+              "Line": 12,
+              "Column": 6
+            }
+          }
+        ],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      }
+    ],
+    "CheckedAtUtc": "2026-10-12T15:48:23.8320184+00:00",
+    "RequestedRegion": "ap-southeast-7",
+    "Role": "campusmate-liveness-stream"
+  },
+  {
+    "Result": "PASS",
+    "EvaluationResults": [
+      {
+        "EvalActionName": "rekognition:CreateFaceLivenessSession",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:GetFaceLivenessSessionResults",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:CompareFaces",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      },
+      {
+        "EvalActionName": "rekognition:StartFaceLivenessSession",
+        "EvalResourceName": "*",
+        "EvalDecision": "implicitDeny",
+        "MatchedStatements": [],
+        "MissingContextValues": [],
+        "OrganizationsDecisionDetail": {
+          "AllowedByOrganizations": true
+        }
+      }
+    ],
+    "CheckedAtUtc": "2026-10-12T15:48:26.0353020+00:00",
+    "RequestedRegion": "ap-southeast-2",
+    "Role": "campusmate-liveness-stream"
+  }
+]

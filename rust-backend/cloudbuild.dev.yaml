@@ -1,0 +1,38 @@
+# Development loop: formats, resolves new dependencies into Cargo.lock, then
+# tests against a disposable PostgreSQL. The formatted sources and lockfile are
+# uploaded before tests so they can be synced back even when a test fails.
+# Creates no production database or service.
+steps:
+  - id: postgres
+    name: gcr.io/cloud-builders/docker
+    args: ['run', '-d', '--name', 'postgres', '--network', 'cloudbuild', '-e', 'POSTGRES_USER=integration', '-e', 'POSTGRES_PASSWORD=disposable-ci-only', '-e', 'POSTGRES_DB=campusmate_test', 'postgres:18-bookworm']
+  - id: format
+    name: rust:1.99-bookworm
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        rustup component add rustfmt
+        cargo fmt
+        cargo metadata --format-version 1 > /dev/null
+        tar czf /workspace/synced.tgz Cargo.toml Cargo.lock src tests
+  - id: upload
+    name: gcr.io/cloud-builders/gsutil
+    args: ['cp', '/workspace/synced.tgz', 'gs://campusmate-7f1ab_cloudbuild/dev-sync/$BUILD_ID.tgz']
+  - id: test
+    name: rust:1.99-bookworm
+    entrypoint: bash
+    env:
+      - DATABASE_URL=postgres://integration:disposable-ci-only@postgres:5432/campusmate_test?sslmode=disable
+      - CARGO_TERM_COLOR=never
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        rustup component add clippy
+        cargo clippy --all-targets -- -D warnings
+        cargo test --all-targets --no-fail-fast
+options:
+  machineType: E2_HIGHCPU_32
+timeout: 2400s

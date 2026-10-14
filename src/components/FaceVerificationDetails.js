@@ -1,6 +1,7 @@
 import Text from './AppText';
 import React from 'react';
-import { ActivityIndicator, Image, Pressable, SafeAreaView, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import FeatureIcon from './FeatureIcon';
 import { useTheme } from '../theme';
 

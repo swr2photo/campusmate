@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { MAX_GALLERY_PHOTOS } from '../src/data/profilePhotos.js';
 
 const source = readFileSync(new URL('../src/context/AppContext.js', import.meta.url), 'utf8');
 const persistSource = source.slice(source.indexOf('async function persistProfileToFirestore('), source.indexOf('async function persistLikeResponse('));
@@ -13,6 +14,7 @@ function fixture({ error, queued = false } = {}) {
   const calls = { uploaded: [], profiles: [], states: [], accounts: [] };
   const initial = { id: 'owner', name: 'Before', avatarUri: 'https://example.test/avatar.jpg', avatarRevision: 123 };
   const context = vm.createContext({
+    MAX_GALLERY_PHOTOS,
     profile: initial,
     user: { id: 'owner', email: 'owner@example.test' },
     withProfileDefaults: (value) => value,
@@ -40,13 +42,13 @@ test('a rejected profile save leaves profile state and account cache unchanged',
   assert.equal(f.calls.accounts.length, 0);
 });
 
-test('profile save publishes uploaded URLs and caps gallery uploads at five', async () => {
+test('profile save publishes uploaded URLs and caps gallery uploads at eight', async () => {
   const f = fixture();
-  const saved = await f.save({ name: ' After ', avatarUri: 'file:///avatar.jpg', gallery: [null, {}, ...Array.from({ length: 7 }, (_, i) => `file:///photo-${i}.jpg`)] });
+  const saved = await f.save({ name: ' After ', avatarUri: 'file:///avatar.jpg', gallery: [null, {}, ...Array.from({ length: 12 }, (_, i) => `file:///photo-${i}.jpg`)] });
   assert.equal(saved.name, 'After');
   assert.equal(saved.avatarUri, 'https://example.test/new-avatar.jpg');
-  assert.equal(saved.gallery.length, 5);
-  assert.equal(f.calls.uploaded.length, 5);
+  assert.equal(saved.gallery.length, 8);
+  assert.equal(f.calls.uploaded.length, 8);
   assert.ok(f.calls.uploaded.every((call) => call.uid === 'owner'));
   assert.equal(f.calls.states[0], saved);
   assert.equal(f.calls.profiles[0].gallery[0], 'https://example.test/upload-1.jpg');

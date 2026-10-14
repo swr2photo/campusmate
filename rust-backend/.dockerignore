@@ -1,0 +1,16 @@
+*
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!tests/
+!tests/fixtures/
+!tests/fixtures/firebase-rs256.json
+!migrations/
+!migrations/**
+!web/
+!web/**
+!operations/
+!operations/runtime-grants.sql
+!operations/neon-runtime-logins.sql
+!Dockerfile

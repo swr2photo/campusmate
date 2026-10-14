@@ -1,0 +1,8 @@
+{
+  "expo": {
+    "name": "CampusMate Liveness Compile Host",
+    "slug": "campusmate-liveness-compile-host",
+    "version": "0.1.0",
+    "android": { "package": "com.campusmate.liveness.compilehost" }
+  }
+}

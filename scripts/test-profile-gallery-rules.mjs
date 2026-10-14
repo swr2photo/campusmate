@@ -11,19 +11,19 @@ const environment = await initializeTestEnvironment({
 try {
   const owner = environment.authenticatedContext('gallery-owner').firestore();
   const other = environment.authenticatedContext('gallery-other').firestore();
-  const urls = Array.from({ length: 5 }, (_, i) => `https://example.test/photo-${i}.jpg`);
+  const urls = Array.from({ length: 8 }, (_, i) => `https://example.test/photo-${i}.jpg`);
   const base = { id: 'gallery-owner', name: 'Gallery owner', avatarRevision: 123, updatedAt: serverTimestamp() };
   for (const collection of ['users', 'profiles']) {
     const profile = collection === 'profiles' ? { ...base, isDiscoverable: true } : base;
     const reference = doc(owner, collection, 'gallery-owner');
     await assertSucceeds(setDoc(reference, { ...profile, gallery: urls }));
-    await assertFails(setDoc(reference, { ...profile, gallery: [...urls, 'https://example.test/photo-6.jpg'] }));
+    await assertFails(setDoc(reference, { ...profile, gallery: [...urls, 'https://example.test/photo-9.jpg'] }));
     await assertFails(setDoc(reference, { ...profile, gallery: 'invalid' }));
     await assertFails(setDoc(reference, { ...profile, avatarRevision: -1 }));
     await assertFails(setDoc(reference, { ...profile, avatarRevision: 'invalid' }));
     await assertFails(setDoc(doc(other, collection, 'gallery-owner'), { ...profile, gallery: [] }));
     await assertSucceeds(setDoc(reference, { ...profile, gallery: [] }));
-    console.log(`PASS ${collection}: owner saves/removes gallery; six photos, wrong type and other writers denied`);
+    console.log(`PASS ${collection}: owner saves/removes gallery; nine photos, wrong type and other writers denied`);
   }
   await assertFails(getDoc(doc(other, 'profiles', 'gallery-owner')));
   await assertFails(getDoc(doc(other, 'users', 'gallery-owner')));

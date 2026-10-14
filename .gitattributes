@@ -1,0 +1,3 @@
+# Keep LF in every checkout. EAS uploads the working tree, and its Linux
+# builders reject CRLF patch files (pnpm) and scripts such as android/gradlew.
+* text=auto eol=lf

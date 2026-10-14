@@ -1,12 +1,9 @@
 import Text from '../components/AppText';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, BackHandler, Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { router, Stack, useNavigation } from 'expo-router';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { cancelAnimation, Easing, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
-import { scheduleOnRN } from 'react-native-worklets';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { project, rubberband } from '../utils/motion';
+import { finishMatchingFilters } from '../utils/matchingFilterNavigation';
 import { FACULTIES } from '../data/faculties';
 import {
   MATCHING_ACTIVITY_OPTIONS, MATCHING_AGE_MAX, MATCHING_AGE_MIN,
@@ -22,7 +19,7 @@ import { FilterSlider, FilterSwitch } from '../components/filter-controls';
 import AgeRangeSlider from '../components/age-range-slider';
 import { useEntitlement } from '../context/MembershipContext';
 import { FEATURE_ADVANCED_FILTERS } from '../data/plans';
-import { spacing, useTheme } from '../theme';
+import { useTheme } from '../theme';
 
 function optionSummary(options, state, allLabel = 'ทั้งหมด') {
   const selected = getSelectedMatchingValues(options, state);
@@ -69,9 +66,16 @@ export default function MatchingFiltersScreen() {
   }, []);
 
   useEffect(() => {
+    if (Platform.OS !== 'android') return undefined;
+    // Let the native stack handle ordinary Back; block only an in-flight save.
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => submitLock.current);
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
     // An optimistic profile update or entitlement refresh must not overwrite
     // an edited draft, especially while a failed save is waiting for a retry.
-    if (hydratedProfileId.current === profile?.id && dirty.current) return;
+    if (submitLock.current || (hydratedProfileId.current === profile?.id && dirty.current)) return;
     hydratedProfileId.current = profile?.id;
     dirty.current = false;
     // Keep stored Plus values in the draft even while entitlement is loading.
@@ -136,6 +140,7 @@ export default function MatchingFiltersScreen() {
     if (submitLock.current || !mounted.current) return;
     submitLock.current = true;
     setSaving(true); setSaveError(null);
+    let closing = false;
     try {
       const nextActivities = getSelectedMatchingValues(MATCHING_ACTIVITY_OPTIONS, activities);
       const min = normalizeMatchingAge(Math.round(ageMin), MATCHING_AGE_MIN);
@@ -155,13 +160,19 @@ export default function MatchingFiltersScreen() {
         years: getSelectedMatchingValues(MATCHING_YEAR_OPTIONS, years),
       });
       if (!mounted.current || !navigation.isFocused()) return;
-      if (router.canGoBack()) router.back();
-      else router.replace('/home');
+      closing = true;
+      finishMatchingFilters(router);
     } catch (error) {
+      closing = false;
       if (mounted.current) setSaveError(error?.message || 'บันทึกไม่สำเร็จ ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง');
     } finally {
-      submitLock.current = false;
-      if (mounted.current) setSaving(false);
+      // Android native-stack retains this subtree during dismissal. Changing
+      // pointerEvents back to auto would flatten/re-parent the ScrollView while
+      // its old parent is retained by the transition and crash Fabric.
+      if (!closing) {
+        submitLock.current = false;
+        if (mounted.current) setSaving(false);
+      }
     }
   };
   const openPopup = (key, paid = false) => {
@@ -192,7 +203,7 @@ export default function MatchingFiltersScreen() {
   }));
   const header = <SheetHeader colors={colors} saving={saving} onClose={closeSheet} onSave={saveSearchSettings} />;
   const body = <>
-    <View style={styles.body} pointerEvents={saving ? 'none' : 'auto'}>
+    <View collapsable={false} style={styles.body} pointerEvents={saving ? 'none' : 'auto'}>
       <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={[styles.content, { paddingBottom: Math.max(32, insets.bottom + 24) }]}
         showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={styles.scroll}>
         <Text style={[styles.intro, { color: colors.inkMuted }]}>เลือกคนที่คุณอยากเจอ และกิจกรรมที่อยากทำด้วยกัน</Text>
@@ -247,9 +258,7 @@ export default function MatchingFiltersScreen() {
   </>;
   return <>
     <Stack.Screen options={{ gestureEnabled: Platform.OS === 'ios' && !saving }} />
-    {Platform.OS === 'ios'
-      ? <View style={[styles.screen, { backgroundColor: colors.canvas }]}>{header}{body}</View>
-      : <DismissibleSheet colors={colors} onClose={closeSheet} dismissDisabled={saving} header={header}>{body}</DismissibleSheet>}
+    <View style={[styles.screen, { backgroundColor: colors.canvas, paddingTop: Platform.OS === 'android' ? insets.top : 0 }]}>{header}{body}</View>
   </>;
 }
 
@@ -312,116 +321,13 @@ function SelectionPopup({ config, onClose }) {
 function PopupOption({ label, active, colors, onPress, single }) {
   return <Pressable accessibilityRole={single ? 'radio' : 'checkbox'} accessibilityState={{ checked: active }} onPress={onPress} style={({ pressed }) => [styles.popupOption, { borderBottomColor: colors.line, backgroundColor: active ? colors.primarySoft : colors.card }, pressed && styles.pressed]}><Text style={[styles.popupOptionText, { color: active ? colors.primary : colors.ink }]}>{label}</Text>{active ? <FeatureIcon name="checkmark" size={18} color={colors.primary} /> : <View style={{ width: 18 }} />}</Pressable>;
 }
-function DismissibleSheet({ children, colors, onClose, dismissDisabled = false, header }) {
-  const insets = useSafeAreaInsets();
-  const translateY = useSharedValue(600);
-  const fadeAnim = useSharedValue(0);
-  const dragStartY = useSharedValue(0);
-  const isClosingRef = useRef(false);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  const disabledRef = useRef(dismissDisabled);
-  disabledRef.current = dismissDisabled;
-
-  const unlockClose = useCallback(() => {
-    isClosingRef.current = false;
-  }, []);
-
-  const finishClose = useCallback(() => {
-    closeRef.current?.();
-    isClosingRef.current = false;
-  }, []);
-
-  const closeWithAnimation = useCallback(() => {
-    if (isClosingRef.current || disabledRef.current) return;
-    isClosingRef.current = true;
-    translateY.set(withSpring(700, { duration: 300, dampingRatio: 0.8 }, (finished) => {
-      if (finished) scheduleOnRN(finishClose);
-      else scheduleOnRN(unlockClose);
-    }));
-    fadeAnim.set(withTiming(0, { duration: 200, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
-  }, [fadeAnim, finishClose, translateY, unlockClose]);
-
-  useEffect(() => {
-    isClosingRef.current = false;
-    translateY.set(600);
-    fadeAnim.set(0);
-    translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
-    fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
-  }, [fadeAnim, translateY]);
-
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      closeWithAnimation();
-      return true;
-    });
-    return () => sub.remove();
-  }, [closeWithAnimation]);
-
-  const panGesture = useMemo(() => Gesture.Pan()
-    .enabled(!dismissDisabled)
-    .onStart(() => {
-      cancelAnimation(translateY);
-      dragStartY.set(translateY.get());
-      scheduleOnRN(unlockClose);
-    })
-    .onUpdate((event) => {
-      const next = dragStartY.get() + event.translationY;
-      if (next > 0) translateY.set(next);
-      else translateY.set(rubberband(next, 600));
-    })
-    .onEnd((event) => {
-      const projected = translateY.get() + project(event.velocityY);
-      if (projected > 70 || event.velocityY > 500) {
-        scheduleOnRN(closeWithAnimation);
-      } else {
-        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8, velocity: event.velocityY }));
-        fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
-      }
-    })
-    .onFinalize((_, success) => {
-      if (!success) {
-        translateY.set(withSpring(0, { duration: 300, dampingRatio: 0.8 }));
-        fadeAnim.set(withTiming(1, { duration: 180, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
-      }
-    }), [closeWithAnimation, dismissDisabled, dragStartY, fadeAnim, translateY, unlockClose]);
-
-  const fadeStyle = useAnimatedStyle(() => {
-    const dragged = translateY.get();
-    const dragFade = dragged > 0 ? Math.max(0.2, 1 - dragged / 420) : 1;
-    return { opacity: fadeAnim.get() * dragFade };
-  });
-  const sheetStyle = useAnimatedStyle(() => ({ transform: [{ translateY: translateY.get() }] }));
-
-  return (
-    <View style={styles.overlay}>
-      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(16,24,40,0.42)' }, fadeStyle]}>
-        <Pressable accessibilityLabel="ปิดแผง" disabled={dismissDisabled} onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
-      </Animated.View>
-      <Animated.View
-        style={[
-          styles.jsSheet,
-          { backgroundColor: colors.canvas, paddingBottom: Math.max(insets.bottom, spacing.sm) },
-          sheetStyle,
-        ]}
-      >
-        <GestureDetector gesture={panGesture}>
-          <View style={styles.grabberHit}><View style={[styles.grabber, { backgroundColor: colors.inkMuted }]} /></View>
-        </GestureDetector>
-        {header}
-        {children}
-      </Animated.View>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   screen: { flex: 1, width: '100%', borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
   body: { flex: 1 },
   scroll: { flex: 1 },
   content: { width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 18, paddingTop: 18, gap: 12 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth },
-  headerButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  headerButton: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
   confirmButton: { borderRadius: 22 },
   headerTitle: { flex: 1, textAlign: 'center', fontSize: 18, fontWeight: '700' },
   intro: { fontSize: 13, lineHeight: 22, paddingHorizontal: 2, marginBottom: 4 },
@@ -459,8 +365,4 @@ const styles = StyleSheet.create({
   popupList: { flexShrink: 1 },
   popupOption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 52, paddingHorizontal: 20, paddingVertical: 13, borderBottomWidth: StyleSheet.hairlineWidth },
   popupOptionText: { flex: 1, fontSize: 15, lineHeight: 24 },
-  overlay: { flex: 1, justifyContent: 'flex-end' },
-  jsSheet: { width: '100%', height: '92%', borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
-  grabberHit: { alignItems: 'center', justifyContent: 'center', minHeight: 24, paddingTop: 10, paddingBottom: 6 },
-  grabber: { width: 38, height: 4, borderRadius: 2 },
 });

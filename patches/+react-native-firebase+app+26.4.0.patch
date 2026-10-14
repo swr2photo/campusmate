@@ -1,0 +1,15 @@
+diff --git a/ios_config.sh b/ios_config.sh
+index a35f763c73261eb1cc2702aff91dacf37b3e64f4..e2e822e2988b3ad22b07a9413a2dacffadf548a7 100644
+--- a/ios_config.sh
++++ b/ios_config.sh
+@@ -87,7 +87,9 @@ while true; do
+ done
+ 
+ if [[ ${_SEARCH_RESULT} ]]; then
+-  _JSON_OUTPUT_RAW=$(cat "${_SEARCH_RESULT}")
++  # Only the react-native section is read below. Extract it so other sections
++  # (the hosting CSP has single-quoted 'self') never reach the inline Ruby.
++  _JSON_OUTPUT_RAW=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], "rb")); print(json.dumps({k: d[k] for k in ["react-native"] if k in d}))' "${_SEARCH_RESULT}")
+   if ! _RN_ROOT_EXISTS=$(ruby -Ku -e "require 'json'; output=JSON.parse('$_JSON_OUTPUT_RAW'); puts output[$_JSON_ROOT]"); then
+     echo "error: Failed to parse firebase.json, check for syntax errors."
+     exit 1

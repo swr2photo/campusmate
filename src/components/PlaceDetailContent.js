@@ -55,6 +55,6 @@ const styles = StyleSheet.create({
   rowLabel: { fontSize: 12 },
   actions: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 20, paddingTop: 12, gap: 8 },
   secondaryActions: { flexDirection: 'row', gap: 8 },
-  action: { flexGrow: 1, flexBasis: 0, minHeight: 48, borderRadius: 14, paddingHorizontal: 12, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  action: { flexGrow: 1, flexBasis: 0, minHeight: 48, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   actionLabel: { fontSize: 14, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
 });

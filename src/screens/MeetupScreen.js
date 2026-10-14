@@ -333,7 +333,9 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const header = (
     <View>
       <TourTarget id="meetup.party" scrollRef={tourScrollRef} scrollOffset={24}>
-        <PartyFinderEntry />
+        <View style={{ marginBottom: 16 }}>
+          <PartyFinderEntry onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])} />
+        </View>
       </TourTarget>
       {selectedSpot ? <SelectedMeetup meetup={selectedSpot} onClear={handleClear} onPress={() => setDetailSpot(selectedSpot)} /> : null}
 

@@ -7,6 +7,14 @@ export function isSuperAdminEmail(email) {
   return typeof email === 'string' && SUPER_ADMIN_EMAILS.includes(email.trim().toLowerCase());
 }
 
+/**
+ * Super-admin status comes only from the auth provider's signed claims with a
+ * verified email. Profile documents are client-writable and never count.
+ */
+export function isVerifiedSuperAdmin(token) {
+  return token?.email_verified === true && isSuperAdminEmail(token?.email);
+}
+
 export function requireAdmin(request) {
   if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'กรุณาเข้าสู่ระบบ');
   const email = request.auth.token?.email;

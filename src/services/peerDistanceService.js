@@ -1,8 +1,6 @@
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { requireFirebase } from './dbService';
+import { getCallable } from './callableClient';
 import { applyDistancePrivacyFloor } from '../utils/distance';
 
-const FUNCTIONS_REGION = 'asia-southeast1';
 const PEER_DISTANCE_CHUNK = 50;
 
 function uniquePeerIds(userIds) {
@@ -20,10 +18,7 @@ export async function fetchPeerDistances(userIds) {
   const ids = uniquePeerIds(userIds);
   if (ids.length === 0) return {};
 
-  const { app } = requireFirebase();
-  const getPeerDistances = httpsCallable(getFunctions(app, FUNCTIONS_REGION), 'getPeerDistances', {
-    timeout: 15000,
-  });
+  const getPeerDistances = getCallable('getPeerDistances', { timeout: 15000 });
   const distances = {};
   for (let index = 0; index < ids.length; index += PEER_DISTANCE_CHUNK) {
     const chunk = ids.slice(index, index + PEER_DISTANCE_CHUNK);

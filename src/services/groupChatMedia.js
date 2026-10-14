@@ -4,6 +4,8 @@ import { getFunctions, httpsCallable } from 'firebase/functions';
 import { bytesToBase64, base64ToBytes, encryptMediaBytes } from './chatEncryptionService';
 import { verifyImageSafety } from './imageModerationService';
 import { requireFirebase } from './dbService';
+import { getCallable } from './callableClient';
+import { RUST_BACKEND } from './rust/backend';
 import { compressUploadImage } from '../utils/compressImage';
 
 export async function pickAndUploadGroupImage(partyId, groupKey) {
@@ -18,9 +20,7 @@ export async function pickAndUploadGroupImage(partyId, groupKey) {
   const raw = await FileSystem.readAsStringAsync(resized.uri, { encoding: FileSystem.EncodingType.Base64 });
   // No upload is started until encryption succeeds.
   const encrypted = bytesToBase64(encryptMediaBytes(base64ToBytes(raw), groupKey));
-  const { app } = requireFirebase();
-  const functions = getFunctions(app, 'asia-southeast1');
-  const sign = httpsCallable(functions, 'getR2ChatUploadUrl', { timeout: 20000 });
+  const sign = getCallable('getR2ChatUploadUrl', { timeout: 20000 });
   const signed = (await sign({ groupChatId: partyId, mediaType: 'image', extension: 'enc', contentType: 'application/octet-stream', uploadProtocolVersion: 2 })).data;
   if (signed?.success && signed.uploadUrl && signed.downloadUrl) {
     const temp = `${FileSystem.cacheDirectory}group_${Date.now()}_${Math.random().toString(36).slice(2)}.enc`;
@@ -36,8 +36,10 @@ export async function pickAndUploadGroupImage(partyId, groupKey) {
       await FileSystem.deleteAsync(temp, { idempotent: true }).catch(() => {});
     }
   }
+  if (RUST_BACKEND) throw new Error('อัปโหลดรูปภาพไม่สำเร็จ กรุณาลองใหม่');
   if (encrypted.length > 5_000_000) throw new Error('รูปภาพใหญ่เกินไปสำหรับการอัปโหลดสำรอง');
-  const upload = httpsCallable(functions, 'uploadChatMedia', { timeout: 45000 });
+  const { app } = requireFirebase();
+  const upload = httpsCallable(getFunctions(app, 'asia-southeast1'), 'uploadChatMedia', { timeout: 45000 });
   const result = (await upload({
     groupChatId: partyId, base64Data: encrypted,
     contentType: 'application/octet-stream', extension: 'enc',

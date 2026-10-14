@@ -8,6 +8,8 @@ import { Platform } from 'react-native';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { getStorage, ref, uploadBytes, uploadString, getDownloadURL } from 'firebase/storage';
 import { requireFirebase } from './dbService';
+import { getCallable } from './callableClient';
+import { RUST_BACKEND } from './rust/backend';
 import { verifyImageSafety } from './imageModerationService';
 import {
   encryptMediaBytes,
@@ -50,9 +52,8 @@ function waitBeforeR2Retry() {
   return new Promise((resolve) => setTimeout(resolve, R2_RETRY_DELAY_MS));
 }
 
-async function requestR2UploadUrl({ app, conversationId, mediaType, extension, contentType }) {
-  const functions = getFunctions(app, 'asia-southeast1');
-  const getR2UploadUrlFn = httpsCallable(functions, 'getR2ChatUploadUrl', { timeout: 20000 });
+async function requestR2UploadUrl({ conversationId, mediaType, extension, contentType }) {
+  const getR2UploadUrlFn = getCallable('getR2ChatUploadUrl', { timeout: 20000 });
   const r2Result = await getR2UploadUrlFn({
     conversationId,
     mediaType,
@@ -245,7 +246,7 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
     )
     : null;
 
-  const { app } = requireFirebase();
+  const app = RUST_BACKEND ? null : requireFirebase().app;
   let uploadUri = fileUri;
   let ext = extension || (mediaType === 'video' ? 'mp4' : (mediaType === 'audio' ? 'm4a' : 'jpg'));
   let contentType = mediaType === 'video' ? 'video/mp4' : (mediaType === 'audio' ? 'audio/mp4' : 'image/jpeg');
@@ -363,8 +364,9 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
     }
 
     // Avoid re-uploading large encrypted videos through Firebase when R2 failed —
-    // that path is the multi-second/minute hang users hit.
-    if (mediaType === 'video') {
+    // that path is the multi-second/minute hang users hit. The native backend
+    // has no Firebase Storage fallback at all.
+    if (mediaType === 'video' || RUST_BACKEND) {
       logUploadStage('firebase_fallback', Date.now(), 'skipped', { reason: fallbackReason });
       logUploadStage('total', uploadStartedAt, 'failed');
       throw new Error('อัปโหลดวิดีโอไปยังพื้นที่จัดเก็บไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');

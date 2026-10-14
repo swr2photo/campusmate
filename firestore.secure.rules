@@ -1,4 +1,4 @@
-// STAGED ONLY. Source firestore.rules SHA256: 3f46f1b2f26dbf7fe317bf32cfc7b806b58e0f6af07e2e233008fd377d99f884
+// STAGED ONLY. Source firestore.rules SHA256: a3b909070f6ba1af8913f5c4f9816884f9c5e276fad994265aaa7fbc5b25773f
 // Deploy after API/client/migration/store rollout gates are verified.
 rules_version = '2';
 
@@ -26,6 +26,11 @@ service cloud.firestore {
       // Suspended clients can still read the reason and sign out immediately.
       allow get: if request.auth != null && request.auth.uid == userId;
       allow list, write: if false;
+    }
+
+    match /accountDeletionOtps/{userId} {
+      // The authenticated owner can manage their own deletion OTP document
+      allow read, write, delete: if isOwner(userId);
     }
 
     function isOwner(userId) {
@@ -187,7 +192,7 @@ service cloud.firestore {
           'tags', 'interests', 'favoriteTracks', 'gender', 'meetup', 'selectedMeetup',
           'scheduledAt', 'isDiscoverable', 'encryptionDevices', 'updatedAt',
           'createdAt', 'lastSeen', 'displayName', 'photoURL', 'photos',
-          'spotifyTopArtists', 'spotifyTopGenres', 'isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'
+          'spotifyTopArtists', 'spotifyTopGenres', 'isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus', 'isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'
         ])
         && data.keys().hasAll(['id', 'updatedAt'])
         && data.id is string
@@ -245,7 +250,7 @@ service cloud.firestore {
           'displayName', 'photoURL', 'photos', 'latitude', 'longitude', 'locationUpdatedAt',
           'privacy', 'matchingPreferences', 'notificationsEnabled',
           'locationEnabled', 'consentAcceptedAt', 'createdAt', 'lastSeen',
-          'spotifyTopArtists', 'spotifyTopGenres', 'isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'
+          'spotifyTopArtists', 'spotifyTopGenres', 'isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus', 'isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'
         ])
         && data.keys().hasAll(['id', 'updatedAt'])
         && data.id is string
@@ -902,10 +907,32 @@ service cloud.firestore {
                   : false;
     }
 
+    // Older clients may send the unverified defaults when creating a profile.
+    // They still cannot create verified metadata or change it after creation.
+    function initialUnverifiedFaceState(data) {
+      return (!('isFaceVerified' in data) || data.isFaceVerified == false)
+        && (!('faceVerifiedAt' in data) || data.faceVerifiedAt == null)
+        && (!('faceMatchScore' in data) || data.faceMatchScore == null)
+        && (!('faceVerificationStatus' in data) || data.faceVerificationStatus == 'unverified' || data.faceVerificationStatus == null);
+    }
+
+    // `email` mirrors the sign-in address. An owner may keep the stored value
+    // or set their own token email, never another address: server code once
+    // trusted this field for admin and face-verification shortcuts.
+    function emailFieldAllowed() {
+      let next = request.resource.data;
+      return !('email' in next) || next.email == null || next.email == ''
+        || (resource != null && ('email' in resource.data) && resource.data.email == next.email)
+        || (('email' in request.auth.token) && request.auth.token.email is string && next.email is string
+          && next.email.lower() == request.auth.token.email.lower());
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId)
         && !request.resource.data.keys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
+        && initialUnverifiedFaceState(request.resource.data)
+        && emailFieldAllowed()
         && (
           request.resource.data.keys().hasOnly(['id', 'meetup', 'updatedAt'])
             ? meetupCreateAllowed(userId)
@@ -914,7 +941,10 @@ service cloud.firestore {
               : validPrivateProfile(request.resource.data, userId)
         );
       allow update: if isOwner(userId)
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus']) && usersUpdateAllowed(userId);
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
+        && emailFieldAllowed()
+        && usersUpdateAllowed(userId);
       allow delete: if false;
 
       match /blockedUsers/{blockedId} {
@@ -946,22 +976,32 @@ service cloud.firestore {
       allow list: if false;
       allow create: if isOwner(userId)
         && !request.resource.data.keys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
+        && initialUnverifiedFaceState(request.resource.data)
         && (
           request.resource.data.keys().hasOnly(['id', 'meetup', 'updatedAt'])
             ? meetupCreateAllowed(userId)
             : validPublicProfile(request.resource.data, userId)
         );
       allow update: if isOwner(userId)
-        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus']) && profilesUpdateAllowed(userId);
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
+        && profilesUpdateAllowed(userId);
       allow delete: if false;
     }
 
-    // Discovery is deliberately split from the profile/detail document. Only
-    // signed-in users can read this public allowlisted projection; clients
-    // cannot create or modify ranking/discovery records themselves.
+    // Profile visibility is evaluated by authenticated server APIs using the
+    // private verification state. Projections cannot authorize client reads.
     match /discoveryProfiles/{userId} {
       allow read: if false;
       allow write: if false;
+    }
+
+    match /users/{userId}/notifications/{notificationId} {
+      allow read: if isOwner(userId);
+      allow create, delete: if false;
+      allow update: if isOwner(userId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt'])
+        && request.resource.data.readAt == request.time;
     }
 
     match /decisions/{decisionId} {

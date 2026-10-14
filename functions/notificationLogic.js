@@ -85,13 +85,14 @@ export function matchNotification(otherProfile, conversationId) {
 export function messageNotification(senderProfile, conversationId, message) {
   const senderName = profileName(senderProfile);
   const avatarUri = profileAvatarUri(senderProfile);
+  const encrypted = message?.encrypted === true || typeof message?.ciphertext === 'string';
   const rawText = String(message?.text || message?.preview || '').trim();
-  const bodyText = rawText
+  const bodyText = encrypted ? 'ข้อความที่เข้ารหัส' : rawText
     ? rawText.slice(0, 200)
     : (message?.mediaType === 'image'
       ? 'ส่งรูปภาพ'
       : (message?.mediaType === 'track' ? 'ส่งเพลง' : 'มีข้อความใหม่'));
-  const mediaUrl = message?.mediaType === 'image' && typeof message?.mediaUrl === 'string' ? message.mediaUrl : null;
+  const mediaUrl = !encrypted && message?.mediaType === 'image' && typeof message?.mediaUrl === 'string' ? message.mediaUrl : null;
 
   return {
     title: senderName,

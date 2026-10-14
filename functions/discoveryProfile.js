@@ -355,11 +355,9 @@ export function buildPublicProfile(userId, source = {}) {
   const encryptionDevices = compactEncryptionDevices(source.encryptionDevices);
   if (encryptionDevices) profile.encryptionDevices = encryptionDevices;
 
+  // Only the badge is public. Raw similarity scores never leave the server.
   if (source.isFaceVerified === true) {
     profile.isFaceVerified = true;
-    if (typeof source.faceMatchScore === 'number') {
-      profile.faceMatchScore = source.faceMatchScore;
-    }
   }
 
   return profile;
@@ -419,11 +417,9 @@ export function buildDiscoveryProfile(userId, source = {}) {
   const encryptionDevices = compactEncryptionDevices(source.encryptionDevices);
   if (encryptionDevices) profile.encryptionDevices = encryptionDevices;
 
+  // Only the badge is public. Raw similarity scores never leave the server.
   if (source.isFaceVerified === true) {
     profile.isFaceVerified = true;
-    if (typeof source.faceMatchScore === 'number') {
-      profile.faceMatchScore = source.faceMatchScore;
-    }
   }
 
   return profile;

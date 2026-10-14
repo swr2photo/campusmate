@@ -1,5 +1,6 @@
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService';
+import { RUST_BACKEND, rpc } from './rust/backend';
 
 export const FUNCTIONS_REGION = 'asia-southeast1';
 
@@ -31,13 +32,22 @@ export function callableErrorMessage(error, fallback = 'เชื่อมต่
 }
 
 /**
+ * Same shape as Firebase `httpsCallable(...)`: `(data) => Promise<{ data }>`.
+ * The native build sends the call to the Rust backend's RPC endpoint.
+ */
+export function getCallable(name, options = {}) {
+  if (RUST_BACKEND) return async (data) => ({ data: await rpc(name, data || {}) });
+  const { app } = requireFirebase();
+  return httpsCallable(getFunctions(app, FUNCTIONS_REGION), name, options);
+}
+
+/**
  * Calls a regional Cloud Function with one shared timeout and a single retry
  * for transport failures. Mutations that may have reached the server should
  * pass retries: 0.
  */
 export async function callFunction(name, data, { timeout = 30000, retries = 0, fallback } = {}) {
-  const { app } = requireFirebase();
-  const callable = httpsCallable(getFunctions(app, FUNCTIONS_REGION), name, { timeout });
+  const callable = getCallable(name, { timeout });
   let lastError;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {

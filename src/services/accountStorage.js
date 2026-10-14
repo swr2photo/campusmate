@@ -68,7 +68,10 @@ export async function enrichSavedAccountsWithFirestore(accounts) {
   try {
     const { getAuth } = require('firebase/auth');
     const { firebaseApp } = require('./dbService');
-    const currentAuthUser = firebaseApp ? getAuth(firebaseApp).currentUser : null;
+    const { RUST_BACKEND, rustUid } = require('./rust/backend');
+    const currentAuthUser = RUST_BACKEND
+      ? (rustUid() ? { uid: rustUid() } : null)
+      : (firebaseApp ? getAuth(firebaseApp).currentUser : null);
     if (!currentAuthUser) return accounts;
 
     const { getUserProfile } = require('./firestoreService');

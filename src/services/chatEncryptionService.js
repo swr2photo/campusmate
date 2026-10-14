@@ -7,6 +7,7 @@ import { collection, doc, getDoc, getDocFromServer, getDocs, limit, query, runTr
 import nacl from 'tweetnacl';
 import { requireFirebase } from './dbService';
 import { secureDiscoveryCall, secureDiscoveryConfigured } from './secureDiscoveryService';
+import { RUST_BACKEND, rpc } from './rust/backend';
 
 export const E2EE_VERSION = 1;
 export const E2EE_ALGORITHM = 'x25519-xsalsa20-poly1305.v1';
@@ -16,6 +17,7 @@ export const E2EE_PENDING_PREVIEW = 'กำลังเตรียมการ�
 const IDENTITY_STORAGE_PREFIX = 'campusmate_e2ee_identity_v1_';
 const DECRYPTION_FAILED_TEXT = 'ไม่สามารถถอดรหัสข้อความนี้ได้';
 const identityLocks = new Map();
+const publishedDevices = new Set();
 const publishLocks = new Map();
 const conversationLocks = new Map();
 const MAX_ENCRYPTION_DEVICES = 5;
@@ -259,12 +261,34 @@ export function withIdentityDevice(profile, identity) {
   return { ...(profile || {}), encryptionDevices: devices };
 }
 
+async function publishRustDevice(identity) {
+  const publicKey = bytesToBase64(identity.publicKey);
+  try {
+    await rpc('publishEncryptionDevice', { deviceId: identity.deviceId, publicKey });
+  } catch (error) {
+    if (!String(error?.code || '').includes('resource-exhausted')) throw error;
+    // Five devices are already published: retire the least recently
+    // published other device, then publish this one.
+    const { devices = [] } = await rpc('listMyEncryptionDevices');
+    const oldest = devices.find((device) => device.deviceId !== identity.deviceId);
+    if (!oldest) throw error;
+    await rpc('removeEncryptionDevice', { deviceId: oldest.deviceId });
+    await rpc('publishEncryptionDevice', { deviceId: identity.deviceId, publicKey });
+  }
+}
+
 export async function ensureEncryptionIdentity(userId) {
   const identity = await getOrCreateEncryptionIdentity(userId);
   const lockKey = String(userId);
   if (publishLocks.has(lockKey)) return publishLocks.get(lockKey).then(() => identity);
 
   const promise = (async () => {
+    if (RUST_BACKEND) {
+      if (publishedDevices.has(lockKey)) return identity;
+      await publishRustDevice(identity);
+      publishedDevices.add(lockKey);
+      return identity;
+    }
     const { db } = requireFirebase();
     const privateRef = doc(db, 'users', userId);
     const publicRef = doc(db, 'profiles', userId);
@@ -737,7 +761,57 @@ async function resolveParticipantProfiles(db, conversationId, participantIds, em
   return profiles;
 }
 
+async function prepareRustConversationEncryption(conversationId, currentUserId) {
+  const identity = await ensureEncryptionIdentity(currentUserId);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const { conversation } = await rpc('getConversation', { conversationId });
+    if (!conversation) throw createE2EEError('not-found', 'ไม่พบห้องสนทนา');
+    const participants = Array.isArray(conversation.participants) ? conversation.participants : [];
+    if (!participants.includes(currentUserId) || participants.length !== 2) {
+      throw createE2EEError('permission-denied', 'คุณไม่มีสิทธิ์ใช้ห้องสนทนานี้');
+    }
+    const { profiles = [] } = await rpc('getConversationEncryptionProfiles', { conversationId, userIds: participants });
+    const byId = new Map(profiles.map((profile) => [profile.id, profile]));
+    const resolved = Object.fromEntries(participants.map((userId) => {
+      const profile = { id: userId, encryptionDevices: getEncryptionDevices(byId.get(userId) || {}) };
+      return [userId, userId === currentUserId ? withIdentityDevice(profile, identity) : profile];
+    }));
+    const hasMessages = Boolean(conversation.lastMessageId);
+    let conversationKey = null;
+    let encryption = conversation.encryption;
+    let changed = false;
+    if (isValidConversationEncryption(encryption)) {
+      try { conversationKey = getConversationKey(encryption, currentUserId, identity); } catch { conversationKey = null; }
+      if (conversationKey) {
+        const next = addMissingDeviceEnvelopes(encryption, participants, resolved, identity, currentUserId, conversationKey);
+        changed = next !== encryption;
+        encryption = next;
+      } else if (!hasMessages) {
+        ({ conversationKey, encryption } = createConversationEncryption(participants, resolved, currentUserId, identity));
+        changed = true;
+      } else {
+        throw createE2EEError('E2EE_KEY_UNAVAILABLE', 'ไม่พบกุญแจของอุปกรณ์นี้สำหรับห้องแชต');
+      }
+    } else {
+      ({ conversationKey, encryption } = createConversationEncryption(participants, resolved, currentUserId, identity));
+      changed = true;
+    }
+    if (changed) {
+      try {
+        await rpc('chatSaveEncryption', { conversationId, revision: conversation.encryptionRevision || 0, encryption });
+      } catch (error) {
+        // Another device updated the envelopes first: reload and retry once.
+        if (attempt === 0 && String(error?.code || '').includes('aborted')) continue;
+        throw error;
+      }
+    }
+    return { conversationKey, encryption, messages: [], data: { ...conversation, encryption } };
+  }
+  throw createE2EEError('E2EE_KEY_UNAVAILABLE', 'ไม่พบกุญแจของอุปกรณ์นี้สำหรับห้องแชต');
+}
+
 async function prepareConversationEncryption(conversationId, currentUserId, participantProfiles = {}) {
+  if (RUST_BACKEND) return prepareRustConversationEncryption(conversationId, currentUserId);
   const { db } = requireFirebase();
   const identity = await ensureEncryptionIdentity(currentUserId);
   const conversationRef = doc(db, 'conversations', conversationId);

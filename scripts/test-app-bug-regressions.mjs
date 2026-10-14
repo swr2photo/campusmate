@@ -12,7 +12,7 @@ const nacl = require('tweetnacl');
 const read = (file) => readFileSync(file, 'utf8').replaceAll('\r\n', '\n');
 function moduleWithMocks(file, mocks, names) {
   const source = read(file).replace(/import[\s\S]*?from\s+['"][^'"]+['"];?/g, '').replace(/export\s*\{[^}]*\};?/g, '').replace(/export\s+(?=(?:async\s+)?function|const)/g, '');
-  const ctx = vm.createContext({ console, ...mocks });
+  const ctx = vm.createContext({ RUST_BACKEND: false, console, ...mocks });
   vm.runInContext(source + `\n;globalThis.api = {${names.join(',')}};`, ctx);
   return ctx.api;
 }
@@ -88,7 +88,7 @@ test('pair message remains pending after enqueue and only queue acknowledgement 
   const start = source.indexOf('  const sendMessage = async (');
   const end = source.indexOf('\n  const retryFailedMessage', start);
   let rooms = [{ id: 'room', participants: ['me', 'other'], messages: [] }];
-  const ctx = vm.createContext({ user: { id: 'me' }, activeUserIdRef: { current: 'me' }, conversations: rooms,
+  const ctx = vm.createContext({ RUST_BACKEND: false, user: { id: 'me' }, activeUserIdRef: { current: 'me' }, conversations: rooms,
     setConversations: (update) => { rooms = update(rooms); }, createClientMessageId: () => 'outbox', runOrQueue: async () => ({ queued: true }), console });
   vm.runInContext(source.slice(start, end) + ';globalThis.send = sendMessage;', ctx);
   assert.equal(await ctx.send('room', 'offline message'), true);

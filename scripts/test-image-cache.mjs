@@ -84,6 +84,7 @@ function mediaFixture({ failEncryption = false, failModeration = false } = {}) {
     bytesToBase64: (bytes) => Buffer.from(bytes).toString('base64'), base64ToBytes: (value) => new Uint8Array(Buffer.from(value, 'base64')),
     encryptMediaBytes: (bytes, activeKey) => { counters.encrypt += 1; if (failEncryption) throw new Error('encrypt failed'); return new Uint8Array([activeKey[0], ...bytes]); },
     decryptMediaBytes: (bytes, activeKey) => { if (bytes[0] !== activeKey[0]) throw new Error('wrong key'); return bytes.slice(1); },
+    RUST_BACKEND: false, getCallable: (...args) => dependencies.httpsCallable(...args),
     getFunctions: () => ({}), httpsCallable: () => async (request) => {
       counters.sign += 1;
       counters.request = request;

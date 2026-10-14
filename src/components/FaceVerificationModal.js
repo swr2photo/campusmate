@@ -1,12 +1,15 @@
 import Text from './AppText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Dimensions, Modal, Platform, Pressable, SafeAreaView, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, AppState, Dimensions, Modal, Platform, Pressable, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import FeatureIcon from './FeatureIcon';
 import FaceVerificationDetails from './FaceVerificationDetails';
+import LivenessVerificationSheet from './LivenessVerificationSheet';
 import { startFaceVerificationSession, submitFaceVerification } from '../services/faceVerificationService';
+import { isLivenessEnabled } from '../services/photoVerificationService';
 import { useTheme } from '../theme';
 
 function ovalSize(windowWidth) {
@@ -14,25 +17,22 @@ function ovalSize(windowWidth) {
   return { width, height: width * 1.35 };
 }
 
-const REUSABLE_SESSION_REASONS = new Set([
-  'no_face_detected',
-  'multiple_faces_detected',
-  'low_face_confidence',
-  'face_too_small',
-  'face_blurry',
-  'face_lighting',
-  'face_pose',
-  'sunglasses',
-  'face_occluded',
-  'invalid_selfie',
-]);
+// Every attempt consumes its server session; retries always start a new one.
 
 // CameraX's JPEG ImageReader aborts in the native layer on older Android
 // camera drivers (including the connected API 25 emulator). System capture
 // uses its own compatible camera implementation and still requires a live photo.
 const USE_SYSTEM_CAMERA = Platform.OS === 'android' && Number(Platform.Version) <= 25;
 
-export default function FaceVerificationModal({
+// Builds with the native AWS liveness module and the flag switch to the
+// server-decided liveness check; others keep the selfie comparison.
+const LIVENESS = isLivenessEnabled();
+
+export default function FaceVerificationModal(props) {
+  return LIVENESS ? <LivenessVerificationSheet {...props} /> : <SelfieVerificationModal {...props} />;
+}
+
+function SelfieVerificationModal({
   visible,
   onClose,
   onSuccess,
@@ -110,12 +110,10 @@ export default function FaceVerificationModal({
 
   const [step, setStep] = useState('idle'); // 'idle' | 'capturing' | 'verifying' | 'success' | 'error'
   const [errorMessage, setErrorMessage] = useState('');
-  const [similarityScore, setSimilarityScore] = useState(null);
 
   const handleReset = useCallback(() => {
     setStep('idle');
     setErrorMessage('');
-    setSimilarityScore(null);
   }, []);
 
   const handleClose = useCallback(() => {
@@ -171,12 +169,10 @@ export default function FaceVerificationModal({
       if (generation.current !== attempt) return;
 
       if (result.success) {
-        setSimilarityScore(result.similarity);
         setStep('success');
         onSuccess?.(result);
       } else {
-        if (REUSABLE_SESSION_REASONS.has(result.reason)) sessionRef.current.id = sessionId;
-        else warmSession();
+        warmSession();
         setErrorMessage(result.message || 'ใบหน้าไม่ตรงกับรูปโปรไฟล์หลัก');
         setStep('error');
       }
@@ -315,7 +311,7 @@ export default function FaceVerificationModal({
                     <FeatureIcon color="#10B981" name="checkmark.seal.fill" size={54} />
                     <Text style={styles.resultTitle}>ยืนยันใบหน้าสำเร็จ!</Text>
                     <Text style={styles.resultSubtitle}>
-                      ความตรงกัน {similarityScore}%{'\n'}ได้รับตราสัญลักษณ์ยืนยันตัวตนเรียบร้อยแล้ว
+                      ได้รับตราสัญลักษณ์ยืนยันใบหน้าเรียบร้อยแล้ว
                     </Text>
                     <TouchableOpacity
                       activeOpacity={0.85}

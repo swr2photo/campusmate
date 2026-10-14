@@ -12,6 +12,8 @@ function client({ data = { userId: 'owner', url: 'https://example.test/gallery.j
     FileSystem: { EncodingType: { Base64: 'base64' }, readAsStringAsync: async (uri) => { calls.reads.push(uri); return '/9j/2Q=='; } },
     requireFirebase: () => ({ app: {} }),
     getFunctions: (_, region) => ({ region }),
+    RUST_BACKEND: false,
+    uploadRawImage: async () => { throw new Error('native backend is off'); },
     httpsCallable: (functions, name) => {
       calls.callable.push({ region: functions.region, name });
       return async (payload) => { calls.payloads.push(payload); if (error) throw error; return { data }; };

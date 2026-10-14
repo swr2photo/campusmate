@@ -7,7 +7,7 @@ const read = (file) => readFileSync(file, 'utf8').replaceAll('\r\n', '\n');
 function fixture(platform = 'android') {
   const storage = new Map(), opened = [], listeners = [];
   const config = { platforms: { android: { storePublished: true, latestVersion: '2.1.7', latestBuild: '80' } } };
-  const context = vm.createContext({ console, Date, BigInt,
+  const context = vm.createContext({ RUST_BACKEND: false, console, Date, BigInt,
     Platform: { OS: platform }, Application: { nativeApplicationVersion: '2.1.7', nativeBuildVersion: '77' },
     Constants: { appOwnership: 'standalone', expoConfig: { version: '99.0.0', android: { versionCode: 9999 } } },
     AsyncStorage: { getItem: async (key) => storage.get(key), multiSet: async (entries) => entries.forEach(([key, value]) => storage.set(key, value)) },

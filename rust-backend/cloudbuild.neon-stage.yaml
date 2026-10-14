@@ -1,0 +1,76 @@
+# Explicit one-shot verification of the EMPTY schema-check-20261012 branch.
+# Creates schema/runtime roles there. Never use these secrets for another branch.
+# Full disposable tests MUST pass before any live schema change.
+serviceAccount: projects/campusmate-7f1ab/serviceAccounts/campusmate-rust-schema-ci@campusmate-7f1ab.iam.gserviceaccount.com
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['run', '-d', '--name', 'postgres', '--network', 'cloudbuild', '-e', 'POSTGRES_USER=integration', '-e', 'POSTGRES_PASSWORD=disposable-ci-only', '-e', 'POSTGRES_DB=campusmate_test', 'postgres:18-bookworm']
+  - name: rust:1.99-bookworm
+    id: disposable-tests
+    entrypoint: bash
+    env:
+      - DATABASE_URL=postgres://integration:disposable-ci-only@postgres:5432/campusmate_test?sslmode=disable
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        rustup component add rustfmt clippy
+        cargo fmt --check
+        cargo test --locked --all-targets --no-fail-fast
+        cargo clippy --locked --all-targets -- -D warnings
+        cargo build --locked --release
+  - name: rust:1.99-bookworm
+    id: isolated-neon-schema
+    entrypoint: bash
+    secretEnv: ['DATABASE_DIRECT_URL', 'NEON_API_DATABASE_URL', 'NEON_MAIL_DATABASE_URL']
+    env: ['APP_ENV=production', 'RUST_LOG=error']
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        ./target/release/check-database --kind owner
+        ./target/release/migrate --runtime-grants
+        ./target/release/provision-neon-logins
+  - name: rust:1.99-bookworm
+    id: isolated-neon-runtime
+    entrypoint: bash
+    secretEnv: ['NEON_API_DATABASE_URL', 'NEON_MAIL_DATABASE_URL']
+    env: ['APP_ENV=production', 'RUST_LOG=error', 'DB_POOL_MODE=transaction', 'DB_MAX_CONNECTIONS=2', 'DB_MIN_CONNECTIONS=0']
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        export DATABASE_URL="$$NEON_MAIL_DATABASE_URL"
+        ./target/release/check-database --kind mail
+        export DATABASE_URL="$$NEON_API_DATABASE_URL"
+        ./target/release/check-database --kind api
+        unset NEON_API_DATABASE_URL NEON_MAIL_DATABASE_URL
+        export CURSOR_SECRET="$$(head -c 48 /dev/urandom | base64 -w 0)"
+        export BIND_HOST=127.0.0.1 PORT=8080
+        ./target/release/campusmate-backend >/tmp/native-staging.log 2>&1 &
+        native_pid=$$!
+        trap 'kill "$$native_pid" 2>/dev/null || true' EXIT
+        for attempt in {1..20}; do
+          health=$$( (exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3; cat <&3) 2>/dev/null) || health=""
+          if [[ "$$health" == *"200 OK"* && "$$health" == *\"ready\":true* ]]; then
+            printf 'NEON_RUST_HTTP_HEALTH_OK\n'
+            break
+          fi
+          if [[ "$$attempt" == 20 ]]; then printf 'NEON_RUST_HTTP_HEALTH_FAILED\n' >&2; exit 1; fi
+          sleep 1
+        done
+        denied=$$( (exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /v1/auth/me HTTP/1.0\r\nHost: localhost\r\n\r\n" >&3; cat <&3) 2>/dev/null)
+        [[ "$$denied" == *"401 Unauthorized"* ]]
+        printf 'NEON_RUST_UNAUTHENTICATED_DENIED\n'
+availableSecrets:
+  secretManager:
+    - versionName: projects/campusmate-7f1ab/secrets/CAMPUSMATE_NEON_SCHEMA_CHECK_OWNER/versions/1
+      env: DATABASE_DIRECT_URL
+    - versionName: projects/campusmate-7f1ab/secrets/CAMPUSMATE_NEON_SCHEMA_CHECK_API/versions/1
+      env: NEON_API_DATABASE_URL
+    - versionName: projects/campusmate-7f1ab/secrets/CAMPUSMATE_NEON_SCHEMA_CHECK_MAIL/versions/1
+      env: NEON_MAIL_DATABASE_URL
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s

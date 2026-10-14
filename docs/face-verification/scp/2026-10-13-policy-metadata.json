@@ -1,0 +1,16 @@
+{
+  "Id": "p-oh1dnpq7",
+  "Arn": "arn:aws:organizations::028610956731:policy/o-0yiwm4s86j/service_control_policy/p-oh1dnpq7",
+  "Name": "AdvancedModeRegionRestrictionSecurityControlPolicy",
+  "Description": "AdvancedModeRegionRestrictionSecurityControlPolicy",
+  "Type": "SERVICE_CONTROL_POLICY",
+  "AwsManaged": false,
+  "reviewStatus": "PROPOSED_NOT_APPLIED",
+  "attachment": {
+    "Type": "ROOT",
+    "TargetId": "r-hss9"
+  },
+  "expectedProject": "502731779521",
+  "managementProject": "028610956731",
+  "proposedMinifiedBytes": 4135
+}

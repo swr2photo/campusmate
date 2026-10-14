@@ -5,14 +5,6 @@ import RNText from '../components/AppText';
 import PlacePhoto from '../components/PlacePhoto';
 import PlacePreviewCard from '../components/PlacePreviewCard';
 import PlaceDetailSheet from '../components/PlaceDetailSheet';
-import SearchField from '../components/SearchField';
-import LiquidGlassCompactToolbar from '../components/LiquidGlassCompactToolbar';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  interpolate,
-  Extrapolation,
-} from 'react-native-reanimated';
 import { Keyboard, Modal, Pressable, useColorScheme, View, ScrollView as RNScrollView, useWindowDimensions, StyleSheet } from 'react-native';
 import ExpoImage from '../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -24,7 +16,7 @@ import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import CampusMapView from '../components/CampusMapView';
 import AppointmentPlacePicker from '../components/AppointmentPlacePicker';
 import { Stack, useRouter } from 'expo-router';
-import { BottomSheet, ContentUnavailableView, DatePicker, Form, Host, HStack, Image, Picker, ScrollView, RNHostView, Section, Spacer, TextField, useNativeState, VStack, ZStack } from '@expo/ui/swift-ui';
+import { BottomSheet, ContentUnavailableView, DatePicker, Form, Group, Host, HStack, Image, Picker, ScrollView, RNHostView, Section, Spacer, TextField, useNativeState, VStack, ZStack } from '@expo/ui/swift-ui';
 import { accessibilityLabel, background, buttonBorderShape, buttonStyle, controlSize, datePickerStyle, disabled, foregroundStyle, frame, fixedSize, labelStyle, lineLimit, multilineTextAlignment, padding, pickerStyle, presentationDetents, presentationDragIndicator, scrollDismissesKeyboard, scrollIndicators, shadow, shapes, textFieldStyle, tint } from '@expo/ui/swift-ui/modifiers';
 import { useAppActions, useAppFeed, useAppProfile } from '../context/AppContext';
 import PartyFinderSection, { sortAndRefitMeetups } from '../components/PartyFinderSection';
@@ -96,48 +88,6 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   const [busyPartyId, setBusyPartyId] = useState(null);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [query, setQuery] = useState('');
-  const searchFieldRef = useRef(null);
-  const scrollY = useSharedValue(0);
-  const [isCollapsed, setIsCollapsed] = useState(false);
-  const isCollapsedRef = useRef(false);
-
-  const handleScroll = useCallback((event) => {
-    const y = event.nativeEvent.contentOffset.y;
-    scrollY.value = y;
-    const shouldCollapse = y > 24;
-    if (shouldCollapse !== isCollapsedRef.current) {
-      isCollapsedRef.current = shouldCollapse;
-      setIsCollapsed(shouldCollapse);
-    }
-  }, [scrollY]);
-
-  const handleExpandSearch = useCallback(() => {
-    if (tourScrollRef.current?.scrollTo) {
-      tourScrollRef.current.scrollTo({ y: 0, animated: true });
-    }
-    setTimeout(() => {
-      searchFieldRef.current?.focus?.();
-    }, 280);
-  }, []);
-
-  const expandedHeaderStyle = useAnimatedStyle(() => {
-    const opacity = interpolate(scrollY.value, [0, 24], [1, 0], Extrapolation.CLAMP);
-    const translateY = interpolate(scrollY.value, [0, 24], [0, -6], Extrapolation.CLAMP);
-    return {
-      opacity,
-      transform: [{ translateY }],
-    };
-  });
-
-  const collapsedToolbarStyle = useAnimatedStyle(() => {
-    const opacity = interpolate(scrollY.value, [12, 28], [0, 1], Extrapolation.CLAMP);
-    const translateY = interpolate(scrollY.value, [12, 28], [4, 0], Extrapolation.CLAMP);
-    const scale = interpolate(scrollY.value, [12, 28], [0.97, 1], Extrapolation.CLAMP);
-    return {
-      opacity,
-      transform: [{ translateY }, { scale }],
-    };
-  });
   const filteredParties = useMemo(() => {
     if (!query.trim()) return parties;
     const q = query.trim().toLowerCase();
@@ -331,6 +281,22 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       const nextWidth = nativeEvent.layout.width;
       if (nextWidth > 0) setMeasuredWidth(current => current != null && Math.abs(current - nextWidth) < 1 ? current : nextWidth);
     }} style={{ flex: 1, backgroundColor: palette.background }}>
+      {/* Native UISearchController + bar buttons: iOS 26+ renders them as system Liquid Glass. */}
+      <Stack.SearchBar
+        autoCapitalize="none"
+        cancelButtonText="ยกเลิก"
+        hideWhenScrolling={false}
+        onCancelButtonPress={() => setQuery('')}
+        onChangeText={(event) => setQuery(event.nativeEvent.text)}
+        placeholder={partyOnly ? 'ค้นหากิจกรรมหรือสถานที่ตี้' : 'ค้นหาสถานที่หรือกิจกรรม'}
+        placement="stacked"
+        textColor={palette.text}
+        tintColor={palette.accent}
+      />
+      <Stack.Toolbar placement="right">
+        <Stack.Toolbar.Button accessibilityLabel="เปิดแผนที่" icon="map" onPress={() => openMapForSpot()} />
+        <Stack.Toolbar.Button accessibilityLabel="สร้างกิจกรรม" icon="plus" onPress={() => openScheduleFor(visibleSpots[0] || campusSpots[0])} />
+      </Stack.Toolbar>
       {partyOnly ? <TourTarget id="party-finder.list" style={{ flex: 1 }}>
         <PartyFinderSection
           targetPartyId={targetPartyId}
@@ -352,24 +318,21 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
           onRetryActivation={(party) => retryLegacyActivation(party.id)}
           onOpenChat={(party) => router.push({ pathname: '/group-chat', params: { partyId: party.id } })}
           onOpenMap={openMapForSpot}
-          onScroll={handleScroll}
-          contentContainerStyle={{ paddingTop: 60 }}
+          contentContainerStyle={{ paddingTop: 12 }}
         />
       </TourTarget> : <RNScrollView
         ref={tourScrollRef}
         style={{ flex: 1, width: '100%' }}
-        contentContainerStyle={{ paddingTop: 60, paddingBottom: 80, paddingHorizontal: 20 }}
+        contentContainerStyle={{ paddingTop: 12, paddingBottom: 80, paddingHorizontal: 20 }}
         showsVerticalScrollIndicator={false}
-        contentInsetAdjustmentBehavior="never"
+        contentInsetAdjustmentBehavior="automatic"
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
-        onScroll={handleScroll}
-        scrollEventThrottle={16}
       >
         {!partyOnly && (
           <View style={{ gap: 16 }}>
             <TourTarget id="meetup.party" scrollRef={tourScrollRef} scrollOffset={16}>
-              <PartyFinderEntry />
+              <PartyFinderEntry onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])} />
             </TourTarget>
 
             {selectedMeetup && (
@@ -454,55 +417,6 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
         )}
       </RNScrollView>}
 
-      {/* Floating Liquid Glass Header — ลอยอยู่เหนือคอนเทนต์ ไม่ยึดติดกับพื้นหลัง */}
-      <View
-        pointerEvents="box-none"
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          paddingHorizontal: 16,
-          paddingTop: 8,
-          zIndex: 100,
-        }}
-      >
-        {/* Expanded Search Field (Floating Liquid Glass at top) */}
-        <Animated.View
-          style={[
-            expandedHeaderStyle,
-            isCollapsed && { pointerEvents: 'none' },
-          ]}
-        >
-          <SearchField
-            ref={searchFieldRef}
-            value={query}
-            onChangeText={setQuery}
-            placeholder={partyOnly ? 'ค้นหากิจกรรมหรือสถานที่ตี้' : 'ค้นหาสถานที่หรือกิจกรรม'}
-          />
-        </Animated.View>
-
-        {/* Collapsed Liquid Glass Toolbar (Floating Compact Toolbar on scroll) */}
-        <Animated.View
-          style={[
-            StyleSheet.absoluteFillObject,
-            { paddingHorizontal: 16, paddingTop: 8 },
-            collapsedToolbarStyle,
-            !isCollapsed && { pointerEvents: 'none' },
-          ]}
-        >
-          <LiquidGlassCompactToolbar
-            query={query}
-            placeholder={partyOnly ? 'ค้นหากิจกรรมตี้...' : 'ค้นหากิจกรรมหรือสถานที่...'}
-            onPressSearch={handleExpandSearch}
-            onClearSearch={() => setQuery('')}
-            onOpenMap={() => openMapForSpot()}
-            onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])}
-            spotCount={visibleSpots.length}
-          />
-        </Animated.View>
-      </View>
-
       <PlaceDetailSheet
         spot={resolvedDetailSpot}
         visible={Boolean(detailSpot)}
@@ -566,11 +480,8 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       <BottomSheet
         isPresented={showSchedule}
         onIsPresentedChange={setShowSchedule}
-        modifiers={[
-          presentationDetents(['large']),
-          presentationDragIndicator('visible'),
-        ]}
       >
+        <Group modifiers={[presentationDetents(['large']), presentationDragIndicator('visible')]}>
         <VStack style={{ flex: 1 }}>
           <Text
             modifiers={[
@@ -642,6 +553,7 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
             ]}
           />
         </VStack>
+        </Group>
       </BottomSheet>
 
       </Host>

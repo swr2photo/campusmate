@@ -1,0 +1,38 @@
+# Build and boot the actual nonroot container against disposable PostgreSQL.
+# No image is pushed, no service is deployed, and no email is sent.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['run', '-d', '--name', 'postgres', '--network', 'cloudbuild', '-e', 'POSTGRES_USER=integration', '-e', 'POSTGRES_PASSWORD=disposable-ci-only', '-e', 'POSTGRES_DB=campusmate_test', 'postgres:18-bookworm']
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker build -t campusmate-native:ci .
+        test "$$(docker inspect --format '{{.Config.User}}' campusmate-native:ci)" = '65532:65532'
+        trap 'docker rm -f native-ci >/dev/null 2>&1 || true' EXIT
+        docker run -d --name native-ci --network cloudbuild \
+          -e APP_ENV=test \
+          -e DATABASE_URL='postgres://integration:disposable-ci-only@postgres:5432/campusmate_test?sslmode=disable' \
+          -e CURSOR_SECRET='disposable-ci-cursor-secret-at-least-32-bytes' \
+          campusmate-native:ci
+        docker run --rm --network cloudbuild --entrypoint bash rust:1.99-bookworm -c '
+          for attempt in {1..15}; do
+            health=$$( (exec 3<>/dev/tcp/native-ci/8080; printf "GET /healthz HTTP/1.0\r\nHost: native-ci\r\n\r\n" >&3; cat <&3) 2>/dev/null) || health=""
+            if [[ "$$health" == *"200 OK"* && "$$health" == *\"ready\":true* ]]; then
+              printf "Rust container health and PostgreSQL connection passed\n"
+              exit 0
+            fi
+            sleep 1
+          done
+          printf "Rust container failed readiness check\n" >&2
+          exit 1
+        '
+        docker run --rm --entrypoint email-worker \
+          -e RESEND_API_KEY=disposable-config-only-no-delivery \
+          -e NATIVE_AUTH_EMAIL_ORIGIN=https://auth.example.test \
+          campusmate-native:ci --check-config
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 1800s

@@ -1,0 +1,28 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ServerFaceVerificationThailand",
+      "Effect": "Allow",
+      "Action": [
+        "rekognition:CreateFaceLivenessSession",
+        "rekognition:GetFaceLivenessSessionResults",
+        "rekognition:CompareFaces",
+        "rekognition:DetectModerationLabels"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": { "aws:RequestedRegion": "ap-southeast-7" }
+      }
+    },
+    {
+      "Sid": "IssueStreamingCredentialsOnly",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::502731779521:role/campusmate-liveness-stream",
+      "Condition": {
+        "StringEquals": { "aws:RequestedRegion": "ap-southeast-7" }
+      }
+    }
+  ]
+}

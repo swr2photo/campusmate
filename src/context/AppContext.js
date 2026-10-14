@@ -1,6 +1,6 @@
 import Text from '../components/AppText';
 import { retainLoadingConversations } from '../utils/conversationOrder';
-import { withServerFaceVerification } from '../utils/faceVerificationState';
+import { mergePendingOwnProfile, subscribeToOwnProfileUpdates } from '../services/ownProfileSync';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, getDoc, getDocFromServer, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
 import NetInfo from '@react-native-community/netinfo';
@@ -24,6 +24,7 @@ import { allowedMatchingPreferences, recordSecureDiscoveryAction, respondToSecur
 import { isCampusEmail, isLikelyNewFirebaseUser } from '../utils/campusEmail';
 import { getCurrentUserIdToken } from '../services/authService';
 import { callFunction } from '../services/callableClient';
+import { RUST_BACKEND } from '../services/rust/backend';
 import FeatureIcon from '../components/FeatureIcon';
 import { showInAppNotification } from '../components/InAppNotificationBanner';
 import { db, requireFirebase } from '../services/dbService';
@@ -37,7 +38,6 @@ import {
   createSharedProfilesSubscription,
   createUserProfile,
   getUserProfile,
-  subscribeToFaceVerification,
   getPublicProfilesByIds,
   getSpotDistanceFromUser,
   formatDistance,
@@ -1077,6 +1077,7 @@ export function AppProvider({ children }) {
   useEffect(() => {
     let active = true;
     let backgroundProfileTask = null;
+    let stopLiveProfile = () => {};
 
     if (!user?.id) {
       discoveryProfileFetchesRef.current.clear();
@@ -1117,15 +1118,7 @@ export function AppProvider({ children }) {
         if (storedProfile) {
           const pending = await getOfflineQueue(user.id);
           if (!active) return;
-          const merged = pending.reduce((data, operation) => {
-            const payload = operation.payload || {};
-            if (operation.type === 'saveProfile') return { ...data, ...payload.profile };
-            if (operation.type === 'updateMeetup') return { ...data, meetup: payload.meetup };
-            if (operation.type === 'saveMatchingPreferences') return { ...data, matchingPreferences: payload.matchingPreferences };
-            if (operation.type === 'saveLocationEnabled') return { ...data, locationEnabled: payload.locationEnabled };
-            return data;
-          }, storedProfile);
-          const defaults = withProfileDefaults(withServerFaceVerification(merged, storedProfile));
+          const defaults = withProfileDefaults(mergePendingOwnProfile(storedProfile, pending));
           saveFastBootData({ profile: defaults });
           if (defaults.meetup) {
             setSelectedMeetup(defaults.meetup);
@@ -1147,7 +1140,8 @@ export function AppProvider({ children }) {
           const currentEmail = (user.email || defaults.email || '').toLowerCase().trim();
           const isSuperUser = currentEmail === '6710210317@psu.ac.th';
           const isAdminUser = isSuperUser || defaults.isAdmin === true || defaults.role === 'admin';
-          if (isAdminUser && (storedProfile?.isFaceVerified !== true || storedProfile?.isDiscoverable !== true)) {
+          // Badges are server-owned on the native backend (admin console).
+          if (!RUST_BACKEND && isAdminUser && (storedProfile?.isFaceVerified !== true || storedProfile?.isDiscoverable !== true)) {
             try {
               const targetDb = db || requireFirebase()?.db;
               if (targetDb && user?.id) {
@@ -1211,11 +1205,22 @@ export function AppProvider({ children }) {
         else if (!isRetryableNetworkError(error)) console.warn('[AppContext] Profile refresh failed:', error);
       })
       .finally(() => {
-        if (active) setProfileLoading(false);
+        if (!active) return;
+        setProfileLoading(false);
+        // Attach after bootstrap so a late one-off read cannot overwrite the
+        // live record. onSnapshot supplies the latest record on attachment.
+        stopLiveProfile = subscribeToOwnProfileUpdates(user.id, (serverProfile) => {
+          const next = withProfileDefaults(serverProfile);
+          setProfile(next);
+          setSelectedMeetup(next.meetup || null);
+        }, (error) => {
+          console.warn('[Profile] Live refresh failed:', error?.code);
+        }, () => active && activeUserIdRef.current === user.id);
       });
 
     return () => {
       active = false;
+      stopLiveProfile();
       backgroundProfileTask?.cancel?.();
     };
   }, [cacheHydratedUserId, isOnline, retryKey, user?.displayName, user?.email, user?.id]);
@@ -2236,6 +2241,22 @@ export function AppProvider({ children }) {
       throw new Error('ไม่พบข้อมูลสำหรับเปิดห้องแชต');
     }
     const conversationId = `c-${[user.id, candidate.id].sort().join('-')}`;
+    if (RUST_BACKEND) {
+      // The server opens the room only for an established, unblocked match.
+      const roomId = await createConversation(user.id, profile, candidate);
+      updateHiddenConversations((current) => current.filter((id) => id !== roomId));
+      setRemovedUserIds((current) => {
+        if (!current.has(candidate.id)) return current;
+        const next = new Set(current);
+        next.delete(candidate.id);
+        return next;
+      });
+      const optimisticConversation = buildOptimisticConversation(user.id, profile, candidate);
+      setConversations((current) => (
+        current.some((c) => c.id === roomId) ? current : [{ ...optimisticConversation, id: roomId }, ...current]
+      ));
+      return roomId;
+    }
     const { db } = requireFirebase();
     const conversationRef = doc(db, 'conversations', conversationId);
 
@@ -2764,16 +2785,19 @@ export function AppProvider({ children }) {
       ...(profile?.matchingPreferences || {}),
       ...matchingPreferences,
     }, profile?.matchingPreferences, canAdvancedFilters);
-    setProfile((current) => withProfileDefaults({
-      ...(current || {}),
-      matchingPreferences: nextPreferences,
-    }));
-    await runOrQueue(
+    const expectedUserId = user.id;
+    const result = await runOrQueue(
       'saveMatchingPreferences',
       { matchingPreferences: nextPreferences },
       () => updateUserMatchingPreferences(user.id, nextPreferences),
       { dedupeKey: 'saveMatchingPreferences' }
     );
+    if (activeUserIdRef.current !== expectedUserId) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
+    setProfile((current) => withProfileDefaults({
+      ...(current || {}),
+      matchingPreferences: nextPreferences,
+    }));
+    return result;
   };
 
   // คำนวณระยะห่างจริงจาก GPS ของผู้ใช้ + รวม CAMPUS_SPOTS ทั้งหมด
@@ -2870,22 +2894,24 @@ export function AppProvider({ children }) {
   };
 
   useEffect(() => {
-    if (!user?.id) return undefined;
-    return subscribeToFaceVerification(user.id, (serverProfile) => {
-      setProfile((current) => current?.id === user.id
-        ? withProfileDefaults(withServerFaceVerification(current, serverProfile)) : current);
-    }, (error) => console.warn('[FaceVerification] Status refresh failed:', error?.code));
-  }, [user?.id]);
+    if (!profile?.id || profile.id !== user?.id || cacheHydratedUserId !== user.id) return;
+    void saveFastBootData({ profile });
+    void saveAccount({
+      id: profile.id, email: user.email || profile.email,
+      displayName: profile.nickname || profile.name || user.displayName,
+      photoURL: profile.avatarUri || profile.photos?.[0] || user.photoURL,
+      avatarUri: profile.avatarUri || profile.photos?.[0] || user.photoURL,
+      avatarRevision: profile.avatarRevision, avatarColor: profile.avatarColor || null,
+      faculty: profile.faculty || '', updatedAt: profile.updatedAt,
+    });
+  }, [cacheHydratedUserId, profile, user?.id, user?.email, user?.displayName, user?.photoURL]);
 
-  useEffect(() => {
-    if (profile?.id && profile.id === user?.id) void saveFastBootData({ profile });
-  }, [user?.id, profile?.id, profile?.isFaceVerified, profile?.faceVerificationStatus, profile?.faceMatchScore, profile?.faceVerifiedAt]);
-
-  const markFaceVerified = useCallback((similarityScore) => {
+  // Local mirror of a server decision; scores never reach the client.
+  const markFaceVerified = useCallback(() => {
     setProfile((prev) => withProfileDefaults({
       ...prev,
       isFaceVerified: true,
-      faceMatchScore: typeof similarityScore === 'number' ? similarityScore : 90,
+      faceMatchScore: null,
       faceVerificationStatus: 'verified',
     }));
   }, []);
@@ -2917,7 +2943,7 @@ export function AppProvider({ children }) {
       }
     }
 
-    if (newAdmin && user?.id) {
+    if (newAdmin && user?.id && !RUST_BACKEND) {
       try {
         const targetDb = db || requireFirebase()?.db;
         if (targetDb) {
@@ -3429,7 +3455,7 @@ export function AppProvider({ children }) {
       try {
         await deleteAccountData(user.id, user.email);
       } catch (error) {
-        accountDeletedRef.current = false;
+        accountDeletedRef.current = error?.accountDeleted === true;
         throw error;
       }
     },

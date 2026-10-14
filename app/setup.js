@@ -1,6 +1,7 @@
 import React from 'react';
 import { Redirect, router } from 'expo-router';
-import ProfileScreen from '../src/screens/ProfileScreen';
+import ProfileSetupScreen from '../src/screens/ProfileSetupScreen';
+import AppErrorBoundary from '../src/components/AppErrorBoundary';
 import { useToast } from '../src/context/ToastContext';
 import { useAppActions, useAppProfile } from '../src/context/AppContext';
 import { useAuth } from '../src/context/AuthContext';
@@ -24,9 +25,11 @@ export default function SetupRoute() {
   };
 
   return (
-    <ProfileScreen
-      onToast={showToast}
-      overrideSave={handleSave}
-    />
+    <AppErrorBoundary
+      message="เกิดข้อผิดพลาดในการโหลดหน้าตั้งค่าโปรไฟล์ กรุณากดลองใหม่อีกครั้ง"
+      onReset={() => router.replace('/setup')}
+    >
+      <ProfileSetupScreen onComplete={handleSave} />
+    </AppErrorBoundary>
   );
 }

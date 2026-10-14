@@ -4,7 +4,7 @@ import { requireFeature } from './plusEntitlements.js';
 import { buildPublicProfile } from './discoveryProfile.js';
 import { toWire } from './secureProfileAccess.js';
 import { establishedMatch } from './profileRelationships.js';
-import { isSuperAdminEmail } from './adminPolicy.js';
+import { isVerifiedSuperAdmin } from './adminPolicy.js';
 
 const UID = /^[A-Za-z0-9_-]{1,128}$/;
 const ACTION = /^[a-zA-Z0-9_-]{16,100}$/;
@@ -125,14 +125,14 @@ export function createMatchingActionApi({ db, now = Date.now, serverTimestamp })
       const uid = request.auth?.uid;
       if (!uid) throw new HttpsError('unauthenticated', 'ต้องเข้าสู่ระบบ');
       const id = actionId(request);
-      const isSuper = isSuperAdminEmail(request.auth.token?.email);
+      const isSuper = isVerifiedSuperAdmin(request.auth.token);
       const isAdminClaim = request.auth.token?.admin === true;
       const isAdmin = isSuper || isAdminClaim;
       return db.runTransaction(async (tx) => {
         const receiptRef = db.doc(`rewindReceipts/${uid}/entries/${id}`);
         const [entitlement, receipt, userSnap] = await tx.getAll(db.doc(`entitlements/${uid}`), receiptRef, db.doc(`users/${uid}`));
-        const userEmail = request.auth.token?.email || userSnap.data()?.email || userSnap.data()?.campusEmail;
-        const isUserAdmin = isAdmin || isSuperAdminEmail(userEmail) || userSnap.data()?.isAdmin === true || userSnap.data()?.role === 'admin';
+        // Admin flags on the user document are server-written; emails there are not trusted.
+        const isUserAdmin = isAdmin || userSnap.data()?.isAdmin === true || userSnap.data()?.role === 'admin';
         if (!isUserAdmin) {
           requireFeature(entitlement.data(), 'unlimitedRewind', now());
         }

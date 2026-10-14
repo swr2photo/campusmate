@@ -371,6 +371,9 @@ export function ProfileCardView({
           </View>
 
           <InfoList styles={styles}>
+            {Array.isArray(candidate?.matchReasons) && candidate.matchReasons.length ? (
+              <InfoRow icon="sparkles" label="จุดที่เข้ากัน" value={candidate.matchReasons.filter((reason) => typeof reason === 'string').slice(0, 3).join(' · ')} colors={colors} styles={styles} />
+            ) : null}
             {ageDisplay ? <InfoRow icon="calendar" label="อายุ" value={`${ageDisplay} ปี`} colors={colors} styles={styles} /> : null}
             {genderDisplay ? <InfoRow icon="person.2.fill" label="เพศ" value={genderLabel(genderDisplay)} colors={colors} styles={styles} /> : null}
             {(facultyDisplay && !hasCorruptMarker(facultyDisplay)) ? <InfoRow icon="building.columns.fill" label="คณะ" value={facultyDisplay} colors={colors} styles={styles} /> : null}

@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService.js';
+import { getCallable } from './callableClient';
 
 let LiveKitClient = null;
 let LiveKitRN = null;
@@ -104,7 +105,7 @@ export function isLiveKitAvailable() {
 export async function fetchLiveKitToken({ callId, participantName }) {
   const { app } = requireFirebase();
   const functions = getFunctions(app, 'asia-southeast1');
-  const getTokenFn = httpsCallable(functions, 'getLiveKitToken', { timeout: 15000 });
+  const getTokenFn = getCallable('getLiveKitToken', { timeout: 15000 });
 
   const result = await getTokenFn({ callId, participantName });
   return result.data;

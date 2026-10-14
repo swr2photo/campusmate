@@ -5,6 +5,8 @@ import { getFunctions, httpsCallable } from 'firebase/functions';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { requireFirebase } from './dbService';
 import { PLUS_ENTITLEMENT_ID } from '../data/plans';
+import { RUST_BACKEND, rpc, rustUid } from './rust/backend';
+import { liveQuery } from './rust/events';
 const extra = () => Constants.expoConfig?.extra || {};
 let sdk, sdkUser = null, queue = Promise.resolve();
 function serialized(operation) { const result = queue.then(operation); queue = result.catch(() => {}); return result; }
@@ -53,8 +55,11 @@ function bounded(operation) {
   })]).finally(() => clearTimeout(timer));
 }
 function apiKey() { return Platform.OS === 'ios' ? extra().revenueCatIosKey : Platform.OS === 'android' ? extra().revenueCatAndroidKey : ''; }
+function currentUid() {
+  return RUST_BACKEND ? rustUid() : getAuth(requireFirebase().app).currentUser?.uid;
+}
 function assertCurrentAccount(uid) {
-  if (!uid || getAuth(requireFirebase().app).currentUser?.uid !== uid) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
+  if (!uid || currentUid() !== uid) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
 }
 // On a returning launch the app signs in from the fast-boot cache before Firebase Auth
 // restores its session, so `currentUser` is briefly null. Wait for that restore instead
@@ -62,6 +67,7 @@ function assertCurrentAccount(uid) {
 const ACCOUNT_WAIT_MS = 20000;
 function waitForAccount(uid) {
   if (!uid) return Promise.reject(new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง'));
+  if (RUST_BACKEND) return rustUid() === uid ? Promise.resolve() : Promise.reject(new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง'));
   const auth = getAuth(requireFirebase().app);
   if (auth.currentUser?.uid === uid) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -87,11 +93,23 @@ export function purchasesConfigured() {
   return membershipConfigured() && Boolean(apiKey());
 }
 export function subscribeMembership(uid, onData, onError) {
+  if (RUST_BACKEND) {
+    return liveQuery('membership', () => rpc('getMembershipState'), (state) => {
+      if (rustUid() === uid) onData(state?.record || null, { fromCache: false });
+    }, onError);
+  }
   const { db } = requireFirebase();
   return onSnapshot(doc(db, 'entitlements', uid), { includeMetadataChanges: true },
     (snapshot) => onData(snapshot.data() || null, { fromCache: snapshot.metadata.fromCache }), onError);
 }
 export async function syncMembership(expectedUid) {
+  if (RUST_BACKEND) {
+    const uid = expectedUid || rustUid();
+    if (!uid || rustUid() !== uid) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
+    const result = await rpc('syncMembership');
+    if (rustUid() !== uid) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
+    return result;
+  }
   const { app } = requireFirebase();
   if (expectedUid) await waitForAccount(expectedUid);
   const uid = expectedUid || getAuth(app).currentUser?.uid;

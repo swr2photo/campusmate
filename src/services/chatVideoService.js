@@ -2,6 +2,8 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { doc, onSnapshot, runTransaction, serverTimestamp } from 'firebase/firestore';
 import { requireFirebase } from './dbService';
+import { RUST_BACKEND, rpc } from './rust/backend';
+import { liveQuery } from './rust/events';
 import { validateChatVideo } from '../utils/chatVideoPolicy';
 
 export async function prepareRecordedVideo(uri, durationMs = 60000) {
@@ -33,6 +35,10 @@ function isOnceMediaData(data) {
 // A transaction requires an online server response and only one device can win.
 // Receipts cannot be modified or deleted by clients (see firestore.rules).
 export async function recordMediaView(conversationId, messageId, userId, { exclusive = false } = {}) {
+  if (RUST_BACKEND) {
+    await rpc('chatRecordView', { conversationId, messageId, exclusive });
+    return;
+  }
   const { db } = requireFirebase();
   const messageRef = doc(db, 'conversations', conversationId, 'messages', messageId);
   const receiptRef = doc(messageRef, 'videoViews', userId);
@@ -55,6 +61,12 @@ export async function claimOnceVideo(conversationId, messageId, userId) {
 
 export function watchMediaView(conversationId, messageId, viewerId, onViewed) {
   if (!conversationId || !messageId || !viewerId) return () => {};
+  if (RUST_BACKEND) {
+    let notified = false;
+    return liveQuery('messages', () => rpc('chatViewState', { conversationId, messageId }), (state) => {
+      if (!notified && state?.views?.[viewerId]) { notified = true; onViewed({}); }
+    }, () => {}, { id: conversationId });
+  }
   const { db } = requireFirebase();
   return onSnapshot(
     doc(db, 'conversations', conversationId, 'messages', messageId, 'videoViews', viewerId),

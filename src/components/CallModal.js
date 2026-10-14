@@ -1,6 +1,7 @@
 import Text from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, Modal, Platform, Pressable, SafeAreaView, StatusBar, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Animated, Easing, Modal, Platform, Pressable, StatusBar, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Reanimated, {
   cancelAnimation,
   useAnimatedStyle,

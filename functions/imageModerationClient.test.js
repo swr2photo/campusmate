@@ -10,7 +10,8 @@ function service(data, { offline = false, image = 'jpeg' } = {}) {
   const context = vm.createContext({
     console: { warn() {} },
     ImageManipulator: { SaveFormat: { JPEG: 'jpeg' }, manipulateAsync: async () => ({ base64: image }) },
-    requireFirebase: () => ({ app: {} }), getFunctions: () => ({}),
+    requireFirebase: () => ({ app: {} }), getFunctions: () => ({}), RUST_BACKEND: false,
+    uploadRawImage: async () => { throw new Error('native backend is off'); },
     httpsCallable: () => async () => {
       if (offline) throw new Error('offline');
       return { data };

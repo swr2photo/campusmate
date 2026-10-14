@@ -17,7 +17,7 @@ import Reanimated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { project, rubberband } from '../utils/motion';
 import { BlurTargetView } from 'expo-blur';
-import { useLocalSearchParams, usePathname } from 'expo-router';
+import { Stack, useLocalSearchParams, usePathname } from 'expo-router';
 import { openChatRoom } from '../utils/openChatRoom';
 import { useConfirm } from '../context/ConfirmContext';
 import TabsBlurTargetContext from '../context/TabsBlurTargetContext';
@@ -247,12 +247,14 @@ export default function ChatScreen() {
         keyboardShouldPersistTaps="handled"
         ListHeaderComponent={(
           <TourTarget id="chat.search" style={styles.listHeader}>
-            <SearchField
-              value={query}
-              onChangeText={setQuery}
-              placeholder="ค้นหาชื่อหรือข้อความ"
-              onClear={() => setQuery('')}
-            />
+            {isAndroid ? (
+              <SearchField
+                value={query}
+                onChangeText={setQuery}
+                placeholder="ค้นหาชื่อหรือข้อความ"
+                onClear={() => setQuery('')}
+              />
+            ) : null}
             <View style={styles.tabsContainer}>
               <LiquidGlassSegmentedControl
                 activeTab={unreadOnly ? 'unread' : 'all'}
@@ -272,6 +274,20 @@ export default function ChatScreen() {
 
   return (
     <>
+      {/* iOS: native UISearchController in the navigation bar (system Liquid Glass on iOS 26+). */}
+      {isAndroid ? null : (
+        <Stack.SearchBar
+          autoCapitalize="none"
+          cancelButtonText="ยกเลิก"
+          hideWhenScrolling={false}
+          onCancelButtonPress={() => setQuery('')}
+          onChangeText={(event) => setQuery(event.nativeEvent.text)}
+          placeholder="ค้นหาชื่อหรือข้อความ"
+          placement="stacked"
+          textColor={colors.ink}
+          tintColor={colors.primary}
+        />
+      )}
       {isAndroid ? (
         <BlurTargetView ref={blurTargetRef} style={styles.blurTarget}>
           {screenContent}

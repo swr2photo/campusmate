@@ -1,0 +1,23 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; background: #f4f6fa; color: #172135; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px 16px; min-height: 100dvh; display: grid; place-items: center; }
+main { width: min(100%, 460px); background: white; border: 1px solid #d9dfe9; border-radius: 20px; padding: clamp(24px, 6vw, 40px); }
+.brand { color: #3457a7; font-weight: 700; margin-top: 0; }
+h1 { font-size: clamp(1.6rem, 5vw, 2rem); line-height: 1.3; margin: 20px 0 16px; }
+p { line-height: 1.65; }
+form { display: grid; gap: 10px; margin-top: 28px; }
+label { font-weight: 600; margin-top: 8px; }
+input, button { min-height: 48px; font: inherit; border-radius: 10px; padding: 12px; }
+input { width: 100%; color: inherit; background: transparent; border: 1px solid #778397; }
+button { margin-top: 12px; color: white; background: #244fa8; border: 0; font-weight: 650; cursor: pointer; }
+button:disabled { cursor: default; background: #64748b; }
+:focus-visible { outline: 3px solid #d27900; outline-offset: 3px; }
+.hint { color: #495568; font-size: .9rem; margin: 0 0 6px; }
+#status { margin-top: 24px; min-height: 1.65em; overflow-wrap: anywhere; }
+@media (prefers-color-scheme: dark) {
+  :root { background: #101725; color: #f0f3fa; }
+  main { background: #192337; border-color: #3a4861; }
+  .brand { color: #9bbcff; }
+  .hint { color: #c2ccdf; }
+  button { background: #3863bc; }
+}

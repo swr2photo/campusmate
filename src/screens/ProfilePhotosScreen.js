@@ -44,14 +44,11 @@ export default function ProfilePhotosScreen({ onClose }) {
   const [errorMessage, setErrorMessage] = useState('');
   const [sheet, setSheet] = useState(null);
   const [verificationVisible, setVerificationVisible] = useState(false);
-  const [pendingAvatar, setPendingAvatar] = useState(null);
   const [mayLeave, setMayLeave] = useState(false);
   const [failedImages, setFailedImages] = useState({});
   const [gridWidth, setGridWidth] = useState(0);
   const savingRef = useRef(false);
   const processingRef = useRef(false);
-  const pendingAvatarRef = useRef(null);
-  const verifiedDraftRef = useRef(null);
   const verificationPassedRef = useRef(false);
   const photoActionTimer = useRef(null);
   const dirty = photoKey(draft) !== savedKey;
@@ -91,7 +88,7 @@ export default function ProfilePhotosScreen({ onClose }) {
     else showToast(message, 'error');
   }, [showImageModeration, showToast]);
 
-  const savePhotos = async (nextDraft = draft, { close = false, verification } = {}) => {
+  const savePhotos = async (nextDraft = draft, { close = false, message } = {}) => {
     if (savingRef.current || processingRef.current) return false;
     if (!nextDraft.avatarUri) {
       setErrorMessage('กรุณาเพิ่มรูปโปรไฟล์หลักก่อนบันทึก');
@@ -102,22 +99,16 @@ export default function ProfilePhotosScreen({ onClose }) {
     setSaving(true);
     setErrorMessage('');
     try {
-      const verified = verification || (verifiedDraftRef.current?.uri === nextDraft.avatarUri ? verifiedDraftRef.current : null);
+      // Verification fields are server-owned; a new main photo is re-verified
+      // after it is saved (see verifyMainPhoto).
       const committed = await saveProfile({
         avatarUri: nextDraft.avatarUri,
         gallery: nextDraft.gallery.filter(Boolean).slice(0, MAX_PROFILE_PHOTOS - 1),
-        ...(verified ? {
-          isFaceVerified: true,
-          faceMatchScore: verified.similarity,
-          faceVerificationStatus: 'verified',
-        } : {}),
       });
       const next = photoDraft(committed || nextDraft);
       setDraft(next);
       setSavedKey(photoKey(next));
-      if (verified) markFaceVerified?.(verified.similarity);
-      verifiedDraftRef.current = null;
-      showToast(verified ? 'ยืนยันใบหน้าและบันทึกรูปโปรไฟล์เรียบร้อยแล้ว' : 'บันทึกรูปภาพเรียบร้อยแล้ว', 'success');
+      showToast(message || 'บันทึกรูปภาพเรียบร้อยแล้ว', 'success');
       if (close) setMayLeave(true);
       return true;
     } catch (error) {
@@ -129,10 +120,14 @@ export default function ProfilePhotosScreen({ onClose }) {
     }
   };
 
-  const verifyMainPhoto = (uri, gallery = draft.gallery) => {
-    const next = { uri, gallery: [...gallery] };
-    pendingAvatarRef.current = next;
-    setPendingAvatar(next);
+  // The server compares the selfie with the *saved* main photo and revokes the
+  // badge whenever that photo changes, so save first, then verify.
+  const verifyMainPhoto = async (uri, gallery = draft.gallery) => {
+    const saved = await savePhotos(
+      { avatarUri: uri, gallery: [...gallery] },
+      { message: 'บันทึกรูปหลักแล้ว ยืนยันใบหน้ากับรูปใหม่ต่อได้เลย' },
+    );
+    if (!saved) return;
     verificationPassedRef.current = false;
     setVerificationVisible(true);
   };
@@ -151,6 +146,7 @@ export default function ProfilePhotosScreen({ onClose }) {
     processingRef.current = true;
     setProcessing(true);
     setErrorMessage('');
+    let newMainUri = null;
     try {
       if (Platform.OS !== 'web') {
         const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -172,7 +168,7 @@ export default function ProfilePhotosScreen({ onClose }) {
       if (!validation.valid) throw new Error(validation.error);
       const uri = await compressProfileImage(asset.uri);
       if (index === 0) {
-        verifyMainPhoto(uri);
+        newMainUri = uri;
       } else {
         setDraft((current) => {
           const gallery = [...current.gallery];
@@ -190,6 +186,8 @@ export default function ProfilePhotosScreen({ onClose }) {
       processingRef.current = false;
       setProcessing(false);
     }
+    // Saving needs the processing lock released first.
+    if (newMainUri) await verifyMainPhoto(newMainUri);
   };
 
   // Let the native action sheet dismiss before presenting the system photo picker.
@@ -310,22 +308,17 @@ export default function ProfilePhotosScreen({ onClose }) {
         </BottomSheet>
       </Host>
       <FaceVerificationModal
-        avatarUri={pendingAvatar?.uri || draft.avatarUri}
+        avatarUri={draft.avatarUri}
         visible={verificationVisible}
         onClose={() => {
           setVerificationVisible(false);
-          setPendingAvatar(null);
-          pendingAvatarRef.current = null;
-          if (!verificationPassedRef.current) showToast('ยกเลิกการเปลี่ยนรูปหลัก เนื่องจากยังไม่ได้ยืนยันใบหน้า', 'info');
+          if (!verificationPassedRef.current) showToast('บันทึกรูปหลักแล้ว โปรไฟล์จะแสดงในหน้าค้นหาหลังยืนยันใบหน้ากับรูปนี้', 'info');
         }}
-        onSuccess={async (result) => {
-          const pending = pendingAvatarRef.current;
-          if (!pending || verificationPassedRef.current) return;
+        onSuccess={() => {
+          // The server already recorded the result; only mirror it locally.
           verificationPassedRef.current = true;
-          const next = { avatarUri: pending.uri, gallery: pending.gallery };
-          verifiedDraftRef.current = { uri: pending.uri, similarity: result.similarity };
-          setDraft(next);
-          await savePhotos(next, { verification: result });
+          markFaceVerified?.();
+          showToast('ยืนยันใบหน้าเรียบร้อยแล้ว', 'success');
         }}
       />
     </View>

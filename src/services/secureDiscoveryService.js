@@ -6,9 +6,12 @@ import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService';
 import { stripPaidMatchingPreferences } from '../data/plans';
+import { RUST_BACKEND, rpc, rustClient, rustUid } from './rust/backend';
+import { onBackendChange } from './rust/events';
 
 const refreshers = new Set();
-export const secureDiscoveryConfigured = () => Constants.expoConfig?.extra?.secureDiscoveryEnabled === true;
+// The native backend always enforces visibility on the server.
+export const secureDiscoveryConfigured = () => RUST_BACKEND || Constants.expoConfig?.extra?.secureDiscoveryEnabled === true;
 // A returning launch renders the fast-boot session before Firebase Auth has
 // restored `currentUser` (initialisation reloads the user over the network).
 // Callers that run during that gap must wait for the restore instead of
@@ -27,6 +30,13 @@ export async function waitForAuthReady(auth) {
   return auth.currentUser;
 }
 export async function secureDiscoveryCall(name, data = {}) {
+  if (RUST_BACKEND) {
+    const uid = rustUid();
+    if (!uid) throw Object.assign(new Error('กรุณาเข้าสู่ระบบ'), { code: 'unauthenticated' });
+    const result = await rpc(name, data);
+    if (rustUid() !== uid) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
+    return result;
+  }
   if (!secureDiscoveryConfigured()) throw new Error('ฟังก์ชันนี้ยังไม่เปิดให้ใช้งาน');
   // Only await when Auth is still restoring, so signed-in calls keep their timing.
   const { app } = requireFirebase(), auth = getAuth(app), uid = (auth.currentUser || await waitForAuthReady(auth))?.uid;
@@ -34,6 +44,53 @@ export async function secureDiscoveryCall(name, data = {}) {
   const result = (await httpsCallable(getFunctions(app, 'asia-southeast1'), name, { timeout: 45000 })(data)).data;
   if (getAuth(app).currentUser?.uid !== uid) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
   return result;
+}
+// Ranked discovery from the Rust matching service. HTTPS only, Firebase ID
+// token per request. Returns null when the service is not configured or not
+// reachable so callers fall back to the getDiscoveryPage callable.
+const MATCHING_TIMEOUT_MS = 8000;
+const RANKED_CURSOR_PREFIX = 'm1.';
+const matchingServiceUrl = () => Constants.expoConfig?.extra?.matchingServiceUrl || '';
+async function rankedDiscoveryPage(data) {
+  const base = matchingServiceUrl();
+  if (!base) return null;
+  const { app } = requireFirebase(), auth = getAuth(app);
+  const user = auth.currentUser || await waitForAuthReady(auth);
+  if (!user) throw Object.assign(new Error('กรุณาเข้าสู่ระบบ'), { code: 'unauthenticated' });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), MATCHING_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(`${base}/v1/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await user.getIdToken()}` },
+      body: JSON.stringify(data),
+      signal: controller.signal,
+    });
+  } catch {
+    return null; // offline, timeout or DNS: let the callable try
+  } finally {
+    clearTimeout(timer);
+  }
+  const body = await response.json().catch(() => null);
+  if (getAuth(app).currentUser?.uid !== user.uid) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
+  if (response.ok && Array.isArray(body?.profiles)) return body;
+  // Warming up / outage: fall back. Validation, auth and paywall errors are
+  // real answers and surface exactly like callable errors.
+  if (response.status >= 500) return null;
+  const error = body?.error || {};
+  throw Object.assign(new Error(error.message || 'โหลดรายการไม่สำเร็จ'), { code: `functions/${error.code || 'internal'}`, details: error.details });
+}
+export async function fetchDiscoveryPage({ filters = {}, cursor = null } = {}) {
+  if (RUST_BACKEND) return secureDiscoveryCall('getDiscoveryPage', { filters, cursor: typeof cursor === 'string' ? cursor : null });
+  const rankedCursor = typeof cursor === 'string' && cursor.startsWith(RANKED_CURSOR_PREFIX);
+  if (!cursor || rankedCursor) {
+    const ranked = await rankedDiscoveryPage({ filters, cursor });
+    if (ranked) return ranked;
+  }
+  // Callable cursors are opaque UUIDs; a ranked cursor restarts from page one
+  // (the subscriber de-duplicates by id).
+  return secureDiscoveryCall('getDiscoveryPage', { filters, cursor: rankedCursor ? null : cursor });
 }
 export function refreshSecureDiscovery() { refreshers.forEach((refresh) => refresh()); }
 export async function recordSecureDiscoveryAction(targetUserId, kind, likeMessage = '', actionId = Crypto.randomUUID()) {
@@ -53,6 +110,13 @@ export async function respondToSecureLike(targetUserId, response) {
 }
 
 function changes(uid, refresh, onError) {
+  if (RUST_BACKEND) {
+    const active = AppState.addEventListener('change', (state) => { if (state === 'active') refresh(); });
+    const timer = setInterval(() => { if (AppState.currentState === 'active') refresh(); }, 60000);
+    const stops = uid ? ['decisions', 'membership', 'blocks', 'profile', 'config'].map((topic) => onBackendChange(topic, refresh)) : [];
+    refreshers.add(refresh);
+    return () => { active.remove(); clearInterval(timer); stops.forEach((stop) => stop()); refreshers.delete(refresh); };
+  }
   const { db } = requireFirebase();
   const active = AppState.addEventListener('change', (state) => { if (state === 'active') refresh(); });
   const timer = setInterval(() => { if (AppState.currentState === 'active') refresh(); }, 30000);
@@ -67,11 +131,12 @@ export function subscribeSecureProfile(userId, callback, onError) {
     callback?.(null);
     return () => {};
   }
-  const { app } = requireFirebase(), auth = getAuth(app);
+  const auth = RUST_BACKEND ? null : getAuth(requireFirebase().app);
+  const currentUid = () => (RUST_BACKEND ? rustUid() : auth.currentUser?.uid);
   let disposed = false, running = false, again = false, uid = null, off = () => {};
   const refresh = async () => {
     if (disposed) return;
-    if (getAuth(app).currentUser?.uid !== uid) { callback(null); return; }
+    if (currentUid() !== uid) { callback(null); return; }
     if (running) { again = true; return; }
     running = true;
     try {
@@ -91,7 +156,8 @@ export function subscribeSecureProfile(userId, callback, onError) {
     off = changes(uid, refresh, onError);
     void refresh();
   };
-  if (auth.currentUser?.uid) start(auth.currentUser.uid);
+  if (RUST_BACKEND) start(rustUid());
+  else if (auth.currentUser?.uid) start(auth.currentUser.uid);
   else void waitForAuthReady(auth).then((user) => start(user?.uid));
   return () => { disposed = true; off(); };
 }
@@ -142,8 +208,7 @@ export function subscribeSecureDecisions(uid, callback, onError) {
   return unsubscribe;
 }
 export function createSecureProfilesSubscription(onProfiles, onError, options = {}) {
-  const { app } = requireFirebase();
-  const auth = getAuth(app);
+  const auth = RUST_BACKEND ? { get currentUser() { const id = rustUid(); return id ? { uid: id } : null; } } : getAuth(requireFirebase().app);
   let uid = auth.currentUser?.uid;
   let disposed = false, busy = false, again = false, pageCount = 1, cursor = null, hasMore = false, profiles = [];
   const info = (loading) => options.onPageInfo?.({ source: 'discovery', hasMore, loading });
@@ -168,7 +233,7 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
       let nextCursor = append ? cursor : null, nextHasMore = true;
       const pages = append ? 1 : pageCount;
       for (let index = 0; index < pages && nextHasMore; index++) {
-        const result = await secureDiscoveryCall('getDiscoveryPage', { filters: options.filters || {}, cursor: nextCursor });
+        const result = await fetchDiscoveryPage({ filters: options.filters || {}, cursor: nextCursor });
         if (disposed) return;
         nextCursor = result.nextCursor; nextHasMore = result.hasMore;
         result.profiles.forEach((profile) => merged.set(profile.id, profile));
@@ -190,7 +255,10 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
     }
   };
   let offChanges = changes(uid, () => { void fetchPage(false); }, onError);
-  const offAuth = onAuthStateChanged(auth, (user) => {
+  const watchAccount = (listener) => (RUST_BACKEND
+    ? rustClient().subscribe((user) => listener(user ? { uid: user.uid } : null))
+    : onAuthStateChanged(auth, listener));
+  const offAuth = watchAccount((user) => {
     if (disposed) return;
     const nextUid = user?.uid;
     if (nextUid !== uid) {

@@ -1,0 +1,47 @@
+# Apply new migrations and runtime grants to the ALREADY-PROVISIONED
+# schema-check-20261012 staging branch. Unlike cloudbuild.neon-stage.yaml it
+# never creates login roles, so it is safe to repeat. Disposable tests gate it.
+serviceAccount: projects/campusmate-7f1ab/serviceAccounts/campusmate-rust-schema-ci@campusmate-7f1ab.iam.gserviceaccount.com
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['run', '-d', '--name', 'postgres', '--network', 'cloudbuild', '-e', 'POSTGRES_USER=integration', '-e', 'POSTGRES_PASSWORD=disposable-ci-only', '-e', 'POSTGRES_DB=campusmate_test', 'postgres:18-bookworm']
+  - name: rust:1.99-bookworm
+    id: disposable-tests
+    entrypoint: bash
+    env:
+      - DATABASE_URL=postgres://integration:disposable-ci-only@postgres:5432/campusmate_test?sslmode=disable
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        rustup component add rustfmt clippy
+        cargo fmt --check
+        cargo test --locked --all-targets --no-fail-fast
+        cargo clippy --locked --all-targets -- -D warnings
+        cargo build --locked --release --bin migrate --bin check-database
+  - name: rust:1.99-bookworm
+    id: staging-neon-migrate
+    entrypoint: bash
+    secretEnv: ['DATABASE_DIRECT_URL', 'NEON_API_DATABASE_URL']
+    env: ['APP_ENV=production', 'RUST_LOG=error', 'DB_POOL_MODE=transaction', 'DB_MAX_CONNECTIONS=2', 'DB_MIN_CONNECTIONS=0']
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        ./target/release/check-database --kind owner
+        ./target/release/migrate --runtime-grants
+        unset DATABASE_DIRECT_URL
+        export DATABASE_URL="$$NEON_API_DATABASE_URL"
+        unset NEON_API_DATABASE_URL
+        ./target/release/check-database --kind api
+        printf 'NEON_STAGING_MIGRATE_OK\n'
+availableSecrets:
+  secretManager:
+    - versionName: projects/campusmate-7f1ab/secrets/CAMPUSMATE_NEON_SCHEMA_CHECK_OWNER/versions/1
+      env: DATABASE_DIRECT_URL
+    - versionName: projects/campusmate-7f1ab/secrets/CAMPUSMATE_NEON_SCHEMA_CHECK_API/versions/1
+      env: NEON_API_DATABASE_URL
+options:
+  machineType: E2_HIGHCPU_32
+  logging: CLOUD_LOGGING_ONLY
+timeout: 2400s

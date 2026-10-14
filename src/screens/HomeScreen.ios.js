@@ -1,7 +1,6 @@
 import { Button, Text } from '../components/NativeTypography';
 import { font } from '../components/brandFont';
 import { useNativePalette } from '../theme';
-import RNText from '../components/AppText';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { getImageRequestUri, useProfileImagePrefetch } from '../utils/useRemoteImage';
 import ExpoImage from '../components/CachedImage';
@@ -48,7 +47,7 @@ import { useAppActions, useAppBadges, useAppFeed, useAppProfile } from '../conte
 import { BlurView } from 'expo-blur';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import { View, Pressable, useColorScheme } from 'react-native';
+import { View, useColorScheme } from 'react-native';
 
 const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -805,34 +804,6 @@ export default function HomeScreen() {
           </Host>
         </BottomSheet>
       </Host>
-
-      {/* Floating Action Button for Landmarks */}
-      <Pressable
-        accessibilityLabel="สถานที่"
-        accessibilityRole="button"
-        onPress={() => router.push('/landmarks')}
-        style={({ pressed }) => [
-          {
-            position: 'absolute',
-            bottom: 24,
-            right: 20,
-            backgroundColor: palette.purple || '#007AFF',
-            width: 56,
-            height: 56,
-            borderRadius: 28,
-            alignItems: 'center',
-            justifyContent: 'center',
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.25,
-            shadowRadius: 8,
-            elevation: 5,
-            opacity: pressed ? 0.8 : 1,
-          }
-        ]}
-      >
-        <RNText style={{ fontSize: 24 }}>🗺️</RNText>
-      </Pressable>
     </View>
   );
 }
@@ -951,9 +922,9 @@ function ProfileCard({ candidate, imageUri, onPress }) {
       ]}
     >
       <VStack spacing={0} modifiers={[frame({ maxWidth: Infinity })]}>
-        <ZStack modifiers={[frame({ height: 340, maxWidth: Infinity })]}>
+        <ZStack modifiers={[frame({ height: 340 }), frame({ maxWidth: Infinity })]}>
           {imageUri ? (
-            <RNHostView matchContents={false} modifiers={[frame({ height: 340, maxWidth: Infinity })]}>
+            <RNHostView matchContents={false} modifiers={[frame({ height: 340 }), frame({ maxWidth: Infinity })]}>
               <ExpoImage source={{ uri: imageUri }} contentFit="cover" priority="high" style={{ width: '100%', height: 340 }} />
             </RNHostView>
           ) : (
@@ -962,7 +933,8 @@ function ProfileCard({ candidate, imageUri, onPress }) {
               size={84}
               systemName="person.crop.square.fill"
               modifiers={[
-                frame({ height: 340, maxWidth: Infinity }),
+                frame({ height: 340 }),
+                frame({ maxWidth: Infinity }),
                 background(candidate.avatarColor || palette.chip),
               ]}
             />
@@ -991,7 +963,8 @@ function ProfileCard({ candidate, imageUri, onPress }) {
             spacing={6}
             modifiers={[
               padding({ top: 44, bottom: 22, horizontal: 18 }),
-              frame({ height: 340, maxWidth: Infinity, alignment: 'bottomLeading' }),
+              frame({ height: 340 }),
+              frame({ maxWidth: Infinity, alignment: 'bottomLeading' }),
             ]}
           >
             <Spacer />

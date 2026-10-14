@@ -13,6 +13,10 @@ functions/
 scripts/
 docs/
 test_artifacts/
+artifacts/
+rust-backend/
+matching-service/
+scratch/
 play-store-assets/
 .party-build-check/
 .party-ios-build-check/

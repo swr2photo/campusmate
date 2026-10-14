@@ -30,6 +30,10 @@ import { getCurrentUserIdToken } from './authService';
 import { requireFirebase } from './dbService';
 import { createSecureProfilesSubscription, recordSecureDiscoveryAction, respondToSecureLike, rewindSecureDiscoveryAction, secureDiscoveryCall, secureDiscoveryConfigured, subscribeSecureDecisions, waitForAuthReady } from './secureDiscoveryService';
 import { verifyImageSafety } from './imageModerationService';
+import { RUST_BACKEND, rpc, rustUid } from './rust/backend';
+import { liveQuery } from './rust/events';
+import { ts, withTimes } from './rust/time';
+import { uploadRawImage } from './rust/media';
 import * as FileSystem from 'expo-file-system/legacy';
 import { ACTIVITY_LABELS } from '../utils/formatters';
 import { getStudentAcademicProfile } from '../utils/studentId';
@@ -1123,6 +1127,7 @@ async function assertAvatarSize(uri) {
 }
 
 export async function uploadImage(uri, userId) {
+  if (RUST_BACKEND) return rustUploadImage(uri, userId);
   if (!uri || !userId) return null;
   if (!isAvatarOwnedByProfile(uri, userId)) {
     throw new Error('รูปโปรไฟล์นี้ไม่ตรงกับบัญชีปัจจุบัน กรุณาเลือกรูปใหม่');
@@ -1213,6 +1218,7 @@ export async function uploadImage(uri, userId) {
 }
 
 export function subscribeToFaceVerification(userId, onChange, onError) {
+  if (RUST_BACKEND) return rustSubscribeToFaceVerification(userId, onChange, onError);
   let active = true, unsubscribe = () => {};
   const { db, app } = requireFirebase();
   import('firebase/auth').then(({ getAuth }) => waitForAuthReady(getAuth(app)))
@@ -1226,8 +1232,17 @@ export function subscribeToFaceVerification(userId, onChange, onError) {
   return () => { active = false; unsubscribe(); };
 }
 
+// The owner subscription carries the whole committed record, including the
+// avatar revision. A verification-only merge leaves other devices' edits stale.
+export function subscribeToUserProfile(userId, onChange, onError) {
+  return subscribeToFaceVerification(userId, (record) => {
+    onChange(normalizeProfileRecord(userId, record));
+  }, onError);
+}
+
 export async function getUserProfile(userId) {
   if (!userId) return null;
+  if (RUST_BACKEND) return rustGetUserProfile(userId);
   if (secureDiscoveryConfigured()) {
     const { getAuth } = await import('firebase/auth');
     // On a cold start the owner's fast-boot session arrives before Firebase Auth
@@ -1257,6 +1272,7 @@ export async function getUserProfile(userId) {
 }
 
 export async function createUserProfile(userId, data, { onlyIfMissing = false } = {}) {
+  if (RUST_BACKEND) return rustCreateUserProfile(userId, data, { onlyIfMissing });
   const { db } = requireFirebase();
   const existingPrivateSnapshot = await getProfileDocFresh(doc(db, 'users', userId));
   if (!existingPrivateSnapshot.exists() && existingPrivateSnapshot.metadata?.fromCache) {
@@ -1412,6 +1428,10 @@ export async function createUserProfile(userId, data, { onlyIfMissing = false } 
 
 export async function updateUserMatchingPreferences(userId, matchingPreferences) {
   if (!userId) throw new Error('ไม่พบข้อมูลผู้ใช้สำหรับบันทึกตัวกรอง');
+  if (RUST_BACKEND) {
+    await rustSaveProfile({ matchingPreferences: sanitizeMatchingPreferences(matchingPreferences) });
+    return;
+  }
   const { db } = requireFirebase();
   const userRef = doc(db, 'users', userId);
   await setDoc(userRef, {
@@ -1436,6 +1456,8 @@ function valuesMatch(left, right) {
  * saved to `users` but its `profiles` projection was incomplete/stale.
  */
 export async function ensurePublicProfileProjection(userId, profileData) {
+  // The native backend builds public projections on the server.
+  if (RUST_BACKEND) return false;
   if (!userId || !profileData) return false;
   const { db } = requireFirebase();
   try {
@@ -1468,6 +1490,10 @@ export async function updateUserLocation(userId, latitude, longitude) {
   if (!userId) return;
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
   if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return;
+  if (RUST_BACKEND) {
+    await rustSaveProfile({ latitude, longitude });
+    return;
+  }
   const { db } = requireFirebase();
   await setDoc(doc(db, 'users', userId), {
     id: userId,
@@ -1480,6 +1506,10 @@ export async function updateUserLocation(userId, latitude, longitude) {
 
 export async function updateUserLocationEnabled(userId, locationEnabled) {
   if (!userId) return;
+  if (RUST_BACKEND) {
+    await rustSaveProfile({ locationEnabled: locationEnabled === true });
+    return;
+  }
   const { db } = requireFirebase();
   await setDoc(doc(db, 'users', userId), {
     id: userId,
@@ -1495,6 +1525,10 @@ export async function updateUserLocationEnabled(userId, locationEnabled) {
  */
 export async function updateUserMeetup(userId, meetup, privacy = {}) {
   if (!userId) return;
+  if (RUST_BACKEND) {
+    await rustSaveProfile({ meetup: meetup == null ? null : sanitizeMeetup(meetup) });
+    return true;
+  }
   const { db } = requireFirebase();
   const privateMeetup = meetup == null ? null : sanitizeMeetup(meetup);
   const publicMeetup = meetup == null ? null : toPublicMeetup(meetup, privacy || {});
@@ -1514,6 +1548,7 @@ export async function updateUserMeetup(userId, meetup, privacy = {}) {
 }
 
 export function subscribeToSpots(callback, onError) {
+  if (RUST_BACKEND) return rustSpotsSubscription(callback, onError);
   const { db } = requireFirebase();
   return onSnapshot(
     collection(db, 'spots'),
@@ -1566,6 +1601,7 @@ function appointmentMeetupSnapshot(meetup) {
 }
 
 export function subscribeToAppointments(currentUserId, callback, onError) {
+  if (RUST_BACKEND) return rustSubscribeToAppointments(currentUserId, callback, onError);
   const { db } = requireFirebase();
   // Query the two participant fields separately. A rules expression that
   // checks membership in `participants` cannot reliably prove an
@@ -1609,6 +1645,10 @@ export function subscribeToAppointments(currentUserId, callback, onError) {
  */
 export async function ensureAppointmentHistory(conversationId, currentUserId, hostUserId) {
   if (!conversationId || !currentUserId) return false;
+  if (RUST_BACKEND) {
+    const result = await rpc('ensureAppointmentHistory', { conversationId, hostUserId }).catch(() => null);
+    return result?.created === true;
+  }
   const visibleHost = secureDiscoveryConfigured() && hostUserId ? await getPublicProfile(hostUserId) : null;
   const { db } = requireFirebase();
   const conversationRef = doc(db, 'conversations', conversationId);
@@ -2133,7 +2173,7 @@ async function fetchInboxPreviewMessages(db, conversationId, lastMessageId) {
  * one-shot read instead of opening N live listeners at boot.
  */
 export function subscribeToConversations(currentUserId, callback, onError) {
-  const { db } = requireFirebase();
+  const db = RUST_BACKEND ? null : requireFirebase().db;
   let previousEntries = new Map();
   let previousConversations = null;
   let previousRootSnapshotInfo = null;
@@ -2151,7 +2191,7 @@ export function subscribeToConversations(currentUserId, callback, onError) {
   // publication transaction. A legacy profile can reject that transaction
   // while the current device can still decrypt existing conversations.
   const identityPromise = getOrCreateEncryptionIdentity(currentUserId);
-  const conversationsQuery = query(
+  const conversationsQuery = RUST_BACKEND ? null : query(
     collection(db, 'conversations'),
     where('participants', 'array-contains', currentUserId)
   );
@@ -2229,11 +2269,9 @@ export function subscribeToConversations(currentUserId, callback, onError) {
           if (cachedPreview?.previewKey === previewKey) {
             secureMessageSnapshot = cachedPreview.rawMessages;
           } else {
-            secureMessageSnapshot = await fetchInboxPreviewMessages(
-              db,
-              conversationId,
-              preparedData.lastMessageId
-            );
+            secureMessageSnapshot = RUST_BACKEND
+              ? await rustInboxPreview(conversationId)
+              : await fetchInboxPreviewMessages(db, conversationId, preparedData.lastMessageId);
             if (disposed) return cachedHydration?.conversation || null;
             previewCache.set(conversationId, { previewKey, rawMessages: secureMessageSnapshot });
           }
@@ -2391,7 +2429,26 @@ export function subscribeToConversations(currentUserId, callback, onError) {
     previewCache.delete(conversationId);
   };
 
-  const rootUnsubscribe = onSnapshot(
+  const rootUnsubscribe = RUST_BACKEND ? liveQuery(['conversations', 'profile'], () => rpc('listConversations'), (result) => {
+    if (disposed) return;
+    emitVersion += 1;
+    latestRootSnapshotInfo = { fromCache: false, hasPendingWrites: false };
+    const activeIds = new Set();
+    for (const conversation of result?.conversations || []) {
+      activeIds.add(conversation.id);
+      const previous = rawConversations.get(conversation.id);
+      // Keep the same entry object when nothing changed so hydration is cached.
+      if (previous && JSON.stringify(previous.source) === JSON.stringify(conversation)) continue;
+      rawConversations.set(conversation.id, { data: rustConversationData(conversation), source: conversation });
+    }
+    [...rawConversations.keys()].forEach((conversationId) => {
+      if (!activeIds.has(conversationId)) forgetConversation(conversationId);
+    });
+    scheduleEmit();
+  }, (error) => {
+    console.error('[RustChat] Conversation subscription failed:', error?.code || error?.message || error);
+    onError?.(error);
+  }) : onSnapshot(
     conversationsQuery,
     { includeMetadataChanges: true },
     (snapshot) => {
@@ -2781,6 +2838,10 @@ export async function respondToDecision(decisionId, currentUserId, status, other
 
 export async function hideConversation(conversationId, currentUserId) {
   if (!conversationId || !currentUserId) return false;
+  if (RUST_BACKEND) {
+    await rpc('chatSettings', { conversationId, settings: { isHidden: true, clearHistory: true } });
+    return true;
+  }
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
   const snap = await getDoc(convRef);
@@ -2795,6 +2856,10 @@ export async function hideConversation(conversationId, currentUserId) {
 }
 
 export async function unhideConversation(conversationId, currentUserId) {
+  if (RUST_BACKEND) {
+    await rpc('chatSettings', { conversationId, settings: { isHidden: false } });
+    return true;
+  }
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
   const snap = await getDoc(convRef);
@@ -2862,6 +2927,8 @@ export async function unmatchUser(currentUserId, otherUserId) {
  * - Hides the conversation for the current user
  */
 export async function cleanupDeletedUserInteractions(currentUserId, deletedUserIds) {
+  // Account deletion removes every interaction on the server.
+  if (RUST_BACKEND) return false;
   if (!currentUserId || !Array.isArray(deletedUserIds) || !deletedUserIds.length) return false;
   const { db } = requireFirebase();
   const batch = writeBatch(db);
@@ -2939,6 +3006,10 @@ export async function submitContentReport({
   if (!reporterId || !reason) {
     throw new Error('กรุณาระบุข้อมูลการรายงานให้ครบถ้วน');
   }
+  if (RUST_BACKEND) {
+    const result = await rpc('submitReport', { reportedUserId, conversationId, messageId, mediaUrl, messageText, reason, details: (details || '').trim() });
+    return { success: true, reportId: result?.reportId };
+  }
 
   const reportsCol = collection(db, 'reports');
   const reportDocRef = doc(reportsCol);
@@ -2975,6 +3046,11 @@ export async function submitContentReport({
  * Hides a specific message for a given user by appending their UID to `hiddenFor`.
  */
 export async function hideMessageForUser(conversationId, messageId, userId) {
+  if (RUST_BACKEND) {
+    if (!conversationId || !messageId) return;
+    await rpc('chatHideMessage', { conversationId, messageId });
+    return;
+  }
   const { db } = requireFirebase();
   if (!conversationId || !messageId || !userId) return;
 
@@ -2994,6 +3070,10 @@ export async function blockUserAccount(currentUserId, targetUserId, conversation
   const { db } = requireFirebase();
   if (!currentUserId || !targetUserId || currentUserId === targetUserId) {
     throw new Error('ข้อมูลผู้ใช้ไม่ถูกต้อง');
+  }
+  if (RUST_BACKEND) {
+    await rpc('blockUser', { targetUserId });
+    return true;
   }
 
   const blockRef = doc(db, 'users', currentUserId, 'blockedUsers', targetUserId);
@@ -3017,6 +3097,11 @@ export async function blockUserAccount(currentUserId, targetUserId, conversation
  * Unblocks a previously blocked user account.
  */
 export async function unblockUserAccount(currentUserId, targetUserId) {
+  if (RUST_BACKEND) {
+    if (!targetUserId) return;
+    await rpc('unblockUser', { targetUserId });
+    return true;
+  }
   const { db } = requireFirebase();
   if (!currentUserId || !targetUserId) return;
 
@@ -3029,6 +3114,9 @@ export async function unblockUserAccount(currentUserId, targetUserId) {
  * Retrieves the list of blocked user IDs for a user.
  */
 export async function getBlockedUserIds(currentUserId) {
+  if (RUST_BACKEND) {
+    try { return (await rpc('listBlockedUsers'))?.userIds || []; } catch { return []; }
+  }
   const { db } = requireFirebase();
   if (!currentUserId) return [];
 
@@ -3102,6 +3190,7 @@ export async function resetSkippedDecisions(currentUserId) {
 }
 
 export async function createConversation(currentUserId, currentProfile, otherProfile) {
+  if (RUST_BACKEND) return rustCreateConversation(currentUserId, currentProfile, otherProfile);
   const { db } = requireFirebase();
   if (!currentUserId || !otherProfile?.id || currentUserId === otherProfile.id) {
     throw Object.assign(new Error('ข้อมูลผู้ร่วมสนทนาไม่ถูกต้อง'), { code: 'invalid-argument' });
@@ -3196,6 +3285,7 @@ function conversationMessageRef(db, conversationId, messageId) {
  * Firestore rules validate sender, envelope sizes, and per-message updates.
  */
 export async function updateConversationMessage(conversationId, currentUserId, text, options = {}) {
+  if (RUST_BACKEND) return rustSendMessage(conversationId, currentUserId, text, options);
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
   const encryptionSetup = await ensureConversationEncryption(conversationId, currentUserId);
@@ -3277,7 +3367,7 @@ export async function updateConversationMessage(conversationId, currentUserId, t
       }
     }
     const encryptedMessage = encryptMessageRecord(message, encryptionSetup.conversationKey);
-    encryptedMessage.preview = safeText.slice(0, 500);
+    encryptedMessage.preview = ENCRYPTED_PREVIEW;
     const unreadCounts = { ...(data.unreadCounts || {}) };
     participants.forEach((uid) => {
       if (uid !== currentUserId) unreadCounts[uid] = (unreadCounts[uid] || 0) + 1;
@@ -3381,6 +3471,8 @@ async function updateConversationMessageLegacy(conversationId, currentUserId, te
 }
 
 export async function deleteConversation(conversationId) {
+  // Rooms belong to the match on the native backend; nothing to delete.
+  if (RUST_BACKEND) return;
   const { db } = requireFirebase();
   try {
     await deleteDoc(doc(db, "conversations", conversationId));
@@ -3395,6 +3487,10 @@ export async function deleteConversation(conversationId) {
 }
 
 export async function markConversationAsRead(conversationId, currentUserId) {
+  if (RUST_BACKEND) {
+    await rpc('chatMarkRead', { conversationId });
+    return;
+  }
   const { db } = requireFirebase();
   await ensureConversationEncryption(conversationId, currentUserId);
   await updateDoc(doc(db, 'conversations', conversationId), {
@@ -3404,6 +3500,7 @@ export async function markConversationAsRead(conversationId, currentUserId) {
 }
 
 export async function toggleMeetupAcceptance(conversationId, currentUserId, hostUserId, spotName, options = {}) {
+  if (RUST_BACKEND) return rustToggleMeetupAcceptance(conversationId, currentUserId, hostUserId, spotName, options);
   const visibleHost = secureDiscoveryConfigured() && hostUserId ? await getPublicProfile(hostUserId) : null;
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
@@ -3624,6 +3721,7 @@ async function toggleMeetupAcceptanceLegacy(conversationId, currentUserId, hostU
 
 export async function cancelAppointment(appointmentId, currentUserId) {
   if (!appointmentId || !currentUserId) return false;
+  if (RUST_BACKEND) return (await rpc('cancelAppointment', { appointmentId }))?.cancelled === true;
   const { db } = requireFirebase();
   const appointmentRef = doc(db, 'appointments', appointmentId);
   let cancelled = false;
@@ -3655,8 +3753,7 @@ export async function cancelAppointment(appointmentId, currentUserId) {
 }
 
 export async function updateChatSettings(conversationId, currentUserId, settings) {
-  const { db } = requireFirebase();
-  const convRef = doc(db, 'conversations', conversationId);
+  const convRef = RUST_BACKEND ? null : doc(requireFirebase().db, 'conversations', conversationId);
   const allowedSettings = new Set(['isMuted', 'showPinnedMeetup', 'isHidden']);
   const updates = {};
   for (const [key, value] of Object.entries(settings)) {
@@ -3666,11 +3763,16 @@ export async function updateChatSettings(conversationId, currentUserId, settings
     updates[`participantSettings.${currentUserId}.${key}`] = value;
   }
   if (!Object.keys(updates).length) return false;
+  if (RUST_BACKEND) {
+    await rpc('chatSettings', { conversationId, settings });
+    return true;
+  }
   await updateDoc(convRef, updates);
   return true;
 }
 
 export async function unsendMessage(conversationId, messageId, currentUserId) {
+  if (RUST_BACKEND) return (await rpc('chatUnsend', { conversationId, messageId }))?.removed === true;
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
   const messageRef = conversationMessageRef(db, conversationId, messageId);
@@ -3708,6 +3810,11 @@ export async function unsendMessage(conversationId, messageId, currentUserId) {
 }
 
 export async function reactToMessage(conversationId, messageId, currentUserId, emoji, desiredReaction) {
+  if (RUST_BACKEND) {
+    const data = { conversationId, messageId, emoji: String(emoji || '').trim().slice(0, 16) };
+    if (desiredReaction !== undefined) data.desiredReaction = desiredReaction ? String(desiredReaction).slice(0, 16) : null;
+    return (await rpc('chatReact', data))?.changed === true;
+  }
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
   const messageRef = conversationMessageRef(db, conversationId, messageId);
@@ -3775,6 +3882,7 @@ export async function reactToMessage(conversationId, messageId, currentUserId, e
 }
 
 export async function deleteMessageForUser(conversationId, messageId, currentUserId) {
+  if (RUST_BACKEND) return (await rpc('chatHideMessage', { conversationId, messageId }))?.changed === true;
   const { db } = requireFirebase();
   const convRef = doc(db, 'conversations', conversationId);
   const messageRef = conversationMessageRef(db, conversationId, messageId);
@@ -3825,4 +3933,269 @@ function findStoredMessageIndex(conversationId, messages, messageId) {
     message.id === messageId
     || `${conversationId}-m-${toMillis(message.createdAt || message.time)}-${message.senderId || message.sender || 'unknown'}-${index}` === messageId
   ));
+}
+
+// ---------------------------------------------------------------------------
+// Native (Rust) backend implementations. Each exported Firestore function
+// above delegates here when RUST_BACKEND is set; shapes match the originals.
+// ---------------------------------------------------------------------------
+
+// Fields the server stores in the owner's profile (rust-backend profiles.rs).
+const RUST_PROFILE_FIELDS = [
+  'name', 'nickname', 'bio', 'faculty', 'year', 'age', 'gender', 'activities', 'activity',
+  'activityLabel', 'interests', 'tags', 'skill', 'pace', 'activityDetails', 'availability',
+  'availabilitySlots', 'privacy', 'avatarUri', 'avatar', 'avatarColor', 'gallery', 'favoriteTracks',
+  'meetup', 'matchingPreferences', 'locationEnabled', 'latitude', 'longitude', 'avatarRevision',
+  'compatibility', 'spotifyTopArtists', 'spotifyTopGenres', 'studentId', 'notificationsEnabled',
+  'consentAcceptedAt',
+];
+
+function rustProfileRecord(userId, result) {
+  const profile = result?.profile;
+  if (!profile) return null;
+  return normalizeProfileRecord(userId, withTimes(profile, ['updatedAt', 'createdAt', 'locationUpdatedAt', 'consentAcceptedAt']));
+}
+
+async function rustMyProfile() {
+  return rpc('getMyProfile');
+}
+
+function rustProfilePatch(source, existing = {}) {
+  const patch = {};
+  for (const field of RUST_PROFILE_FIELDS) {
+    let value = source[field];
+    if (field === 'consentAcceptedAt' && value !== undefined && value !== null) value = toMillis(value) || undefined;
+    if (field === 'age' && typeof value === 'string' && /^\d+$/.test(value)) value = Number(value);
+    if (value === undefined) {
+      if (existing[field] !== undefined && Object.prototype.hasOwnProperty.call(source, field)) patch[field] = null;
+      continue;
+    }
+    patch[field] = value;
+  }
+  return withoutUndefined(patch);
+}
+
+async function rustSaveProfile(patch, extra = {}) {
+  return rpc('saveMyProfile', { patch, ...extra });
+}
+
+async function rustUploadImage(uri, userId) {
+  if (!uri || !userId) return null;
+  if (/^https:\/\//i.test(uri)) return uri;
+  const result = await uploadRawImage('avatar', uri);
+  if (!result?.url) throw new Error('อัปโหลดรูปภาพไม่สำเร็จ');
+  return result.url;
+}
+
+function rustSubscribeToFaceVerification(userId, onChange, onError) {
+  return liveQuery(['profile', 'account'], rustMyProfile, (result) => {
+    if (rustUid() === userId && result?.profile) onChange(result.profile);
+  }, onError, { id: userId });
+}
+
+async function rustGetUserProfile(userId) {
+  if (!userId) return null;
+  if (rustUid() !== userId) return getPublicProfile(userId);
+  return rustProfileRecord(userId, await rustMyProfile());
+}
+
+async function rustCreateUserProfile(userId, data, { onlyIfMissing = false } = {}) {
+  const current = await rustMyProfile();
+  const existing = current?.profile || {};
+  const hasProfile = Boolean(existing.name || existing.age);
+  if (onlyIfMissing && hasProfile) return rustProfileRecord(userId, current);
+  let profileData = normalizeProfileRecord(userId, mergeProfileInput(existing, data || {}));
+  if (!Number.isSafeInteger(profileData.avatarRevision)) {
+    profileData.avatarRevision = Number.isSafeInteger(existing.avatarRevision) ? existing.avatarRevision : 0;
+  }
+  profileData = sanitizeProfileForFirestore(userId, profileData);
+  const privateData = {};
+  privateProfileFields.forEach((field) => {
+    if (field === 'meetup') {
+      if (profileData.meetup !== undefined) privateData.meetup = profileData.meetup === null ? null : sanitizeMeetup(profileData.meetup);
+    } else if (profileData[field] !== undefined) {
+      privateData[field] = field === 'matchingPreferences' ? sanitizeMatchingPreferences(profileData[field]) : profileData[field];
+    }
+  });
+  // A full save replaces the profile: fields the app no longer sends are removed.
+  const full = { ...Object.fromEntries(RUST_PROFILE_FIELDS.map((field) => [field, undefined])), ...privateData };
+  await rustSaveProfile(rustProfilePatch(full, existing), {
+    isDiscoverable: profileData.isDiscoverable !== false,
+  });
+  const saved = await rustMyProfile();
+  return { ...profileData, ...(rustProfileRecord(userId, saved) || {}) };
+}
+
+function rustSpotsSubscription(callback, onError) {
+  return liveQuery('config', () => rpc('listSpots'), (result) => callback(result?.spots || []), onError);
+}
+
+function rustAppointment(entry) {
+  const appointment = withTimes(entry, ['scheduledFor', 'cancelledAt', 'createdAt', 'updatedAt']);
+  if (appointment.meetup?.schedule) {
+    appointment.meetup = {
+      ...appointment.meetup,
+      schedule: withTimes(appointment.meetup.schedule, ['scheduledFor']),
+    };
+  }
+  return appointment;
+}
+
+function rustSubscribeToAppointments(currentUserId, callback, onError) {
+  return liveQuery('appointments', () => rpc('listAppointments'),
+    (result) => callback((result?.appointments || []).map(rustAppointment)), onError);
+}
+
+function rustConversationData(conversation) {
+  const data = withTimes(conversation, ['lastMessageAt', 'updatedAt', 'createdAt', 'historyClearedAt']);
+  data.readReceipts = Object.fromEntries(Object.entries(conversation.readReceipts || {})
+    .map(([uid, value]) => [uid, ts(value)]));
+  data.participantSettings = Object.fromEntries(Object.entries(conversation.participantSettings || {})
+    .map(([uid, settings]) => [uid, withTimes(settings, ['historyClearedAt'])]));
+  return data;
+}
+
+function rustMessageRecord(message) {
+  const record = withTimes(message, ['createdAt', 'time']);
+  if (message.reactionTimes) {
+    record.reactionTimes = Object.fromEntries(Object.entries(message.reactionTimes).map(([uid, value]) => [uid, ts(value)]));
+  }
+  return record;
+}
+
+/** Newest page (oldest first) or the page before `beforeSequence`. */
+export async function fetchRustConversationMessages(conversationId, { beforeSequence, limit: size = 40 } = {}) {
+  const page = await rpc('chatMessages', { conversationId, beforeSequence, limit: size });
+  return {
+    messages: (page?.messages || []).map(rustMessageRecord),
+    hasMore: page?.hasMore === true,
+    beforeSequence: page?.beforeSequence || null,
+  };
+}
+
+/** Live newest page of a room's messages (refetched on `messages` signals). */
+export function subscribeToRustConversationMessages(conversationId, onPage, onError, { limit: size = 40 } = {}) {
+  return liveQuery('messages', () => fetchRustConversationMessages(conversationId, { limit: size }), onPage, onError,
+    { id: conversationId, debounceMs: 60 });
+}
+
+async function rustInboxPreview(conversationId) {
+  try {
+    return (await fetchRustConversationMessages(conversationId, { limit: 1 })).messages;
+  } catch (error) {
+    console.warn('[RustChat] Inbox preview failed:', conversationId, error?.message || error);
+    return [];
+  }
+}
+
+function buildRustMessage(currentUserId, text, options, messageId) {
+  const sentAt = Number.isFinite(options.clientSentAt) ? options.clientSentAt : Date.now();
+  const message = { id: messageId, senderId: currentUserId, text, createdAt: sentAt, time: sentAt };
+  if (options.mediaType) message.mediaType = options.mediaType;
+  if (options.mediaType === 'video') {
+    if (!['once', 'replay', 'chat'].includes(options.videoMode)
+      || !Number.isFinite(options.videoDuration) || options.videoDuration <= 0 || options.videoDuration > 60000) {
+      throw new Error('วิดีโอต้องยาวไม่เกิน 60 วินาทีและมีรูปแบบการส่งที่ถูกต้อง');
+    }
+    message.videoMode = options.videoMode;
+    message.videoDuration = options.videoDuration;
+    if (Number.isFinite(options.videoStartMs)) message.videoStartMs = options.videoStartMs;
+    if (Number.isFinite(options.videoEndMs)) message.videoEndMs = options.videoEndMs;
+  }
+  if (options.mediaType === 'image' && options.viewMode) {
+    if (!['once', 'replay', 'chat'].includes(options.viewMode)) throw new Error('รูปแบบการดูรูปภาพไม่ถูกต้อง');
+    message.viewMode = options.viewMode;
+  }
+  for (const key of ['callType', 'callStatus', 'callTime', 'mediaUrl']) if (options[key]) message[key] = options[key];
+  if (typeof options.callDuration === 'number') message.callDuration = options.callDuration;
+  if (Array.isArray(options.mediaUrls)) message.mediaUrls = options.mediaUrls;
+  if (typeof options.audioDuration === 'number') message.audioDuration = options.audioDuration;
+  if (options.mediaType === 'track') {
+    for (const [key, max] of [['trackId', 64], ['trackName', 200], ['artists', 200], ['albumArt', 2000], ['previewUrl', 2000], ['externalUrl', 500]]) {
+      if (options[key]) message[key] = String(options[key]).slice(0, max);
+    }
+    if (Number.isFinite(Number(options.previewStartMs))) message.previewStartMs = Math.max(0, Math.round(Number(options.previewStartMs)));
+    if (Number.isFinite(Number(options.previewEndMs))) message.previewEndMs = Math.max(0, Math.round(Number(options.previewEndMs)));
+  }
+  if (options.replyTo?.id) message.replyTo = { ...createReplySnapshot(options.replyTo), id: normalizeMessageId(options.replyTo.id) };
+  if (options.forwarded) {
+    message.forwarded = true;
+    if (options.forwardedFrom?.conversationId && options.forwardedFrom?.messageId) {
+      message.forwardedFrom = {
+        conversationId: String(options.forwardedFrom.conversationId).slice(0, 200),
+        messageId: normalizeMessageId(options.forwardedFrom.messageId),
+      };
+    }
+  }
+  return message;
+}
+
+// Plaintext-free routing metadata the server accepts beside the ciphertext.
+function rustMessageMeta(encrypted) {
+  const meta = {};
+  for (const key of ['videoMode', 'videoDuration', 'videoStartMs', 'videoEndMs', 'viewMode', 'callType', 'callDuration', 'callStatus', 'callTime']) {
+    if (encrypted[key] !== undefined && encrypted[key] !== null) meta[key] = encrypted[key];
+  }
+  if (encrypted.isSystem) meta.isSystem = true;
+  if (encrypted.forwarded) meta.forwarded = true;
+  if (encrypted.forwardedFrom) meta.forwardedFrom = encrypted.forwardedFrom;
+  return meta;
+}
+
+async function rustSendMessage(conversationId, currentUserId, text, options = {}) {
+  const encryptionSetup = await ensureConversationEncryption(conversationId, currentUserId);
+  const messageId = normalizeMessageId(options.clientMessageId || `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const safeText = String(text || '').trim();
+  if (!safeText || safeText.length > 1000) {
+    throw Object.assign(new Error('Message length is invalid'), { code: 'invalid-argument' });
+  }
+  const message = buildRustMessage(currentUserId, safeText, options, messageId);
+  const encrypted = encryptMessageRecord(message, encryptionSetup.conversationKey);
+  const result = await rpc('chatSend', {
+    conversationId,
+    messageId,
+    encrypted: true,
+    encryptionVersion: encrypted.encryptionVersion,
+    nonce: encrypted.nonce,
+    ciphertext: encrypted.ciphertext,
+    meta: rustMessageMeta(encrypted),
+    clientSentAt: message.createdAt,
+  });
+  return result?.created === true;
+}
+
+async function rustCreateConversation(currentUserId, currentProfile, otherProfile) {
+  if (!currentUserId || !otherProfile?.id || currentUserId === otherProfile.id) {
+    throw Object.assign(new Error('ข้อมูลผู้ร่วมสนทนาไม่ถูกต้อง'), { code: 'invalid-argument' });
+  }
+  const { conversationId } = await rpc('openConversation', { otherUserId: otherProfile.id });
+  try {
+    await ensureConversationEncryption(conversationId, currentUserId, {}, true);
+  } catch (error) {
+    console.warn('[createConversation] E2EE warmup warning:', error?.message || error);
+  }
+  return conversationId;
+}
+
+async function rustToggleMeetupAcceptance(conversationId, currentUserId, hostUserId, spotName, options = {}) {
+  const encryptionSetup = await ensureConversationEncryption(conversationId, currentUserId);
+  const messageId = normalizeMessageId(options.clientMessageId || `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  const { conversation } = await rpc('getConversation', { conversationId });
+  const accepted = (conversation?.meetupAcceptedUsers || []).includes(currentUserId);
+  const shouldAccept = typeof options.shouldAccept === 'boolean' ? options.shouldAccept : !accepted;
+  const safeSpotName = String(spotName || 'Meetup').slice(0, 200);
+  const sentAt = Number.isFinite(options.clientSentAt) ? options.clientSentAt : Date.now();
+  const encrypted = encryptMessageRecord({
+    id: messageId,
+    senderId: currentUserId,
+    text: shouldAccept ? `Accepted meetup at ${safeSpotName}` : `Cancelled meetup at ${safeSpotName}`,
+    isSystem: true,
+    createdAt: sentAt,
+    time: sentAt,
+  }, encryptionSetup.conversationKey);
+  const result = await rpc('chatToggleMeetup', {
+    conversationId, hostUserId, shouldAccept, messageId, clientSentAt: sentAt,
+    encrypted: true, encryptionVersion: encrypted.encryptionVersion, nonce: encrypted.nonce, ciphertext: encrypted.ciphertext,
+  });
+  return result?.accepted === true;
 }

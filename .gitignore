@@ -121,6 +121,7 @@ artifacts/private-qa/
 .env.*
 !.env.example
 !functions/.env.example
+!rust-backend/operations/.env.neon.example
 **/.gradle/
 **/.wrangler/
 .firebase/
@@ -149,3 +150,13 @@ mosquitto.conf
 remote_config.json
 สคริปต์*.md
 สรุป*.md
+
+# Rust matching service build output
+matching-service/target/
+rust-backend/target/
+
+# Maintained staging deployment and provider checks (not scratch scripts).
+!scripts/staging-services.py
+!scripts/staging-services.test.py
+!scripts/check-staging-providers.py
+!scripts/check-staging-providers.test.py

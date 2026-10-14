@@ -1,0 +1,7 @@
+{
+  "uid": 65532,
+  "defaultCredentialChain": "PASS",
+  "principal": "arn:aws:sts::502731779521:assumed-role/campusmate-backend/campusmate-backend-502731779521@185e262f6650d8",
+  "region": "ap-southeast-7",
+  "boto3Version": "1.43.111"
+}

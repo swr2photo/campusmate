@@ -6,6 +6,8 @@ import { router } from 'expo-router';
 import { useAuth } from './AuthContext';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
+import { RUST_BACKEND, rpc } from '../services/rust/backend';
+import { liveQuery } from '../services/rust/events';
 import { getCachedPackages, isPurchaseCancelled, loadMembershipPackages, membershipConfigured, purchaseMembership, purchasesConfigured, releasePurchases, restoreMembership, subscribeMembership, syncMembership } from '../services/membershipService';
 import { featuresForPlan, hasFeature, isPlusRecord, PLAN_FREE, PLAN_PLUS, PLUS_ENTITLEMENT_ID } from '../data/plans';
 import { showAlert } from '../utils/appAlert';
@@ -60,6 +62,11 @@ export function MembershipProvider({ children }) {
   useEffect(() => {
     if (!uid) { setIsAdmin(false); return undefined; }
     if (isSuperAdmin) { setIsAdmin(true); return undefined; }
+    if (RUST_BACKEND) {
+      return liveQuery(['membership', 'account'], () => rpc('getMembershipState'),
+        (state) => setIsAdmin(state?.isAdmin === true),
+        (err) => console.warn('[Membership] Admin check error:', err?.message || err));
+    }
     try {
       const { db } = requireFirebase();
       const unsub = onSnapshot(doc(db, 'users', uid), (snap) => {

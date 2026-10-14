@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
+import { buildPartySchedule, validatePartySchedule } from '../src/utils/partySchedule.js';
 
 const require = createRequire(import.meta.url);
 const babel = require('@babel/core');
@@ -39,6 +40,8 @@ for (const platform of ['js', 'ios.js']) {
       schedEnd: platform === 'js' ? '16:00' : new Date('2026-10-10T16:00:00Z'),
       maxPeople: '2', message: 'hello', maxPeopleState: { get: () => '2' }, messageState: { get: () => 'hello' },
       timeValueToMinutes: value => Number(value.slice(0, 2)) * 60 + Number(value.slice(3)),
+      validatePartySchedule: value => validatePartySchedule(value, Date.parse('2026-10-09T00:00:00Z')),
+      buildPartySchedule: value => buildPartySchedule(value, Date.parse('2026-10-09T00:00:00Z')),
       createParty, setScheduleModal: () => { closed = true; }, setShowSchedule: () => { closed = true; },
       setPendingSpot: value => { spot = value; }, setTimeout: fn => fn(), onToast: message => messages.push(message),
     });

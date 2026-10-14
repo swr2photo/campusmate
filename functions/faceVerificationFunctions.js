@@ -1,51 +1,63 @@
+import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
-import { defineSecret } from 'firebase-functions/params';
+import { defineSecret, defineString } from 'firebase-functions/params';
 import {
   createFaceVerificationSession,
+  FaceVerificationError,
   getAwsSecretNames,
   getRekognitionClient,
-  isAwsConfigured,
   verifyFaceMatch,
 } from './faceVerification.js';
+import {
+  fetchIdentityStatus,
+  identityOrigin,
+  PhotoSyncError,
+  syncPhotoVerification as mirrorPhotoVerification,
+} from './photoVerificationSync.js';
 
 const REGION = 'asia-southeast1';
 const AWS_FUNCTION_SECRETS = getAwsSecretNames().map((name) => defineSecret(name));
+// Origin of the Rust identity API. Empty keeps the liveness badge sync off.
+const IDENTITY_BACKEND_URL = defineString('IDENTITY_BACKEND_URL', { default: '' });
+const SYNC_ERRORS = new Set(['invalid-argument', 'unauthenticated', 'permission-denied', 'not-found', 'unavailable']);
 
-function requireAuthUid(request) {
+function requireAuth(request) {
   if (!request.auth?.uid) {
     throw new HttpsError('unauthenticated', 'ต้องเข้าสู่ระบบก่อนทำการยืนยันใบหน้า');
   }
-  return request.auth.uid;
+  // Email claims come from the auth provider's signed token, never from the
+  // client-writable profile document.
+  return {
+    uid: request.auth.uid,
+    authEmail: request.auth.token?.email || null,
+    authEmailVerified: request.auth.token?.email_verified === true,
+  };
 }
 
 /**
- * Callable: Create a face verification session for the authenticated user.
+ * Callable: Create a single-use face verification session for the caller.
  */
 export const startFaceVerificationSession = onCall(
   { region: REGION, maxInstances: 20, secrets: AWS_FUNCTION_SECRETS },
   async (request) => {
-    const uid = requireAuthUid(request);
-    const db = getFirestore();
-    const rekognitionClient = getRekognitionClient();
-
+    const { uid, authEmail, authEmailVerified } = requireAuth(request);
     try {
-      const result = await createFaceVerificationSession({
-        db,
-        uid,
-        rekognitionClient,
-      });
-      return result;
+      return await createFaceVerificationSession({ db: getFirestore(), uid, authEmail, authEmailVerified });
     } catch (err) {
-      logger.error(`[FaceVerification] Session creation failed for user ${uid}:`, err);
+      if (err instanceof FaceVerificationError && err.code === 'rate_limited') {
+        throw new HttpsError('resource-exhausted', err.message, { reason: 'RATE_LIMITED' });
+      }
+      logger.warn('[FaceVerification] session not created', { code: err?.code || 'error' });
       throw new HttpsError('invalid-argument', err.message || 'ไม่สามารถเริ่มเซสชันการยืนยันใบหน้าได้');
     }
   }
 );
 
 /**
- * Callable: Complete face verification by comparing live capture / liveness result against primary avatar.
+ * Callable: Compare the live capture with the pinned main photo. The server
+ * alone decides; the response carries no similarity score.
  */
 export const completeFaceVerification = onCall(
   {
@@ -56,10 +68,7 @@ export const completeFaceVerification = onCall(
     secrets: AWS_FUNCTION_SECRETS,
   },
   async (request) => {
-    const uid = requireAuthUid(request);
-    const db = getFirestore();
-    const rekognitionClient = getRekognitionClient();
-
+    const { uid, authEmail, authEmailVerified } = requireAuth(request);
     const { sessionId, liveSelfieBase64 } = request.data || {};
     if (!sessionId || typeof sessionId !== 'string') {
       throw new HttpsError('invalid-argument', 'กรุณาระบุรหัสเซสชัน (sessionId)');
@@ -67,23 +76,49 @@ export const completeFaceVerification = onCall(
 
     try {
       const result = await verifyFaceMatch({
-        db,
+        db: getFirestore(),
         uid,
         sessionId,
         liveSelfieBase64,
-        rekognitionClient,
+        rekognitionClient: getRekognitionClient(),
+        authEmail,
+        authEmailVerified,
       });
-
-      if (result.success) {
-        logger.info(`[FaceVerification] User ${uid} verified successfully with score ${result.similarity}%`);
-      } else {
-        logger.warn(`[FaceVerification] Verification rejected for user ${uid}: ${result.reason} (${result.similarity || 0}%)`);
-      }
-
+      // Outcome codes only: no scores, images, emails or session payloads.
+      logger.info('[FaceVerification] completed', { outcome: result.success ? 'verified' : result.reason });
       return result;
     } catch (err) {
-      logger.error(`[FaceVerification] Verification process failed for user ${uid}:`, err);
-      throw new HttpsError('internal', err.message || 'เกิดข้อผิดพลาดในการประมวลผลการยืนยันใบหน้า');
+      logger.error('[FaceVerification] processing error', { name: err?.name || 'Error' });
+      throw new HttpsError('internal', 'เกิดข้อผิดพลาดในการประมวลผลการยืนยันใบหน้า กรุณาเริ่มใหม่อีกครั้ง');
     }
   }
 );
+
+/**
+ * Callable: mirror the Rust liveness decision into the Firestore badge. The
+ * caller sends their own ID token, which is checked and forwarded to the
+ * identity API; the server decision, not this request, sets the badge.
+ */
+export const syncPhotoVerification = onCall({ region: REGION, maxInstances: 20, timeoutSeconds: 30 }, async (request) => {
+  const { uid } = requireAuth(request);
+  const origin = identityOrigin(IDENTITY_BACKEND_URL.value());
+  if (!origin) {
+    throw new HttpsError('failed-precondition', 'ระบบยืนยันใบหน้าแบบใหม่ยังไม่เปิดใช้งาน');
+  }
+  try {
+    return await mirrorPhotoVerification({
+      db: getFirestore(),
+      uid,
+      idToken: request.data?.idToken,
+      verifyIdToken: (token, checkRevoked) => getAuth().verifyIdToken(token, checkRevoked),
+      readStatus: (token) => fetchIdentityStatus({ origin, idToken: token }),
+    });
+  } catch (err) {
+    if (err instanceof PhotoSyncError && SYNC_ERRORS.has(err.code)) {
+      logger.warn('[PhotoVerificationSync] not synced', { code: err.code });
+      throw new HttpsError(err.code, err.message);
+    }
+    logger.error('[PhotoVerificationSync] failed', { name: err?.name || 'Error' });
+    throw new HttpsError('internal', 'ซิงก์สถานะการยืนยันใบหน้าไม่สำเร็จ');
+  }
+});

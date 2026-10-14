@@ -1,0 +1,64 @@
+[
+    {
+        "id": "185e262f6650d8",
+        "name": "oidc-probe",
+        "state": "started",
+        "region": "sin",
+        "image_ref": {
+            "registry": "docker-hub-mirror.fly.io",
+            "repository": "library/python",
+            "tag": "3.12-alpine",
+            "digest": "sha256:2055081c860db8c842b663415b795b026e7e5cc63b59c5193fcc9997713ea5b8"
+        },
+        "instance_id": "01M4RD9W4QYFF3RJPQMVQ7MH95",
+        "version": "01M4RD9W4QYFF3RJPQMVQ7MH95",
+        "private_ip": "fdaa:d4:6b87:a7b:2ce:2265:84d3:2",
+        "created_at": "2026-10-12T15:57:04Z",
+        "updated_at": "2026-10-12T15:57:09Z",
+        "config": {
+            "env": {
+                "AWS_REGION": "ap-southeast-7",
+                "AWS_ROLE_ARN": "arn:aws:iam::502731779521:role/campusmate-backend"
+            },
+            "init": {
+                "cmd": [
+                    "sleep",
+                    "3600"
+                ]
+            },
+            "guest": {
+                "cpu_kind": "shared",
+                "cpus": 1,
+                "memory_mb": 256
+            },
+            "image": "docker-hub-mirror.fly.io/library/python:3.12-alpine@sha256:2055081c860db8c842b663415b795b026e7e5cc63b59c5193fcc9997713ea5b8",
+            "restart": {
+                "policy": "no"
+            },
+            "dns": {}
+        },
+        "events": [
+            {
+                "type": "start",
+                "status": "started",
+                "request": {},
+                "source": "flyd",
+                "timestamp": 1791820629843
+            },
+            {
+                "type": "launch",
+                "status": "created",
+                "source": "user",
+                "timestamp": 1791820624199
+            },
+            {
+                "type": "launch",
+                "status": "pending",
+                "source": "flyd",
+                "timestamp": 1791820624023
+            }
+        ],
+        "host_status": "ok",
+        "cordoned": false
+    }
+]

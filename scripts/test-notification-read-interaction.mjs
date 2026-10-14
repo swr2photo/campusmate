@@ -22,7 +22,7 @@ assert.ok(received && open, 'Exercise the actual foreground receipt and tap hand
 
 function handlers(chatId = '') {
   const reads = [], banners = [], routes = [];
-  const context = vm.createContext({
+  const context = vm.createContext({ RUST_BACKEND: false,
     markPushInboxRead: async id => { if (id) reads.push(id); },
     routeRef: { current: { chatId } },
     showInAppNotification: banner => banners.push(banner),
@@ -75,7 +75,7 @@ findRestrictionPresses(restrictionAst);
 test('restriction announcement tap and warning acknowledgement mark the matching inbox record', () => {
   assert.equal(restrictionPresses.length, 2);
   for (const callback of restrictionPresses) {
-    const reads = [], context = vm.createContext({
+    const reads = [], context = vm.createContext({ RUST_BACKEND: false,
       notice: { notificationId: 'notice-1', route: '/home' },
       markPushInboxRead: async id => reads.push(id), showingNotice: true,
       showNextNotice: () => {}, router: { push: () => {} },

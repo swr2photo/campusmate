@@ -30,6 +30,7 @@ const listenerOptions = new Map();
 let releaseOlder;
 const olderGate = new Promise((resolve) => { releaseOlder = resolve; });
 const dependencies = {
+  RUST_BACKEND: false,
   requireFirebase: () => ({ db: {} }),
   getOrCreateEncryptionIdentity: async () => ({}),
   collection: (_db, ...parts) => parts.join('/'),

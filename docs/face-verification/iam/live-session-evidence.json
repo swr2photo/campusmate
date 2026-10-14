@@ -1,0 +1,49 @@
+{
+  "Project": "Building Momentum",
+  "ProjectId": "502731779521",
+  "Region": "ap-southeast-7",
+  "CheckedAtUtc": "2026-10-12T15:47:07.7954823+00:00",
+  "BackendPrincipal": "arn:aws:sts::502731779521:assumed-role/campusmate-backend/campusmate-liveness-smoke",
+  "StreamingPrincipal": "arn:aws:sts::502731779521:assumed-role/campusmate-liveness-stream/campusmate-stream-smoke",
+  "BackendCredentialExpiresAt": "2026-10-12T23:01:52+07:00",
+  "StreamingCredentialExpiresAt": "2026-10-12T23:01:59+07:00",
+  "CreateFaceLivenessSession": "PASS",
+  "GetFaceLivenessSessionResults": "PASS",
+  "SessionId": "993a73b9-0b0f-4b91-8f39-5c817516b181",
+  "SessionCreatedAtUtc": "2026-10-12T15:46:54.4788866+00:00",
+  "SessionStatus": "CREATED",
+  "AuditImagesLimit": 0,
+  "OutputConfig": null,
+  "Checks": [
+    {
+      "Error": "AccessDenied",
+      "Result": "PASS",
+      "Check": "Administrator cannot directly assume streaming role"
+    },
+    {
+      "Error": "AccessDenied",
+      "Result": "PASS",
+      "Check": "Streaming cannot create sessions"
+    },
+    {
+      "Error": "AccessDenied",
+      "Result": "PASS",
+      "Check": "Streaming cannot retrieve results"
+    },
+    {
+      "Error": "AccessDenied",
+      "Result": "PASS",
+      "Check": "Streaming cannot compare faces"
+    },
+    {
+      "Error": "AccessDenied",
+      "Result": "PASS",
+      "Check": "Streaming cannot assume backend"
+    }
+  ],
+  "VideoStreaming": "NOT RUN",
+  "BackendCompareFacesWithImages": "NOT RUN",
+  "BiometricDataUploaded": false,
+  "ProductionApplicationDeployment": false,
+  "BillingPlanCheck": "GetAccountPlanState returned ResourceNotFoundException; paid/free status unconfirmed"
+}

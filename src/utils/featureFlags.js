@@ -3,7 +3,25 @@ let rc = null;
 let getBoolean = null;
 let getString = null;
 
-try {
+// Native backend: the admin console writes the same keys to app_config/remoteConfig.
+const RUST_MODE = process.env.EXPO_PUBLIC_BACKEND === 'rust';
+if (RUST_MODE) {
+  const values = {};
+  rc = values;
+  getBoolean = (store, key) => store[key] === true || store[key] === 'true';
+  getString = (store, key) => (typeof store[key] === 'string' ? store[key] : '');
+  // Loaded lazily to keep this module free of an import cycle with services.
+  setTimeout(() => {
+    try {
+      const { publicRpc } = require('../services/rust/backend');
+      publicRpc('getAppConfig', { id: 'remoteConfig' })
+        .then((result) => Object.assign(values, result?.config || {}))
+        .catch(() => {});
+    } catch { /* Defaults stay in effect. */ }
+  }, 0);
+}
+
+if (!RUST_MODE) try {
   const remoteConfig = require('@react-native-firebase/remote-config');
   const dbService = require('../services/dbService');
   if (remoteConfig?.getRemoteConfig && dbService?.firebaseApp) {

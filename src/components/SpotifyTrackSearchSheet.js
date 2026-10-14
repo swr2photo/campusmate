@@ -9,14 +9,12 @@ import Animated, {
   Easing,
   useAnimatedStyle,
   useSharedValue,
-  withRepeat,
-  withSequence,
   withSpring,
   withTiming,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { scheduleOnRN } from 'react-native-worklets';
-import { MotiView } from 'moti';
+import { useTrackLyrics } from '../hooks/useTrackLyrics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FeatureIcon from './FeatureIcon';
 import { browseMusicTracks, getCachedBrowseMusicTracks, searchSpotifyTracksPage } from '../services/spotifyService';
@@ -156,7 +154,6 @@ function TrackRow({ alreadyAdded, colors, isPlaying, item, onPress, selected }) 
 function MiniPlayerBar({ colors, hasPreview, insets, isPlaying, onNext, onTogglePlay, track }) {
   const fallback = colors.ink || '#1A2333';
   const [cardColor, setCardColor] = useState(fallback);
-  const volumePulse = useSharedValue(0);
 
   useEffect(() => {
     let active = true;
@@ -170,47 +167,15 @@ function MiniPlayerBar({ colors, hasPreview, insets, isPlaying, onNext, onToggle
     return () => { active = false; };
   }, [fallback, track?.albumArt, track?.id]);
 
-  useEffect(() => {
-    if (isPlaying) {
-      volumePulse.set(withRepeat(
-        withSequence(
-          withTiming(1, { duration: 210, easing: Easing.out(Easing.quad) }),
-          withTiming(0.22, { duration: 170 }),
-          withTiming(0.78, { duration: 250 }),
-          withTiming(0.32, { duration: 190 }),
-          withTiming(0.92, { duration: 150 }),
-          withTiming(0.18, { duration: 230 }),
-        ),
-        -1,
-        false,
-      ));
-      return undefined;
-    }
-    cancelAnimation(volumePulse);
-    volumePulse.set(withTiming(0, { duration: 280 }));
-    return undefined;
-  }, [isPlaying, track?.id, volumePulse]);
-
-  const pulseStyle = useAnimatedStyle(() => ({
-    opacity: 0.04 + volumePulse.get() * 0.2,
-  }));
-
   if (!track) return null;
   return (
-    <MotiView
-      animate={{ backgroundColor: cardColor }}
+    <View
       style={[
         styles.miniBar,
+        { backgroundColor: cardColor },
         { bottom: Math.max(insets.bottom, 10) },
       ]}
-      transition={{
-        backgroundColor: { type: 'timing', duration: 560 },
-      }}
     >
-      <Animated.View
-        pointerEvents="none"
-        style={[styles.miniVolumeWash, pulseStyle]}
-      />
       <Pressable accessibilityLabel="ต่อไป เลือกท่อน" onPress={onNext} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0, gap: 10 }}>
         {track.albumArt ? (
           <Image contentFit="cover" source={{ uri: track.albumArt }} style={styles.miniArt} />
@@ -243,7 +208,7 @@ function MiniPlayerBar({ colors, hasPreview, insets, isPlaying, onNext, onToggle
       >
         <FeatureIcon color={colors.ink || '#1A2333'} name="chevron.right" size={22} />
       </Pressable>
-    </MotiView>
+    </View>
   );
 }
 
@@ -358,9 +323,11 @@ function TrimModule({
   const [endMs, setEndMs] = useState(Math.min(safeDuration, defaultInitialStart + DEFAULT_SEGMENT_MS));
   const [width, setWidth] = useState(0);
   const [segmentLoop, setSegmentLoop] = useState(false);
-  const [lyricsResult, setLyricsResult] = useState({ status: 'loading' });
   const [lyricsRetry, setLyricsRetry] = useState(0);
+  const lyricsResult = useTrackLyrics(track, lyricsRetry);
   const rangeReadyRef = useRef(false);
+  const rangeEditedRef = useRef(false);
+  const rangeTrackRef = useRef(null);
 
   const startMsSV = useSharedValue(defaultInitialStart);
   const endMsSV = useSharedValue(Math.min(safeDuration, defaultInitialStart + DEFAULT_SEGMENT_MS));
@@ -378,6 +345,13 @@ function TrimModule({
 
   useEffect(() => {
     durationSV.set(safeDuration);
+    const songKey = `${track?.id}:${track?.name}:${track?.artists}`;
+    if (rangeTrackRef.current !== songKey) {
+      rangeTrackRef.current = songKey;
+      rangeReadyRef.current = false;
+      rangeEditedRef.current = false;
+      setSegmentLoop(false);
+    }
     if (!rangeReadyRef.current && safeDuration > 0) {
       const initStart = (track?.previewStartMs != null && track.previewStartMs >= 0)
         ? track.previewStartMs
@@ -388,25 +362,18 @@ function TrimModule({
       startMsSV.set(initStart);
       endMsSV.set(nextEnd);
       rangeReadyRef.current = true;
+    } else if (rangeEditedRef.current) {
+      // Late duration metadata may clamp a range, but must not reset it.
+      const nextStart = clamp(startMsSV.get(), 0, Math.max(0, safeDuration - MIN_SEGMENT_MS));
+      const nextEnd = clamp(endMsSV.get(), nextStart + MIN_SEGMENT_MS, safeDuration);
+      setStartMs(nextStart); setEndMs(nextEnd);
+      startMsSV.set(nextStart); endMsSV.set(nextEnd);
     }
-  }, [durationSV, endMsSV, initialStartMs, safeDuration, startMsSV, track?.previewStartMs]);
+  }, [durationSV, endMsSV, initialStartMs, safeDuration, startMsSV, track?.id, track?.name, track?.artists, track?.previewStartMs]);
 
   useEffect(() => {
     widthSV.set(width);
   }, [width, widthSV]);
-
-  useEffect(() => {
-    rangeReadyRef.current = false;
-    const initStart = (track?.previewStartMs != null && track.previewStartMs >= 0)
-      ? track.previewStartMs
-      : (initialStartMs > 0 && initialStartMs < safeDuration ? initialStartMs : 0);
-    const nextEnd = Math.min(safeDuration, initStart + DEFAULT_SEGMENT_MS);
-    setStartMs(initStart);
-    setEndMs(nextEnd);
-    startMsSV.set(initStart);
-    endMsSV.set(nextEnd);
-    setSegmentLoop(false);
-  }, [endMsSV, initialStartMs, safeDuration, startMsSV, track?.id, track?.previewStartMs]);
 
   // Boundary check: pause automatically as soon as playback reaches or exceeds the trim window
   useEffect(() => {
@@ -423,29 +390,19 @@ function TrimModule({
   }, [currentMs, endMs, isPlaying, onPause, onSeek, player, startMs]);
 
   useEffect(() => {
-    let active = true;
-    setLyricsResult({ status: 'loading' });
-    getTrackLyrics({ track })
-      .then((result) => {
-        if (!active) return;
-        setLyricsResult(result);
-        // If user hasn't set custom trim and hook is detected, auto-position the window to the hook
-        if (result?.suggestedLineStartMs && !track?.previewStartMs && startMs === 0) {
-          const hookStart = clamp(result.suggestedLineStartMs, 0, Math.max(0, safeDuration - MIN_SEGMENT_MS));
-          const hookEnd = clamp(hookStart + DEFAULT_SEGMENT_MS, hookStart + MIN_SEGMENT_MS, safeDuration);
-          setStartMs(hookStart);
-          setEndMs(hookEnd);
-          startMsSV.set(hookStart);
-          endMsSV.set(hookEnd);
-        }
-      })
-      .catch(() => {
-        if (active) setLyricsResult({ status: 'error' });
-      });
-    return () => { active = false; };
-  }, [lyricsRetry, safeDuration, startMs, startMsSV, endMsSV, track?.id, track?.name, track?.artists, track?.previewStartMs]);
+    // Position a default range after lyrics arrive, independently of fetch.
+    if (!rangeEditedRef.current && lyricsResult?.suggestedLineStartMs && track?.previewStartMs == null && startMs === 0) {
+      const hookStart = clamp(lyricsResult.suggestedLineStartMs, 0, Math.max(0, safeDuration - MIN_SEGMENT_MS));
+      const hookEnd = clamp(hookStart + DEFAULT_SEGMENT_MS, hookStart + MIN_SEGMENT_MS, safeDuration);
+      setStartMs(hookStart);
+      setEndMs(hookEnd);
+      startMsSV.set(hookStart);
+      endMsSV.set(hookEnd);
+    }
+  }, [lyricsResult, safeDuration, startMs, startMsSV, endMsSV, track?.previewStartMs]);
 
   const commitRange = useCallback((nextStart, nextEnd) => {
+    rangeEditedRef.current = true;
     try {
       onPause?.();
       player?.pause?.();
@@ -1034,6 +991,55 @@ export default function SpotifyTrackSearchSheet({
   const [showTrim, setShowTrim] = useState(false);
   const [autoPlayToken, setAutoPlayToken] = useState(0);
 
+  const hasPreview = typeof selectedTrack?.previewUrl === 'string' && selectedTrack.previewUrl.length > 0;
+  const sourceRef = useRef(null);
+  if (hasPreview && sourceRef.current?.uri !== selectedTrack.previewUrl) {
+    sourceRef.current = { uri: selectedTrack.previewUrl };
+  } else if (!hasPreview) {
+    sourceRef.current = null;
+  }
+
+  const player = useAudioPlayer(sourceRef.current);
+  const status = useAudioPlayerStatus(player);
+  const playerPlaying = Boolean(status?.playing || player?.playing);
+
+  const [ytTrackData, setYtTrackData] = useState(null);
+  const [ytLoading, setYtLoading] = useState(false);
+  const [ytCurrentMs, setYtCurrentMs] = useState(0);
+  const [ytDurationMs, setYtDurationMs] = useState(0);
+  const [ytIsPlaying, setYtIsPlaying] = useState(false);
+  const [ytState, setYtState] = useState('UNSTARTED');
+  const ytPlayerRef = useRef(null);
+  const showTrimRef = useRef(false);
+  showTrimRef.current = showTrim;
+
+  const [hookStartMs, setHookStartMs] = useState(0);
+  const hookStartMsRef = useRef(0);
+  const hasJumpedToHookRef = useRef(false);
+
+  const isFullSongActive = Boolean(ytTrackData?.videoId);
+  const activeHasAudio = Boolean(hasPreview || isFullSongActive);
+  const isPlaying = Boolean(ytIsPlaying || playerPlaying);
+  const activeIsPlaying = isPlaying;
+  const durationMs = Math.round((Number(status?.duration) || 0) * 1000);
+  const currentMs = Math.round((Number(status?.currentTime) || 0) * 1000);
+
+  const handleBackFromTrim = useCallback(() => {
+    setShowTrim(false);
+    if (hasPreview) {
+      try { ytPlayerRef.current?.pause?.(); } catch (_) {}
+      if (player) {
+        try {
+          player.seekTo(0);
+          player.play();
+        } catch (_) {}
+      }
+    } else {
+      // If no preview, YouTube is our main source in list mode too, so keep it playing (or start it)
+      ytPlayerRef.current?.play?.();
+    }
+  }, [hasPreview, player]);
+
   const translateY = useSharedValue(700);
   const fadeAnim = useSharedValue(0);
   const dragStartY = useSharedValue(0);
@@ -1133,39 +1139,6 @@ export default function SpotifyTrackSearchSheet({
     () => new Set((excludeIds || []).filter(Boolean)),
     [excludeIds],
   );
-
-  const hasPreview = typeof selectedTrack?.previewUrl === 'string' && selectedTrack.previewUrl.length > 0;
-  const sourceRef = useRef(null);
-  if (hasPreview && sourceRef.current?.uri !== selectedTrack.previewUrl) {
-    sourceRef.current = { uri: selectedTrack.previewUrl };
-  } else if (!hasPreview) {
-    sourceRef.current = null;
-  }
-
-  const player = useAudioPlayer(sourceRef.current);
-  const status = useAudioPlayerStatus(player);
-  const playerPlaying = Boolean(status?.playing || player?.playing);
-
-  const [ytTrackData, setYtTrackData] = useState(null);
-  const [ytLoading, setYtLoading] = useState(false);
-  const [ytCurrentMs, setYtCurrentMs] = useState(0);
-  const [ytDurationMs, setYtDurationMs] = useState(0);
-  const [ytIsPlaying, setYtIsPlaying] = useState(false);
-  const [ytState, setYtState] = useState('UNSTARTED');
-  const ytPlayerRef = useRef(null);
-  const showTrimRef = useRef(false);
-  showTrimRef.current = showTrim;
-
-  const [hookStartMs, setHookStartMs] = useState(0);
-  const hookStartMsRef = useRef(0);
-  const hasJumpedToHookRef = useRef(false);
-
-  const isFullSongActive = Boolean(ytTrackData?.videoId);
-  const activeHasAudio = Boolean(hasPreview || isFullSongActive);
-  const isPlaying = Boolean(ytIsPlaying || playerPlaying);
-  const activeIsPlaying = isPlaying;
-  const durationMs = Math.round((Number(status?.duration) || 0) * 1000);
-  const currentMs = Math.round((Number(status?.currentTime) || 0) * 1000);
 
   useEffect(() => {
     if (!selectedTrack?.name) {
@@ -1592,22 +1565,6 @@ export default function SpotifyTrackSearchSheet({
     closeWithAnimation();
   }, [closeWithAnimation, handlePick, player, selectedTrack?.youtubeVideoId, ytTrackData?.videoId]);
 
-  const handleBackFromTrim = useCallback(() => {
-    setShowTrim(false);
-    if (hasPreview) {
-      try { ytPlayerRef.current?.pause?.(); } catch (_) {}
-      if (player) {
-        try {
-          player.seekTo(0);
-          player.play();
-        } catch (_) {}
-      }
-    } else {
-      // If no preview, YouTube is our main source in list mode too, so keep it playing (or start it)
-      ytPlayerRef.current?.play?.();
-    }
-  }, [hasPreview, player]);
-
   const isSearching = query.trim().length >= MIN_QUERY_LENGTH;
   const error = isSearching ? searchError : browseError;
   const browseSections = useMemo(() => {
@@ -1857,7 +1814,6 @@ export default function SpotifyTrackSearchSheet({
                   setYtDurationMs(Math.round(duration * 1000));
                 }
               }}
-              videoId={ytTrackData?.videoId}
             />
           </Animated.View>
         </View>
@@ -2013,10 +1969,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     position: 'absolute',
     right: spacing.md,
-  },
-  miniVolumeWash: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: '#FFFFFF',
   },
   miniArt: {
     borderRadius: 8,

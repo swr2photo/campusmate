@@ -56,6 +56,8 @@ module.exports = {
       ? expo.extra?.plusBackendEnabled === true : process.env.CAMPUSMATE_PLUS_BACKEND_ENABLED === 'true',
     secureDiscoveryEnabled: process.env.CAMPUSMATE_SECURE_DISCOVERY_ENABLED === undefined
       ? expo.extra?.secureDiscoveryEnabled === true : process.env.CAMPUSMATE_SECURE_DISCOVERY_ENABLED === 'true',
+    // Ranked discovery (matching-service on Cloud Run). Empty = use the getDiscoveryPage callable.
+    matchingServiceUrl: (process.env.EXPO_PUBLIC_MATCHING_URL || '').replace(/\/+$/, '').startsWith('https://') ? process.env.EXPO_PUBLIC_MATCHING_URL.replace(/\/+$/, '') : '',
     revenueCatAndroidKey: process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY || expo.extra?.revenueCatAndroidKey || '',
     revenueCatIosKey: process.env.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY || '',
     nativeAdsEnabled: process.env.CAMPUSMATE_NATIVE_ADS_ENABLED === 'true',

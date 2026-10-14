@@ -18,6 +18,8 @@ import { showAlert } from '../utils/appAlert';
 import { router } from 'expo-router';
 import { showInAppNotification } from '../components/InAppNotificationBanner';
 import { markPushInboxRead } from '../services/notificationInboxService';
+import { RUST_BACKEND, rpc } from '../services/rust/backend';
+import { liveQuery } from '../services/rust/events';
 
 const AuthContext = createContext(null);
 const AUTH_READY_TIMEOUT_MS = 6000;
@@ -185,6 +187,39 @@ export function AuthProvider({ children }) {
         },
       });
     };
+
+    if (RUST_BACKEND) {
+      // Suspension revokes the native session (the auth subscription signs
+      // out). Announcements and warnings arrive through the inbox.
+      const openAnnouncement = (item) => {
+        void markPushInboxRead(item.notificationId).catch(() => {});
+        if (item.route && ['/home', '/discover', '/meetup', '/me', '/chat', '/likes'].includes(item.route)) router.push(item.route);
+      };
+      const stop = liveQuery('notifications', () => rpc('listNotifications', { limit: 10 }), async (page) => {
+        for (const row of page?.notifications || []) {
+          const kind = row.type;
+          if (!['admin_announcement', 'moderation_warning'].includes(kind) || row.readAt) continue;
+          const notice = { id: row.id, notificationId: row.id, title: row.title, message: row.body, route: row.target?.route, createdAt: row.createdAt };
+          if (!active || shownNotices.has(kind + ':' + notice.id) || isNoticeStale(notice)) continue;
+          shownNotices.add(kind + ':' + notice.id);
+          const storageKey = 'campusmate_' + kind + '_' + uid;
+          const seen = await AsyncStorage.getItem(storageKey).catch(() => null);
+          if (!active || seen === notice.id) continue;
+          await AsyncStorage.setItem(storageKey, notice.id).catch(() => {});
+          if (kind === 'admin_announcement') {
+            showInAppNotification({
+              title: notice.title || 'ประกาศจาก CampusMate', message: notice.message || '', type: 'admin_announcement',
+              data: { route: notice.route, notificationId: notice.notificationId },
+              onPress: () => openAnnouncement(notice),
+            });
+          } else {
+            noticeQueue.push({ ...notice, kind, title: 'คำเตือนจากผู้ดูแล CampusMate', storageKey });
+            showNextNotice();
+          }
+        }
+      }, () => {});
+      return () => { active = false; stop(); };
+    }
 
     const unsubscribe = onSnapshot(doc(db, 'accountRestrictions', uid), { includeMetadataChanges: true }, async snapshot => {
       if (!active || !snapshot.exists()) return;

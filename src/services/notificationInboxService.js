@@ -6,13 +6,23 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { requireFirebase } from './dbService';
 import { waitForAuthReady } from './secureDiscoveryService';
 import { createNotificationReadOutbox } from '../utils/notificationReadOutbox';
+import { RUST_BACKEND, rpc, rustUid } from './rust/backend';
+import { liveQuery } from './rust/events';
+import { withTimes } from './rust/time';
+
+const rustRow = (row) => (row ? withTimes(row, ['readAt', 'createdAt', 'expiresAt']) : row);
 
 let readOutbox;
 function getReadOutbox() {
   if (!readOutbox) readOutbox = createNotificationReadOutbox({
     storage: AsyncStorage,
-    currentUid: () => getAuth(requireFirebase().app).currentUser?.uid || null,
+    currentUid: () => (RUST_BACKEND ? rustUid() : getAuth(requireFirebase().app).currentUser?.uid || null),
     write: async (uid, id) => {
+      if (RUST_BACKEND) {
+        if (rustUid() !== uid) throw Object.assign(new Error('บัญชีเปลี่ยนแล้ว'), { code: 'permission-denied' });
+        await rpc('markNotificationRead', { id });
+        return;
+      }
       const { app, db } = requireFirebase();
       if (getAuth(app).currentUser?.uid !== uid) throw Object.assign(new Error('บัญชีเปลี่ยนแล้ว'), { code: 'permission-denied' });
       await updateDoc(doc(db, 'users', uid, 'notifications', id), { readAt: serverTimestamp() });
@@ -28,12 +38,31 @@ export const timestampMillis = value => value?.toMillis?.() || (value?.seconds ?
 export const visibleNotification = row => !row.expiresAt || timestampMillis(row.expiresAt) > Date.now();
 const inbox = (db, uid) => collection(db, 'users', uid, 'notifications');
 export async function inboxCall(name, expectedUid) {
+  if (RUST_BACKEND) {
+    const uid = rustUid();
+    if (!uid || (expectedUid && uid !== expectedUid)) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
+    return rpc(name, { expectedUid: expectedUid || uid });
+  }
   const { app } = requireFirebase();
   const user = await waitForAuthReady(getAuth(app));
   if (!user || (expectedUid && user.uid !== expectedUid)) throw new Error('บัญชีเปลี่ยนแล้ว กรุณาลองอีกครั้ง');
   return (await httpsCallable(getFunctions(app, 'asia-southeast1'), name)({ expectedUid: expectedUid || user.uid })).data;
 }
 export function watchInbox(uid, onRows, onCount, onError, onFace, pageSize = 30) {
+  if (RUST_BACKEND) {
+    if (rustUid() !== uid) return () => {};
+    void retryInboxReadWrites(uid).catch(onError);
+    inboxCall('ensureNotificationInbox', uid).catch(onError);
+    // Expiry is a clock event; also refresh once a minute while active.
+    const timer = setInterval(() => { if (AppState.currentState === 'active') stop.refresh?.(); }, 60000);
+    const stop = liveQuery('notifications', () => rpc('listNotifications', { limit: pageSize }), (page) => {
+      const rows = (page?.notifications || []).map(rustRow);
+      onRows(rows, rows.at(-1) || null, page?.hasMore === true, false);
+      onCount(Number(page?.unreadCount) || 0);
+      onFace?.(rustRow(page?.face) || null, false);
+    }, onError);
+    return () => { clearInterval(timer); stop(); };
+  }
   let alive = true, stops = [], revision = 0, offAuth = () => {};
   const disconnect = () => { revision++; stops.forEach(stop => stop()); stops = []; };
   try {
@@ -76,6 +105,12 @@ export function watchInbox(uid, onRows, onCount, onError, onFace, pageSize = 30)
   return () => { alive = false; offAuth(); disconnect(); };
 }
 export async function loadInboxPage(uid, cursor) {
+  if (RUST_BACKEND) {
+    const before = cursor ? { createdAt: cursor.createdAt?.toMillis?.() ?? cursor.createdAt, id: cursor.id } : null;
+    const page = await rpc('listNotifications', { limit: 30, before });
+    const rows = (page?.notifications || []).map(rustRow);
+    return { rows, cursor: rows.at(-1) || null, hasMore: page?.hasMore === true };
+  }
   const { db } = requireFirebase();
   const snap = await getDocs(query(inbox(db, uid), orderBy('createdAt', 'desc'), startAfter(cursor), limit(30)));
   return { rows: snap.docs.map(row => ({ id: row.id, ...row.data() })), cursor: snap.docs.at(-1), hasMore: snap.size === 30 };
@@ -84,6 +119,23 @@ export function markInboxRead(uid, id) {
   return getReadOutbox().enqueue(uid, id);
 }
 export async function inboxTargetAvailable(row, uid) {
+  if (RUST_BACKEND) {
+    const target = row.target || {};
+    try {
+      if (target.conversationId) return Boolean((await rpc('getConversation', { conversationId: target.conversationId }))?.conversation);
+      if (row.type === 'group_message' && target.partyId) {
+        return Boolean((await rpc('listGroupChats', { partyId: target.partyId }))?.chats?.length);
+      }
+      if (target.partyId) return Boolean((await rpc('listParties', { scope: 'one', partyId: target.partyId }))?.parties?.length);
+      if (target.appointmentId) {
+        const { appointments = [] } = await rpc('listAppointments');
+        return appointments.some((entry) => entry.id === target.appointmentId);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
   const { db } = requireFirebase(), target = row.target || {};
   if (target.conversationId) {
     const snap = await getDoc(doc(db, 'conversations', target.conversationId));
@@ -100,6 +152,11 @@ export async function inboxTargetAvailable(row, uid) {
 
 export async function markPushInboxRead(id) {
   if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id)) return;
+  if (RUST_BACKEND) {
+    const uid = rustUid();
+    if (uid) await markInboxRead(uid, id);
+    return;
+  }
   const { app } = requireFirebase(), user = await waitForAuthReady(getAuth(app));
   if (user) await markInboxRead(user.uid, id);
 }

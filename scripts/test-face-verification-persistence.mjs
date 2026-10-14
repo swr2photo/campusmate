@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 const helper=fs.readFileSync('src/utils/faceVerificationState.js','utf8').replaceAll('export ', '');
 const service=fs.readFileSync('src/services/firestoreService.js','utf8');
-function context(extra={}) {const c=vm.createContext({...extra});vm.runInContext(helper+'\nglobalThis.preserve=withServerFaceVerification;',c);return c;}
+function context(extra={}) {const c=vm.createContext({ RUST_BACKEND: false,...extra});vm.runInContext(helper+'\nglobalThis.preserve=withServerFaceVerification;',c);return c;}
 test('general edits preserve server verification and reject stale or forged client values',()=>{
  const c=context();const server={isFaceVerified:true,faceVerifiedAt:123,faceMatchScore:98,faceVerificationStatus:'verified'};
  const result=c.preserve({name:'Edited',isFaceVerified:false,faceMatchScore:0},server);
@@ -39,7 +39,7 @@ test('status subscription ignores stale cache and pending writes, applies server
  let emit,stopped=false;const values=[];
  const c=context({Promise,requireFirebase:()=>({db:{},app:{}}),getAuth:()=>({}),waitForAuthReady:async()=>({uid:'owner'}),
  doc:(_db,col,id)=>col+'/'+id,onSnapshot:(ref,options,callback)=>{assert.equal(ref,'users/owner');emit=callback;return()=>{stopped=true;};}});
- const body=service.slice(service.indexOf('export function subscribeToFaceVerification('),service.indexOf('export async function getUserProfile(')).replace('export ','').replace("import('firebase/auth')","Promise.resolve({getAuth})");
+ const body=service.slice(service.indexOf('export function subscribeToFaceVerification('),service.indexOf('export function subscribeToUserProfile(')).replace('export ','').replace("import('firebase/auth')","Promise.resolve({getAuth})");
  vm.runInContext(body+'\nglobalThis.subscribe=subscribeToFaceVerification;',c);
  const stop=c.subscribe('owner',value=>values.push(value),assert.fail);await new Promise(r=>setImmediate(r));
  const snapshot=(isFaceVerified,fromCache=false,hasPendingWrites=false)=>({metadata:{fromCache,hasPendingWrites},exists:()=>true,data:()=>({isFaceVerified})});

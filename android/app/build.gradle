@@ -105,8 +105,8 @@ android {
         manifestPlaceholders['googleMapsApiKey'] = System.getenv('CAMPUSMATE_ANDROID_MAPS_SDK_KEY') ?: ''
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 86
-        versionName "3.1.2"
+        versionCode 93
+        versionName "3.1.4"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }

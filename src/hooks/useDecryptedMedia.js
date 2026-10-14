@@ -3,6 +3,7 @@ import { getAuth } from 'firebase/auth';
 import { getDecryptedMediaUri, getSyncCachedMediaUri } from '../services/chatMediaService';
 import { getOrFetchConversationKey } from '../services/chatEncryptionService';
 import { firebaseApp } from '../services/dbService';
+import { RUST_BACKEND, rustUid } from '../services/rust/backend';
 
 /**
  * Hook to retrieve and decrypt chat media (image / audio) on-device.
@@ -63,7 +64,8 @@ export function useDecryptedMedia(mediaUrl, { conversationId, currentUserId, con
         let key = conversationKey;
         if (!key && conversationId) {
           let resolvedUid = currentUserId;
-          if (!resolvedUid && firebaseApp) {
+          if (!resolvedUid && RUST_BACKEND) resolvedUid = rustUid();
+          if (!resolvedUid && firebaseApp && !RUST_BACKEND) {
             try {
               resolvedUid = getAuth(firebaseApp)?.currentUser?.uid;
             } catch (_) {}

@@ -1,5 +1,6 @@
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService.js';
+import { getCallable } from './callableClient';
 
 const FUNCTIONS_REGION = 'asia-southeast1';
 const BROWSE_TTL_MS = 12 * 60 * 1000;
@@ -32,9 +33,7 @@ export function getCachedBrowseMusicTracks() {
 
 async function fetchBrowseMusicTracks({ limit = 20 } = {}) {
   const { app } = requireFirebase();
-  const browseFn = httpsCallable(
-    getFunctions(app, FUNCTIONS_REGION),
-    'browseMusicTracks',
+  const browseFn = getCallable('browseMusicTracks',
     { timeout: 20000 },
   );
 
@@ -84,9 +83,7 @@ export async function searchSpotifyTracksPage({ q, limit = 10, offset = 0, sourc
   const pageOffset = Math.min(1000, Math.max(0, Math.floor(Number(offset) || 0)));
 
   const { app } = requireFirebase();
-  const searchFn = httpsCallable(
-    getFunctions(app, FUNCTIONS_REGION),
-    'searchSpotifyTracks',
+  const searchFn = getCallable('searchSpotifyTracks',
     { timeout: 15000 },
   );
 

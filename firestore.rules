@@ -914,10 +914,22 @@ service cloud.firestore {
         && (!('faceVerificationStatus' in data) || data.faceVerificationStatus == 'unverified' || data.faceVerificationStatus == null);
     }
 
+    // `email` mirrors the sign-in address. An owner may keep the stored value
+    // or set their own token email, never another address: server code once
+    // trusted this field for admin and face-verification shortcuts.
+    function emailFieldAllowed() {
+      let next = request.resource.data;
+      return !('email' in next) || next.email == null || next.email == ''
+        || (resource != null && ('email' in resource.data) && resource.data.email == next.email)
+        || (('email' in request.auth.token) && request.auth.token.email is string && next.email is string
+          && next.email.lower() == request.auth.token.email.lower());
+    }
+
     match /users/{userId} {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId)
         && initialUnverifiedFaceState(request.resource.data)
+        && emailFieldAllowed()
         && (
           request.resource.data.keys().hasOnly(['id', 'meetup', 'updatedAt'])
             ? meetupCreateAllowed(userId)
@@ -927,6 +939,7 @@ service cloud.firestore {
         );
       allow update: if isOwner(userId)
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
+        && emailFieldAllowed()
         && usersUpdateAllowed(userId);
       allow delete: if false;
 

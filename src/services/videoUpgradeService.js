@@ -2,6 +2,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { getAuth } from 'firebase/auth';
 import { doc, getDoc, getDocs, collection, setDoc, Timestamp } from 'firebase/firestore';
 import { requireFirebase } from './dbService';
+import { RUST_BACKEND, rpc, rustUid } from './rust/backend';
 import { exportChatVideo, discardVideoExport } from './videoProcessingService';
 import { uploadChatMedia } from './chatMediaService';
 import { encryptMessageRecord, decryptMessageRecord, getOrFetchConversationKey } from './chatEncryptionService';
@@ -10,7 +11,7 @@ const root = () => `${FileSystem.documentDirectory}video-upgrades/`;
 const safeId = value => encodeURIComponent(value);
 const jobDirectory = (userId, messageId) => `${root()}${safeId(userId)}/${safeId(messageId)}/`;
 let running = false;
-const isCurrentUser = userId => getAuth(requireFirebase().app).currentUser?.uid === userId;
+const isCurrentUser = userId => (RUST_BACKEND ? rustUid() : getAuth(requireFirebase().app).currentUser?.uid) === userId;
 
 // The source stays inside the app's private storage; no key or clear media URL
 // is persisted in the job manifest. A fresh key is obtained for each attempt.
@@ -43,6 +44,36 @@ export async function resumeVideoUpgrades(userId) {
       try {
         const job = JSON.parse(await FileSystem.readAsStringAsync(manifest));
         if (job.userId !== userId) continue;
+        if (RUST_BACKEND) {
+          const state = await rpc('chatViewState', { conversationId: job.conversationId, messageId: job.messageId });
+          if (!state?.exists) {
+            if (Date.now() - job.createdAt > 7 * 86400000) await cancelVideoUpgrade(userId, job.messageId);
+            continue;
+          }
+          if (state.senderId !== userId) { await cancelVideoUpgrade(userId, job.messageId); continue; }
+          const key = await getOrFetchConversationKey(job.conversationId, userId);
+          if (!state.renditions?.high) {
+            exported = await exportChatVideo(job.asset, job.edit, 'high');
+            if (!isCurrentUser(userId)) return;
+            const mediaUrl = await uploadChatMedia(exported.uri, {
+              conversationId: job.conversationId, mediaType: 'video', conversationKey: key, videoDuration: exported.duration,
+            });
+            if (!isCurrentUser(userId)) return;
+            const time = Date.now();
+            const record = encryptMessageRecord({
+              id: job.messageId, senderId: userId, createdAt: time, time,
+              text: '', mediaType: 'video', mediaUrl, videoMode: job.mode, videoDuration: exported.duration,
+            }, key);
+            await rpc('chatSaveRendition', {
+              conversationId: job.conversationId, messageId: job.messageId, quality: 'high',
+              rendition: { encrypted: true, encryptionVersion: record.encryptionVersion, nonce: record.nonce, ciphertext: record.ciphertext,
+                createdAt: time, videoMode: record.videoMode, videoDuration: record.videoDuration },
+            });
+            await discardVideoExport(exported); exported = null;
+          }
+          await cancelVideoUpgrade(userId, job.messageId);
+          continue;
+        }
         const { db } = requireFirebase();
         const messageRef = doc(db, 'conversations', job.conversationId, 'messages', job.messageId);
         const parent = await getDoc(messageRef);
@@ -79,6 +110,18 @@ export async function resumeVideoUpgrades(userId) {
 }
 
 export async function getBestVideoUrl(conversationId, item, key) {
+  if (RUST_BACKEND) {
+    try {
+      const state = await rpc('chatViewState', { conversationId, messageId: item.id });
+      for (const quality of ['high', 'medium']) {
+        const data = state?.renditions?.[quality];
+        if (!data || data.senderId !== item.senderId || data.id !== item.id) continue;
+        const decoded = decryptMessageRecord(data, key);
+        if (decoded.mediaType === 'video' && decoded.mediaUrl) return decoded.mediaUrl;
+      }
+    } catch { /* The original upload remains playable. */ }
+    return item.mediaUrl;
+  }
   try {
     const { db } = requireFirebase();
     const snapshot = await getDocs(collection(db, 'conversations', conversationId, 'messages', item.id, 'videoRenditions'));

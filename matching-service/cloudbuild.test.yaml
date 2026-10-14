@@ -1,0 +1,15 @@
+# Compile and run the unit tests on Cloud Build. Deploys nothing.
+#   gcloud builds submit matching-service --project campusmate-7f1ab --config matching-service/cloudbuild.test.yaml
+steps:
+  - name: rust:1-bookworm
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        rustc --version
+        cargo test --color never 2>&1 | grep -vE '^\s+(Compiling|Downloaded|Downloading) '
+        cargo build --release --color never 2>&1 | grep -vE '^\s+(Compiling|Downloaded|Downloading) '
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 1800s

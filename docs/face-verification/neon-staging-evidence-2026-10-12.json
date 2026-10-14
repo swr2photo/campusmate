@@ -1,0 +1,21 @@
+{
+  "project": "icy-wildflower-47757369",
+  "branch": "br-lively-cell-b3piehmz",
+  "endpoint": "ep-young-bonus-b3777j39",
+  "database": "campusmate",
+  "cloudBuild": "2bb5d6c5-6211-44b8-a30b-68a0d0281ab8",
+  "status": "SUCCESS",
+  "migrations": 5,
+  "accountsAfterMigration": 0,
+  "apiLogin": "campusmate_api_login",
+  "mailLogin": "campusmate_mail_login",
+  "runtimeSuperuser": false,
+  "runtimeCreateDatabase": false,
+  "runtimeCreateRole": false,
+  "httpHealth": "PASS",
+  "unauthenticatedDenied": "PASS",
+  "secretVersions": { "owner": 1, "api": 1, "mail": 1 },
+  "flySecrets": "restricted pooled API DSN and random cursor secret staged through stdin",
+  "productionMigration": false,
+  "userDataImported": false
+}

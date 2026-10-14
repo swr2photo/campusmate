@@ -1,0 +1,23 @@
+{
+  "region": "ap-southeast-7",
+  "issuer": "https://oidc.fly.io/werachart-kaewkham",
+  "audience": "sts.amazonaws.com",
+  "subject": "werachart-kaewkham:campusmate-backend-502731779521:oidc-probe",
+  "backendPrincipal": "arn:aws:sts::502731779521:assumed-role/campusmate-backend/fly-liveness-probe",
+  "assumeRoleWithWebIdentity": "PASS",
+  "oidcRequestId": "4f4b6fc8-14bd-41fa-b6c4-0e85cc9e8d7f",
+  "nonRootAutoTokenReadable": true,
+  "autoTokenPath": "/.fly/oidc_token",
+  "callerIdentity": "arn:aws:sts::502731779521:assumed-role/campusmate-backend/fly-liveness-probe",
+  "wrongAudienceDenied": true,
+  "createSession": "PASS",
+  "streamAssumeRole": "PASS",
+  "challenge": "FaceMovementChallenge",
+  "sessionCreatedAt": 1791821204.879258,
+  "streamingPrincipal": "arn:aws:sts::502731779521:assumed-role/campusmate-liveness-stream/fly-liveness-stream-probe",
+  "sessionStatus": "SUCCEEDED",
+  "referenceImagePresent": true,
+  "getResultsRequestId": "cecb51b4-da4b-44a8-a25e-2dc56bc56ca8",
+  "checkedAt": 1791821211.7934809,
+  "productionBadgeChanged": false
+}

@@ -14,6 +14,7 @@ function client({ active = false, purchaseError, restored = active } = {}) {
     Constants: { expoConfig: { extra: { plusBackendEnabled: true, revenueCatAndroidKey: 'public' } } },
     require: () => ({ default: sdk, PURCHASES_ERROR_CODE: { PRODUCT_ALREADY_PURCHASED_ERROR: '6' } }),
     requireFirebase: () => ({ app: {} }), getAuth: () => ({ currentUser: { uid: 'owner' } }), onAuthStateChanged: () => () => {}, getFunctions: () => ({}),
+    RUST_BACKEND: false, rpc: async () => { throw new Error('native backend is off'); }, rustUid: () => null, liveQuery: () => () => {},
     httpsCallable: () => async () => { calls.push('verify'); return { data: { plus: true } }; }, setTimeout, clearTimeout });
   vm.runInContext(source, context);
   return { api: context, calls };

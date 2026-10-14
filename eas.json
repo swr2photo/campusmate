@@ -17,6 +17,19 @@
         "simulator": true
       }
     },
+    "rust-staging": {
+      "extends": "preview",
+      "env": {
+        "EXPO_PUBLIC_BACKEND": "rust",
+        "EXPO_PUBLIC_RUST_BACKEND_URL": "https://campusmate-backend-502731779521.fly.dev"
+      }
+    },
+    "rust-staging-simulator": {
+      "extends": "rust-staging",
+      "ios": {
+        "simulator": true
+      }
+    },
     "production": {
       "environment": "production",
       "autoIncrement": false,

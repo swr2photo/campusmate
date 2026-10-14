@@ -153,7 +153,7 @@ export default function ProfileHubScreen({ onToast }) {
   const editSection = (section) => router.push({ pathname: '/profile', params: { tab: 'edit', section } });
   const verifyFace = () => {
     if (isFaceVerified) {
-      onToast?.(`ยืนยันใบหน้าจริงแล้ว${profile.faceMatchScore ? ` (${profile.faceMatchScore}%)` : ''}`, 'success');
+      onToast?.('ยืนยันใบหน้าจริงแล้ว', 'success');
       return;
     }
     if (!profile.avatarUri) {
@@ -362,14 +362,10 @@ export default function ProfileHubScreen({ onToast }) {
         avatarUri={profile.avatarUri}
         visible={showFaceModal}
         onClose={() => setShowFaceModal(false)}
-        onSuccess={async (result) => {
-          markFaceVerified?.(result.similarity);
-          try {
-            await saveProfile({ isFaceVerified: true, faceMatchScore: result.similarity, faceVerificationStatus: 'verified' });
-            onToast?.('ยืนยันใบหน้าสำเร็จแล้ว', 'success');
-          } catch (error) {
-            onToast?.(error?.message || 'ซิงก์สถานะยืนยันใบหน้าไม่สำเร็จ กรุณาลองอีกครั้ง', 'error');
-          }
+        onSuccess={() => {
+          // The server already recorded the result; only mirror it locally.
+          markFaceVerified?.();
+          onToast?.('ยืนยันใบหน้าสำเร็จแล้ว', 'success');
           setShowFaceModal(false);
         }}
       />

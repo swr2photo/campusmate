@@ -9,6 +9,8 @@ import { FEATURE_INCOGNITO } from '../data/plans';
 import { requireFirebase } from '../services/dbService';
 import { secureDiscoveryCall, secureDiscoveryConfigured } from '../services/secureDiscoveryService';
 import { useTheme } from '../theme';
+import { RUST_BACKEND, rpc } from '../services/rust/backend';
+import { liveQuery } from '../services/rust/events';
 
 export default function IncognitoVisibility() {
   const { user } = useAuth(), membership = useMembership(), { colors } = useTheme();
@@ -18,6 +20,12 @@ export default function IncognitoVisibility() {
     setMode(null); setError(''); setBusy(false);
     if (!uid || !enabled) return undefined;
     let live = true;
+    if (RUST_BACKEND) {
+      const stop = liveQuery('profile', () => rpc('getVisibilityState'), (state) => {
+        if (live) setMode(state?.mode || 'public');
+      }, () => { if (live) { setMode(null); setError('ตรวจการแสดงโปรไฟล์ไม่ได้ กรุณาลองใหม่'); } });
+      return () => { live = false; stop(); };
+    }
     const { db } = requireFirebase();
     const off = onSnapshot(doc(db, 'profileVisibility', uid), (snapshot) => {
       if (live) setMode(snapshot.exists() ? snapshot.data().mode : 'public');

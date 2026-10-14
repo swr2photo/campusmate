@@ -10,7 +10,7 @@ test('likes hide unverified legacy identities even when the decision was accepte
   const service = read('src/services/firestoreService.js');
   const start = service.indexOf('export function hydrateDecisionLikes(');
   const end = service.indexOf('\n/**', start);
-  const context = vm.createContext({ Map, Array,
+  const context = vm.createContext({ RUST_BACKEND: false, Map, Array,
     decisionProfileId: (decision, direction) => direction === 'incoming' ? decision.fromUserId : decision.toUserId,
     formatLikeTime: () => '', toMillis: (value) => value || 0,
   });
@@ -31,7 +31,7 @@ test('a hidden public profile does not remove an existing conversation or its hi
   const end = source.indexOf('\n  const visibleDiscoveryProfileCount', start);
   const conversation = { id: 'c-owner-legacy', profileId: 'legacy', participants: ['owner', 'legacy'], lastMessage: 'kept' };
   const unexpected = () => { throw new Error('Public visibility must not modify conversations'); };
-  const context = vm.createContext({ Map, Set, Array, console,
+  const context = vm.createContext({ RUST_BACKEND: false, Map, Set, Array, console,
     user: { id: 'owner' }, sharedProfiles: [], decisionProfilesById: new Map(), decisionSnapshots: null,
     conversations: [conversation], removedUserIds: new Set(), discoveryProfileFetchesRef: { current: new Set() },
     useEffect: (effect) => effect(), getPublicProfilesByIds: async () => [],
@@ -49,7 +49,7 @@ function fixture(handler) {
   const signals = [], auth = { currentUser: { uid: 'owner' } }, emissions = [], errors = [];
   const source = read('src/services/secureDiscoveryService.js')
     .replace(/^import .*;\n/gm, '').replace(/export (?=(?:async )?function|const)/g, '');
-  const context = vm.createContext({ console, Map, Set, Date, Promise,
+  const context = vm.createContext({ RUST_BACKEND: false, console, Map, Set, Date, Promise,
     AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
     Constants: { expoConfig: { extra: { secureDiscoveryEnabled: true } } },
     Crypto: { randomUUID: () => 'receipt' }, requireFirebase: () => ({ app: {}, db: {} }), getAuth: () => auth,
@@ -68,7 +68,7 @@ test('live skip hides its card and an empty Rewind snapshot overrides the old de
   const helpers = source.slice(source.indexOf('function compactOutgoingDecisions('), source.indexOf('function isNearCoordinate('));
   const memo = source.slice(source.indexOf('  const outgoingDecisionSnapshot ='), source.indexOf('\n  // Once the live listener', source.indexOf('  const outgoingDecisionSnapshot =')));
   const filter = service.slice(service.indexOf('export function filterAvailableProfiles('), service.indexOf('export function hydrateDecisionLikes(')).replace('export ', '');
-  const context = vm.createContext({ Set, Map, Array, useMemo: (fn) => fn(),
+  const context = vm.createContext({ RUST_BACKEND: false, Set, Map, Array, useMemo: (fn) => fn(),
     isProfileReadyForDiscovery: () => true, matchesPreferences: () => true,
     allowedMatchingPreferences: (value) => value, profile: { id: 'owner', matchingPreferences: {} },
     user: { id: 'owner' }, membership: { plus: true }, canAdvancedFilters: true, membershipLoading: false, sharedProfiles: [{ id: 'skipped' }, { id: 'unseen' }],
@@ -119,6 +119,7 @@ test('an account switch discards an in-flight discovery response', async () => {
   let finish;
   const f = fixture(() => new Promise((resolve) => { finish = resolve; }));
   const subscription = f.createSecureProfilesSubscription(f.profiles, f.error);
+  await tick(); // Allow asynchronous token acquisition to start the request.
   f.auth.currentUser = { uid: 'another-account' };
   finish({ profiles: [{ id: 'private-peer' }], hasMore: false, nextCursor: null }); await tick();
   assert.deepEqual(f.emissions.at(-1), []); assert.equal(f.errors.length, 1);
@@ -142,7 +143,7 @@ test('profile bootstrap only reports a new account after server-confirmed absenc
   const missing = (fromCache) => ({ exists: () => false, metadata: { fromCache } });
   const existing = { exists: () => true, data: () => ({ name: 'Existing profile', isNewUser: false }) };
   let privateRecord = existing, publicRecord = missing(false), reads = 0;
-  const ctx = vm.createContext({ secureDiscoveryConfigured: () => false, requireFirebase: () => ({ db: {} }),
+  const ctx = vm.createContext({ RUST_BACKEND: false, secureDiscoveryConfigured: () => false, requireFirebase: () => ({ db: {} }),
     doc: (_db, collection) => collection, normalizeProfileRecord: (id, data) => ({ id, ...data }),
     getProfileDocFresh: async (collection) => {
       reads++; const result = collection === 'users' ? privateRecord : publicRecord;
@@ -168,7 +169,7 @@ test('bootstrap cannot overwrite a profile created or restored concurrently', as
   const body = source.slice(source.indexOf('export async function createUserProfile('), source.indexOf('export async function updateUserMatchingPreferences(')).replace('export ', '');
   const restored = { name: 'Recovered', avatarUri: 'https://example.test/original.jpg', isNewUser: false };
   let writes = 0;
-  const ctx = vm.createContext({ console, Number, Date, requireFirebase: () => ({ db: {} }),
+  const ctx = vm.createContext({ RUST_BACKEND: false, console, Number, Date, requireFirebase: () => ({ db: {} }),
     doc: (_db, collection) => collection, getProfileDocFresh: async () => ({ exists: () => false, metadata: { fromCache: false } }),
     normalizeProfileRecord: (id, data) => ({ id, ...data }), mergeProfileInput: (a, b) => ({ ...a, ...b }),
     getOrCreateEncryptionIdentity: async () => ({}), withIdentityDevice: (value) => value,

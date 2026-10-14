@@ -23,6 +23,8 @@ import { radius, shadow, spacing, type, useTheme } from '../theme';
 import { getOrFetchConversationKey, peekCachedConversationKey } from '../services/chatEncryptionService';
 import { decryptConversationMessageList } from '../services/firestoreService';
 import { requireFirebase } from '../services/dbService';
+import { RUST_BACKEND } from '../services/rust/backend';
+import { fetchRustConversationMessages } from '../services/firestoreService';
 import { warmChatPreviewMedia } from '../services/chatPreviewMedia';
 
 function toDate(timestamp) {
@@ -238,16 +240,19 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
     let isSubscribed = true;
     (async () => {
       try {
-        const { db } = requireFirebase();
-        const messagesRef = collection(db, 'conversations', activeConversation.id, 'messages');
-        const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(10));
-        const [snapshot, fetchedKey] = await Promise.all([
-          getDocs(q),
+        const loadRaw = async () => {
+          if (RUST_BACKEND) return (await fetchRustConversationMessages(activeConversation.id, { limit: 10 })).messages;
+          const { db } = requireFirebase();
+          const messagesRef = collection(db, 'conversations', activeConversation.id, 'messages');
+          const snapshot = await getDocs(query(messagesRef, orderBy('createdAt', 'desc'), limit(10)));
+          return snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() })).reverse();
+        };
+        const [rawDocs, fetchedKey] = await Promise.all([
+          loadRaw(),
           currentUserId ? getOrFetchConversationKey(activeConversation.id, currentUserId).catch(() => null) : null,
         ]);
         if (!isSubscribed) return;
 
-        const rawDocs = snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() })).reverse();
         const historyCutoff = activeConversation?.historyClearedAt?.[currentUserId] || null;
         const key = fetchedKey || (currentUserId
           ? peekCachedConversationKey(activeConversation.id, currentUserId)

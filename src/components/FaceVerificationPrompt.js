@@ -33,7 +33,7 @@ export function useFaceVerificationFlow() {
     <FaceVerificationModal
       avatarUri={profile?.avatarUri}
       onClose={() => setOpen(false)}
-      onSuccess={(result) => markFaceVerified?.(result?.similarity)}
+      onSuccess={() => markFaceVerified?.()}
       visible={open}
     />
   );

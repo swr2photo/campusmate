@@ -2,8 +2,11 @@ import Text from './AppText';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
+import { LinearGradient } from 'expo-linear-gradient';
 import FeatureIcon from './FeatureIcon';
 import NativeAdCard from './NativeAdCard';
+import LiquidGlassSegmentedControl from './LiquidGlassSegmentedControl';
+import { partyBannerGradient } from './PartyFinderEntry';
 import { insertActivityAdSlots } from '../utils/adPolicy';
 import { useAppFeed, useAppProfile } from '../context/AppContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -480,32 +483,44 @@ function PartyCard({ party, spot, colors, busy, onSelect, onJoin, onWithdraw, on
   const status = partyStatus(party, remaining, colors);
   const time = [party.schedule?.startTime, party.schedule?.endTime].filter(Boolean).join('–');
   const select = () => onSelect?.(party);
+  const spotName = party.spotName || spot?.name || 'จุดนัดหมาย ม.อ.';
+  const category = party.categoryLabel || spot?.categoryLabel;
   return <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
-    <Pressable accessibilityRole="button" accessibilityLabel={`ดูรายละเอียดตี้ของ ${hostName} ที่ ${party.spotName || 'จุดนัดหมาย'}`} onPress={select} style={({ pressed }) => pressed && styles.pressed}>
-      <View style={styles.cardHeaderRow}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`ดูรายละเอียดตี้ของ ${hostName} ที่ ${spotName}`} onPress={select} style={({ pressed }) => pressed && styles.pressed}>
+      <View>
+        <PartyPhoto spot={spot} party={party} colors={colors} />
+        <View pointerEvents="none" style={styles.photoOverlayTop}>
+          <View style={styles.overlayBadge}>
+            <View style={[styles.overlayDot, { backgroundColor: status.color === colors.inkMuted ? '#C9CED6' : status.color }]} />
+            <Text style={styles.overlayBadgeText}>{status.text}</Text>
+          </View>
+          {category ? <View style={styles.overlayBadge}><Text numberOfLines={1} style={styles.overlayBadgeText}>{category}</Text></View> : null}
+        </View>
+        <View pointerEvents="none" style={styles.photoOverlayBottom}>
+          <View style={styles.overlayBadge}>
+            <FeatureIcon name="calendar" size={13} color="#FFFFFF" />
+            <Text style={styles.overlayBadgeText}>{`${formatPartyDate(party)}${time ? ` · ${time} น.` : ''}`}</Text>
+          </View>
+        </View>
+      </View>
+      <View style={styles.cardBody}>
+        <Text style={[styles.cardSpotName, { color: colors.ink }]} numberOfLines={2}>{spotName}</Text>
+        {party.schedule?.message ? <Text style={[styles.caption, { color: colors.inkMuted }]} numberOfLines={3}>{party.schedule.message}</Text> : null}
         <View style={styles.hostRow}>
-          <HostAvatar uri={hostAvatarUri} name={hostName} size={42} colors={colors} />
+          <HostAvatar uri={hostAvatarUri} name={hostName} size={34} colors={colors} />
           <View style={styles.hostMeta}>
             <Text style={[styles.hostName, { color: colors.ink }]} numberOfLines={1}>{hostName}</Text>
             <Text style={[styles.hostSub, { color: colors.inkMuted }]} numberOfLines={1}>{[hostFaculty, hostYear].filter(Boolean).join(' · ') || 'นักศึกษา ม.อ.'}</Text>
           </View>
+          <View style={[styles.capacityPill, { backgroundColor: colors.primarySoft }]}>
+            <FeatureIcon name="person.2.fill" size={13} color={colors.primary} />
+            <Text style={[styles.capacityPillText, { color: colors.primary }]}>{`${members}/${capacity}`}</Text>
+          </View>
         </View>
-        <FeatureIcon name="ellipsis" size={20} color={colors.inkMuted} />
-      </View>
-      <PartyPhoto spot={spot} party={party} colors={colors} />
-      <View style={styles.cardBody}>
-        <View style={styles.cardStatusRow}>
-          <View style={[styles.statusBadge, { backgroundColor: status.background }]}><FeatureIcon name={status.icon} size={13} color={status.color} /><Text style={[styles.statusBadgeText, { color: status.color }]}>{status.text}</Text></View>
-          {party.categoryLabel || spot?.categoryLabel ? <Text style={[styles.categoryLabel, { color: colors.inkMuted }]}>{party.categoryLabel || spot.categoryLabel}</Text> : null}
+        <View style={styles.capacityGroup}>
+          <View style={[styles.capacityTrack, { backgroundColor: colors.surfaceRaised }]}><View style={[styles.capacityFill, { backgroundColor: colors.primary, width: `${Math.min(100, (members / Math.max(1, capacity)) * 100)}%` }]} /></View>
+          <Text style={[styles.remainingText, { color: colors.inkMuted }]}>{remaining ? `รับอีก ${remaining} คน` : 'ครบทีมแล้ว'}</Text>
         </View>
-        <Text style={[styles.cardSpotName, { color: colors.ink }]} numberOfLines={3}>{party.spotName || spot?.name || 'จุดนัดหมาย ม.อ.'}</Text>
-        {party.schedule?.message ? <Text style={[styles.caption, { color: colors.ink }]} numberOfLines={4}>{party.schedule.message}</Text> : null}
-        <View style={[styles.scheduleBox, { backgroundColor: colors.surfaceRaised }]}>
-          <FeatureIcon name="calendar" size={18} color={colors.primary} />
-          <View style={styles.scheduleCopy}><Text style={[styles.scheduleDate, { color: colors.ink }]}>{formatPartyDate(party)}</Text><Text style={[styles.scheduleTime, { color: colors.inkMuted }]}>{time ? `${time} น.` : 'ยังไม่ระบุเวลา'}</Text></View>
-        </View>
-        <View style={styles.slotRow}><View style={styles.slotMeta}><FeatureIcon name="person.2.fill" size={16} color={colors.primary} /><Text style={[styles.slotMetaText, { color: colors.ink }]}>{`สมาชิก ${members}/${capacity} คน`}</Text></View><Text style={[styles.remainingText, { color: colors.inkMuted }]}>{remaining ? `รับอีก ${remaining} คน` : 'ครบทีมแล้ว'}</Text></View>
-        <View style={[styles.capacityTrack, { backgroundColor: colors.surfaceRaised }]}><View style={[styles.capacityFill, { backgroundColor: colors.primary, width: `${Math.min(100, (members / Math.max(1, capacity)) * 100)}%` }]} /></View>
         {mine && party.pendingRequests?.length > 0 ? <View style={[styles.hostPendingAlert, { backgroundColor: colors.coralSoft, borderColor: colors.coral }]}><FeatureIcon name="person.badge.plus" size={15} color={colors.coral} /><Text style={[styles.hostPendingAlertText, { color: colors.coral }]}>{`มี ${party.pendingRequests.length} คำขอรออนุมัติ · แตะเพื่อจัดการ`}</Text></View> : null}
       </View>
     </Pressable>
@@ -571,9 +586,10 @@ export default function PartyFinderSection({
   onScroll,
   contentContainerStyle,
 }) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const { campusSpots = [] } = useAppFeed();
   const [tab, setTab] = useState('open');
+  const [category, setCategory] = useState('all');
   const [selectedPartyId, setSelectedPartyId] = useState(targetPartyId);
   useEffect(() => setSelectedPartyId(targetPartyId), [targetPartyId]);
 
@@ -588,19 +604,41 @@ export default function PartyFinderSection({
 
   const tabs = [
     { id: 'open', label: 'เปิดรับ' },
-    { id: 'requests', label: 'คำขอ', badge: pendingRequestsCount > 0 ? pendingRequestsCount : null },
+    { id: 'requests', label: 'คำขอ', badgeCount: pendingRequestsCount },
     { id: 'mine', label: 'ตี้ของฉัน' },
   ];
 
-  const visible = useMemo(() => {
+  const openParties = useMemo(
+    () => parties.filter((party) => !party.isPast && !party.isMember && !party.isUserHost),
+    [parties]
+  );
+  const stats = useMemo(() => [
+    { id: 'open', label: 'เปิดรับ', value: openParties.length },
+    { id: 'today', label: 'นัดวันนี้', value: openParties.filter((party) => party.urgencyBadge?.type === 'today').length },
+    { id: 'mine', label: 'ตี้ของฉัน', value: parties.filter((party) => party.isUserHost || party.isMember).length },
+  ], [openParties, parties]);
+
+  const tabParties = useMemo(() => {
     if (tab === 'mine') return parties.filter((party) => party.isUserHost || party.isMember);
     if (tab === 'requests') {
       return parties.filter((party) =>
         (party.requestStatus && !party.isMember) || (party.isUserHost && party.pendingRequests?.length > 0)
       );
     }
-    return parties.filter((party) => !party.isPast && !party.isMember && !party.isUserHost);
-  }, [parties, tab]);
+    return openParties;
+  }, [openParties, parties, tab]);
+
+  const partyCategory = (party) => party.categoryLabel || resolvePartySpot(party, campusSpots)?.categoryLabel || '';
+  const categories = useMemo(
+    () => [...new Set(tabParties.map(partyCategory).filter(Boolean))],
+    [campusSpots, tabParties]
+  );
+  const activeCategory = categories.includes(category) ? category : 'all';
+
+  const visible = useMemo(() => (activeCategory === 'all'
+    ? tabParties
+    : tabParties.filter((party) => partyCategory(party) === activeCategory)
+  ), [activeCategory, campusSpots, tabParties]);
 
   const activeSelectedParty = useMemo(() => {
     if (!selectedPartyId) return null;
@@ -609,58 +647,57 @@ export default function PartyFinderSection({
 
   const feedRows = useMemo(() => insertActivityAdSlots(visible), [visible]);
   const header = <View style={styles.feedHeader}>
-      {/* Banner Header */}
-      <View style={styles.heading}>
+      <LinearGradient colors={partyBannerGradient(isDark)} end={{ x: 1, y: 1 }} start={{ x: 0, y: 0 }} style={styles.hero}>
+        <View pointerEvents="none" style={styles.heroOrb} />
         <View style={styles.headingText}>
-          <View style={styles.badgeLine}>
-            <View style={[styles.bannerLiveDot, { backgroundColor: colors.green }]} />
-            <Text style={[styles.bannerTag, { color: colors.primary }]}>ตี้กิจกรรมรอบ ม.อ.</Text>
+          <View style={styles.heroEyebrow}>
+            <View style={styles.bannerLiveDot} />
+            <Text style={styles.heroEyebrowText}>อัปเดตสด · รอบ ม.อ.</Text>
           </View>
-          <Text style={[styles.headingTitle, { color: colors.ink }]}>ไปทำกิจกรรมด้วยกัน</Text>
-          <Text style={[styles.headingSubtitle, { color: colors.inkMuted }]}>
-            หาเพื่อนทำกิจกรรม นัดเจอกันใน ม.อ.
-          </Text>
+          <Text accessibilityRole="header" style={styles.heroTitle}>ไปทำกิจกรรมด้วยกัน</Text>
+          <Text style={styles.heroSubtitle}>เลือกตี้ที่ใช่ หรือเปิดตี้ชวนเพื่อนใหม่</Text>
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="สร้างตี้ใหม่"
-          onPress={onCreateParty}
-          style={[styles.createBtn, { backgroundColor: colors.primary }]}
-        >
-          <FeatureIcon name="plus" size={18} color={colors.onPrimary} />
-          <Text style={[styles.createBtnText, { color: colors.onPrimary }]}>เปิดตี้</Text>
-        </Pressable>
-      </View>
+        <View style={styles.statRow}>
+          {stats.map((item) => (
+            <View accessible accessibilityLabel={`${item.label} ${item.value} ตี้`} key={item.id} style={styles.statTile}>
+              <Text style={styles.statValue}>{item.value}</Text>
+              <Text numberOfLines={1} style={styles.statLabel}>{item.label}</Text>
+            </View>
+          ))}
+        </View>
+        {onCreateParty ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="เปิดตี้ใหม่"
+            onPress={onCreateParty}
+            style={({ pressed }) => [styles.createBtn, pressed && styles.pressed]}
+          >
+            <FeatureIcon name="plus" size={16} color="#1F56A8" />
+            <Text style={styles.createBtnText}>เปิดตี้ใหม่</Text>
+          </Pressable>
+        ) : null}
+      </LinearGradient>
 
-      {/* Tabs */}
-      <View style={styles.tabs}>
-        {tabs.map((item) => {
-          const isSelected = tab === item.id;
-          return (
-            <Pressable
-              key={item.id}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: isSelected }}
-              onPress={() => setTab(item.id)}
-              style={[
-                styles.tab,
-                { backgroundColor: isSelected ? colors.primary : colors.surfaceRaised },
-              ]}
-            >
-              <Text style={[styles.tabLabel, { color: isSelected ? colors.onPrimary : colors.inkMuted }]}>
-                {item.label}
-              </Text>
-              {item.badge ? (
-                <View style={[styles.tabBadge, { backgroundColor: isSelected ? colors.onPrimary : colors.coral }]}>
-                  <Text style={[styles.tabBadgeText, { color: isSelected ? colors.primary : '#FFFFFF' }]}>
-                    {item.badge}
-                  </Text>
-                </View>
-              ) : null}
-            </Pressable>
-          );
-        })}
-      </View>
+      <LiquidGlassSegmentedControl activeTab={tab} onChangeTab={setTab} tabs={tabs} />
+
+      {categories.length > 1 ? (
+        <ScrollView contentContainerStyle={styles.categoryRow} horizontal showsHorizontalScrollIndicator={false}>
+          {['all', ...categories].map((item) => {
+            const active = activeCategory === item;
+            return (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                key={item}
+                onPress={() => setCategory(item)}
+                style={[styles.categoryChip, { backgroundColor: active ? colors.ink : colors.card, borderColor: active ? colors.ink : colors.line }]}
+              >
+                <Text style={[styles.categoryChipText, { color: active ? colors.canvas : colors.ink }]}>{item === 'all' ? 'ทั้งหมด' : item}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      ) : null}
 
       {error ? (
         <View style={[styles.stateCard, { borderColor: colors.danger, backgroundColor: colors.dangerSoft }]}>
@@ -708,7 +745,7 @@ export default function PartyFinderSection({
       <FlatList
         data={feedRows}
         keyExtractor={(item) => item.id}
-        contentInsetAdjustmentBehavior="never"
+        contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={[styles.feedContent, contentContainerStyle]}
         initialNumToRender={3}
         maxToRenderPerBatch={3}
@@ -773,23 +810,33 @@ const styles = StyleSheet.create({
   feedContent: { flexGrow: 1, width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 8, paddingBottom: 32 },
   feedHeader: { gap: 16, paddingBottom: 20 },
   feedSeparator: { height: 20 },
-  heading: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  headingText: { flex: 1, minWidth: 0, gap: 4 },
-  badgeLine: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  bannerLiveDot: { width: 6, height: 6, borderRadius: 3 },
-  bannerTag: { fontSize: 12, fontWeight: '600' },
-  headingTitle: { fontSize: 20, lineHeight: 29, fontWeight: '700' },
-  headingSubtitle: { fontSize: 13, lineHeight: 21 },
-  createBtn: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 14 },
-  createBtnText: { fontSize: 14, fontWeight: '700' },
-  tabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  tab: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 15, paddingVertical: 10, borderRadius: 14 },
-  tabLabel: { fontSize: 13, fontWeight: '600' },
-  tabBadge: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 10, marginLeft: 5 },
-  tabBadgeText: { fontSize: 11, fontWeight: '700' },
+  hero: { borderRadius: 26, borderCurve: 'continuous', gap: 14, overflow: 'hidden', padding: 18 },
+  heroOrb: { position: 'absolute', right: -60, top: -80, width: 200, height: 200, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.09)' },
+  headingText: { minWidth: 0, gap: 4 },
+  heroEyebrow: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.pill, backgroundColor: 'rgba(255,255,255,0.18)' },
+  bannerLiveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#5BE3AE' },
+  heroEyebrowText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
+  heroTitle: { color: '#FFFFFF', fontSize: 24, lineHeight: 32, fontWeight: '900', letterSpacing: -0.3 },
+  heroSubtitle: { color: 'rgba(255,255,255,0.86)', fontSize: 14, lineHeight: 20 },
+  statRow: { flexDirection: 'row', gap: 8 },
+  statTile: { flex: 1, minWidth: 0, alignItems: 'center', gap: 1, paddingVertical: 10, borderRadius: 16, borderCurve: 'continuous', backgroundColor: 'rgba(255,255,255,0.14)' },
+  statValue: { color: '#FFFFFF', fontSize: 22, lineHeight: 28, fontWeight: '900' },
+  statLabel: { color: 'rgba(255,255,255,0.86)', fontSize: 12, fontWeight: '600' },
+  createBtn: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 18, borderRadius: radius.pill, backgroundColor: '#FFFFFF' },
+  createBtnText: { color: '#1F56A8', fontSize: 15, fontWeight: '800' },
+  categoryRow: { gap: 8, paddingVertical: 2 },
+  categoryChip: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 14, borderRadius: radius.pill, borderWidth: StyleSheet.hairlineWidth },
+  categoryChipText: { fontSize: 13, fontWeight: '700' },
+  photoOverlayTop: { position: 'absolute', top: 10, left: 10, right: 10, flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  photoOverlayBottom: { position: 'absolute', left: 10, right: 10, bottom: 10, flexDirection: 'row' },
+  overlayBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: '100%', paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.pill, backgroundColor: 'rgba(17,20,26,0.62)' },
+  overlayDot: { width: 7, height: 7, borderRadius: 4 },
+  overlayBadgeText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', flexShrink: 1 },
+  capacityPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.pill },
+  capacityPillText: { fontSize: 13, fontWeight: '800' },
+  capacityGroup: { gap: 6 },
   card: { width: '100%', borderRadius: 22, borderCurve: 'continuous', borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   pressed: { opacity: 0.92 },
-  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: 14 },
   hostRow: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10 },
   hostMeta: { flex: 1, minWidth: 0, gap: 2 },
   hostName: { fontSize: 15, lineHeight: 22, fontWeight: '700' },
@@ -797,7 +844,7 @@ const styles = StyleSheet.create({
   avatarFallback: { alignItems: 'center', justifyContent: 'center' },
   avatarInitial: { fontWeight: '700' },
   avatarImage: { borderWidth: StyleSheet.hairlineWidth },
-  placePhoto: { width: '100%', aspectRatio: 4 / 3, overflow: 'hidden' },
+  placePhoto: { width: '100%', aspectRatio: 16 / 10, overflow: 'hidden' },
   photoPlaceholder: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 10 },
   photoPlaceholderIcon: { width: 58, height: 58, borderRadius: 29, alignItems: 'center', justifyContent: 'center' },
   photoPlaceholderTitle: { fontSize: 17, lineHeight: 26, fontWeight: '600', textAlign: 'center' },
@@ -805,29 +852,18 @@ const styles = StyleSheet.create({
   photoCredit: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: 10, paddingVertical: 4, backgroundColor: 'rgba(0,0,0,0.5)' },
   photoCreditText: { fontSize: 10, color: '#FFFFFF' },
   cardBody: { padding: 16, gap: 12 },
-  cardStatusRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
-  statusBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 9 },
-  statusBadgeText: { fontSize: 12, fontWeight: '600' },
-  categoryLabel: { fontSize: 12, lineHeight: 20, flexShrink: 1 },
-  cardSpotName: { fontSize: 19, lineHeight: 29, fontWeight: '700' },
-  caption: { fontSize: 15, lineHeight: 24 },
-  scheduleBox: { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 12, borderRadius: 14 },
-  scheduleCopy: { flex: 1, gap: 3 },
-  scheduleDate: { fontSize: 14, lineHeight: 22, fontWeight: '600' },
-  scheduleTime: { fontSize: 13, lineHeight: 21 },
-  slotRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between', gap: 8 },
-  slotMeta: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  slotMetaText: { fontSize: 13, lineHeight: 21, fontWeight: '600' },
+  cardSpotName: { fontSize: 19, lineHeight: 27, fontWeight: '800' },
+  caption: { fontSize: 14, lineHeight: 22 },
   remainingText: { fontSize: 12, lineHeight: 20 },
-  capacityTrack: { height: 4, borderRadius: 2, overflow: 'hidden', marginTop: -5 },
-  capacityFill: { height: '100%', borderRadius: 2 },
+  capacityTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
+  capacityFill: { height: '100%', borderRadius: 3 },
   hostPendingAlert: { flexDirection: 'row', alignItems: 'center', gap: 7, padding: 10, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth },
   hostPendingAlertText: { fontSize: 12, lineHeight: 20, fontWeight: '600', flex: 1 },
   cardActionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14, borderTopWidth: StyleSheet.hairlineWidth },
   hostActionButtons: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
-  quickBtn: { flex: 1, minWidth: 90, minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 11, borderRadius: 13 },
+  quickBtn: { flex: 1, minWidth: 90, minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 11, borderRadius: radius.pill },
   quickBtnText: { fontSize: 14, lineHeight: 22, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
-  detailIconBtn: { width: 44, height: 44, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
+  detailIconBtn: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   busyAction: { flex: 1, minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
   disabledText: { flex: 1, fontSize: 12, lineHeight: 20, fontWeight: '500', textAlign: 'center' },
   stateCard: { minHeight: 180, borderWidth: StyleSheet.hairlineWidth, borderRadius: 20, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },

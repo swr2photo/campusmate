@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ยืนยันอีเมล · CampusMate</title>
+  <link rel="stylesheet" href="/auth/assets/action.css">
+  <script src="/auth/assets/action.js" defer></script>
+</head>
+<body data-action="verify-email">
+  <main>
+    <p class="brand">CampusMate</p>
+    <h1>ยืนยันอีเมลของคุณ</h1>
+    <p>กดยืนยันเพื่อเปิดใช้งานบัญชี จากนั้นกลับเข้าสู่ระบบในแอป</p>
+    <form id="action-form" method="post">
+      <button id="submit" type="submit" disabled aria-describedby="status">ยืนยันอีเมล</button>
+    </form>
+    <p id="status" role="status" aria-live="polite" aria-atomic="true">กำลังตรวจลิงก์…</p>
+    <noscript>กรุณาเปิด JavaScript แล้วเปิดลิงก์ในอีเมลอีกครั้ง</noscript>
+  </main>
+</body>
+</html>

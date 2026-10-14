@@ -1,5 +1,6 @@
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService.js';
+import { getCallable } from './callableClient';
 
 const FUNCTIONS_REGION = 'asia-southeast1';
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -141,9 +142,7 @@ export function getTrackLyrics({ track } = {}) {
   const task = (async () => {
     try {
       const { app } = requireFirebase();
-      const callable = httpsCallable(
-        getFunctions(app, FUNCTIONS_REGION),
-        'getMusicLyrics',
+      const callable = getCallable('getMusicLyrics',
         { timeout: 5000 },
       );
       const response = await callable({

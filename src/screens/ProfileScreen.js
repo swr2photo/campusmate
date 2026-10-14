@@ -46,11 +46,11 @@ import {
 import { showAlert } from '../utils/appAlert';
 const FACULTY_OPTIONS = FACULTIES.map((faculty) => ({ label: faculty, value: faculty }));
 const YEAR_OPTIONS = ACADEMIC_YEARS.map((year) => ({ label: year, value: year }));
-const AGES = Array.from({ length: 17 }, (_, i) => ({
+export const AGES = Array.from({ length: 17 }, (_, i) => ({
   label: `${i + 19} ปี`,
   value: String(i + 19),
 }));
-const GENDERS = [
+export const GENDERS = [
   { label: 'ชาย', value: 'male' },
   { label: 'หญิง', value: 'female' },
   { label: 'ชายข้ามเพศ', value: 'trans_male' },
@@ -85,7 +85,7 @@ function getInitialActivityDetails(profile) {
   return details;
 }
 
-function getProfileValidationError({ age, avatarUri, bio, faculty, gender, interests, name, pace, studentId, year, availability, availabilitySlots, requireComplete = true }) {
+export function getProfileValidationError({ age, avatarUri, bio, faculty, gender, interests, name, pace, studentId, year, availability, availabilitySlots, requireComplete = true }) {
   if (!name || name.trim().length < 2) return 'กรุณากรอกชื่อของคุณ (อย่างน้อย 2 ตัวอักษร)';
   if (!gender) return 'กรุณาเลือกเพศของคุณ';
   if (!studentId) return STUDENT_ID_REQUIRED_MESSAGE;
@@ -295,7 +295,6 @@ export default function ProfileScreen({
   const [isProcessingImage, setIsProcessingImage] = useState(false);
   const [showFaceVerificationModal, setShowFaceVerificationModal] = useState(false);
   const isFaceVerified = Boolean(safeProfile?.isFaceVerified);
-  const faceMatchScore = safeProfile?.faceMatchScore;
   const [discoverable, setDiscoverable] = useState(safeProfile.isDiscoverable ?? true);
   const [notifications, setNotifications] = useState(safeProfile.notificationsEnabled ?? true);
   const [privacy, setPrivacy] = useState(safeProfile.privacy || {});
@@ -304,7 +303,6 @@ export default function ProfileScreen({
   const editorScrollRef = useRef(null);
   const musicShortcutHandled = useRef(false);
   const musicSectionYRef = useRef(0);
-  const pendingAvatarRef = useRef(null);
   const verificationPassedRef = useRef(false);
 
   useEffect(() => {
@@ -411,6 +409,7 @@ export default function ProfileScreen({
 
   const pickImage = async () => {
     if (isProcessingImage) return;
+    let compressedUri = null;
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
@@ -436,10 +435,7 @@ export default function ProfileScreen({
       }
 
       try {
-        const compressedUri = await compressProfileImage(asset.uri);
-        pendingAvatarRef.current = compressedUri;
-        verificationPassedRef.current = false;
-        setShowFaceVerificationModal(true);
+        compressedUri = await compressProfileImage(asset.uri);
       } catch (compressionError) {
         console.warn('[Profile] Image compression failed:', compressionError);
         showAlert(
@@ -455,13 +451,26 @@ export default function ProfileScreen({
     } finally {
       setIsProcessingImage(false);
     }
+    if (!compressedUri) return;
+
+    // The server compares the selfie with the *saved* main photo and revokes
+    // the badge whenever that photo changes, so save first, then verify.
+    const saved = await handleSave({
+      avatarUri: compressedUri,
+      keepOpen: true,
+      successMessage: 'บันทึกรูปหลักแล้ว ยืนยันใบหน้ากับรูปใหม่ต่อได้เลย',
+    });
+    if (saved) {
+      verificationPassedRef.current = false;
+      setShowFaceVerificationModal(true);
+    }
   };
 
   const handleSave = async (customOverrides = {}) => {
-    if (saving) return;
+    if (saving) return false;
     if (isProcessingImage) {
       onToast?.('กำลังประมวลผลรูปภาพ กรุณารอสักครู่...', 'info');
-      return;
+      return false;
     }
     setSaving(true);
     try {
@@ -516,6 +525,7 @@ export default function ProfileScreen({
       } else {
         onToast?.(successMessage);
       }
+      return true;
     } catch (error) {
       console.error('[ProfileScreen handleSave error]', error?.message || error, error?.code, error?.stack);
       if (error.isModerationViolation || error.isModerationUnavailable) {
@@ -523,6 +533,7 @@ export default function ProfileScreen({
       } else {
         onToast?.(error.message || 'บันทึกโปรไฟล์ไม่สำเร็จ', 'info');
       }
+      return false;
     } finally {
       setSaving(false);
     }
@@ -984,29 +995,18 @@ export default function ProfileScreen({
         }}
       />
       <FaceVerificationModal
-        avatarUri={pendingAvatarRef.current || avatarUri}
+        avatarUri={avatarUri}
         onClose={() => {
           setShowFaceVerificationModal(false);
-          if (pendingAvatarRef.current && !verificationPassedRef.current) {
-            onToast?.('ยกเลิกการเปลี่ยนรูปโปรไฟล์ เนื่องจากยังไม่ได้ยืนยันใบหน้า', 'info');
-            pendingAvatarRef.current = null;
+          if (!verificationPassedRef.current) {
+            onToast?.('บันทึกรูปใหม่แล้ว โปรไฟล์จะแสดงในหน้าค้นหาหลังยืนยันใบหน้ากับรูปนี้', 'info');
           }
         }}
-        onSuccess={async (result) => {
+        onSuccess={() => {
+          // The server already recorded the result; only mirror it locally.
           verificationPassedRef.current = true;
-          const newAvatar = pendingAvatarRef.current || avatarUri;
-          pendingAvatarRef.current = null;
-          setAvatarUri(newAvatar);
-          markFaceVerified?.(result.similarity);
-          onToast?.(`ยืนยันใบหน้าสำเร็จ ความตรงกัน ${result.similarity}%`, 'success');
-          await handleSave({
-            avatarUri: newAvatar,
-            isFaceVerified: true,
-            faceMatchScore: result.similarity,
-            faceVerificationStatus: 'verified',
-            keepOpen: true,
-            successMessage: 'ยืนยันใบหน้าและบันทึกรูปโปรไฟล์เรียบร้อยแล้ว',
-          });
+          markFaceVerified?.();
+          onToast?.('ยืนยันใบหน้าเรียบร้อยแล้ว', 'success');
         }}
         visible={showFaceVerificationModal}
       />
@@ -1135,7 +1135,7 @@ function AndroidInputField({ icon, label, onChangeText, placeholder, required = 
   );
 }
 
-function AndroidReadOnlyRow({ helper, icon, label, value }) {
+export function AndroidReadOnlyRow({ helper, icon, label, value }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
   return (
@@ -1153,7 +1153,7 @@ function AndroidReadOnlyRow({ helper, icon, label, value }) {
   );
 }
 
-function AndroidSelectionRow({ icon, label, onSelect, options, placeholder, required = false, value, disabled = false }) {
+export function AndroidSelectionRow({ icon, label, onSelect, options, placeholder, required = false, value, disabled = false }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
   return (

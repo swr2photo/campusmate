@@ -55,6 +55,7 @@ test('buildDiscoveryProfile leaves out owners who have not passed face verificat
   // The public projection keeps the server-written flag so discovery can be rebuilt from it.
   const verified = buildPublicProfile('user-v', { name: 'Verified', isFaceVerified: true, faceMatchScore: 97 });
   assert.equal(verified.isFaceVerified, true);
+  assert.equal(verified.faceMatchScore, undefined, 'raw similarity must not be public');
   assert.equal(buildDiscoveryProfile('user-v', verified).isFaceVerified, true);
   assert.equal(buildPublicProfile('user-u', { name: 'Unverified' }).isFaceVerified, undefined);
 });

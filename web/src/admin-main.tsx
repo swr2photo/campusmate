@@ -4,6 +4,7 @@ import { onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, Google
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { LayoutDashboard, Flag, Users, Settings, History, ShieldCheck, LogOut, RefreshCw, Search, ChevronRight, Mail, CheckCircle2, Bell, PanelLeftClose, PanelLeftOpen, MapPin, Sparkles, Activity, Menu, X, AlertTriangle, User as UserIcon } from 'lucide-react';
 import { auth } from './lib/firebase';
+import { RUST_ADMIN, rustAdmin } from './lib/rust-admin';
 import './admin.css';
 import {FeatureTesterPicker} from './admin-user-picker';
 import {UserDirectory} from './admin-users';
@@ -18,7 +19,10 @@ import { AdminMetrics } from './admin-metrics';
 
 type Row = Record<string, any>;
 const invoke=httpsCallable(getFunctions(auth.app,'asia-southeast1'),'adminConsole');
-const api=async(op:string,data:Row={})=>(await invoke({op,...data})).data as Row;
+const api=async(op:string,data:Row={})=>RUST_ADMIN?(await rustAdmin.console(op,data)) as Row:(await invoke({op,...data})).data as Row;
+// Native backend: the same sign-in/out calls go to the Rust session.
+const signInAdmin=(email:string,password:string)=>RUST_ADMIN?rustAdmin.signIn(email,password):signInWithEmailAndPassword(auth,email,password).then(()=>undefined);
+const signOutAdmin=():Promise<void>=>RUST_ADMIN?rustAdmin.signOut():signOut(auth);
 const date=(value:any)=>value?new Date(value).toLocaleString('th-TH',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Bangkok'}):'—';
 const statuses:Row={pending:'รอตรวจสอบ',reviewing:'กำลังตรวจสอบ',resolved:'ดำเนินการแล้ว',dismissed:'ปิดโดยไม่ดำเนินการ'};
 const nav=[{id:'overview',label:'ภาพรวม',icon:LayoutDashboard},{id:'metrics',label:'แดชบอร์ด & ประสิทธิภาพ',icon:Activity},{id:'reports',label:'รายงานจากผู้ใช้',icon:Flag},{id:'users',label:'ผู้ใช้และอีเมล',icon:Users},{id:'spots',label:'สถานที่และรูปภาพ',icon:MapPin},{id:'parties',label:'ระบบตี้ / นัดพบ',icon:Sparkles},{id:'notifications',label:'ส่งแจ้งเตือน',icon:Bell},{id:'settings',label:'การตั้งค่าระบบ',icon:Settings},{id:'audit',label:'ประวัติการจัดการ',icon:History}];
@@ -36,7 +40,18 @@ function App(){
  const [isAdminClaim, setIsAdminClaim] = useState(false);
  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
 
-  useEffect(() => onAuthStateChanged(auth, async u => {
+  useEffect(() => RUST_ADMIN ? rustAdmin.subscribe(async principal => {
+    setUser(principal ? ({ uid: principal.uid, email: principal.email, emailVerified: principal.emailVerified } as unknown as User) : null);
+    setAdmin(false); setIsAdminClaim(false); setIsSuperAdmin(false); setReady(false);
+    try {
+      if (principal) {
+        const superAdmin = principal.email === '6710210317@psu.ac.th';
+        setIsAdminClaim(principal.role === 'admin');
+        setIsSuperAdmin(superAdmin);
+        setAdmin((principal.role === 'admin' || superAdmin) && principal.emailVerified);
+      }
+    } finally { setReady(true); }
+  }) : onAuthStateChanged(auth, async u => {
     setUser(u);
     setAdmin(false);
     setIsAdminClaim(false);
@@ -117,8 +132,8 @@ function App(){
   const field=(key:string,label:string,type='text')=><label key={key}>{label}<input type={type} value={version[key]??''} onChange={e=>setVersion({...version,[key]:type==='number'?Number(e.target.value):e.target.value})}/></label>;
   const toggle=(key:string,label:string)=><label className="toggle" key={key}><span>{label}</span><input type="checkbox" checked={version[key]===true} onChange={e=>setVersion({...version,[key]:e.target.checked})}/></label>;
   if(!ready)return <main className="login"><div className="login-card">กำลังตรวจสอบสิทธิ์…</div></main>;
-  if(!user)return <main className="login"><div className="login-card"><div className="brand-mark">C</div><p className="eyebrow">CAMPUSMATE ADMIN</p><h1>พื้นที่สำหรับผู้ดูแล</h1><p className="muted">ตรวจสอบรายงานและดูแลระบบ CampusMate</p><form onSubmit={e=>{e.preventDefault();void run(async()=>{await signInWithEmailAndPassword(auth,email,password);});}}><label>อีเมล<input type="email" autoComplete="username" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label>รหัสผ่าน<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button disabled={busy} className="primary">เข้าสู่ระบบ</button></form><div className="divider">หรือ</div><button disabled={busy} onClick={()=>void run(async()=>{await signInWithPopup(auth,new GoogleAuthProvider());})}>เข้าสู่ระบบด้วย Google</button>{error&&<p role="alert" className="error">{error}</p>}<p className="small muted">เฉพาะบัญชีที่ได้รับสิทธิ์ผู้ดูแลระบบ</p></div></main>;
-  if(!admin)return <main className="login"><div className="login-card"><ShieldCheck size={38}/><h1>ยังไม่มีสิทธิ์เข้าถึง</h1><p>{user.email}</p><p className="muted">ต้องเป็นบัญชีที่ยืนยันอีเมลและได้รับสิทธิ์ผู้ดูแลระบบ</p><button onClick={()=>void signOut(auth)}>ออกจากระบบ</button></div></main>;
+  if(!user)return <main className="login"><div className="login-card"><div className="brand-mark">C</div><p className="eyebrow">CAMPUSMATE ADMIN</p><h1>พื้นที่สำหรับผู้ดูแล</h1><p className="muted">ตรวจสอบรายงานและดูแลระบบ CampusMate</p><form onSubmit={e=>{e.preventDefault();void run(async()=>{await signInAdmin(email,password);});}}><label>อีเมล<input type="email" autoComplete="username" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label>รหัสผ่าน<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button disabled={busy} className="primary">เข้าสู่ระบบ</button></form><div className="divider">หรือ</div>{!RUST_ADMIN&&<button disabled={busy} onClick={()=>void run(async()=>{await signInWithPopup(auth,new GoogleAuthProvider());})}>เข้าสู่ระบบด้วย Google</button>}{error&&<p role="alert" className="error">{error}</p>}<p className="small muted">เฉพาะบัญชีที่ได้รับสิทธิ์ผู้ดูแลระบบ</p></div></main>;
+  if(!admin)return <main className="login"><div className="login-card"><ShieldCheck size={38}/><h1>ยังไม่มีสิทธิ์เข้าถึง</h1><p>{user.email}</p><p className="muted">ต้องเป็นบัญชีที่ยืนยันอีเมลและได้รับสิทธิ์ผู้ดูแลระบบ</p><button onClick={()=>void signOutAdmin()}>ออกจากระบบ</button></div></main>;
   return <div className={'shell '+(collapsed?'sidebar-collapsed':'')}>
     {/* Floating Toast Notification Center */}
     <div className="toast-container" aria-live="polite">
@@ -202,7 +217,7 @@ function App(){
                 {isAdminClaim ? 'สลับเป็นผู้ใช้' : 'สลับเป็นแอดมิน'}
               </button>
             </div>
-            <button className="danger" style={{ width: '100%', marginTop: 8 }} onClick={() => void signOut(auth)}>
+            <button className="danger" style={{ width: '100%', marginTop: 8 }} onClick={() => void signOutAdmin()}>
               <LogOut size={16} /> ออกจากระบบ
             </button>
           </div>
@@ -273,7 +288,7 @@ function App(){
             </button>
           </div>
           <span className="admin-email">{user.email}</span>
-          <button className="icon-button" title="ออกจากระบบ" onClick={() => void signOut(auth)}>
+          <button className="icon-button" title="ออกจากระบบ" onClick={() => void signOutAdmin()}>
             <LogOut size={18} />
           </button>
         </div>
@@ -384,7 +399,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, Error
     try {
       localStorage.clear();
       sessionStorage.clear();
-      await signOut(auth);
+      await signOutAdmin();
     } catch {}
     window.location.reload();
   };

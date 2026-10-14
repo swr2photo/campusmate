@@ -20,6 +20,10 @@ const excludedDirectories = [
   'tmp',
   'dist',
   'functions',
+  'artifacts',
+  'rust-backend',
+  'matching-service',
+  'scratch',
   '.agents',
   '.agent-device',
   '.codex',
@@ -50,6 +54,23 @@ config.resolver.blockList = [
   excludedExpoSnapshots,
 ];
 config.resolver.nodeModulesPaths = [path.resolve(projectRoot, 'node_modules')];
+
+const defaultResolveRequest = config.resolver.resolveRequest;
+config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName === 'expo/src/async-require/hmr.ts' || moduleName === 'expo/src/async-require/hmr') {
+    try {
+      return {
+        type: 'sourceFile',
+        filePath: require.resolve('expo/src/async-require/hmr.ts'),
+      };
+    } catch (_) {}
+  }
+  if (defaultResolveRequest) {
+    return defaultResolveRequest(context, moduleName, platform);
+  }
+  return context.resolveRequest(context, moduleName, platform);
+};
+
 // Some Windows environments do not have a working Watchman service. Allow
 // Expo start/export callers to opt out without changing the production bundle.
 config.resolver.useWatchman = process.env.EXPO_USE_WATCHMAN !== '0';
@@ -62,7 +83,7 @@ const DefaultFileStore = config.cacheStores?.[0]?.constructor;
 if (DefaultFileStore) {
   config.cacheStores = [new DefaultFileStore({ root: metroCacheDirectory })];
 }
-config.maxWorkers = 1;
+config.maxWorkers = process.env.METRO_MAX_WORKERS ? parseInt(process.env.METRO_MAX_WORKERS, 10) : 4;
 
 // Worklets must install its runtime globals before Reanimated imports use them.
 // Lazy imports avoid the Expo eager-loading initialization cycle (upstream #9445).

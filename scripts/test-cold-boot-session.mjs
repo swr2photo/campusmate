@@ -14,7 +14,7 @@ const read = (file) => readFileSync(file, 'utf8').replaceAll('\r\n', '\n');
 function loadService(auth, calls) {
   const source = read('src/services/secureDiscoveryService.js')
     .replace(/^import .*;\n/gm, '').replace(/export (?=(?:async )?function|const)/g, '');
-  const context = vm.createContext({ console, Map, Set, Date, Promise, setTimeout, clearTimeout,
+  const context = vm.createContext({ RUST_BACKEND: false, console, Map, Set, Date, Promise, setTimeout, clearTimeout,
     AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
     Constants: { expoConfig: { extra: { secureDiscoveryEnabled: true } } },
     Crypto: { randomUUID: () => 'id' }, requireFirebase: () => ({ app: {}, db: {} }), getAuth: () => auth,

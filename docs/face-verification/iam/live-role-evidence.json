@@ -1,0 +1,143 @@
+[
+  {
+    "AttachedPolicies": [],
+    "InlinePolicy": {
+      "RoleName": "campusmate-backend",
+      "PolicyName": "CampusMateFaceVerificationThailand",
+      "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "ServerFaceVerificationThailand",
+            "Effect": "Allow",
+            "Action": [
+              "rekognition:CreateFaceLivenessSession",
+              "rekognition:GetFaceLivenessSessionResults",
+              "rekognition:CompareFaces"
+            ],
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:RequestedRegion": "ap-southeast-7"
+              }
+            }
+          },
+          {
+            "Sid": "IssueStreamingCredentialsOnly",
+            "Effect": "Allow",
+            "Action": "sts:AssumeRole",
+            "Resource": "arn:aws:iam::502731779521:role/campusmate-liveness-stream",
+            "Condition": {
+              "StringEquals": {
+                "aws:RequestedRegion": "ap-southeast-7"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "Role": {
+      "Path": "/",
+      "RoleName": "campusmate-backend",
+      "RoleId": "AROAXKDJGFXAVYYZGR5ZF",
+      "Arn": "arn:aws:iam::502731779521:role/campusmate-backend",
+      "CreateDate": "2026-10-12T22:45:15+07:00",
+      "AssumeRolePolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "LocalBootstrapFromProjectAdministrator",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::502731779521:role/managed/AccountFullAccessRole"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "Description": "CampusMate Face Liveness Thailand; bootstrap trust, Fly OIDC not yet connected",
+      "MaxSessionDuration": 3600,
+      "Tags": [
+        {
+          "Key": "Project",
+          "Value": "CampusMate"
+        },
+        {
+          "Key": "Purpose",
+          "Value": "FaceVerification"
+        },
+        {
+          "Key": "ManagedBy",
+          "Value": "CampusMateDocs"
+        }
+      ],
+      "RoleLastUsed": {}
+    },
+    "InlinePolicies": [
+      "CampusMateFaceVerificationThailand"
+    ]
+  },
+  {
+    "AttachedPolicies": [],
+    "InlinePolicy": {
+      "RoleName": "campusmate-liveness-stream",
+      "PolicyName": "CampusMateFaceVerificationThailand",
+      "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "StreamFaceLivenessThailandOnly",
+            "Effect": "Allow",
+            "Action": "rekognition:StartFaceLivenessSession",
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:RequestedRegion": "ap-southeast-7"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "Role": {
+      "Path": "/",
+      "RoleName": "campusmate-liveness-stream",
+      "RoleId": "AROAXKDJGFXA4VNLHVQTJ",
+      "Arn": "arn:aws:iam::502731779521:role/campusmate-liveness-stream",
+      "CreateDate": "2026-10-12T22:45:35+07:00",
+      "AssumeRolePolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Sid": "BackendOnly",
+            "Effect": "Allow",
+            "Principal": {
+              "AWS": "arn:aws:iam::502731779521:role/campusmate-backend"
+            },
+            "Action": "sts:AssumeRole"
+          }
+        ]
+      },
+      "Description": "CampusMate temporary Face Liveness streaming credentials, Thailand only",
+      "MaxSessionDuration": 3600,
+      "Tags": [
+        {
+          "Key": "Project",
+          "Value": "CampusMate"
+        },
+        {
+          "Key": "Purpose",
+          "Value": "FaceVerification"
+        },
+        {
+          "Key": "ManagedBy",
+          "Value": "CampusMateDocs"
+        }
+      ],
+      "RoleLastUsed": {}
+    },
+    "InlinePolicies": [
+      "CampusMateFaceVerificationThailand"
+    ]
+  }
+]

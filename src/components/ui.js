@@ -26,15 +26,30 @@ export function Chip({ label, icon, iconName, active = false, color, onPress, st
   const { colors } = useTheme();
   const styles = getStyles(colors);
   const activeColor = color || colors.primary;
+  const flattenedStyle = StyleSheet.flatten(style) || {};
+  const isFullWidth = flattenedStyle.width === '100%';
   const content = (
     <View style={[styles.chip, active && { backgroundColor: activeColor, borderColor: activeColor }, style]}>
       {iconName ? (
         <FeatureIcon color={active ? colors.onPrimary : activeColor} name={iconName} size={16} style={styles.chipIcon} />
-      ) : (!!icon && <Text style={styles.chipIcon}>{icon}</Text>)}
+      ) : (!!icon && <Text style={styles.chipEmoji}>{icon}</Text>)}
       <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
     </View>
   );
-  return onPress ? <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active }} onPress={onPress}>{content}</Pressable> : content;
+  return onPress ? (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: active }}
+      onPress={onPress}
+      style={({ pressed }) => [
+        isFullWidth && { width: '100%' },
+        pressed && styles.pressed,
+      ]}
+    >
+      {content}
+    </Pressable>
+  ) : content;
 }
 
 export function PrimaryButton({ label, icon, iconName, onPress, style, disabled = false, loading = false, compact = false, numberOfLines = 1 }) {
@@ -142,7 +157,8 @@ const createStyles = (colors) => StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: spacing.md,
   },
-  chipIcon: { fontSize: 14, marginRight: 5 },
+  chipIcon: { marginRight: 5 },
+  chipEmoji: { fontSize: 14, marginRight: 5 },
   chipText: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '700', flexShrink: 1 },
   chipTextActive: { color: colors.onPrimary },
   primaryButton: {

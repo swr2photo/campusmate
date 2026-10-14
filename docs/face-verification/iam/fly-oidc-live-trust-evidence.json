@@ -1,0 +1,30 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "LocalBootstrapFromProjectAdministrator",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::502731779521:role/managed/AccountFullAccessRole"
+            },
+            "Action": "sts:AssumeRole"
+        },
+        {
+            "Sid": "FlyBackendAppThailand",
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::502731779521:oidc-provider/oidc.fly.io/werachart-kaewkham"
+            },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+                "StringEquals": {
+                    "aws:RequestedRegion": "ap-southeast-7",
+                    "oidc.fly.io/werachart-kaewkham:aud": "sts.amazonaws.com"
+                },
+                "StringLike": {
+                    "oidc.fly.io/werachart-kaewkham:sub": "werachart-kaewkham:campusmate-backend-502731779521:*"
+                }
+            }
+        }
+    ]
+}

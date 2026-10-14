@@ -1,0 +1,100 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "UsWest2Partitional",
+      "Effect": "Deny",
+      "NotAction": [
+        "bedrock-mantle:CallWithBearerToken",
+        "bedrock-mantle:CreateInference",
+        "bedrock-mantle:GetInference",
+        "bedrock-mantle:GetModel",
+        "bedrock-mantle:ListModels",
+        "bedrock:ApplyGuardrail",
+        "bedrock:CountTokens",
+        "bedrock:GetFoundationModel",
+        "bedrock:GetFoundationModelAvailability",
+        "bedrock:GetInferenceProfile",
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:ListFoundationModels",
+        "bedrock:ListInferenceProfiles",
+        "cloudshell:*",
+        "cloudtrail:LookupEvents",
+        "health:*",
+        "identitystore-auth:*",
+        "identitystore:*",
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:ListAliases",
+        "networkmanager-chat:*",
+        "networkmanager:*",
+        "route53-recovery-cluster:*",
+        "route53-recovery-control-config:*",
+        "route53-recovery-readiness:*",
+        "servicequotas:*",
+        "sso-directory:*",
+        "sso-oauth:*",
+        "sso:*",
+        "support:*",
+        "trustedadvisor:*",
+        "uxc:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-west-2"
+        }
+      }
+    },
+    {
+      "Sid": "RegionFloor",
+      "Effect": "Deny",
+      "NotAction": [
+        "bedrock-mantle:CallWithBearerToken",
+        "bedrock-mantle:CreateInference",
+        "bedrock-mantle:GetInference",
+        "bedrock-mantle:GetModel",
+        "bedrock-mantle:ListModels",
+        "bedrock:ApplyGuardrail",
+        "bedrock:CountTokens",
+        "bedrock:GetFoundationModel",
+        "bedrock:GetFoundationModelAvailability",
+        "bedrock:GetInferenceProfile",
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:ListFoundationModels",
+        "bedrock:ListInferenceProfiles"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": [
+            "ap-southeast-2",
+            "ap-southeast-7",
+            "unspecified",
+            "us-east-1",
+            "us-west-2"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ThailandFaceLivenessOnly",
+      "Effect": "Deny",
+      "NotAction": [
+        "rekognition:*",
+        "sts:*",
+        "cloudshell:*",
+        "servicequotas:*",
+        "health:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-7"
+        }
+      }
+    }
+  ]
+}

@@ -46,7 +46,10 @@ child.on('close', (code) => {
     const aabPath = path.resolve('android/app/build/outputs/bundle/release/app-release.aab');
     if (fs.existsSync(aabPath)) {
       const stats = fs.statSync(aabPath);
+      const targetAab = path.join(folder, `CampusMate-${currentVersion}-${currentCode}.aab`);
+      fs.copyFileSync(aabPath, targetAab);
       console.log(`[SUCCESS] AAB generated successfully: ${aabPath} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+      console.log(`[COPIED] Saved artifact to: ${targetAab}`);
     }
   }
   process.exitCode = code;

@@ -13,6 +13,8 @@ import {
   where,
 } from 'firebase/firestore';
 import { requireFirebase } from './dbService.js';
+import { RUST_BACKEND } from './rust/backend';
+import * as rustCalls from './rust/calls';
 
 export const CALL_STATUS = {
   CALLING: 'calling',
@@ -41,6 +43,7 @@ export async function initiateCall({
   conversationId = null,
   offer = null,
 }) {
+  if (RUST_BACKEND) return rustCalls.initiateCall({ receiverId, callType });
   const { db } = requireFirebase();
   const callDocRef = doc(collection(db, 'calls'));
   const callId = callDocRef.id;
@@ -97,6 +100,7 @@ export async function initiateCall({
  * Answer an incoming call with SDP answer
  */
 export async function acceptCall(callId, answer = null) {
+  if (RUST_BACKEND) return rustCalls.acceptCall(callId);
   const { db } = requireFirebase();
   const callDocRef = doc(db, 'calls', callId);
 
@@ -115,6 +119,7 @@ export async function acceptCall(callId, answer = null) {
  * Update call to ringing state (receiver app received the call notification)
  */
 export async function setCallRinging(callId) {
+  if (RUST_BACKEND) return rustCalls.setCallRinging(callId);
   const { db } = requireFirebase();
   const callDocRef = doc(db, 'calls', callId);
   try {
@@ -130,6 +135,7 @@ export async function setCallRinging(callId) {
  * Reject incoming call (busy or declined by user)
  */
 export async function rejectCall(callId, reason = 'declined') {
+  if (RUST_BACKEND) return rustCalls.rejectCall(callId, reason);
   const { db } = requireFirebase();
   const callDocRef = doc(db, 'calls', callId);
 
@@ -144,6 +150,7 @@ export async function rejectCall(callId, reason = 'declined') {
  * Mark call as missed (timed out without answer)
  */
 export async function markCallMissed(callId) {
+  if (RUST_BACKEND) return rustCalls.markCallMissed(callId);
   const { db } = requireFirebase();
   const callDocRef = doc(db, 'calls', callId);
 
@@ -158,6 +165,7 @@ export async function markCallMissed(callId) {
  * End an ongoing or pending call
  */
 export async function endCall(callId, durationSeconds = 0, reason = 'hangup') {
+  if (RUST_BACKEND) return rustCalls.endCall(callId, durationSeconds, reason);
   const { db } = requireFirebase();
   const callDocRef = doc(db, 'calls', callId);
 
@@ -177,6 +185,7 @@ export async function endCall(callId, durationSeconds = 0, reason = 'hangup') {
  * Listen to real-time state changes of a specific call
  */
 export function subscribeToCall(callId, onUpdate) {
+  if (RUST_BACKEND) return rustCalls.subscribeToCall(callId, onUpdate);
   if (!callId) return () => {};
   const { db } = requireFirebase();
   const callDocRef = doc(db, 'calls', callId);
@@ -200,8 +209,8 @@ export function subscribeToCall(callId, onUpdate) {
  * Listen for incoming calls for the current user (where status is 'calling' or 'ringing')
  */
 export function subscribeToIncomingCalls(userId, onIncomingCall) {
+  if (RUST_BACKEND) return rustCalls.subscribeToIncomingCalls(userId, onIncomingCall);
   if (!userId) return () => {};
-  console.log('DEBUG subscribeToIncomingCalls', { requireFirebase: typeof requireFirebase, query: typeof query, collection: typeof collection, where: typeof where });
   const { db } = requireFirebase();
 
   // Query calls where receiverId === userId and status is calling or ringing
@@ -245,6 +254,7 @@ export function subscribeToIncomingCalls(userId, onIncomingCall) {
  * Send an ICE candidate to Firestore sub-collection
  */
 export async function sendIceCandidate(callId, isCaller, candidate) {
+  if (RUST_BACKEND) return rustCalls.sendIceCandidate();
   if (!callId || !candidate) return;
   const { db } = requireFirebase();
   const subCollectionName = isCaller ? 'callerCandidates' : 'receiverCandidates';
@@ -261,6 +271,7 @@ export async function sendIceCandidate(callId, isCaller, candidate) {
  * Listen to ICE candidates from the other peer
  */
 export function subscribeToRemoteIceCandidates(callId, isCaller, onCandidate) {
+  if (RUST_BACKEND) return rustCalls.subscribeToRemoteIceCandidates();
   if (!callId) return () => {};
   const { db } = requireFirebase();
   // If we are caller, we listen to receiverCandidates; if receiver, listen to callerCandidates
@@ -286,6 +297,7 @@ export function subscribeToRemoteIceCandidates(callId, isCaller, onCandidate) {
  * Get call by id
  */
 export async function getCall(callId) {
+  if (RUST_BACKEND) return rustCalls.getCall(callId);
   if (!callId) return null;
   const { db } = requireFirebase();
   const callDoc = await getDoc(doc(db, 'calls', callId));

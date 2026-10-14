@@ -1,0 +1,13 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BackendOnly",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::502731779521:role/campusmate-backend"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}

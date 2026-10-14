@@ -1,0 +1,24 @@
+# Isolated staging mail worker. Never shares the API database identity.
+# Deploy only after scripts/staging-services.py imports the mail credentials.
+app = "campusmate-mail-staging-502731779521"
+primary_region = "sin"
+
+[deploy]
+  release_command = "sh -c '/usr/local/bin/check-database --kind mail && /usr/local/bin/email-worker --check-config'"
+
+[env]
+  APP_ENV = "production"
+  DB_POOL_MODE = "transaction"
+  DB_MAX_CONNECTIONS = "2"
+  DB_MIN_CONNECTIONS = "0"
+  NATIVE_AUTH_EMAIL_ORIGIN = "https://campusmate-backend-502731779521.fly.dev"
+
+[processes]
+  worker = "/usr/local/bin/email-worker --send"
+
+# No public HTTP/TCP service. The worker continuously polls the staging outbox.
+[[vm]]
+  processes = ["worker"]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"

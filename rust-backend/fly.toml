@@ -1,0 +1,69 @@
+# Isolated Rust staging: schema-check-20261012 Neon branch; no real-user import.
+# Photo verification is on for staging only (manual review, no real users).
+# Production stays off until docs/face-verification/production-release-gates.md passes.
+app = "campusmate-backend-502731779521"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+  [build.args]
+    CARGO_PROFILE_RELEASE_LTO = "false"
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16"
+
+[deploy]
+  # Fail before replacing a healthy machine if the staging login has the
+  # wrong PostgreSQL identity or is missing the API runtime grants.
+  release_command = "/usr/local/bin/check-database --kind api"
+
+[env]
+  APP_ENV = "production"
+  BIND_HOST = "0.0.0.0"
+  PORT = "8080"
+  AWS_REGION = "ap-southeast-7"
+  AWS_DEFAULT_REGION = "ap-southeast-7"
+  AWS_ROLE_ARN = "arn:aws:iam::502731779521:role/campusmate-backend"
+  AWS_WEB_IDENTITY_TOKEN_FILE = "/.fly/oidc_token"
+  FACE_LIVENESS_REGION = "ap-southeast-7"
+  # Same Region as the role's web-identity trust condition (aws:RequestedRegion).
+  MODERATION_REGION = "ap-southeast-7"
+  FACE_LIVENESS_STREAM_ROLE_ARN = "arn:aws:iam::502731779521:role/campusmate-liveness-stream"
+  FACE_VERIFICATION_ENABLED = "true"
+  DB_POOL_MODE = "transaction"
+  DB_MAX_CONNECTIONS = "2"
+  DB_MIN_CONNECTIONS = "0"
+  RUST_LOG = "warn"
+  R2_ENDPOINT = "https://3dd0f976f772d6bfb28fc82710a63a9c.r2.cloudflarestorage.com"
+  R2_MEDIA_BUCKET = "campusmate-avatars"
+  R2_VERIFICATION_BUCKET = "campusmate-verification-staging"
+  PROFILE_MEDIA_ORIGIN = "https://images.getcampusmate.app"
+  # Same campusmate-avatars objects (SHA-256 of a real avatar matched on both, 2026-10-13).
+  PROFILE_MEDIA_ALIAS_ORIGINS = "https://pub-73287d4af57d4e788f89d95e71d2ea70.r2.dev"
+  FACE_CONSENT_VERSION = "face-consent-2026-10"
+  FACE_POLICY_VERSION = "staging-manual-2026-10"
+  FACE_DECISION_MODE = "manual"
+  FIREBASE_IDENTITY_ENABLED = "true"
+  FIREBASE_PROJECT_ID = "campusmate-7f1ab"
+  ADMIN_CONSOLE_ORIGINS = "https://campusmate-7f1ab.web.app,https://campusmate-7f1ab.firebaseapp.com"
+  # Public OAuth client IDs (web, iOS, Android); ID tokens must name one as audience.
+  GOOGLE_OAUTH_CLIENT_IDS = "865275661439-fvhsudae20viohqniq13iufb7b97p7h4.apps.googleusercontent.com,865275661439-88thtqomehff31taquhc4srga14fbvav.apps.googleusercontent.com,865275661439-1md7lkrhld462jgfn7s1dnmbjrnl2ve4.apps.googleusercontent.com"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Push delivery, receipt checks and expiry sweeps run inside the API process.
+  # Keep one staging instance alive even when there are no incoming requests.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "512mb"

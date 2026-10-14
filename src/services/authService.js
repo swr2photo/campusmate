@@ -32,6 +32,8 @@ import {
   normalizeEmail,
 } from '../utils/campusEmail';
 import { getPasswordError, PASSWORD_REQUIREMENTS_MESSAGE } from '../utils/passwordPolicy';
+import { RUST_BACKEND } from './rust/backend';
+import * as rustAuth from './rust/auth';
 
 let auth = null;
 
@@ -80,7 +82,7 @@ if (firebaseApp) {
   }
 }
 
-function requireAuth() {
+export function requireAuth() {
   if (!auth) {
     throw new Error(firebaseConfigError || 'Firebase Authentication is not initialized');
   }
@@ -204,6 +206,7 @@ export async function signInWithGoogle() {
 }
 
 export async function signInWithGoogleCredential(id_token) {
+  if (RUST_BACKEND) return rustAuth.signInWithGoogleIdToken(id_token);
   const credential = GoogleAuthProvider.credential(id_token);
   const result = await withAuthNetworkRetry(() => signInWithCredential(requireAuth(), credential));
   await rejectUnauthorizedNewUser(result);
@@ -218,6 +221,15 @@ function isNativeGoogleSigninAvailable() {
 }
 
 export async function signOutUser() {
+  if (RUST_BACKEND) {
+    if (isNativeGoogleSigninAvailable()) {
+      try {
+        const { GoogleSignin } = require('@react-native-google-signin/google-signin');
+        if (await GoogleSignin.hasPreviousSignIn()) await GoogleSignin.signOut();
+      } catch (_) {}
+    }
+    return rustAuth.signOutUser();
+  }
   if (isNativeGoogleSigninAvailable()) {
     try {
       const { GoogleSignin } = require('@react-native-google-signin/google-signin');
@@ -230,11 +242,13 @@ export async function signOutUser() {
 }
 
 export function isFirebaseConfigured() {
+  if (RUST_BACKEND) return true;
   return Boolean(auth && !firebaseConfigError);
 }
 
 export async function checkCampusEmailAvailability(email) {
   const campusEmail = assertCampusEmail(email);
+  if (RUST_BACKEND) return rustAuth.checkCampusEmailAvailability(campusEmail);
   if (!firebaseApp) {
     throw new Error(firebaseConfigError || 'Firebase Authentication is not initialized');
   }
@@ -272,6 +286,12 @@ export async function signUpWithEmail(email, password) {
   if (passwordError) {
     throw campusEmailError('auth/weak-password', passwordError);
   }
+  if (RUST_BACKEND) {
+    await assertCampusEmailAvailable(campusEmail);
+    const result = await rustAuth.signUpWithEmail(campusEmail, password);
+    await rustAuth.resendEmailVerification().catch(() => {});
+    return result;
+  }
   await assertCampusEmailAvailable(campusEmail);
   const result = await withAuthNetworkRetry(() => createUserWithEmailAndPassword(requireAuth(), campusEmail, password));
   try {
@@ -285,6 +305,7 @@ export async function signUpWithEmail(email, password) {
 
 export async function signInWithEmail(email, password) {
   const loginEmail = assertLoginEmailAllowed(email);
+  if (RUST_BACKEND) return rustAuth.signInWithEmail(loginEmail, password);
   const result = await withAuthNetworkRetry(() => signInWithEmailAndPassword(requireAuth(), loginEmail, password));
   try {
     await result.user.reload();
@@ -310,6 +331,7 @@ export async function signInWithEmail(email, password) {
 }
 
 export async function resendEmailVerification(email, password) {
+  if (RUST_BACKEND) return rustAuth.resendEmailVerification(email && assertLoginEmailAllowed(email), password);
   const authInstance = requireAuth();
   let user = authInstance.currentUser;
   let shouldSignOut = false;
@@ -378,6 +400,9 @@ export function getSignInErrorMessage(error, { mode } = {}) {
   ) {
     return getCampusEmailErrorMessage(error);
   }
+  if (code === 'auth/migration-pending') {
+    return 'บัญชีนี้กำลังย้ายเข้าระบบใหม่ กรุณาลองอีกครั้งภายหลัง';
+  }
   if (code === 'auth/user-not-found') {
     return 'ไม่พบบัญชีที่ใช้อีเมลนี้ สมัครใหม่ได้เฉพาะอีเมล @psu.ac.th';
   }
@@ -406,6 +431,10 @@ export function getSignInErrorMessage(error, { mode } = {}) {
 
 export async function requestCampusEmailChange(newEmail) {
   const campusEmail = assertCampusEmail(newEmail);
+  if (RUST_BACKEND) {
+    await assertCampusEmailAvailable(campusEmail, { allowCurrentUser: true });
+    return rustAuth.requestCampusEmailChange(campusEmail);
+  }
   const user = requireAuth().currentUser;
   if (!user) {
     throw new Error('กรุณาเข้าสู่ระบบก่อนยืนยันอีเมลใหม่');
@@ -450,6 +479,7 @@ export async function requestCampusEmailChange(newEmail) {
 }
 
 export async function reloadCampusEmailStatus() {
+  if (RUST_BACKEND) return rustAuth.reloadCampusEmailStatus();
   const user = requireAuth().currentUser;
   if (!user) {
     throw new Error('กรุณาเข้าสู่ระบบก่อนยืนยันอีเมลใหม่');
@@ -460,6 +490,7 @@ export async function reloadCampusEmailStatus() {
 
 export async function sendPasswordReset(email) {
   const normalizedEmail = assertLoginEmailAllowed(email);
+  if (RUST_BACKEND) return rustAuth.sendPasswordReset(normalizedEmail);
   if (!firebaseApp) {
     throw new Error(firebaseConfigError || 'Firebase Authentication is not initialized');
   }
@@ -479,12 +510,19 @@ export async function sendPasswordReset(email) {
 }
 
 export async function getCurrentUserIdToken(forceRefresh = false) {
+  if (RUST_BACKEND) return rustAuth.getCurrentAccessToken();
   const currentUser = requireAuth().currentUser;
   if (!currentUser) throw new Error('กรุณาเข้าสู่ระบบก่อนดำเนินการ');
   return currentUser.getIdToken(forceRefresh);
 }
 
+export function getCurrentAuthUserId() {
+  if (RUST_BACKEND) return rustAuth.getCurrentAuthUserId();
+  return requireAuth().currentUser?.uid || null;
+}
+
 export function subscribeToAuthChanges(callback, onError) {
+  if (RUST_BACKEND) return rustAuth.subscribeToAuthChanges(callback, onError);
   return onAuthStateChanged(
     requireAuth(),
     async (user) => {

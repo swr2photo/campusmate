@@ -95,7 +95,7 @@ function RootNavigator() {
                     <Stack.Screen
                       name="setup"
                       options={{
-                        headerShown: true,
+                        headerShown: false,
                         title: 'สร้างโปรไฟล์',
                         headerBackVisible: false,
                         gestureEnabled: false,
@@ -135,11 +135,11 @@ function RootNavigator() {
                         headerShown: false,
                         contentStyle: { backgroundColor: colors.canvas },
                       } : {
-                        presentation: 'transparentModal',
-                        animation: 'none',
+                        presentation: 'modal',
+                        animation: 'slide_from_bottom',
                         headerShown: false,
                         gestureEnabled: false,
-                        contentStyle: { backgroundColor: 'transparent' },
+                        contentStyle: { backgroundColor: colors.canvas },
                       }}
                     />
                     <Stack.Screen name="about" options={{ headerShown: true, title: 'เกี่ยวกับ CampusMate' }} />

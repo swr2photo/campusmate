@@ -1,6 +1,8 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService';
+import { RUST_BACKEND } from './rust/backend';
+import { uploadRawImage } from './rust/media';
 
 async function resolveUriIfNeeded(uri) {
   if (!uri || typeof uri !== 'string' || !uri.startsWith('ph://')) return uri;
@@ -44,11 +46,20 @@ export async function getModerationBase64(localUri) {
 /** Verify before uploading. Service failures are retryable, never violations. */
 export async function verifyImageSafety(localUri) {
   try {
-    const base64 = await getModerationBase64(localUri);
-    if (!base64) throw new Error('Image preparation failed');
-    const { app } = requireFirebase();
-    const check = httpsCallable(getFunctions(app, 'asia-southeast1'), 'checkImageSafety', { timeout: 30000 });
-    const { data } = await check({ imageBase64: base64 });
+    let data;
+    if (RUST_BACKEND) {
+      const resolvedUri = await resolveUriIfNeeded(localUri);
+      const thumbnail = await ImageManipulator.manipulateAsync(resolvedUri, [{ resize: { width: 480 } }], {
+        compress: 0.72, format: ImageManipulator.SaveFormat.JPEG,
+      });
+      data = await uploadRawImage('moderate', thumbnail.uri);
+    } else {
+      const base64 = await getModerationBase64(localUri);
+      if (!base64) throw new Error('Image preparation failed');
+      const { app } = requireFirebase();
+      const check = httpsCallable(getFunctions(app, 'asia-southeast1'), 'checkImageSafety', { timeout: 30000 });
+      ({ data } = await check({ imageBase64: base64 }));
+    }
     if (data?.status === 'blocked' && data?.isSafe === false && data?.policyVersion === 2) {
       const error = new Error(data.message || 'ภาพนี้ยังไม่ผ่านเกณฑ์การใช้งาน');
       error.isModerationViolation = true;

@@ -25,10 +25,16 @@ const port = Number(portText);
 initializeAdminApp({ projectId });
 const adminDb = getAdminFirestore();
 
+// Email-auth tokens always carry an email claim; a stored profile email must match it.
+const TOKEN_EMAILS = { profileEditorUid: 'editor@example.test', scheduleOwnerUid: 'schedule@example.test' };
+function tokenEmail(uid) {
+  return TOKEN_EMAILS[uid] || `${uid.replace(/Uid$/, '')}@example.test`;
+}
+
 function client(uid) {
   const app = initializeApp({ projectId, apiKey: 'demo-key' }, `rules-${uid || 'guest'}-${Math.random()}`);
     const db = initializeFirestore(app, { experimentalForceLongPolling: true });
-  connectFirestoreEmulator(db, host, port, uid ? { mockUserToken: { sub: uid } } : undefined);
+  connectFirestoreEmulator(db, host, port, uid ? { mockUserToken: { sub: uid, email: tokenEmail(uid) } } : undefined);
   return db;
 }
 
@@ -74,6 +80,11 @@ const minimalPrivate = {
 await fails('guest cannot read public profiles', () => getDoc(doc(guestDb, 'profiles', alice)));
 await succeeds('owner creates a valid private profile', () => setDoc(doc(aliceDb, 'users', alice), minimalPrivate));
 await fails('another user cannot read a private profile', () => getDoc(doc(bobDb, 'users', alice)));
+await fails('a user cannot store another user email', () => setDoc(doc(malloryDb, 'users', mallory), {
+  ...minimalPrivate,
+  id: mallory,
+  email: 'alice@example.test',
+}));
 await fails('another user cannot update private matching preferences', () => setDoc(doc(bobDb, 'users', alice), {
   id: alice,
   matchingPreferences: { faculty: 'all' },
@@ -98,7 +109,8 @@ await succeeds('owner creates a bounded public profile', () => setDoc(doc(aliceD
   name: 'Alice',
   updatedAt: serverTimestamp(),
 }));
-await succeeds('signed-in user reads a public profile', () => getDoc(doc(bobDb, 'profiles', alice)));
+// Peer profiles are served through Functions; direct reads stay closed.
+await fails('signed-in peer cannot read a profile directly', () => getDoc(doc(bobDb, 'profiles', alice)));
 await fails('public profile cannot contain email', () => setDoc(doc(aliceDb, 'profiles', alice), {
   id: alice,
   isDiscoverable: true,
@@ -228,7 +240,6 @@ await succeeds('owner saves a scheduled meetup profile projection', () => {
     isNewUser: false,
     isDiscoverable: true,
     name: 'Scheduled owner',
-    location: 'legacy private location',
     meetup: scheduledMeetup,
     updatedAt: serverTimestamp(),
   });

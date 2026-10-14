@@ -1,9 +1,13 @@
+import * as Crypto from 'expo-crypto';
 import { Timestamp, collection, collectionGroup, doc, getDocs, limit, onSnapshot, orderBy, query, runTransaction, serverTimestamp, startAfter, where, writeBatch } from 'firebase/firestore';
 import { enqueueOfflineOperation, getFailedOfflineOperations, retryFailedOfflineOperation } from './offlineStorage';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService';
 import { encryptGroupText } from './groupChatEncryption';
 import { encryptMessageRecord } from './chatEncryptionService';
+import { getCallable } from './callableClient';
+import { RUST_BACKEND } from './rust/backend';
+import * as rustParties from './rust/parties';
 
 const REGION = 'asia-southeast1';
 
@@ -29,8 +33,7 @@ function subscribePagedQuery(baseQuery, onData, onError, pageSize = 30) {
 }
 
 function callable(name) {
-  const { app } = requireFirebase();
-  return httpsCallable(getFunctions(app, REGION), name, { timeout: 30000 });
+  return getCallable(name, { timeout: 30000 });
 }
 
 async function invoke(name, payload) {
@@ -59,6 +62,7 @@ export const resolveCampusPlace = async (placeId) => {
 };
 
 export async function writeQueuedGroupMessage(payload, userId) {
+  if (RUST_BACKEND) return rustParties.writeQueuedGroupMessage(payload, userId);
   const { db } = requireFirebase();
   const ref = doc(db, 'groupChats', payload.partyId, 'messages', payload.id);
   // Retrying a commit with an unknown acknowledgement must not duplicate it.
@@ -86,9 +90,14 @@ export async function retryGroupMessage(partyId, userId, epoch, message, key) {
   await retryFailedOfflineOperation(userId, operation.id, payload);
 }
 
+function newMessageId() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = Crypto.getRandomBytes(20);
+  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('');
+}
+
 async function queueGroupRecord(partyId, userId, epoch, type, encrypted) {
-  const { db } = requireFirebase();
-  const id = doc(collection(db, 'groupChats', partyId, 'messages')).id;
+  const id = RUST_BACKEND ? newMessageId() : doc(collection(requireFirebase().db, 'groupChats', partyId, 'messages')).id;
   const record = { senderId: userId, epoch, type, encrypted: true, nonce: encrypted.nonce, ciphertext: encrypted.ciphertext };
   const clientSentAt = Date.now();
   await enqueueOfflineOperation(userId, 'sendGroupMessage', { partyId, id, record, clientSentAt }, { dedupeKey: `group-message:${id}` });
@@ -110,6 +119,7 @@ export async function sendGroupImage(partyId, userId, epoch, mediaUrl, key) {
 }
 
 export function subscribeParties(onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeParties(onData, onError);
   const { db } = requireFirebase();
   const recentCutoff = Timestamp.fromMillis(Date.now());
   return subscribePagedQuery(query(collection(db, 'parties'),
@@ -117,23 +127,27 @@ export function subscribeParties(onData, onError) {
 }
 
 export function subscribeOwnParties(userId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeOwnParties(userId, onData, onError);
   const { db } = requireFirebase();
   return subscribePagedQuery(query(collection(db, 'parties'), where('memberIds', 'array-contains', userId),
     where('schedule.startsAt', '>=', Timestamp.fromMillis(Date.now() - 86400000)), orderBy('schedule.startsAt', 'asc')), onData, onError);
 }
 
 export function subscribePartyById(partyId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribePartyById(partyId, onData, onError);
   const { db } = requireFirebase();
   return onSnapshot(doc(db, 'parties', partyId), (snapshot) => onData(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null), onError);
 }
 
 export function subscribeMyPartyRequest(partyId, userId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeMyPartyRequest(partyId, userId, onData, onError);
   const { db } = requireFirebase();
   return onSnapshot(doc(db, 'parties', partyId, 'requests', userId),
     (snapshot) => onData(snapshot.exists() ? snapshot.data() : null), onError);
 }
 
 export function subscribeLegacyPartiesToActivate(hostId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeLegacyPartiesToActivate(hostId, onData, onError);
   const { db } = requireFirebase();
   return onSnapshot(query(collection(db, 'parties'),
     where('hostId', '==', hostId), where('chatActivationRequired', '==', true), limit(30)),
@@ -142,24 +156,28 @@ export function subscribeLegacyPartiesToActivate(hostId, onData, onError) {
 }
 
 export function subscribeMyPartyRequests(userId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeMyPartyRequests(userId, onData, onError);
   const { db } = requireFirebase();
   return subscribePagedQuery(query(collectionGroup(db, 'requests'), where('requesterId', '==', userId),
     where('status', '==', 'pending'), orderBy('updatedAt', 'desc')), onData, onError);
 }
 
 export function subscribeHostedPartyRequests(partyId, hostId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeHostedPartyRequests(partyId, hostId, onData, onError);
   const { db } = requireFirebase();
   return subscribePagedQuery(query(collection(db, 'parties', partyId, 'requests'), where('hostId', '==', hostId),
     where('status', '==', 'pending'), orderBy('updatedAt', 'asc')), onData, onError);
 }
 
 export function subscribeGroupChats(userId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeGroupChats(userId, onData, onError);
   const { db } = requireFirebase();
   return subscribePagedQuery(query(collection(db, 'groupChats'), where('memberIds', 'array-contains', userId),
     orderBy('updatedAt', 'desc')), onData, onError, 20);
 }
 
 export function subscribeGroupChat(partyId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeGroupChat(partyId, onData, onError);
   const { db } = requireFirebase();
   return onSnapshot(doc(db, 'groupChats', partyId),
     (snapshot) => onData(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null),
@@ -167,6 +185,7 @@ export function subscribeGroupChat(partyId, onData, onError) {
 }
 
 export function subscribeGroupReads(userId, onData, onError, partyIds = []) {
+  if (RUST_BACKEND) return rustParties.subscribeGroupReads(userId, onData, onError, partyIds);
   const { db } = requireFirebase();
   const pages = {};
   onData({});
@@ -183,12 +202,14 @@ export function subscribeGroupReads(userId, onData, onError, partyIds = []) {
 }
 
 export function subscribeGroupReadReceipts(partyId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeGroupReadReceipts(partyId, onData, onError);
   const { db } = requireFirebase();
   return onSnapshot(collection(db, 'groupChats', partyId, 'readReceipts'),
     (snapshot) => onData(Object.fromEntries(snapshot.docs.map((entry) => [entry.id, entry.data()]))), onError);
 }
 
 export async function markGroupRead(partyId, userId, message) {
+  if (RUST_BACKEND) return rustParties.markGroupRead(partyId, userId, message);
   if (!message?.createdAt?.toMillis || message.pendingSync || message.decryptionFailed) return;
   const { db } = requireFirebase();
   const data = { partyId, messageId: message.id, lastReadMessageAt: message.createdAt, updatedAt: serverTimestamp() };
@@ -199,6 +220,7 @@ export async function markGroupRead(partyId, userId, message) {
 }
 
 export function subscribeGroupEpochs(partyId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeGroupEpochs(partyId, onData, onError);
   const { db } = requireFirebase();
   return onSnapshot(collection(db, 'groupChats', partyId, 'epochs'),
     (snapshot) => onData(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }))),
@@ -206,6 +228,7 @@ export function subscribeGroupEpochs(partyId, onData, onError) {
 }
 
 export function subscribeGroupMessages(partyId, onData, onError) {
+  if (RUST_BACKEND) return rustParties.subscribeGroupMessages(partyId, onData, onError);
   const { db } = requireFirebase();
   return onSnapshot(query(collection(db, 'groupChats', partyId, 'messages'), orderBy('createdAt', 'desc'), limit(100)), { includeMetadataChanges: true },
     (snapshot) => onData(
@@ -218,6 +241,7 @@ export function subscribeGroupMessages(partyId, onData, onError) {
 }
 
 export async function loadOlderGroupMessages(partyId, cursor) {
+  if (RUST_BACKEND) return rustParties.loadOlderGroupMessages(partyId, cursor);
   if (!cursor) return { messages: [], cursor: null, hasMore: false };
   const { db } = requireFirebase();
   const snapshot = await getDocs(query(

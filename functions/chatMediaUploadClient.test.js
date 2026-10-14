@@ -50,6 +50,8 @@ function makeClient(options = {}) {
     requireFirebase: () => ({ app: {} }),
     verifyImageSafety: options.verifyImageSafety || (async () => true),
     getFunctions: () => ({}),
+    RUST_BACKEND: false,
+    getCallable: (...args) => context.httpsCallable(...args),
     httpsCallable: () => async () => {
       if (options.signerError) throw options.signerError;
       return { data: options.signerData || { success: true, uploadUrl: signedUrl, downloadUrl } };

@@ -1,0 +1,15 @@
+{
+  "cloudBuild": "afa83940-0c06-458b-a7fd-f89a8a1a0a2f",
+  "status": "SUCCESS",
+  "rustTestsPassed": 121,
+  "rustTestsFailed": 0,
+  "clippyWarningsDenied": "PASS",
+  "cargoLock": "existing dependency versions retained; ring added as a direct dependency",
+  "firebaseSignature": "RS256, Google JWKs only, expected issuer and project audience",
+  "firebaseProviderCheck": "fresh account lookup checks disabled/revoked/verified university email on each identity request",
+  "firebaseAuthority": "identity routes only; Firebase role claims never grant reviewer access",
+  "privateR2Credentials": "separate read-only avatar and read-write verification credentials",
+  "javascriptTestsPassed": 18,
+  "physicalDeviceValidation": "NOT RUN",
+  "productionEnabled": false
+}

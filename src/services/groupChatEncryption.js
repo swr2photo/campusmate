@@ -7,6 +7,7 @@ import {
 } from './chatEncryptionService';
 import { requireFirebase } from './dbService';
 import { secureDiscoveryCall, secureDiscoveryConfigured } from './secureDiscoveryService';
+import { RUST_BACKEND, rpc } from './rust/backend';
 const groupKeyCache = new Map();
 let keyCacheRevision = 0;
 export function clearGroupKeyCache() { keyCacheRevision += 1; groupKeyCache.clear(); }
@@ -47,6 +48,10 @@ function grantsForKey(key, userIds, profiles, identity) {
 }
 
 async function readEpochs(partyId) {
+  if (RUST_BACKEND) {
+    const page = await rpc('groupMessages', { partyId });
+    return (page?.epochs || []).map((entry) => ({ ...entry, epoch: Number(entry.epoch) })).sort((a, b) => a.epoch - b.epoch);
+  }
   const { db } = requireFirebase();
   const snapshots = await getDocs(collection(db, 'groupChats', partyId, 'epochs'));
   return snapshots.docs.map((entry) => ({ epoch: Number(entry.id), ...entry.data() }))
@@ -56,16 +61,21 @@ async function readEpochs(partyId) {
 export async function preparePartyApproval(party, requesterId) {
   const hostId = party.hostId;
   const identity = await ensureEncryptionIdentity(hostId);
-  const { db } = requireFirebase();
   const members = [...new Set([...(party.memberIds || []), requesterId])];
   const profiles = await profilesFor(members, hostId, identity, party.id);
-  const chatSnap = await getDoc(doc(db, 'groupChats', party.id));
-  if (!chatSnap.exists()) {
+  let chat = null;
+  if (RUST_BACKEND) {
+    chat = (await rpc('listGroupChats', { partyId: party.id }))?.chats?.[0] || null;
+  } else {
+    const chatSnap = await getDoc(doc(requireFirebase().db, 'groupChats', party.id));
+    chat = chatSnap.exists() ? chatSnap.data() : null;
+  }
+  if (!chat) {
     const key = Crypto.getRandomBytes(32);
     return { initialGrants: grantsForKey(key, members, profiles, identity) };
   }
   const epochs = await readEpochs(party.id);
-  const count = Number(chatSnap.get('epochCount'));
+  const count = Number(chat.epochCount);
   if (!count || epochs.length !== count || epochs.some((item, index) => item.epoch !== index)) {
     throw new Error('ประวัติกุญแจกลุ่มไม่ครบ ไม่สามารถอนุมัติสมาชิกได้');
   }

@@ -14,6 +14,8 @@ import { useMembership } from '../context/MembershipContext';
 import { useAppTour } from '../context/AppTourContext';
 import { FEATURE_INCOGNITO } from '../data/plans';
 import { requireFirebase } from '../services/dbService';
+import { RUST_BACKEND, rpc } from '../services/rust/backend';
+import { liveQuery } from '../services/rust/events';
 import { secureDiscoveryCall, secureDiscoveryConfigured } from '../services/secureDiscoveryService';
 
 const detail = (section) => router.push({ pathname: '/settings-detail', params: { section } });
@@ -41,6 +43,11 @@ export default function ProfileSettingsScreen({ onLogout, onToast }) {
   useEffect(() => {
     setVisibilityMode(visibilityEnabled ? null : 'public');
     if (!visibilityEnabled || !user?.id) return undefined;
+    if (RUST_BACKEND) {
+      return liveQuery('profile', () => rpc('getVisibilityState'), (state) => {
+        setVisibilityMode(state?.mode || 'public');
+      }, () => { setVisibilityMode(null); setError('โหลดการมองเห็นโปรไฟล์ไม่สำเร็จ กรุณาเปิดหน้านี้อีกครั้ง'); });
+    }
     try {
       const { db } = requireFirebase();
       return onSnapshot(doc(db, 'profileVisibility', user.id), (snapshot) => {

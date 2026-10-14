@@ -6,6 +6,9 @@ import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { requireFirebase } from './dbService';
 import { evaluateVersionPolicy } from '../utils/versionUpdatePolicy';
+import { getCallable } from './callableClient';
+import { RUST_BACKEND, publicRpc } from './rust/backend';
+import { liveQuery } from './rust/events';
 export { compareSemver } from '../utils/versionUpdatePolicy';
 
 const SNOOZE_STORAGE_KEY = '@campusmate:update_snoozed_at';
@@ -54,7 +57,7 @@ export async function reportAppVersionToServer(version) {
   try {
     const { app } = requireFirebase();
     const functions = getFunctions(app, 'asia-southeast1');
-    const reportFn = httpsCallable(functions, 'reportAppVersion');
+    const reportFn = getCallable('reportAppVersion');
     await reportFn({ version });
   } catch {
     // Non-blocking background reporting
@@ -87,6 +90,9 @@ export function getCurrentAppBuild() {
  * ดึงการตั้งค่าเวอร์ชันล่าสุดจาก Firestore collection app_config/version
  */
 export async function fetchRemoteVersionConfig() {
+  if (RUST_BACKEND) {
+    try { return (await publicRpc('getAppConfig', { id: 'version' }))?.config || null; } catch { return null; }
+  }
   try {
     const { db } = requireFirebase();
     const configDocRef = doc(db, 'app_config', 'version');
@@ -159,6 +165,20 @@ export function subscribeAppUpdate(onResult, { ignoreSnooze = false } = {}) {
   let cancelled = false;
   let revision = 0;
   let unsubscribeSnapshot = () => {};
+
+  if (RUST_BACKEND) {
+    unsubscribeSnapshot = liveQuery('config', () => publicRpc('getAppConfig', { id: 'version' }), async (result) => {
+      if (cancelled) return;
+      const observedRevision = ++revision;
+      try {
+        const evaluated = await evaluateUpdateFromConfig(result?.config || null, { ignoreSnooze });
+        if (!cancelled && observedRevision === revision) onResult(evaluated);
+      } catch (error) {
+        console.warn('[versionCheckService] subscribeAppUpdate evaluate error:', error?.message || error);
+      }
+    }, (error) => console.warn('[versionCheckService] subscribeAppUpdate error:', error?.message || error));
+    return () => { cancelled = true; unsubscribeSnapshot(); };
+  }
 
   try {
     const { db } = requireFirebase();

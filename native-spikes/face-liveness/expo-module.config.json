@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["FaceLivenessModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.faceliveness.FaceLivenessModule"]
+  }
+}

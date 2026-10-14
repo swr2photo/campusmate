@@ -600,20 +600,21 @@ function ProfileHero({ candidate, imageUri, palette }) {
     <ZStack
       alignment="topLeading"
       modifiers={[
-        frame({ height: 430, maxWidth: Infinity }),
+        frame({ height: 430 }),
+        frame({ maxWidth: Infinity }),
         background(candidate.avatarColor || palette.surfaceRaised),
         clipShape('roundedRectangle', 24, { style: 'continuous' }),
       ]}
     >
       {imageUri ? (
-        <RNHostView matchContents={false} modifiers={[frame({ height: 430, maxWidth: Infinity })]}>
+        <RNHostView matchContents={false} modifiers={[frame({ height: 430 }), frame({ maxWidth: Infinity })]}>
           <ExpoImage source={{ uri: imageUri }} contentFit="cover" priority="high" style={{ width: '100%', height: 430 }} />
         </RNHostView>
       ) : (
         <VStack
           alignment="center"
           spacing={10}
-          modifiers={[frame({ height: 430, maxWidth: Infinity })]}
+          modifiers={[frame({ height: 430 }), frame({ maxWidth: Infinity })]}
         >
           <Image color={palette.secondary} size={86} systemName="person.crop.square.fill" />
           <Text modifiers={[font({ textStyle: 'body', weight: 'semibold' }), foregroundStyle(palette.secondary)]}>
@@ -794,6 +795,9 @@ function ProfileDetails({ candidate, myFavoriteTracks = [], palette }) {
       </HStack>
 
       <ProfileInfoList palette={palette}>
+        {Array.isArray(candidate.matchReasons) && candidate.matchReasons.length ? (
+          <ProfileInfoRow icon="sparkles" label="จุดที่เข้ากัน" value={candidate.matchReasons.filter((reason) => typeof reason === 'string').slice(0, 3).join(' · ')} palette={palette} />
+        ) : null}
         {candidate.age ? <ProfileInfoRow icon="calendar" label="อายุ" value={`${candidate.age} ปี`} palette={palette} /> : null}
         {candidate.gender ? <ProfileInfoRow icon="person.2.fill" label="เพศ" value={genderLabel(candidate.gender)} palette={palette} /> : null}
         {(candidate.faculty && !candidate.faculty.includes('???')) ? <ProfileInfoRow icon="building.columns.fill" label="คณะ" value={candidate.faculty} palette={palette} /> : null}
@@ -942,7 +946,8 @@ function ProfileInfoRow({ icon, label, value, palette, showDivider = false }) {
         <HStack
           modifiers={[
             padding({ leading: 30 }),
-            frame({ height: 0.5, maxWidth: Infinity }),
+            frame({ height: 0.5 }),
+            frame({ maxWidth: Infinity }),
             background(dividerColor),
           ]}
         />

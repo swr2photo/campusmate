@@ -1,0 +1,12 @@
+*
+!android/
+!android/**
+!expo-module.config.json
+!cloudbuild.android.yaml
+!ci/
+!ci/host/
+!ci/host/package.json
+!ci/host/app.json
+!ci/host/App.js
+!ci/licenses/
+!ci/licenses/android-sdk-license

@@ -14,6 +14,7 @@ import {
   removeEncryptedItem,
   setEncryptedItem,
 } from '../utils/encryptedStorage';
+import { getCallable } from './callableClient';
 
 const REGISTRATION_KEY = 'campusmate_push_registration_v1';
 const CHANNELS = {
@@ -456,7 +457,7 @@ async function readStoredRegistration() {
 async function saveRegistration(userId, expoPushToken) {
   const { app } = requireFirebase();
   const projectId = getProjectId();
-  const registerPushToken = httpsCallable(getFunctions(app, FUNCTIONS_REGION), 'registerPushToken');
+  const registerPushToken = getCallable('registerPushToken');
   await registerPushToken({
     expoPushToken,
     platform: Platform.OS,
@@ -500,7 +501,7 @@ export async function unregisterPushNotificationsAsync(userId) {
   if (!registration?.expoPushToken || registration.userId !== userId) return false;
 
   const { app } = requireFirebase();
-  const unregisterPushToken = httpsCallable(getFunctions(app, FUNCTIONS_REGION), 'unregisterPushToken');
+  const unregisterPushToken = getCallable('unregisterPushToken');
   await unregisterPushToken({ expoPushToken: registration.expoPushToken });
   await removeEncryptedItem(REGISTRATION_KEY);
   return true;

@@ -1,0 +1,191 @@
+{
+  "importedOn": "2026-10-12",
+  "scope": "Project-local Claude and Codex skills plus reference documents; no application implementation or deployment.",
+  "mergePolicy": "Complete bundle selected: all platform references are identical; iOS and Android SKILL.md files extend the platform bundle with the face-verification companion section. Original README files stored separately.",
+  "archives": [
+    {
+      "name": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sha256": "149e0ca1b38a5c9b8595ef7a87e7993573d4c44f8e055c93cd542c95261d6dd0"
+    },
+    {
+      "name": "CampusMate_iOS26-27_Android_Material3_Expo58_Claude_Skills.zip",
+      "sha256": "90bf5dedbd06a06c7fbe5953b7e321de1e2cb919a90734adc65bff046ff87fdd"
+    }
+  ],
+  "files": [
+    {
+      "path": ".claude/skills/campusmate-android-material3-expo58/SKILL.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-android-material3-expo58/SKILL.md",
+      "sha256": "fd5f0d9614eb1e077b8746187af9481859bffbff28546a58fd7e4f737f6c06b7"
+    },
+    {
+      "path": ".agents/skills/campusmate-android-material3-expo58/SKILL.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-android-material3-expo58/SKILL.md",
+      "sha256": "fd5f0d9614eb1e077b8746187af9481859bffbff28546a58fd7e4f737f6c06b7"
+    },
+    {
+      "path": ".claude/skills/campusmate-android-material3-expo58/references/android-campusmate-screen-specs.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-android-material3-expo58/references/android-campusmate-screen-specs.md",
+      "sha256": "d61b1fedc91ae246ca0e5ff142b285875c6d8adfbbd50c26c0c28d0d8cde8c92"
+    },
+    {
+      "path": ".agents/skills/campusmate-android-material3-expo58/references/android-campusmate-screen-specs.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-android-material3-expo58/references/android-campusmate-screen-specs.md",
+      "sha256": "d61b1fedc91ae246ca0e5ff142b285875c6d8adfbbd50c26c0c28d0d8cde8c92"
+    },
+    {
+      "path": ".claude/skills/campusmate-android-material3-expo58/references/android-expo58-implementation-qa.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-android-material3-expo58/references/android-expo58-implementation-qa.md",
+      "sha256": "e6b87cf389a5c8c69cdc89c7556900fdbd4bf274178760f5d8f968305a90cea8"
+    },
+    {
+      "path": ".agents/skills/campusmate-android-material3-expo58/references/android-expo58-implementation-qa.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-android-material3-expo58/references/android-expo58-implementation-qa.md",
+      "sha256": "e6b87cf389a5c8c69cdc89c7556900fdbd4bf274178760f5d8f968305a90cea8"
+    },
+    {
+      "path": ".claude/skills/campusmate-android-material3-expo58/references/android-google-material3-source-of-truth.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-android-material3-expo58/references/android-google-material3-source-of-truth.md",
+      "sha256": "b508c05d6d3351c3dda487bb196a31e34f9081c83edc2b6bcdaa6329d97a3f13"
+    },
+    {
+      "path": ".agents/skills/campusmate-android-material3-expo58/references/android-google-material3-source-of-truth.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-android-material3-expo58/references/android-google-material3-source-of-truth.md",
+      "sha256": "b508c05d6d3351c3dda487bb196a31e34f9081c83edc2b6bcdaa6329d97a3f13"
+    },
+    {
+      "path": ".claude/skills/campusmate-face-verification-rekognition/SKILL.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-face-verification-rekognition/SKILL.md",
+      "sha256": "f0fa0434aac73a3f03c1adb4f234f02bbaa86f6c2b46bceb122a9be2d5711976"
+    },
+    {
+      "path": ".agents/skills/campusmate-face-verification-rekognition/SKILL.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-face-verification-rekognition/SKILL.md",
+      "sha256": "f0fa0434aac73a3f03c1adb4f234f02bbaa86f6c2b46bceb122a9be2d5711976"
+    },
+    {
+      "path": ".claude/skills/campusmate-face-verification-rekognition/references/verification-blueprint.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-face-verification-rekognition/references/verification-blueprint.md",
+      "sha256": "23ab9381c2c3d859da8715ffd524f5f67bd72a4982e7fe3189d204c19a4dec1a"
+    },
+    {
+      "path": ".agents/skills/campusmate-face-verification-rekognition/references/verification-blueprint.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-face-verification-rekognition/references/verification-blueprint.md",
+      "sha256": "23ab9381c2c3d859da8715ffd524f5f67bd72a4982e7fe3189d204c19a4dec1a"
+    },
+    {
+      "path": ".claude/skills/campusmate-ios26-27-expo58/SKILL.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/SKILL.md",
+      "sha256": "3f1b4045c30ceb84a09e0272deef67d1631981a097176f834271822e7109d319"
+    },
+    {
+      "path": ".agents/skills/campusmate-ios26-27-expo58/SKILL.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/SKILL.md",
+      "sha256": "3f1b4045c30ceb84a09e0272deef67d1631981a097176f834271822e7109d319"
+    },
+    {
+      "path": ".claude/skills/campusmate-ios26-27-expo58/references/apple-hig-ios26-27-source-of-truth.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/apple-hig-ios26-27-source-of-truth.md",
+      "sha256": "1e7cbd2cd0b7e32b13f66c56ae8e0ae74689dc891560f2a2264b417ff8d9bcfb"
+    },
+    {
+      "path": ".agents/skills/campusmate-ios26-27-expo58/references/apple-hig-ios26-27-source-of-truth.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/apple-hig-ios26-27-source-of-truth.md",
+      "sha256": "1e7cbd2cd0b7e32b13f66c56ae8e0ae74689dc891560f2a2264b417ff8d9bcfb"
+    },
+    {
+      "path": ".claude/skills/campusmate-ios26-27-expo58/references/campusmate-screen-specs.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/campusmate-screen-specs.md",
+      "sha256": "1dc09927e5764decc6f05e0598fb65e5f6040803f2dfe57fd821f67bed2c6574"
+    },
+    {
+      "path": ".agents/skills/campusmate-ios26-27-expo58/references/campusmate-screen-specs.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/campusmate-screen-specs.md",
+      "sha256": "1dc09927e5764decc6f05e0598fb65e5f6040803f2dfe57fd821f67bed2c6574"
+    },
+    {
+      "path": ".claude/skills/campusmate-ios26-27-expo58/references/design-system-and-navigation.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/design-system-and-navigation.md",
+      "sha256": "3b50ffec531f26b26d8c1c141d5e68ff41cb7704a8dfacb7aa5a41e912f9a889"
+    },
+    {
+      "path": ".agents/skills/campusmate-ios26-27-expo58/references/design-system-and-navigation.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/design-system-and-navigation.md",
+      "sha256": "3b50ffec531f26b26d8c1c141d5e68ff41cb7704a8dfacb7aa5a41e912f9a889"
+    },
+    {
+      "path": ".claude/skills/campusmate-ios26-27-expo58/references/implementation-patterns-and-qa.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/implementation-patterns-and-qa.md",
+      "sha256": "7311fee6b1e021969aae70090d338cdf36fac7462686be513cffc2a94ef593eb"
+    },
+    {
+      "path": ".agents/skills/campusmate-ios26-27-expo58/references/implementation-patterns-and-qa.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/implementation-patterns-and-qa.md",
+      "sha256": "7311fee6b1e021969aae70090d338cdf36fac7462686be513cffc2a94ef593eb"
+    },
+    {
+      "path": ".claude/skills/campusmate-ios26-27-expo58/references/performance-security-and-sdk58.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/performance-security-and-sdk58.md",
+      "sha256": "042840671ea91f174454ce25b5e1d20a27df72f9d8fcae7e7d44d7d695e27702"
+    },
+    {
+      "path": ".agents/skills/campusmate-ios26-27-expo58/references/performance-security-and-sdk58.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": ".claude/skills/campusmate-ios26-27-expo58/references/performance-security-and-sdk58.md",
+      "sha256": "042840671ea91f174454ce25b5e1d20a27df72f9d8fcae7e7d44d7d695e27702"
+    },
+    {
+      "path": "docs/campusmate-skill-bundle/README.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": "README.md",
+      "sha256": "74f21cee59bffc420f41d2bf82f2077bd50168ca94b9e267f00b5d94067da7c6"
+    },
+    {
+      "path": "docs/CampusMate_S_Tier_Face_Verification.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": "docs/CampusMate_S_Tier_Face_Verification.md",
+      "sha256": "23ab9381c2c3d859da8715ffd524f5f67bd72a4982e7fe3189d204c19a4dec1a"
+    },
+    {
+      "path": "docs/CampusMate_S_Tier_Full_System_Spec.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": "docs/CampusMate_S_Tier_Full_System_Spec.md",
+      "sha256": "f334404e764f4cd53bca0bc20f1d868b8c0011999ae2d0d96d403f36c8e0e43d"
+    },
+    {
+      "path": "docs/skills_ios_android_identity.md",
+      "sourceArchive": "CampusMate_Complete_Claude_Skills_and_Spec.zip",
+      "sourceEntry": "docs/skills_ios_android_identity.md",
+      "sha256": "fa6cca92ad74b3d4949388a211faab6be7b57060250ff3159fff606fb5c879ea"
+    },
+    {
+      "path": "docs/campusmate-skill-bundle/platform-skills-README.md",
+      "sourceArchive": "CampusMate_iOS26-27_Android_Material3_Expo58_Claude_Skills.zip",
+      "sourceEntry": "README.md",
+      "sha256": "a8cd60bbda6be1421f598987e0d56d99c73daa2c756fabc721e88899b23ed6b4"
+    }
+  ]
+}

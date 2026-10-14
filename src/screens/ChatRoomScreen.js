@@ -36,7 +36,8 @@ import { project, rubberband } from '../utils/motion';
 import { router, useLocalSearchParams } from 'expo-router';
 import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, startAfter } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
-import { decryptConversationMessageList, mergeProfileRecords, toSafePublicProfile } from '../services/firestoreService';
+import { decryptConversationMessageList, fetchRustConversationMessages, mergeProfileRecords, subscribeToRustConversationMessages, toSafePublicProfile } from '../services/firestoreService';
+import { RUST_BACKEND } from '../services/rust/backend';
 import { secureDiscoveryConfigured, subscribeSecureProfile } from '../services/secureDiscoveryService';
 import { setActiveConversation } from '../services/notificationService';
 import {
@@ -680,7 +681,17 @@ export default function ChatRoomScreen() {
       if (isSubscribed) setDirectMessages(decryptedList);
     };
 
-    try {
+    if (RUST_BACKEND) {
+      unsubscribe = subscribeToRustConversationMessages(normalizedChatId, (page) => {
+        if (!isSubscribed) return;
+        setHasMoreOlder(page.hasMore);
+        oldestDocRef.current = page.beforeSequence ? { beforeSequence: page.beforeSequence } : null;
+        latestRawDocs = page.messages;
+        try { applyDecrypted(page.messages, key); } catch (err) {
+          console.warn('ChatRoom direct messages decrypt error:', err?.message || err);
+        }
+      }, (error) => console.warn('ChatRoom direct messages listener error:', error?.message || error));
+    } else try {
       const { db } = requireFirebase();
       const messagesRef = collection(db, 'conversations', normalizedChatId, 'messages');
       const messagesQuery = query(
@@ -736,6 +747,25 @@ export default function ChatRoomScreen() {
   const loadOlderMessages = useCallback(async () => {
     if (isLoadingOlder || !hasMoreOlder || !oldestDocRef.current || !normalizedChatId) return;
     setIsLoadingOlder(true);
+    if (RUST_BACKEND) {
+      try {
+        const page = await fetchRustConversationMessages(normalizedChatId, { beforeSequence: oldestDocRef.current.beforeSequence, limit: 30 });
+        oldestDocRef.current = page.beforeSequence ? { beforeSequence: page.beforeSequence } : null;
+        if (!page.hasMore || !page.messages.length) setHasMoreOlder(false);
+        const currentKey = await getOrFetchConversationKey(normalizedChatId, currentUserId).catch(() => null);
+        const historyCutoff = chat?.historyClearedAt?.[currentUserId] || null;
+        const decrypted = decryptConversationMessageList(normalizedChatId, page.messages, currentKey, currentUserId, historyCutoff);
+        setOlderMessages((prev) => {
+          const existingIds = new Set(prev.map((m) => m.id));
+          return [...decrypted.filter((m) => !existingIds.has(m.id)), ...prev];
+        });
+      } catch (err) {
+        console.warn('Failed to load older messages:', err);
+      } finally {
+        setIsLoadingOlder(false);
+      }
+      return;
+    }
     try {
       const { db } = requireFirebase();
       const olderQuery = query(

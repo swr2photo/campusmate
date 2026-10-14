@@ -77,3 +77,13 @@ test('pending likes notify on create and when a previous decision is reopened', 
   assert.equal(isNewPendingLike({ type: 'like', status: 'pending' }, { type: 'like', status: 'pending' }), false);
   assert.equal(isNewPendingLike({ type: 'like', status: 'pending' }, { type: 'like', status: 'accepted' }), false);
 });
+test('encrypted messages never include legacy plaintext previews or media URLs in push payloads', () => {
+  for (const marker of [{encrypted:true},{ciphertext:'opaque encrypted bytes'}]) {
+    const notification=messageNotification({name:'Sender'},'room',{...marker,id:'m1',senderId:'sender',text:'PRIVATE MESSAGE',preview:'PRIVATE PREVIEW',mediaType:'image',mediaUrl:'https://private.example.test/secret'});
+    assert.equal(notification.body,'ข้อความที่เข้ารหัส');
+    assert.equal(notification.mediaUrl,null);
+    assert.equal(notification.data.mediaUrl,null);
+    assert.ok(!JSON.stringify(notification).includes('PRIVATE'));
+    assert.ok(!JSON.stringify(notification).includes('private.example.test'));
+  }
+});

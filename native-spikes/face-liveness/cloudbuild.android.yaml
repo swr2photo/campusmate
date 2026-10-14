@@ -1,0 +1,35 @@
+# Compile the real bridge against Expo 58 / RN 0.88; no signing/upload/store release.
+steps:
+  - name: node:24-trixie
+    entrypoint: bash
+    env: ['CI=1', 'EXPO_NO_TELEMETRY=1', 'ANDROID_HOME=/workspace/android-sdk', 'ANDROID_SDK_ROOT=/workspace/android-sdk', 'GRADLE_USER_HOME=/workspace/gradle-cache']
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        apt-get update -qq
+        apt-get install -y --no-install-recommends openjdk-21-jdk-headless unzip ca-certificates
+        export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+        curl -fL https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip -o /workspace/sdk-tools.zip
+        echo '4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  /workspace/sdk-tools.zip' | sha256sum -c -
+        mkdir -p /workspace/android-sdk/cmdline-tools /workspace/android-sdk/licenses
+        unzip -q /workspace/sdk-tools.zip -d /workspace/android-sdk/cmdline-tools
+        mv /workspace/android-sdk/cmdline-tools/cmdline-tools /workspace/android-sdk/cmdline-tools/latest
+        cp /workspace/ci/licenses/* /workspace/android-sdk/licenses/
+        /workspace/android-sdk/cmdline-tools/latest/bin/sdkmanager 'platform-tools' 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;27.1.12297006'
+        cd /workspace/ci/host
+        npm install --legacy-peer-deps --no-audit --no-fund
+        mkdir -p modules/face-liveness
+        cp -r /workspace/android modules/face-liveness/android
+        cp /workspace/expo-module.config.json modules/face-liveness/
+        npx expo prebuild --platform android --no-install
+        cd android
+        ./gradlew :face-liveness:assembleDebug --no-daemon --max-workers=2 --console=plain '-Dorg.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=768m'
+        cd ..
+        tar -czf /workspace/android-bridge-validation.tgz modules/face-liveness/android/build/outputs/aar package-lock.json
+        printf 'ANDROID_FACE_LIVENESS_EXPO58_COMPILE_OK\n'
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    args: ['gcloud', 'storage', 'cp', '/workspace/android-bridge-validation.tgz', 'gs://campusmate-7f1ab_cloudbuild/android-liveness/$BUILD_ID/android-bridge-validation.tgz']
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 2400s

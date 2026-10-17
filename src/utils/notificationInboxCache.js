@@ -22,6 +22,12 @@ export function overlayInboxReadReceipts(rows, receipts) {
 // at once instead of waiting for the callable and the listener echo; rows
 // that arrive afterwards stay unread.
 const createdMillis = value => value?.toMillis?.() || (value?.seconds ? value.seconds * 1000 : Number(value) || 0);
+export function inboxMarkedAllTimestamp(rows = [], now = Date.now()) {
+  return rows.reduce((latest, row) => Math.max(latest, createdMillis(row?.createdAt)), now);
+}
+export function hasUnconfirmedMarkedAllRows(rows = [], markedAt = 0) {
+  return Boolean(markedAt) && rows.some(row => !row.readAt && createdMillis(row.createdAt) <= markedAt);
+}
 export function overlayInboxMarkedAll(rows, markedAt) {
   if (!markedAt) return rows;
   return rows.map(row => row.readAt || createdMillis(row.createdAt) > markedAt ? row : {

@@ -1646,38 +1646,41 @@ export default function ChatRoomScreen() {
   // Keep the SwiftUI child tree stable while typing, opening settings, or
   // changing other local state. List owns the native rows; this memo also
   // avoids rebuilding every message element on each parent render.
+  const otherUnread = chat?.unreadCounts?.[otherUserId];
   const messageRows = useMemo(() => {
     const messagesById = new Map(effectiveMessages.map(message => [message.id, message]));
     const messages = effectiveMessages.map(message => resolveMessageReply(message, messagesById));
     if (!messages.length) return null;
-    const otherUnread = chat?.unreadCounts?.[otherUserId];
-    return messages.map((item, index) => (
-      <MessageSwipeRow
-        avatarColor={chat?.avatarColor}
-        avatarEmoji={chat?.avatar}
-        avatarUri={resolvedPartnerAvatar}
-        conversationId={chat?.id}
-        currentUserId={currentUserId}
-        isLatest={index === messages.length - 1}
-        item={item}
-        key={item.id}
-        onCallPress={handleCallPress}
-        onOpenProfile={handleOpenPartnerProfile}
-        onPreviewImage={handlePreviewImage}
-        onQuickReact={handleQuickReact}
-        onReply={handleReply}
-        onScrollToMessage={handleScrollToMessage}
-        onShowReactionDetails={handleShowReactionDetails}
-        onSelectMessage={handleSelectMessage}
-        otherUnread={otherUnread}
-        previousItem={messages[index - 1]}
-        readAt={otherReadAt}
-        otherUserId={otherUserId}
-        showAllMessageTimes={showAllMessageTimes}
-        tick={0}
-      />
-    ));
-  }, [currentUserId, chat?.avatar, chat?.avatarColor, chat?.id, chat?.unreadCounts, effectiveMessages, handleCallPress, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUserId, handleReply, resolvedPartnerAvatar, showAllMessageTimes]);
+    return messages.map((item, index) => {
+      const isLatest = index === messages.length - 1;
+      return (
+        <MessageSwipeRow
+          avatarColor={chat?.avatarColor}
+          avatarEmoji={chat?.avatar}
+          avatarUri={resolvedPartnerAvatar}
+          conversationId={chat?.id}
+          currentUserId={currentUserId}
+          isLatest={isLatest}
+          item={item}
+          key={item.id}
+          onCallPress={handleCallPress}
+          onOpenProfile={handleOpenPartnerProfile}
+          onPreviewImage={handlePreviewImage}
+          onQuickReact={handleQuickReact}
+          onReply={handleReply}
+          onScrollToMessage={handleScrollToMessage}
+          onShowReactionDetails={handleShowReactionDetails}
+          onSelectMessage={handleSelectMessage}
+          otherUnread={isLatest ? otherUnread : undefined}
+          previousItem={messages[index - 1]}
+          readAt={isLatest ? otherReadAt : null}
+          otherUserId={otherUserId}
+          showAllMessageTimes={showAllMessageTimes}
+          tick={0}
+        />
+      );
+    });
+  }, [currentUserId, chat?.avatar, chat?.avatarColor, chat?.id, effectiveMessages, handleCallPress, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUnread, otherUserId, handleReply, resolvedPartnerAvatar, showAllMessageTimes]);
 
   // Only the newest row shows a ticking relative time, so refresh that single
   // element instead of rebuilding every row's element tree on each tick.

@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { clearPendingInboxReads, inboxCall, markInboxRead, visibleNotification, watchInbox, watchPendingInboxReads } from '../services/notificationInboxService';
-import { mergeInboxSnapshot, overlayInboxMarkedAll, overlayInboxReadReceipts, restoreInboxCache } from '../utils/notificationInboxCache';
+import { hasUnconfirmedMarkedAllRows, inboxMarkedAllTimestamp, mergeInboxSnapshot, overlayInboxMarkedAll, overlayInboxReadReceipts, restoreInboxCache } from '../utils/notificationInboxCache';
 
 const InboxContext = createContext(null);
 export function NotificationInboxProvider({ children }) {
@@ -16,7 +16,7 @@ export function NotificationInboxProvider({ children }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [face, setFace] = useState({ uid: null, row: null });
   const [pendingReads, setPendingReads] = useState({ uid: null, receipts: [] });
-  const [markedAll, setMarkedAll] = useState({ uid: null, at: 0 });
+  const [markedAll, setMarkedAll] = useState({ uid: null, at: 0, pending: false });
   useEffect(() => {
     if (!uid) return undefined;
     const stop = watchPendingInboxReads(uid, receipts => {
@@ -83,17 +83,20 @@ export function NotificationInboxProvider({ children }) {
     return overlayInboxMarkedAll(read, markedAll.uid === uid ? markedAll.at : 0);
   }, [current.rows, uid, face, expiryTick, pendingReads, markedAll]);
   // While "อ่านทั้งหมด" is applied locally the server count can lag behind;
-  // it cannot exceed the loaded rows that are still unread.
-  const count = markedAll.uid === uid && markedAll.at
+  // once the callable finishes and the loaded snapshot reflects it, server count takes over again.
+  const markAllLagging = markedAll.uid === uid && markedAll.at
+    && (markedAll.pending || hasUnconfirmedMarkedAllRows(current.rows, markedAll.at));
+  const count = markAllLagging
     ? Math.min(current.count, rows.filter(row => !row.readAt).length) : current.count;
   const markAll = async () => {
-    const at = Date.now();
-    setMarkedAll({ uid, at });
+    const at = inboxMarkedAllTimestamp(current.rows);
+    setMarkedAll({ uid, at, pending: true });
     try {
       let result;
       do { result = await inboxCall('markAllNotificationInboxRead', uid); } while (result.hasMore && activeUid.current === uid);
+      setMarkedAll(prev => (prev.at === at ? { ...prev, pending: false } : prev));
     } catch (error) {
-      setMarkedAll(prev => (prev.at === at ? { uid: null, at: 0 } : prev));
+      setMarkedAll(prev => (prev.at === at ? { uid: null, at: 0, pending: false } : prev));
       throw error;
     }
   };

@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-const context = vm.createContext({ Array, Number });
-vm.runInContext(fs.readFileSync('src/utils/notificationInboxCache.js', 'utf8').replaceAll('export ', '') + '\nglobalThis.api = {restoreInboxCache,mergeInboxSnapshot,overlayInboxReadReceipts,overlayInboxMarkedAll};', context);
-const { restoreInboxCache, mergeInboxSnapshot, overlayInboxReadReceipts, overlayInboxMarkedAll } = context.api;
+const context = vm.createContext({ Array, Number, Boolean, Date, Math });
+vm.runInContext(fs.readFileSync('src/utils/notificationInboxCache.js', 'utf8').replaceAll('export ', '') + '\nglobalThis.api = {restoreInboxCache,mergeInboxSnapshot,overlayInboxReadReceipts,overlayInboxMarkedAll,inboxMarkedAllTimestamp,hasUnconfirmedMarkedAllRows};', context);
+const { restoreInboxCache, mergeInboxSnapshot, overlayInboxReadReceipts, overlayInboxMarkedAll, inboxMarkedAllTimestamp, hasUnconfirmedMarkedAllRows } = context.api;
 const initial = () => ({ uid: 'alice', rows: [], count: 0, loading: true });
 const cached = { rows: [{ id: 'n1', readAt: null }], count: 1 };
 
@@ -65,4 +65,7 @@ test('mark-all shows rows created up to the tap as read and leaves later arrival
   assert.deepEqual(JSON.parse(JSON.stringify(marked.map(row => [row.id, row.readAt]))),
     [['old', { seconds: 200 }], ['read', { seconds: 95 }], ['new', null]]);
   assert.equal(overlayInboxMarkedAll(rows, 0), rows);
+  assert.equal(inboxMarkedAllTimestamp(rows, 150_000), 300_000);
+  assert.equal(hasUnconfirmedMarkedAllRows(rows, 200_000), true);
+  assert.equal(hasUnconfirmedMarkedAllRows(marked, 200_000), false);
 });

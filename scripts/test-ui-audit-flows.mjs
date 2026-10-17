@@ -340,4 +340,8 @@ test('ios chat rows get stable handlers so their memo comparators can skip uncha
   for (const attribute of handlers) {
     assert.equal(attribute.value.expression.type, 'Identifier', `${attribute.name.name} must not be an inline function`);
   }
+  for (const propName of ['otherUnread', 'readAt']) {
+    const prop = row.attributes.find(attribute => attribute.name?.name === propName);
+    assert.equal(prop?.value?.expression?.type, 'ConditionalExpression', `${propName} must only be passed to the latest row`);
+  }
 });

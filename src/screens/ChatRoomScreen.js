@@ -509,8 +509,11 @@ export default function ChatRoomScreen() {
 
   const flatListPerf = useMemo(() => getFlatListPerformanceConfig(), []);
   const [inputText, setInputText] = useState('');
+  const inputTextRef = useRef('');
+  inputTextRef.current = inputText;
   const [showQuickEmoji, setShowQuickEmoji] = useState(false);
   const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [selectedImage, setSelectedImage] = useState(null);
   const [previewImageUrl, setPreviewImageUrl] = useState(null);
   const [previewImages, setPreviewImages] = useState([]);
@@ -828,6 +831,7 @@ export default function ChatRoomScreen() {
   const timeDragAnim = useSharedValue(0);
   const handleTextInputChange = useCallback((text) => {
     // Preserve native typing/paste, including image URLs, without clearing the draft.
+    inputTextRef.current = text;
     setInputText(text);
   }, []);
 
@@ -1163,8 +1167,10 @@ export default function ChatRoomScreen() {
   }, [showScrollBottom, scrollAnim]);
 
   useEffect(() => {
+    inputTextRef.current = '';
     setInputText('');
     setReplyingTo(null);
+    sendingRef.current = false;
     setSending(false);
     setShowAllMessageTimes(false);
     setShowScrollBottom(false);
@@ -1747,13 +1753,15 @@ export default function ChatRoomScreen() {
       await handleSendImage(selectedImage.uris || selectedImage.uri, inputText);
       return;
     }
-    const trimmed = inputText.trim();
-    if (!trimmed || sending || uploadingMedia || !chat?.id || !isMatchActive) return;
+    const trimmed = (inputTextRef.current || inputText).trim();
+    if (!trimmed || sending || sendingRef.current || uploadingMedia || !chat?.id || !isMatchActive) return;
 
     isNearBottomRef.current = true;
     setShowScrollBottom(false);
     setNewMessagesBelow(0);
+    sendingRef.current = true;
     setSending(true);
+    inputTextRef.current = '';
     setInputText('');
     setShowQuickEmoji(false);
     const replySnapshot = replyingTo;
@@ -1772,6 +1780,7 @@ export default function ChatRoomScreen() {
     } catch (error) {
       delivery = Promise.reject(error);
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
     try {
@@ -1779,8 +1788,13 @@ export default function ChatRoomScreen() {
       scrollToLatest(true, true);
     } catch (error) {
       // Give the draft back only if nothing new was typed meanwhile.
-      setInputText((current) => (current.trim() ? current : trimmed));
-      setReplyingTo((current) => current || replySnapshot);
+      if (!(inputTextRef.current || '').trim()) {
+        inputTextRef.current = trimmed;
+        setInputText((current) => (current.trim() ? current : trimmed));
+        if (replySnapshot) {
+          setReplyingTo((current) => current || replySnapshot);
+        }
+      }
       if (error?.code === 'E2EE_KEY_MISSING' || error?.code === 'E2EE_KEY_UNAVAILABLE') {
         showAlert('ยังส่งไม่สำเร็จ', error.message || 'กำลังเชื่อมกุญแจเข้ารหัส ลองส่งอีกครั้งได้เลย', { tone: 'warning' });
       }

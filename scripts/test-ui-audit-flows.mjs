@@ -219,20 +219,30 @@ for (const path of ['src/context/AppContext.js', 'src/services/firestoreService.
   'src/screens/ProfileScreen.js', 'src/components/ui.js', 'src/components/ConversationInboxStatus.js']) load(path);
 
 const iosChat = load('src/screens/ChatRoomScreen.ios.js');
-function sendHarness({ encryptionPending = false } = {}) {
+const androidChat = load('src/screens/ChatRoomScreen.js');
+function sendHarness({ encryptionPending = false, replyingTo = null } = {}) {
   const call = iosChat.nodes.find(n => n.type === 'VariableDeclarator' && n.id?.name === 'handleSend').init;
-  let draft = '', fieldText = '';
+  let draft = '', fieldText = '', currentReply = replyingTo;
   const deliveries = [], alerts = [];
   const context = vm.createContext({ console: quiet, Promise, setTimeout: () => 0,
     messageState: { get: () => draft, set: (value) => { draft = value; } },
     sendingRef: { current: false }, chat: { id: 'room', encryptionPending }, isMatchActive: true,
-    replyingTo: null, setReplyingTo() {}, setHasText() {}, scrollToLatest() {}, createReplySnapshot: (value) => value,
+    get replyingTo() { return currentReply; },
+    setReplyingTo: (update) => { currentReply = typeof update === 'function' ? update(currentReply) : update; },
+    setHasText() {}, scrollToLatest() {}, createReplySnapshot: (value) => value,
     textFieldRef: { current: { clear: async () => { fieldText = ''; }, setText: async (value) => { fieldText = value; } } },
     sendMessage: (_id, text) => new Promise((resolve, reject) => { deliveries.push({ text, resolve, reject }); }),
     showAlert: (...args) => alerts.push(args),
   });
   vm.runInContext('globalThis.send = ' + iosChat.code(call.arguments[0]), context);
-  return { context, deliveries, alerts, type: (value) => { draft = value; fieldText = value; }, get draft() { return draft; }, get fieldText() { return fieldText; } };
+  return {
+    context, deliveries, alerts,
+    type: (value) => { draft = value; fieldText = value; },
+    selectReply: (value) => { currentReply = value; },
+    get draft() { return draft; },
+    get fieldText() { return fieldText; },
+    get replyingTo() { return currentReply; },
+  };
 }
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 test('ios chat: the composer is free for the next message while the first is still committing', async () => {
@@ -244,15 +254,53 @@ test('ios chat: the composer is free for the next message while the first is sti
   h.deliveries.forEach((item) => item.resolve(true)); await Promise.all([first, second]);
 });
 test('ios chat: a failed send restores the draft unless something new was typed', async () => {
-  const h = sendHarness();
+  const h = sendHarness({ replyingTo: { id: 'r1' } });
   h.type('lost'); const failed = h.context.send(); await flush();
   h.deliveries[0].reject(new Error('permission-denied')); await failed;
   assert.equal(h.draft, 'lost'); assert.equal(h.fieldText, 'lost');
-  const other = sendHarness();
+  assert.deepEqual(h.replyingTo, { id: 'r1' });
+
+  const keepNewReply = sendHarness({ replyingTo: { id: 'r1' } });
+  keepNewReply.type('lost'); const failedWithNewReply = keepNewReply.context.send(); await flush();
+  keepNewReply.selectReply({ id: 'r2' });
+  keepNewReply.deliveries[0].reject(new Error('permission-denied')); await failedWithNewReply;
+  assert.deepEqual(keepNewReply.replyingTo, { id: 'r2' });
+
+  const other = sendHarness({ replyingTo: { id: 'r1' } });
   other.type('first'); const pending = other.context.send(); await flush();
   other.type('typing now');
   other.deliveries[0].reject(new Error('permission-denied')); await pending;
   assert.equal(other.draft, 'typing now');
+  assert.equal(other.replyingTo, null);
+});
+test('android chat: a failed send does not attach its reply snapshot to a newly typed draft', async () => {
+  let draft = 'first', currentReply = { id: 'r1' }, sending = false;
+  const deliveries = [];
+  const inputTextRef = { current: draft }, sendingRef = { current: false };
+  const context = vm.createContext({ console: quiet, Promise,
+    selectedImage: null,
+    get inputText() { return draft; },
+    inputTextRef,
+    get sending() { return sending; },
+    sendingRef,
+    uploadingMedia: false, chat: { id: 'room', encryptionPending: false }, isMatchActive: true,
+    isNearBottomRef: { current: false }, setShowScrollBottom() {}, setNewMessagesBelow() {},
+    setSending: (value) => { sending = value; },
+    setInputText: (update) => { draft = typeof update === 'function' ? update(draft) : update; inputTextRef.current = draft; },
+    setShowQuickEmoji() {},
+    get replyingTo() { return currentReply; },
+    setReplyingTo: (update) => { currentReply = typeof update === 'function' ? update(currentReply) : update; },
+    scrollToLatest() {}, createReplySnapshot: (value) => value,
+    sendMessage: (_id, text) => new Promise((resolve, reject) => { deliveries.push({ text, resolve, reject }); }),
+    showAlert() {},
+  });
+  vm.runInContext('globalThis.send = ' + variable(androidChat, 'handleSend'), context);
+  const first = context.send();
+  draft = 'new draft'; inputTextRef.current = 'new draft';
+  deliveries[0].reject(new Error('permission-denied'));
+  await first;
+  assert.equal(draft, 'new draft');
+  assert.equal(currentReply, null);
 });
 test('ios chat: a room still preparing its key keeps the send lock until the send settles', async () => {
   const h = sendHarness({ encryptionPending: true });

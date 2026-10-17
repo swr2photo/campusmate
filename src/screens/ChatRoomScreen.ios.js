@@ -1606,7 +1606,9 @@ export default function ChatRoomScreen() {
       if (!(messageState.get() || '').trim()) {
         messageState.set(trimmed);
         setHasText(true);
-        setReplyingTo(replySnapshot);
+        if (replySnapshot) {
+          setReplyingTo((current) => current || replySnapshot);
+        }
         await textFieldRef.current?.setText(trimmed);
       }
       if (error?.code === 'E2EE_KEY_MISSING' || error?.code === 'E2EE_KEY_UNAVAILABLE') {

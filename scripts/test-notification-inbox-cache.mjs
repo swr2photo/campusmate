@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const context = vm.createContext({ Array, Number, Boolean, Date, Math });
-vm.runInContext(fs.readFileSync('src/utils/notificationInboxCache.js', 'utf8').replaceAll('export ', '') + '\nglobalThis.api = {restoreInboxCache,mergeInboxSnapshot,overlayInboxReadReceipts,overlayInboxMarkedAll,inboxMarkedAllTimestamp,hasUnconfirmedMarkedAllRows};', context);
-const { restoreInboxCache, mergeInboxSnapshot, overlayInboxReadReceipts, overlayInboxMarkedAll, inboxMarkedAllTimestamp, hasUnconfirmedMarkedAllRows } = context.api;
+vm.runInContext(fs.readFileSync('src/utils/notificationInboxCache.js', 'utf8').replaceAll('export ', '') + '\nglobalThis.api = {restoreInboxCache,mergeInboxSnapshot,overlayInboxReadReceipts,overlayInboxMarkedAll,inboxMarkedAllTimestamp,hasUnconfirmedMarkedAllRows,shouldClearMarkedAll};', context);
+const { restoreInboxCache, mergeInboxSnapshot, overlayInboxReadReceipts, overlayInboxMarkedAll, inboxMarkedAllTimestamp, hasUnconfirmedMarkedAllRows, shouldClearMarkedAll } = context.api;
 const initial = () => ({ uid: 'alice', rows: [], count: 0, loading: true });
 const cached = { rows: [{ id: 'n1', readAt: null }], count: 1 };
 
@@ -68,4 +68,18 @@ test('mark-all shows rows created up to the tap as read and leaves later arrival
   assert.equal(inboxMarkedAllTimestamp(rows, 150_000), 300_000);
   assert.equal(hasUnconfirmedMarkedAllRows(rows, 200_000), true);
   assert.equal(hasUnconfirmedMarkedAllRows(marked, 200_000), false);
+});
+
+test('mark-all overlay ends after the server confirms instead of hiding later unread rows', () => {
+  const unread = [{ id: 'face', createdAt: { seconds: 100 }, readAt: null }];
+  const settledRows = unread;
+  assert.equal(shouldClearMarkedAll({ uid: 'alice', at: 200_000, pending: true }, 'alice', unread), false);
+  // Callable done but the reads have not arrived yet: keep bridging.
+  assert.equal(shouldClearMarkedAll({ uid: 'alice', at: 200_000, pending: false, settledRows }, 'alice', settledRows), false);
+  // A newer snapshot arrived (even if a row is unread again): stop overlaying.
+  assert.equal(shouldClearMarkedAll({ uid: 'alice', at: 200_000, pending: false, settledRows }, 'alice', [...unread]), true);
+  // Nothing left to confirm, or another account: stop overlaying.
+  assert.equal(shouldClearMarkedAll({ uid: 'alice', at: 200_000, pending: false, settledRows }, 'alice', [{ ...unread[0], readAt: { seconds: 150 } }]), true);
+  assert.equal(shouldClearMarkedAll({ uid: 'alice', at: 200_000, pending: false, settledRows }, 'bob', settledRows), true);
+  assert.equal(shouldClearMarkedAll({ uid: null, at: 0, pending: false }, 'alice', unread), false);
 });

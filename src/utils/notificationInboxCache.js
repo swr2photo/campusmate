@@ -28,6 +28,15 @@ export function inboxMarkedAllTimestamp(rows = [], now = Date.now()) {
 export function hasUnconfirmedMarkedAllRows(rows = [], markedAt = 0) {
   return Boolean(markedAt) && rows.some(row => !row.readAt && createdMillis(row.createdAt) <= markedAt);
 }
+// The overlay only bridges the wait for the server. Once the callable has
+// succeeded, drop it when a newer snapshot arrives or nothing is left to
+// confirm; otherwise a row that turns unread again later while keeping its
+// createdAt (e.g. a renewed face-verification notice) would stay hidden as
+// read for the rest of the session.
+export function shouldClearMarkedAll(markedAll, uid, rows) {
+  if (!markedAll?.at || markedAll.pending) return false;
+  return markedAll.uid !== uid || rows !== markedAll.settledRows || !hasUnconfirmedMarkedAllRows(rows, markedAll.at);
+}
 export function overlayInboxMarkedAll(rows, markedAt) {
   if (!markedAt) return rows;
   return rows.map(row => row.readAt || createdMillis(row.createdAt) > markedAt ? row : {

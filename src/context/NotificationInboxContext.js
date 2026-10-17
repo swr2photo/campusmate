@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { clearPendingInboxReads, inboxCall, markInboxRead, visibleNotification, watchInbox, watchPendingInboxReads } from '../services/notificationInboxService';
-import { hasUnconfirmedMarkedAllRows, inboxMarkedAllTimestamp, mergeInboxSnapshot, overlayInboxMarkedAll, overlayInboxReadReceipts, restoreInboxCache } from '../utils/notificationInboxCache';
+import { hasUnconfirmedMarkedAllRows, inboxMarkedAllTimestamp, mergeInboxSnapshot, overlayInboxMarkedAll, overlayInboxReadReceipts, restoreInboxCache, shouldClearMarkedAll } from '../utils/notificationInboxCache';
 
 const InboxContext = createContext(null);
 export function NotificationInboxProvider({ children }) {
@@ -74,6 +74,11 @@ export function NotificationInboxProvider({ children }) {
     return () => { alive = false; stop(); if (activeUid.current !== uid) AsyncStorage.removeItem(cacheKey).catch(() => {}); };
   }, [uid, retryRevision, pageSize]);
   const current = state.uid === uid ? state : { rows: [], count: 0, loading: !!uid };
+  const currentRowsRef = useRef(current.rows);
+  currentRowsRef.current = current.rows;
+  useEffect(() => {
+    if (shouldClearMarkedAll(markedAll, uid, current.rows)) setMarkedAll({ uid: null, at: 0, pending: false });
+  }, [current.rows, markedAll, uid]);
   const rows = useMemo(() => {
     const all = current.rows.filter(visibleNotification);
     const merged = face.uid === uid && face.row?.status === 'required'
@@ -94,7 +99,7 @@ export function NotificationInboxProvider({ children }) {
     try {
       let result;
       do { result = await inboxCall('markAllNotificationInboxRead', uid); } while (result.hasMore && activeUid.current === uid);
-      setMarkedAll(prev => (prev.at === at ? { ...prev, pending: false } : prev));
+      setMarkedAll(prev => (prev.at === at ? { ...prev, pending: false, settledRows: currentRowsRef.current } : prev));
     } catch (error) {
       setMarkedAll(prev => (prev.at === at ? { uid: null, at: 0, pending: false } : prev));
       throw error;

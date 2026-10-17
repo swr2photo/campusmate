@@ -111,22 +111,43 @@ export async function fetchRevenueCatV2Subscriber(uid, apiKey, projectId, reques
   management_url: selected.store === 'play_store' ? 'https://play.google.com/store/account/subscriptions' : 'https://apps.apple.com/account/subscriptions' } };
 }
 
+// What discovery can observe of an entitlement record. syncGeneration is
+// synchronizer bookkeeping and verifiedAt only matters as "verified at all"
+// (isPlusActive), so neither may wake every client's discovery feed.
+export function entitlementDiscoveryFingerprint(record) {
+  if (!record) return null;
+  const { syncGeneration, verifiedAt, ...fields } = record;
+  return JSON.stringify([...Object.entries(fields).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+    ['verified', Number.isSafeInteger(verifiedAt) && verifiedAt > 0]]);
+}
+
+// An unchanged subscriber still refreshes verifiedAt this often, so the admin
+// console keeps a recent "last verified" without a write on every app launch.
+const VERIFIED_AT_REFRESH_MS = 24 * 60 * 60 * 1000;
+
 // A monotonically increasing request generation prevents an older network
 // response arriving after a refund/transfer from re-granting revoked access.
+// The generation lives in entitlementSyncs/{uid}, so a routine sync (every
+// launch and foreground) leaves entitlements/{uid} untouched unless the
+// verified state changed: no owner listener wake-up, no discovery trigger.
 export function createEntitlementSynchronizer({ db, getSubscriber, now = Date.now, allowSandbox = false }) {
   return async (uid) => {
     const ref = db.collection('entitlements').doc(uid);
+    const generationRef = db.collection('entitlementSyncs').doc(uid);
     const generation = await db.runTransaction(async (tx) => {
-      const snapshot = await tx.get(ref);
+      const snapshot = await tx.get(generationRef);
       const next = (snapshot.data()?.syncGeneration || 0) + 1;
-      tx.set(ref, { syncGeneration: next }, { merge: true });
+      tx.set(generationRef, { syncGeneration: next }, { merge: true });
       return next;
     });
     const verified = entitlementFromSubscriber(await getSubscriber(uid), now(), allowSandbox);
     return db.runTransaction(async (tx) => {
-      const snapshot = await tx.get(ref);
-      if (snapshot.data()?.syncGeneration !== generation) return membershipState(snapshot.data(), now());
-      tx.set(ref, verified, { merge: true });
+      const [generationSnapshot, snapshot] = await Promise.all([tx.get(generationRef), tx.get(ref)]);
+      const stored = snapshot.data();
+      if (generationSnapshot.data()?.syncGeneration !== generation) return membershipState(stored, now());
+      const unchanged = stored && Object.entries(verified).every(([key, value]) => key === 'verifiedAt' || stored[key] === value)
+        && Number.isSafeInteger(stored.verifiedAt) && verified.verifiedAt - stored.verifiedAt < VERIFIED_AT_REFRESH_MS;
+      if (!unchanged) tx.set(ref, verified, { merge: true });
       return membershipState(verified, now());
     });
   };

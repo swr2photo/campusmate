@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createEntitlementSynchronizer, createRevenueCatWebhook, entitlementFromSubscriber, isPlusActive,
+import { createEntitlementSynchronizer, createRevenueCatWebhook, entitlementDiscoveryFingerprint, entitlementFromSubscriber, isPlusActive,
   membershipState, requirePlus, verifyWebhookAuthorization, webhookUserIds } from './plusEntitlements.js';
 const now = 1_800_000_000_000;
 function subscriber(until = now + 1000, overrides = {}) {
@@ -39,6 +39,35 @@ test('a delayed old response cannot re-grant access after a newer refund', async
   const old = sync('alice'); while (!resolveOld) await new Promise((resolve) => setImmediate(resolve));
   await sync('alice'); resolveOld(subscriber()); await old;
   assert.equal(isPlusActive(db.data.get('entitlements/alice'), now), false);
+});
+
+test('a routine re-verification leaves the entitlement document untouched', async () => {
+  const db = database(); let clock = now;
+  const writes = [];
+  const transaction = db.runTransaction;
+  db.runTransaction = (fn) => transaction((tx) => fn({ ...tx, set: (ref, value) => { writes.push(ref.id); return tx.set(ref, value); } }));
+  const sync = createEntitlementSynchronizer({ db, now: () => clock, getSubscriber: () => subscriber(now + 60_000) });
+  assert.equal((await sync('alice')).plus, true);
+  assert.deepEqual(writes, ['entitlementSyncs/alice', 'entitlements/alice']);
+  writes.length = 0; clock += 1000;
+  assert.equal((await sync('alice')).plus, true);
+  assert.deepEqual(writes, ['entitlementSyncs/alice']);
+  assert.equal(db.data.get('entitlements/alice').verifiedAt, now);
+  writes.length = 0; clock = now + 24 * 60 * 60 * 1000;
+  await sync('alice');
+  assert.deepEqual(writes, ['entitlementSyncs/alice', 'entitlements/alice']);
+});
+
+test('discovery is signalled only for entitlement changes it can observe', () => {
+  const base = entitlementFromSubscriber(subscriber(), now);
+  const same = entitlementDiscoveryFingerprint(base);
+  assert.equal(entitlementDiscoveryFingerprint({ ...base, verifiedAt: now + 5000, syncGeneration: 7 }), same);
+  assert.equal(entitlementDiscoveryFingerprint({ syncGeneration: 3, ...base }), same);
+  assert.notEqual(entitlementDiscoveryFingerprint({ ...base, activeUntil: 0 }), same);
+  assert.notEqual(entitlementDiscoveryFingerprint({ ...base, verifiedAt: 0 }), same);
+  assert.notEqual(entitlementDiscoveryFingerprint({ ...base, isAdmin: true }), same);
+  assert.equal(entitlementDiscoveryFingerprint(undefined), null);
+  assert.notEqual(entitlementDiscoveryFingerprint(base), entitlementDiscoveryFingerprint(undefined));
 });
 
 test('webhooks authenticate, re-fetch transfers and process duplicate events once', async () => {

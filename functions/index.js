@@ -64,6 +64,7 @@ import {
   sendCampusEmail,
 } from './campusEmailMailer.js';
 import { lookupWorkspaceUser } from './workspaceDirectory.js';
+import { entitlementDiscoveryFingerprint } from './plusEntitlements.js';
 import {
   isExpiredUnverifiedCampusUser,
   UNVERIFIED_ACCOUNT_TTL_MS,
@@ -665,7 +666,13 @@ const signalDiscovery = async () => {
   }
 };
 export const refreshDiscoveryOnVisibility = onDocumentWritten({ ...EVENT_OPTIONS, document: 'profileVisibility/{userId}' }, signalDiscovery);
-export const refreshDiscoveryOnMembership = onDocumentWritten({ ...EVENT_OPTIONS, document: 'entitlements/{userId}' }, signalDiscovery);
+// Re-verification on every launch only moves verifiedAt; signal only when the
+// entitlement can change what discovery shows (plan, expiry, admin flags).
+export const refreshDiscoveryOnMembership = onDocumentWritten({ ...EVENT_OPTIONS, document: 'entitlements/{userId}' }, async (event) => {
+  if (entitlementDiscoveryFingerprint(event.data?.before?.data()) !== entitlementDiscoveryFingerprint(event.data?.after?.data())) {
+    await signalDiscovery();
+  }
+});
 export const refreshDiscoveryOnProfile = onDocumentWritten({ ...EVENT_OPTIONS, document: 'users/{userId}' }, async (event) => {
   if (process.env.CAMPUSMATE_SECURE_DISCOVERY_ENABLED !== 'true') return;
   const fingerprint = (snapshot) => {

@@ -942,6 +942,10 @@ service cloud.firestore {
     match /revenueCatEvents/{eventId} {
       allow read, write: if false;
     }
+    // Membership sync generation (server bookkeeping, Admin SDK only).
+    match /entitlementSyncs/{userId} {
+      allow read, write: if false;
+    }
     match /profileVisibility/{userId} {
       allow get: if isOwner(userId);
       allow list, create, update, delete: if false;

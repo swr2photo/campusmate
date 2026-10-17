@@ -60,7 +60,7 @@ function fixture(handler, { currentUser = { uid: 'owner' }, deferInitial = false
     onAuthStateChanged: (_auth, next) => { authListener = next; return () => {}; },
     getFunctions: () => ({}), httpsCallable: (_functions, name) => async (data) => ({ data: await handler(name, data) }),
     doc: (_db, ...parts) => parts.join('/'),
-    onSnapshot: (_doc, next) => { signals.push(next); if (deferInitial) initial.push(next); else next(); return () => {}; },
+    onSnapshot: (_doc, next) => { signals.push(next); if (deferInitial) initial.push(next); else Promise.resolve().then(next); return () => {}; },
     setInterval: () => 1, clearInterval() {},
   });
   vm.runInContext(source + '\nglobalThis.api = { createSecureProfilesSubscription, subscribeSecureDecisions };', context);
@@ -168,6 +168,17 @@ test('initial listener snapshots during the first request do not discard or refe
   assert.equal(calls, 2);
   subscription.unsubscribe();
 });
+test('an initial listener snapshot that arrives after the first request settled still revalidates', async () => {
+  let calls = 0;
+  const f = fixture(async () => { calls += 1; return { profiles: [{ id: `page-${calls}` }], hasMore: false, nextCursor: null }; }, { deferInitial: true });
+  const subscription = f.createSecureProfilesSubscription(f.profiles, f.error);
+  await tick(); await tick();
+  assert.equal(calls, 1);
+  f.deliverInitialSnapshots(); await tick(); await tick();
+  assert.equal(calls, 2);
+  assert.deepEqual(f.emissions.at(-1), ['page-2']);
+  subscription.unsubscribe();
+});
 test('a fast-boot subscription waits for Auth instead of reporting an empty, ready feed', async () => {
   const f = fixture(async () => ({ profiles: [{ id: 'first' }], hasMore: false, nextCursor: null }), { currentUser: null });
   const subscription = f.createSecureProfilesSubscription(f.profiles, f.error);
@@ -178,8 +189,11 @@ test('a fast-boot subscription waits for Auth instead of reporting an empty, rea
   subscription.unsubscribe();
   const signedOut = fixture(async () => { throw new Error('must not call'); }, { currentUser: null });
   const empty = signedOut.createSecureProfilesSubscription(signedOut.profiles, signedOut.error);
+  await tick();
+  assert.deepEqual(signedOut.emissions, []); // nothing before Auth resolves
   signedOut.authChanged(null); await tick();
-  assert.deepEqual(signedOut.emissions, [[]]);
+  assert.ok(signedOut.emissions.length >= 1);
+  assert.ok(signedOut.emissions.every((ids) => ids.length === 0));
   empty.unsubscribe();
 });
 test('an account switch discards an in-flight discovery response', async () => {

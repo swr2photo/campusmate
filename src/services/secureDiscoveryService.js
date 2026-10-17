@@ -52,21 +52,27 @@ export async function respondToSecureLike(targetUserId, response) {
   refreshSecureDiscovery(); return result;
 }
 
-// Every caller fetches right after subscribing, so the snapshot Firestore
-// delivers when a listener attaches reports state that fetch already covers.
-// Counting it as a change made the first page arrive, get discarded and be
-// fetched again before Home could show a card.
-function afterFirstSnapshot(refresh) {
+// Every caller fetches right after subscribing. The snapshot Firestore
+// delivers when a listener attaches reports state that this in-flight fetch
+// already covers; counting it as a change made the first page arrive, get
+// discarded and be fetched again before Home could show a card. So it is
+// skipped only while that fetch is still running. A first snapshot that
+// arrives after the fetch settled may carry a newer revision or follow a
+// failed fetch, so it refreshes like any later change.
+function afterFirstSnapshot(refresh, isFetching) {
   let primed = false;
-  return () => { if (primed) refresh(); else primed = true; };
+  return () => {
+    if (primed || !isFetching()) refresh();
+    primed = true;
+  };
 }
-function changes(uid, refresh, onError) {
+function changes(uid, refresh, onError, isFetching = () => false) {
   const { db } = requireFirebase();
   const active = AppState.addEventListener('change', (state) => { if (state === 'active') refresh(); });
   const timer = setInterval(() => { if (AppState.currentState === 'active') refresh(); }, 30000);
-  const offSignal = uid ? onSnapshot(doc(db, 'matchingSignals', uid), afterFirstSnapshot(refresh), onError) : () => {};
-  const offMember = uid ? onSnapshot(doc(db, 'entitlements', uid), afterFirstSnapshot(refresh), onError) : () => {};
-  const offFeed = onSnapshot(doc(db, 'app_config', 'discoveryRevision'), afterFirstSnapshot(refresh), onError);
+  const offSignal = uid ? onSnapshot(doc(db, 'matchingSignals', uid), afterFirstSnapshot(refresh, isFetching), onError) : () => {};
+  const offMember = uid ? onSnapshot(doc(db, 'entitlements', uid), afterFirstSnapshot(refresh, isFetching), onError) : () => {};
+  const offFeed = onSnapshot(doc(db, 'app_config', 'discoveryRevision'), afterFirstSnapshot(refresh, isFetching), onError);
   refreshers.add(refresh);
   return () => { active.remove(); clearInterval(timer); offSignal(); offMember(); offFeed(); refreshers.delete(refresh); };
 }
@@ -96,7 +102,7 @@ export function subscribeSecureProfile(userId, callback, onError) {
     if (disposed) return;
     if (!signedInUid) { callback?.(null); return; }
     uid = signedInUid;
-    off = changes(uid, refresh, onError);
+    off = changes(uid, refresh, onError, () => running);
     void refresh();
   };
   if (auth.currentUser?.uid) start(auth.currentUser.uid);
@@ -143,7 +149,7 @@ export function subscribeSecureDecisions(uid, callback, onError) {
     }
     finally { running = false; if (again && !disposed) { again = false; void refresh(); } }
   };
-  const off = changes(uid, () => { void refresh(); }, onError);
+  const off = changes(uid, () => { void refresh(); }, onError, () => running);
   void refresh();
   const unsubscribe = () => { disposed = true; off(); };
   unsubscribe.loadMore = () => refresh(true);
@@ -201,7 +207,7 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
       }
     }
   };
-  let offChanges = changes(uid, () => { void fetchPage(false); }, onError);
+  let offChanges = changes(uid, () => { void fetchPage(false); }, onError, () => busy);
   const offAuth = onAuthStateChanged(auth, (user) => {
     if (disposed) return;
     const firstAuthEvent = !authResolved;
@@ -210,7 +216,7 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
     if (nextUid !== uid) {
       uid = nextUid;
       offChanges();
-      offChanges = changes(uid, () => { void fetchPage(false); }, onError);
+      offChanges = changes(uid, () => { void fetchPage(false); }, onError, () => busy);
       void fetchPage(false);
     } else if (firstAuthEvent && !nextUid) {
       void fetchPage(false); // Restored as signed out: report the empty feed now.

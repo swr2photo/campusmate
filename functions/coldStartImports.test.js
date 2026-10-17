@@ -6,7 +6,8 @@ import { test } from 'node:test';
 // few handlers need must load on first use so the rest do not pay for them.
 test('loading index.js does not load the Vision or Expo push SDKs', async () => {
   await import('./index.js');
-  const loaded = Object.keys(createRequire(import.meta.url).cache);
+  // Normalise Windows separators so the checks match on every platform.
+  const loaded = Object.keys(createRequire(import.meta.url).cache).map((path) => path.replaceAll('\\', '/'));
   assert.ok(loaded.some((path) => path.includes('@google-cloud/firestore')), 'module cache is observable');
   for (const sdk of ['@google-cloud/vision', 'expo-server-sdk']) {
     assert.equal(loaded.some((path) => path.includes(`node_modules/${sdk}/`)), false, `${sdk} loads lazily`);

@@ -3208,8 +3208,8 @@ export async function updateConversationMessage(conversationId, currentUserId, t
   let created = false;
 
   await runTransaction(db, async (transaction) => {
-    const convSnap = await transaction.get(convRef);
-    const existingMessageSnap = await transaction.get(messageRef);
+    // Both reads are independent; issue them together to save a round trip.
+    const [convSnap, existingMessageSnap] = await Promise.all([transaction.get(convRef), transaction.get(messageRef)]);
     if (!convSnap.exists()) throw new Error('Conversation not found');
     if (existingMessageSnap.exists()) return;
 
@@ -3419,8 +3419,7 @@ export async function toggleMeetupAcceptance(conversationId, currentUserId, host
   // transaction without reading the missing appointment.
   let appointmentReadDenied = false;
   const commitMeetupTransaction = (skipAppointmentRead = false, skipAppointmentWrite = false) => runTransaction(db, async (transaction) => {
-    const snap = await transaction.get(convRef);
-    const existingMessageSnap = await transaction.get(messageRef);
+    const [snap, existingMessageSnap] = await Promise.all([transaction.get(convRef), transaction.get(messageRef)]);
     if (!snap.exists()) return;
     const data = snap.data();
     const participants = Array.isArray(data.participants) ? data.participants : [];

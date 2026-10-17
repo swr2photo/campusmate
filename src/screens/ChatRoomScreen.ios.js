@@ -1581,25 +1581,39 @@ export default function ChatRoomScreen() {
     const replySnapshot = replyingTo;
     setReplyingTo(null);
     scrollToLatest();
+    const keyPending = Boolean(chat.encryptionPending);
+    let delivery;
     try {
       await textFieldRef.current?.clear();
-      await sendMessage(chat.id, trimmed, replySnapshot ? {
+      delivery = sendMessage(chat.id, trimmed, replySnapshot ? {
         replyTo: createReplySnapshot(replySnapshot),
       } : {});
-      setTimeout(scrollToLatest, 60);
-      setTimeout(scrollToLatest, 200);
+      // sendMessage shows the bubble before its server write, so the composer
+      // is free for the next message at once. A room still preparing its key
+      // keeps the lock so key setup never runs twice.
+      if (keyPending) await delivery;
     } catch (error) {
-      messageState.set(trimmed);
-      setHasText(true);
-      setReplyingTo(replySnapshot);
-      await textFieldRef.current?.setText(trimmed);
-      if (error?.code === 'E2EE_KEY_MISSING' || error?.code === 'E2EE_KEY_UNAVAILABLE') {
-        showAlert('ยังส่งไม่สำเร็จ', error.message || 'กำลังเชื่อมกุญแจเข้ารหัส ลองส่งอีกครั้งได้เลย', { tone: 'warning' });
-      }
+      delivery = Promise.reject(error);
     } finally {
       sendingRef.current = false;
     }
-  }, [chat?.id, isMatchActive, messageState, replyingTo, scrollToLatest, sendMessage]);
+    try {
+      await delivery;
+      setTimeout(scrollToLatest, 60);
+      setTimeout(scrollToLatest, 200);
+    } catch (error) {
+      // Give the draft back only if nothing new was typed meanwhile.
+      if (!(messageState.get() || '').trim()) {
+        messageState.set(trimmed);
+        setHasText(true);
+        setReplyingTo(replySnapshot);
+        await textFieldRef.current?.setText(trimmed);
+      }
+      if (error?.code === 'E2EE_KEY_MISSING' || error?.code === 'E2EE_KEY_UNAVAILABLE') {
+        showAlert('ยังส่งไม่สำเร็จ', error.message || 'กำลังเชื่อมกุญแจเข้ารหัส ลองส่งอีกครั้งได้เลย', { tone: 'warning' });
+      }
+    }
+  }, [chat?.encryptionPending, chat?.id, isMatchActive, messageState, replyingTo, scrollToLatest, sendMessage]);
 
   // Keep the native modifier objects stable for the lifetime of the field.
   // Recreating the submit modifier while typing or selecting a reply can make

@@ -175,3 +175,49 @@ test('chat status distinguishes loading, offline cache, errors/retry and confirm
 for (const path of ['src/context/AppContext.js', 'src/services/firestoreService.js', 'src/screens/MeetupScreen.js',
   'src/screens/MeetupScreen.ios.js', 'src/screens/HomeScreen.js', 'src/screens/ChatScreen.js', 'src/screens/ChatScreen.ios.js',
   'src/screens/ProfileScreen.js', 'src/components/ui.js', 'src/components/ConversationInboxStatus.js']) load(path);
+
+const iosChat = load('src/screens/ChatRoomScreen.ios.js');
+function sendHarness({ encryptionPending = false } = {}) {
+  const call = iosChat.nodes.find(n => n.type === 'VariableDeclarator' && n.id?.name === 'handleSend').init;
+  let draft = '', fieldText = '';
+  const deliveries = [], alerts = [];
+  const context = vm.createContext({ console: quiet, Promise, setTimeout: () => 0,
+    messageState: { get: () => draft, set: (value) => { draft = value; } },
+    sendingRef: { current: false }, chat: { id: 'room', encryptionPending }, isMatchActive: true,
+    replyingTo: null, setReplyingTo() {}, setHasText() {}, scrollToLatest() {}, createReplySnapshot: (value) => value,
+    textFieldRef: { current: { clear: async () => { fieldText = ''; }, setText: async (value) => { fieldText = value; } } },
+    sendMessage: (_id, text) => new Promise((resolve, reject) => { deliveries.push({ text, resolve, reject }); }),
+    showAlert: (...args) => alerts.push(args),
+  });
+  vm.runInContext('globalThis.send = ' + iosChat.code(call.arguments[0]), context);
+  return { context, deliveries, alerts, type: (value) => { draft = value; fieldText = value; }, get draft() { return draft; }, get fieldText() { return fieldText; } };
+}
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+test('ios chat: the composer is free for the next message while the first is still committing', async () => {
+  const h = sendHarness();
+  h.type('first'); const first = h.context.send(); await flush();
+  assert.equal(h.context.sendingRef.current, false);
+  h.type('second'); const second = h.context.send(); await flush();
+  assert.deepEqual(h.deliveries.map((item) => item.text), ['first', 'second']);
+  h.deliveries.forEach((item) => item.resolve(true)); await Promise.all([first, second]);
+});
+test('ios chat: a failed send restores the draft unless something new was typed', async () => {
+  const h = sendHarness();
+  h.type('lost'); const failed = h.context.send(); await flush();
+  h.deliveries[0].reject(new Error('permission-denied')); await failed;
+  assert.equal(h.draft, 'lost'); assert.equal(h.fieldText, 'lost');
+  const other = sendHarness();
+  other.type('first'); const pending = other.context.send(); await flush();
+  other.type('typing now');
+  other.deliveries[0].reject(new Error('permission-denied')); await pending;
+  assert.equal(other.draft, 'typing now');
+});
+test('ios chat: a room still preparing its key keeps the send lock until the send settles', async () => {
+  const h = sendHarness({ encryptionPending: true });
+  h.type('first'); const first = h.context.send(); await flush();
+  assert.equal(h.context.sendingRef.current, true);
+  h.type('second'); await h.context.send();
+  assert.equal(h.deliveries.length, 1);
+  h.deliveries[0].resolve(true); await first;
+  assert.equal(h.context.sendingRef.current, false);
+});

@@ -1759,19 +1759,31 @@ export default function ChatRoomScreen() {
     const replySnapshot = replyingTo;
     setReplyingTo(null);
     scrollToLatest(true, true);
+    const keyPending = Boolean(chat.encryptionPending);
+    let delivery;
     try {
-      await sendMessage(chat.id, trimmed, replySnapshot ? {
+      delivery = sendMessage(chat.id, trimmed, replySnapshot ? {
         replyTo: createReplySnapshot(replySnapshot),
       } : {});
+      // sendMessage shows the bubble before its server write, so the composer
+      // is free for the next message at once. A room still preparing its key
+      // keeps the lock so key setup never runs twice.
+      if (keyPending) await delivery;
+    } catch (error) {
+      delivery = Promise.reject(error);
+    } finally {
+      setSending(false);
+    }
+    try {
+      await delivery;
       scrollToLatest(true, true);
     } catch (error) {
-      setInputText(trimmed);
-      setReplyingTo(replySnapshot);
+      // Give the draft back only if nothing new was typed meanwhile.
+      setInputText((current) => (current.trim() ? current : trimmed));
+      setReplyingTo((current) => current || replySnapshot);
       if (error?.code === 'E2EE_KEY_MISSING' || error?.code === 'E2EE_KEY_UNAVAILABLE') {
         showAlert('ยังส่งไม่สำเร็จ', error.message || 'กำลังเชื่อมกุญแจเข้ารหัส ลองส่งอีกครั้งได้เลย', { tone: 'warning' });
       }
-    } finally {
-      setSending(false);
     }
   };
 

@@ -32,6 +32,8 @@
       ".git",
       ".env",
       ".env.*",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml",
       "firebase-debug.log",
       "firebase-debug.*.log",
       "npm-cache",

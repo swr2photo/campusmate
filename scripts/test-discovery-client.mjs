@@ -45,21 +45,28 @@ test('a hidden public profile does not remove an existing conversation or its hi
   assert.equal(context.conversations[0].lastMessage, 'kept');
   assert.equal(context.removedUserIds.size, 0);
 });
-function fixture(handler) {
-  const signals = [], auth = { currentUser: { uid: 'owner' } }, emissions = [], errors = [];
+// Like Firestore, every listener receives the current document state right
+// after it attaches; `deferInitial` holds those deliveries for the test to
+// release while a request is in flight.
+function fixture(handler, { currentUser = { uid: 'owner' }, deferInitial = false } = {}) {
+  const signals = [], initial = [], auth = { currentUser }, emissions = [], errors = [];
+  let authListener = () => {};
   const source = read('src/services/secureDiscoveryService.js')
     .replace(/^import .*;\n/gm, '').replace(/export (?=(?:async )?function|const)/g, '');
   const context = vm.createContext({ console, Map, Set, Date, Promise,
     AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
     Constants: { expoConfig: { extra: { secureDiscoveryEnabled: true } } },
     Crypto: { randomUUID: () => 'receipt' }, requireFirebase: () => ({ app: {}, db: {} }), getAuth: () => auth,
-    onAuthStateChanged: () => () => {},
+    onAuthStateChanged: (_auth, next) => { authListener = next; return () => {}; },
     getFunctions: () => ({}), httpsCallable: (_functions, name) => async (data) => ({ data: await handler(name, data) }),
-    doc: (_db, ...parts) => parts.join('/'), onSnapshot: (_doc, next) => { signals.push(next); return () => {}; },
+    doc: (_db, ...parts) => parts.join('/'),
+    onSnapshot: (_doc, next) => { signals.push(next); if (deferInitial) initial.push(next); else next(); return () => {}; },
     setInterval: () => 1, clearInterval() {},
   });
   vm.runInContext(source + '\nglobalThis.api = { createSecureProfilesSubscription, subscribeSecureDecisions };', context);
   return { ...context.api, auth, emissions, errors, signal: () => signals[0](),
+    deliverInitialSnapshots: () => initial.splice(0).forEach((next) => next()),
+    authChanged: (user) => { auth.currentUser = user; authListener(user); },
     profiles: (value) => emissions.push(Array.from(value, (item) => item.id)), error: (reason) => errors.push(reason) };
 }
 
@@ -149,6 +156,32 @@ test('a visibility signal arriving during pagination is revalidated after the re
   subscription.unsubscribe();
 });
 
+test('initial listener snapshots during the first request do not discard or refetch the first page', async () => {
+  let finish, calls = 0;
+  const f = fixture(() => { calls += 1; return new Promise((resolve) => { finish = resolve; }); }, { deferInitial: true });
+  const subscription = f.createSecureProfilesSubscription(f.profiles, f.error);
+  await tick(); f.deliverInitialSnapshots();
+  finish({ profiles: [{ id: 'first' }], hasMore: false, nextCursor: null }); await tick(); await tick();
+  assert.equal(calls, 1);
+  assert.deepEqual(f.emissions, [['first']]);
+  f.signal(); await tick(); // A real change after attaching still revalidates.
+  assert.equal(calls, 2);
+  subscription.unsubscribe();
+});
+test('a fast-boot subscription waits for Auth instead of reporting an empty, ready feed', async () => {
+  const f = fixture(async () => ({ profiles: [{ id: 'first' }], hasMore: false, nextCursor: null }), { currentUser: null });
+  const subscription = f.createSecureProfilesSubscription(f.profiles, f.error);
+  await tick();
+  assert.deepEqual(f.emissions, []);
+  f.authChanged({ uid: 'owner' }); await tick(); await tick();
+  assert.deepEqual(f.emissions, [['first']]);
+  subscription.unsubscribe();
+  const signedOut = fixture(async () => { throw new Error('must not call'); }, { currentUser: null });
+  const empty = signedOut.createSecureProfilesSubscription(signedOut.profiles, signedOut.error);
+  signedOut.authChanged(null); await tick();
+  assert.deepEqual(signedOut.emissions, [[]]);
+  empty.unsubscribe();
+});
 test('an account switch discards an in-flight discovery response', async () => {
   let finish;
   const f = fixture(() => new Promise((resolve) => { finish = resolve; }));

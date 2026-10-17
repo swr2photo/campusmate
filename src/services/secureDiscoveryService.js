@@ -52,13 +52,21 @@ export async function respondToSecureLike(targetUserId, response) {
   refreshSecureDiscovery(); return result;
 }
 
+// Every caller fetches right after subscribing, so the snapshot Firestore
+// delivers when a listener attaches reports state that fetch already covers.
+// Counting it as a change made the first page arrive, get discarded and be
+// fetched again before Home could show a card.
+function afterFirstSnapshot(refresh) {
+  let primed = false;
+  return () => { if (primed) refresh(); else primed = true; };
+}
 function changes(uid, refresh, onError) {
   const { db } = requireFirebase();
   const active = AppState.addEventListener('change', (state) => { if (state === 'active') refresh(); });
   const timer = setInterval(() => { if (AppState.currentState === 'active') refresh(); }, 30000);
-  const offSignal = uid ? onSnapshot(doc(db, 'matchingSignals', uid), refresh, onError) : () => {};
-  const offMember = uid ? onSnapshot(doc(db, 'entitlements', uid), refresh, onError) : () => {};
-  const offFeed = onSnapshot(doc(db, 'app_config', 'discoveryRevision'), refresh, onError);
+  const offSignal = uid ? onSnapshot(doc(db, 'matchingSignals', uid), afterFirstSnapshot(refresh), onError) : () => {};
+  const offMember = uid ? onSnapshot(doc(db, 'entitlements', uid), afterFirstSnapshot(refresh), onError) : () => {};
+  const offFeed = onSnapshot(doc(db, 'app_config', 'discoveryRevision'), afterFirstSnapshot(refresh), onError);
   refreshers.add(refresh);
   return () => { active.remove(); clearInterval(timer); offSignal(); offMember(); offFeed(); refreshers.delete(refresh); };
 }
@@ -145,13 +153,17 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
   const { app } = requireFirebase();
   const auth = getAuth(app);
   let uid = auth.currentUser?.uid;
+  // A fast-boot launch subscribes while Firebase Auth is still restoring the
+  // user. Reporting [] then marks the deck ready and shows "no matching
+  // profiles"; wait for onAuthStateChanged to resolve the account instead.
+  let authResolved = Boolean(auth.currentUser);
   let disposed = false, busy = false, again = false, pageCount = 1, cursor = null, hasMore = false, profiles = [];
   const info = (loading) => options.onPageInfo?.({ source: 'discovery', hasMore, loading });
   const fetchPage = async (append) => {
     if (disposed) return;
     const currentUid = auth.currentUser?.uid || uid;
     if (!currentUid) {
-      if (!disposed) {
+      if (authResolved && !disposed) {
         profiles = []; cursor = null; hasMore = false; pageCount = 1;
         onProfiles([]);
         info(false);
@@ -192,12 +204,16 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
   let offChanges = changes(uid, () => { void fetchPage(false); }, onError);
   const offAuth = onAuthStateChanged(auth, (user) => {
     if (disposed) return;
+    const firstAuthEvent = !authResolved;
+    authResolved = true;
     const nextUid = user?.uid;
     if (nextUid !== uid) {
       uid = nextUid;
       offChanges();
       offChanges = changes(uid, () => { void fetchPage(false); }, onError);
       void fetchPage(false);
+    } else if (firstAuthEvent && !nextUid) {
+      void fetchPage(false); // Restored as signed out: report the empty feed now.
     }
   });
   void fetchPage(false);

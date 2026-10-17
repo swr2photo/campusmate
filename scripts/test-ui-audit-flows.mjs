@@ -241,3 +241,13 @@ test('settings switch shows its new value while saving and flips back when the s
   await context.saveToggle('push', true, async () => { throw new Error('offline'); });
   assert.equal('push' in drafts, false); assert.deepEqual(errors, ['offline']);
 });
+
+test('ios chat rows get stable handlers so their memo comparators can skip unchanged bubbles', () => {
+  const row = iosChat.nodes.find(n => n.type === 'JSXOpeningElement' && n.name?.name === 'MessageSwipeRow');
+  assert.ok(row, 'MessageSwipeRow element');
+  const handlers = row.attributes.filter(attribute => /^on[A-Z]/.test(attribute.name?.name || ''));
+  assert.ok(handlers.length >= 5);
+  for (const attribute of handlers) {
+    assert.equal(attribute.value.expression.type, 'Identifier', `${attribute.name.name} must not be an inline function`);
+  }
+});

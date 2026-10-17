@@ -1630,6 +1630,17 @@ export default function ChatRoomScreen() {
     []
   );
 
+  // One stable call handler for every row. An inline closure here failed both
+  // row memo comparators, so each conversation update (a new message, a read
+  // receipt) re-rendered every mounted bubble.
+  const callTargetRef = useRef(null);
+  callTargetRef.current = { chat, startVideoCall, startVoiceCall };
+  const handleCallPress = useCallback((type) => {
+    const { chat: room, startVideoCall: video, startVoiceCall: voice } = callTargetRef.current;
+    if (type === 'video') video(room, room?.id);
+    else voice(room, room?.id);
+  }, []);
+
   // Keep the SwiftUI child tree stable while typing, opening settings, or
   // changing other local state. List owns the native rows; this memo also
   // avoids rebuilding every message element on each parent render.
@@ -1648,10 +1659,7 @@ export default function ChatRoomScreen() {
         isLatest={index === messages.length - 1}
         item={item}
         key={item.id}
-        onCallPress={(type) => {
-          if (type === 'video') startVideoCall(chat, chat?.id);
-          else startVoiceCall(chat, chat?.id);
-        }}
+        onCallPress={handleCallPress}
         onOpenProfile={handleOpenPartnerProfile}
         onPreviewImage={handlePreviewImage}
         onQuickReact={handleQuickReact}
@@ -1667,7 +1675,7 @@ export default function ChatRoomScreen() {
         tick={0}
       />
     ));
-  }, [acceptCall, activeCall, chat, currentUserId, chat?.avatar, chat?.avatarColor, chat?.unreadCounts, effectiveMessages, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUserId, handleReply, resolvedPartnerAvatar, showAllMessageTimes, startVideoCall, startVoiceCall]);
+  }, [currentUserId, chat?.avatar, chat?.avatarColor, chat?.id, chat?.unreadCounts, effectiveMessages, handleCallPress, handleOpenPartnerProfile, handlePreviewImage, handleQuickReact, handleScrollToMessage, handleSelectMessage, handleShowReactionDetails, otherReadAt, otherUserId, handleReply, resolvedPartnerAvatar, showAllMessageTimes]);
 
   // Only the newest row shows a ticking relative time, so refresh that single
   // element instead of rebuilding every row's element tree on each tick.

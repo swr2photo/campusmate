@@ -1912,16 +1912,22 @@ export function AppProvider({ children }) {
             ? { ...message, pendingSync: sendStatus !== 'sent', sendStatus } : message),
         }));
       };
+      let syncedOnlyMessages = true;
       const result = await flushOfflineQueue(user.id, async (operation) => {
         if (activeUserIdRef.current !== user.id) throw Object.assign(new Error('Account changed'), { code: 'cancelled' });
         await executeQueuedOperation(operation);
         updateMessageStatus(operation, 'sent');
+        if (operation.type !== 'sendMessage' && operation.type !== 'sendGroupMessage') syncedOnlyMessages = false;
       });
       if (activeUserIdRef.current !== user.id) return;
       result.failed.forEach(({ operation }) => updateMessageStatus(operation, 'failed'));
       setPendingSyncCount(result.pendingCount);
-      if (result.syncedCount > 0) {
-        setLastSyncedAt(Date.now());
+      if (result.syncedCount > 0) setLastSyncedAt(Date.now());
+      // Sent messages already show their own status and the live listeners
+      // receive the committed docs. Rebuilding every subscription (deck,
+      // inbox, decisions, profile) and toasting after each group message made
+      // party chats stutter, so only other queued work does that.
+      if (result.syncedCount > 0 && !syncedOnlyMessages) {
         setRetryKey((current) => current + 1);
         showInAppNotification({
           title: 'ซิงค์ข้อมูลสำเร็จ',

@@ -107,6 +107,30 @@ test('pair message remains pending after enqueue and only queue acknowledgement 
   assert.equal(rooms[0].messages[0].sendStatus, 'sent');
 });
 
+test('flushing only queued messages keeps live subscriptions and skips the sync toast', async () => {
+  const source = read('src/context/AppContext.js');
+  const syncStart = source.indexOf('  const syncNow = useCallback(');
+  const syncEnd = source.indexOf('\n  useEffect(', syncStart);
+  async function flush(types) {
+    let retryKeyBumps = 0; const toasts = [];
+    const ctx = vm.createContext({ console, user: { id: 'me' }, activeUserIdRef: { current: 'me' }, useCallback: (fn) => fn,
+      isOnline: true, flushingQueueRef: { current: false }, getOfflineQueueCount: async () => types.length,
+      setPendingSyncCount: () => {}, setLastSyncError: () => {}, setIsSyncing: () => {}, setLastSyncedAt: () => {},
+      setRetryKey: () => { retryKeyBumps += 1; }, refreshQueueCount: () => {}, executeQueuedOperation: async () => {},
+      setConversations: () => {}, showInAppNotification: (toast) => toasts.push(toast.title),
+      flushOfflineQueue: async (_uid, execute) => {
+        for (const type of types) await execute({ type, payload: { partyId: 'party', conversationId: 'room', options: {} } });
+        return { pendingCount: 0, syncedCount: types.length, failed: [] };
+      },
+    });
+    vm.runInContext(source.slice(syncStart, syncEnd) + ';globalThis.sync = syncNow;', ctx);
+    await ctx.sync();
+    return { retryKeyBumps, toasts };
+  }
+  assert.deepEqual(await flush(['sendGroupMessage', 'sendMessage']), { retryKeyBumps: 0, toasts: [] });
+  assert.deepEqual(await flush(['sendGroupMessage', 'saveDecision']), { retryKeyBumps: 1, toasts: ['ซิงค์ข้อมูลสำเร็จ'] });
+});
+
 test('offline encrypted group queue retries without duplicate message IDs, archives failures and supports retry', async () => {
   const storage = new Map();
   const api = moduleWithMocks('src/services/offlineStorage.js', {

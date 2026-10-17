@@ -7,7 +7,7 @@ import { getOfflineQueue, getFailedOfflineOperations, subscribeOfflineQueueChang
 import { Image } from 'expo-image';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useAppProfile } from '../context/AppContext';
+import { useAppActions, useAppProfile } from '../context/AppContext';
 import { useConfirm } from '../context/ConfirmContext';
 import FeatureIcon from '../components/FeatureIcon';
 import { radius, spacing, useTheme } from '../theme';
@@ -46,6 +46,7 @@ export default function GroupChatRoomScreen() {
   const { colors, isDark } = useTheme();
   const { confirm } = useConfirm();
   const { profile } = useAppProfile();
+  const { syncNow } = useAppActions();
   const userId = profile?.id;
   const [chat, setChat] = useState(null);
   const [epochs, setEpochs] = useState([]);
@@ -202,6 +203,9 @@ export default function GroupChatRoomScreen() {
       setOutbox((old) => mergeGroupMessages(old, [message]));
       setDraft('');
       setError('');
+      // The encrypted outbox keeps the message durable; deliver it now rather
+      // than on the 1 s retry timer.
+      void syncNow?.();
     } catch (reason) { setError(reason?.message || 'ส่งข้อความไม่สำเร็จ'); }
     finally { setBusy(false); }
   };
@@ -214,6 +218,7 @@ export default function GroupChatRoomScreen() {
       if (url) {
         const message = await sendGroupImage(partyId, userId, chat.currentEpoch, url, currentKey);
         setOutbox((old) => mergeGroupMessages(old, [message]));
+        void syncNow?.();
       }
       setError('');
     } catch (reason) { setError(reason?.message || 'ส่งรูปภาพไม่สำเร็จ'); }

@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Image from '../components/CachedImage';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import {
   MATCHING_ACTIVITY_OPTIONS,
   MATCHING_AGE_MIN,
@@ -265,8 +265,19 @@ export default function HomeScreen({ onOpenLikes }) {
 
   // dismissProfile/matchProfile hide the card synchronously, so pass and like
   // must not hold the action bar for the server round trip. Only a second
-  // decision on the same person is blocked while the first is in flight.
+  // decision on the same person is blocked while the first is in flight, and
+  // only the first match to resolve while this screen stays focused opens chat.
   const decisionsInFlight = useRef(new Set());
+  const canNavigateToMatchRef = useRef(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      canNavigateToMatchRef.current = true;
+      return () => {
+        canNavigateToMatchRef.current = false;
+      };
+    }, [])
+  );
 
   const handlePass = useCallback(async () => {
     if (!currentProfile || actionInProgress || decisionsInFlight.current.has(currentProfile.id)) return;
@@ -290,7 +301,12 @@ export default function HomeScreen({ onOpenLikes }) {
       const result = await matchProfile(candidate);
       if (result?.queued) showToast('บันทึกถูกใจไว้แล้ว จะส่งเมื่อเชื่อมต่ออินเทอร์เน็ต', 'info');
       if (result?.matched && result?.conversationId) {
-        router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
+        if (canNavigateToMatchRef.current) {
+          canNavigateToMatchRef.current = false;
+          router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
+        } else {
+          showToast(`คุณและ ${candidate.name || 'เพื่อน'} แมตช์กันแล้ว! 🎉`, 'success');
+        }
       }
     } catch (error) {
       console.warn('[HomeScreen] matchProfile error:', error?.message || error);
@@ -308,7 +324,12 @@ export default function HomeScreen({ onOpenLikes }) {
       const result = await matchProfile(candidate);
       if (result?.queued) showToast('บันทึกถูกใจไว้แล้ว จะส่งเมื่อเชื่อมต่ออินเทอร์เน็ต', 'info');
       if (result?.matched && result?.conversationId) {
-        router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
+        if (canNavigateToMatchRef.current) {
+          canNavigateToMatchRef.current = false;
+          router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
+        } else {
+          showToast(`คุณและ ${candidate.name || 'เพื่อน'} แมตช์กันแล้ว! 🎉`, 'success');
+        }
       }
     } catch (error) {
       console.warn('[HomeScreen] superLike error:', error?.message || error);
@@ -325,6 +346,7 @@ export default function HomeScreen({ onOpenLikes }) {
         c?.participants?.includes?.(currentProfile.id) || c?.otherUser?.id === currentProfile.id
       );
       if (convo?.id) {
+        canNavigateToMatchRef.current = false;
         router.push({ pathname: '/chat-room', params: { chatId: convo.id } });
         return;
       }
@@ -332,12 +354,14 @@ export default function HomeScreen({ onOpenLikes }) {
     setActionInProgress(true);
     try {
       const result = await matchProfile(currentProfile);
+      canNavigateToMatchRef.current = false;
       if (result?.conversationId) {
         router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
       } else {
         router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } });
       }
     } catch (error) {
+      canNavigateToMatchRef.current = false;
       router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } });
     } finally {
       setActionInProgress(false);
@@ -348,6 +372,7 @@ export default function HomeScreen({ onOpenLikes }) {
 
   const handleOpenProfile = useCallback(() => {
     if (!currentProfile) return;
+    canNavigateToMatchRef.current = false;
     router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } });
   }, [currentProfile]);
 

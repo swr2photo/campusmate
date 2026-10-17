@@ -23,7 +23,7 @@ import { BlurView } from 'expo-blur';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MaskedView from '@react-native-masked-view/masked-view';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
 import { secureDiscoveryConfigured, subscribeSecureProfile } from '../services/secureDiscoveryService';
@@ -229,7 +229,18 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     return Boolean((isMutualAccepted || isOutgoingAccepted) && hasLiveConvo);
   }, [candidate, conversations, acceptedIncomingLikes]);
 
+  const canNavigateToMatchRef = useRef(true);
+  useFocusEffect(
+    useCallback(() => {
+      canNavigateToMatchRef.current = true;
+      return () => {
+        canNavigateToMatchRef.current = false;
+      };
+    }, [])
+  );
+
   const close = useCallback(() => {
+    canNavigateToMatchRef.current = false;
     if (onClose) {
       onClose();
       return;
@@ -238,10 +249,11 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     else router.replace('/home');
   }, [onClose]);
 
-  const handleDecision = useCallback(async (decision) => {
-    if (!candidate || decisionsInFlight.current.has(candidate.id)) return;
+  const handleDecision = useCallback(async (decision, targetCandidate = candidate, targetMatched = isCandidateMatched) => {
+    if (!targetCandidate || decisionsInFlight.current.has(targetCandidate.id)) return;
 
-    const candidateId = candidate.id;
+    const candidateId = targetCandidate.id;
+    const candidateName = targetCandidate.name || 'เพื่อน';
     decisionsInFlight.current.add(candidateId);
     setPendingDecisionCount((count) => count + 1);
     setSessionExcludedIds((current) => [...current, candidateId]);
@@ -252,25 +264,35 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     cardOpacity.set(1);
     try {
       if (decision === 'like') {
-        if (isCandidateMatched) {
-          const inviteResult = await sendActivityInvite(candidate);
+        if (targetMatched) {
+          const inviteResult = await sendActivityInvite(targetCandidate);
           if (inviteResult?.matched && inviteResult?.conversationId) {
-            onToast?.(`ส่งคำขอร่วมกิจกรรมถึง ${candidate.name} แล้ว! กำลังเปิดห้องแชต...`, 'success');
-            router.replace({ pathname: '/chat-room', params: { chatId: inviteResult.conversationId } });
+            if (canNavigateToMatchRef.current) {
+              canNavigateToMatchRef.current = false;
+              onToast?.(`ส่งคำขอร่วมกิจกรรมถึง ${candidateName} แล้ว! กำลังเปิดห้องแชต...`, 'success');
+              router.replace({ pathname: '/chat-room', params: { chatId: inviteResult.conversationId } });
+            } else {
+              onToast?.(`ส่งคำขอร่วมกิจกรรมถึง ${candidateName} แล้ว!`, 'success');
+            }
           } else {
-            onToast?.(`ส่งถูกใจให้ ${candidate.name} แล้ว รออีกฝ่ายกดถูกใจกลับเพื่อเริ่มคุยกัน`, 'info');
+            onToast?.(`ส่งถูกใจให้ ${candidateName} แล้ว รออีกฝ่ายกดถูกใจกลับเพื่อเริ่มคุยกัน`, 'info');
           }
         } else {
-          const result = await matchProfile(candidate);
-          if (result.matched && result.conversationId) {
-            onToast?.(`คุณและ ${candidate.name} แมตช์กันแล้ว! กำลังเปิดห้องแชต...`, 'success');
-            router.replace({ pathname: '/chat-room', params: { chatId: result.conversationId } });
+          const result = await matchProfile(targetCandidate);
+          if (result?.matched && result?.conversationId) {
+            if (canNavigateToMatchRef.current) {
+              canNavigateToMatchRef.current = false;
+              onToast?.(`คุณและ ${candidateName} แมตช์กันแล้ว! กำลังเปิดห้องแชต...`, 'success');
+              router.replace({ pathname: '/chat-room', params: { chatId: result.conversationId } });
+            } else {
+              onToast?.(`คุณและ ${candidateName} แมตช์กันแล้ว!`, 'success');
+            }
           } else {
-            onToast?.(`ส่งถูกใจให้ ${candidate.name} แล้ว รออีกฝ่ายกดถูกใจกลับเพื่อเริ่มคุยกัน`, 'info');
+            onToast?.(`ส่งถูกใจให้ ${candidateName} แล้ว รออีกฝ่ายกดถูกใจกลับเพื่อเริ่มคุยกัน`, 'info');
           }
         }
       } else {
-        await dismissProfile(candidate.id);
+        await dismissProfile(targetCandidate.id);
         onToast?.('ไม่เลือกโปรไฟล์นี้แล้ว กำลังหาเพื่อนคนถัดไป', 'info');
       }
     } catch (error) {
@@ -292,11 +314,13 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   }, [cardOpacity, cardScale, swipeLock, translateX, translateY]);
 
   const finishSwipe = useCallback((decision) => {
-    if (decisionStarted.current) return;
-    if (candidate && decisionsInFlight.current.has(candidate.id)) {
+    if (decisionStarted.current || !candidate) return;
+    if (decisionsInFlight.current.has(candidate.id)) {
       resetSwipe();
       return;
     }
+    const outgoing = candidate;
+    const outgoingMatched = isCandidateMatched;
     decisionStarted.current = true;
     swipeLock.set(1);
     const buttonCenterOffset = (screenWidth / 2) - actionSideInset - (actionButtonWidth / 2);
@@ -308,9 +332,9 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     translateY.set(withTiming(targetY, { duration: 280, easing: easeOut }));
     cardScale.set(withTiming(0.08, { duration: 280, easing: easeOut }));
     cardOpacity.set(withDelay(110, withTiming(0, { duration: 170, easing: easeOut }, (finished) => {
-      if (finished) scheduleOnRN(handleDecision, decision);
+      if (finished) scheduleOnRN(handleDecision, decision, outgoing, outgoingMatched);
     })));
-  }, [candidate, handleDecision, resetSwipe, swipeLock, translateX, translateY, cardScale, cardOpacity]);
+  }, [candidate, handleDecision, isCandidateMatched, resetSwipe, swipeLock, translateX, translateY, cardScale, cardOpacity]);
 
   const panGesture = useMemo(() => Gesture.Pan()
     .enabled(!isViewOnly)

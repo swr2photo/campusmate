@@ -99,17 +99,58 @@ const home = load('src/screens/HomeScreen.js');
 for (const name of ['handleMatch', 'handleSuperLike']) test(`${name} reports queued and failed actions`, async () => {
   const call = home.nodes.find(n => n.type === 'VariableDeclarator' && n.id?.name === name).init;
   for (const queued of [true, false]) {
-    const messages = [], decisionsInFlight = { current: new Set() };
+    const messages = [], decisionsInFlight = { current: new Set() }, canNavigateToMatchRef = { current: true };
     const context = vm.createContext({ console: quiet, currentProfile: { id: 'target' }, actionInProgress: false,
       // The card is hidden by matchProfile itself, so the bar must stay usable.
       setActionInProgress: () => { throw new Error('like must not lock the action bar'); },
       matchProfile: async () => { if (!queued) throw new Error('failed'); return { queued: true }; },
-      showToast: message => messages.push(message), router: { push() {} }, decisionsInFlight,
+      showToast: message => messages.push(message), router: { push() {} }, decisionsInFlight, canNavigateToMatchRef,
     });
     vm.runInContext('globalThis.press = ' + home.code(call.arguments[0]), context);
     await context.press();
     assert.match(messages[0], queued ? /จะส่งเมื่อ/ : /ไม่สำเร็จ/);
     assert.equal(decisionsInFlight.current.size, 0);
+  }
+});
+
+test('only the first match resolving while focused navigates to chat; later matches show a toast', async () => {
+  const homeMatch = home.nodes.find(n => n.type === 'VariableDeclarator' && n.id?.name === 'handleMatch').init;
+  const routes = [], toasts = [], pending = [];
+  const context = vm.createContext({ console: quiet, currentProfile: { id: 'one', name: 'One' }, actionInProgress: false,
+    decisionsInFlight: { current: new Set() }, canNavigateToMatchRef: { current: true },
+    matchProfile: (candidate) => new Promise((resolve) => { pending.push({ candidate, resolve }); }),
+    showToast: (message) => toasts.push(message), router: { push: (route) => routes.push(route.params.chatId) },
+  });
+  vm.runInContext('globalThis.press = ' + home.code(homeMatch.arguments[0]), context);
+  const first = context.press();
+  context.currentProfile = { id: 'two', name: 'Two' };
+  const second = context.press();
+  pending[0].resolve({ matched: true, conversationId: 'chat-1' });
+  pending[1].resolve({ matched: true, conversationId: 'chat-2' });
+  await Promise.all([first, second]);
+  assert.deepEqual(routes, ['chat-1']);
+  assert.ok(toasts.some((message) => message.includes('Two')));
+
+  for (const platform of ['js', 'ios.js']) {
+    const discover = load(`src/screens/DiscoverProfileScreen.${platform}`);
+    const decisionNode = discover.nodes.find(n => n.type === 'VariableDeclarator' && n.id?.name === 'handleDecision').init;
+    const replaced = [], discoverToasts = [], resolvers = [];
+    const discoverCtx = vm.createContext({ console: quiet, candidate: { id: 'a', name: 'Alpha' }, isCandidateMatched: false,
+      decisionsInFlight: { current: new Set() }, canNavigateToMatchRef: { current: true },
+      setPendingDecisionCount() {}, setSessionExcludedIds() {}, decisionStarted: { current: false },
+      translateX: { set() {} }, translateY: { set() {} }, cardScale: { set() {} }, cardOpacity: { set() {} },
+      matchProfile: (target) => new Promise((resolve) => { resolvers.push({ target, resolve }); }),
+      sendActivityInvite: async () => ({}), dismissProfile: async () => {},
+      onToast: (message) => discoverToasts.push(message), router: { replace: (route) => replaced.push(route.params.chatId) },
+    });
+    vm.runInContext('globalThis.decide = ' + discover.code(decisionNode.arguments[0]), discoverCtx);
+    const d1 = discoverCtx.decide('like', { id: 'a', name: 'Alpha' }, false);
+    const d2 = discoverCtx.decide('like', { id: 'b', name: 'Beta' }, false);
+    resolvers[0].resolve({ matched: true, conversationId: 'room-a' });
+    resolvers[1].resolve({ matched: true, conversationId: 'room-b' });
+    await Promise.all([d1, d2]);
+    assert.deepEqual(replaced, ['room-a']);
+    assert.ok(discoverToasts.some((message) => message.includes('Beta') && message.includes('แมตช์')));
   }
 });
 

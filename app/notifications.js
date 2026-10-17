@@ -15,7 +15,7 @@ const softFill = color => withAlpha(color, 0.12);
 // iOS renders notifications.ios.js (SwiftUI); this page serves Android.
 export default function NotificationsRoute() {
   const { colors, isDark } = useTheme(), insets = useSafeAreaInsets();
-  const { inbox, face, now, sections, unreadOnly, setUnreadOnly, detail, detailOpen, busy, open, closeDetail, startFace, openRoute, canStartFace, allRead, loadMore } = useNotificationsPage();
+  const { inbox, face, now, sections, unreadOnly, setUnreadOnly, detail, detailOpen, open, closeDetail, startFace, openRoute, canStartFace, allRead, loadMore } = useNotificationsPage();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
 
   const renderItem = ({ item, index, section }) => {
@@ -55,8 +55,8 @@ export default function NotificationsRoute() {
 
   const detailKind = kindFor(detail?.type), detailTint = colors[detailKind.tint], detailMillis = timestampMillis(detail?.createdAt);
   return <View style={styles.screen}>
-    <Stack.Screen options={{ headerShown: true, title: 'แจ้งเตือน', headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="ทำเครื่องหมายว่าอ่านทั้งหมดแล้ว" disabled={busy || !inbox.count} onPress={allRead} hitSlop={8} style={styles.headerAction}>
-      {busy ? <ActivityIndicator size="small" color={colors.primary} /> : <AppText style={[styles.headerActionText, { color: inbox.count ? colors.primary : colors.inkSoft }]}>อ่านทั้งหมด</AppText>}
+    <Stack.Screen options={{ headerShown: true, title: 'แจ้งเตือน', headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="ทำเครื่องหมายว่าอ่านทั้งหมดแล้ว" disabled={!inbox.count} onPress={allRead} hitSlop={8} style={styles.headerAction}>
+      <AppText style={[styles.headerActionText, { color: inbox.count ? colors.primary : colors.inkSoft }]}>อ่านทั้งหมด</AppText>
     </Pressable> }} />
     <View accessibilityRole="tablist" style={styles.segment}>
       {[{ label: 'ทั้งหมด', value: false }, { label: 'ยังไม่อ่าน', value: true, count: inbox.count }].map(tab => {

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 const context = vm.createContext({ Array, Number });
-vm.runInContext(fs.readFileSync('src/utils/notificationInboxCache.js', 'utf8').replaceAll('export ', '') + '\nglobalThis.api = {restoreInboxCache,mergeInboxSnapshot,overlayInboxReadReceipts};', context);
-const { restoreInboxCache, mergeInboxSnapshot, overlayInboxReadReceipts } = context.api;
+vm.runInContext(fs.readFileSync('src/utils/notificationInboxCache.js', 'utf8').replaceAll('export ', '') + '\nglobalThis.api = {restoreInboxCache,mergeInboxSnapshot,overlayInboxReadReceipts,overlayInboxMarkedAll};', context);
+const { restoreInboxCache, mergeInboxSnapshot, overlayInboxReadReceipts, overlayInboxMarkedAll } = context.api;
 const initial = () => ({ uid: 'alice', rows: [], count: 0, loading: true });
 const cached = { rows: [{ id: 'n1', readAt: null }], count: 1 };
 
@@ -53,4 +53,16 @@ test('missing cache retains the initial loader until Firestore responds', () => 
 });
 test('invalid cached unread count cannot produce a negative badge', () => {
   assert.equal(restoreInboxCache(initial(), 'alice', { rows: [], count: -2 }).count, 0);
+});
+
+test('mark-all shows rows created up to the tap as read and leaves later arrivals unread', () => {
+  const rows = [
+    { id: 'old', createdAt: { seconds: 100 }, readAt: null },
+    { id: 'read', createdAt: { seconds: 90 }, readAt: { seconds: 95 } },
+    { id: 'new', createdAt: { toMillis: () => 300_000 }, readAt: null },
+  ];
+  const marked = overlayInboxMarkedAll(rows, 200_000);
+  assert.deepEqual(JSON.parse(JSON.stringify(marked.map(row => [row.id, row.readAt]))),
+    [['old', { seconds: 200 }], ['read', { seconds: 95 }], ['new', null]]);
+  assert.equal(overlayInboxMarkedAll(rows, 0), rows);
 });

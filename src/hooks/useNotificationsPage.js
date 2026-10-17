@@ -9,7 +9,7 @@ import { groupInboxRows } from '../utils/notificationDisplay';
 // State and actions shared by the React Native and SwiftUI notification pages.
 export default function useNotificationsPage() {
   const inbox = useNotificationInbox(), face = useFaceVerificationFlow();
-  const [unreadOnly, setUnreadOnly] = useState(false), [detailId, setDetailId] = useState(null), [busy, setBusy] = useState(false);
+  const [unreadOnly, setUnreadOnly] = useState(false), [detailId, setDetailId] = useState(null);
   const lastDetail = useRef(null), pendingAction = useRef(null);
   // Relative times ("5 นาที") must advance while the page stays mounted under a pushed screen.
   const [now, setNow] = useState(() => Date.now());
@@ -49,8 +49,10 @@ export default function useNotificationsPage() {
   const startFace = (row, afterDismiss = false) => { markRead(row); afterClose(afterDismiss, face.start); };
   const openRoute = (route, afterDismiss = false) => afterClose(afterDismiss, () => router.push(route));
   const canStartFace = row => row?.type === 'face_verification' && face.required && row.status !== 'completed';
-  const allRead = async () => { setBusy(true); try { await inbox.markAll(); } catch { report(); } finally { setBusy(false); } };
+  // Rows and the badge update at once (see NotificationInboxProvider.markAll);
+  // the server work runs behind them and a failure restores the old state.
+  const allRead = () => { void inbox.markAll().catch(report); };
   const loadMore = () => { if (inbox.hasMore && !inbox.loadingMore) inbox.loadMore().catch(report); };
 
-  return { inbox, face, now, sections, unreadOnly, setUnreadOnly, detail, detailOpen: !!detailId, busy, open, markRead, closeDetail, flushPending, startFace, openRoute, canStartFace, allRead, loadMore };
+  return { inbox, face, now, sections, unreadOnly, setUnreadOnly, detail, detailOpen: !!detailId, open, markRead, closeDetail, flushPending, startFace, openRoute, canStartFace, allRead, loadMore };
 }

@@ -1,4 +1,4 @@
-import { collection, doc, getDoc, getDocs, getCountFromServer, limit, onSnapshot, orderBy, query, serverTimestamp, startAfter, updateDoc, where, or, Timestamp } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocFromCache, getDocs, getCountFromServer, limit, onSnapshot, orderBy, query, serverTimestamp, startAfter, updateDoc, where, or, Timestamp } from 'firebase/firestore';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { AppState } from 'react-native';
@@ -83,18 +83,24 @@ export async function loadInboxPage(uid, cursor) {
 export function markInboxRead(uid, id) {
   return getReadOutbox().enqueue(uid, id);
 }
+// Chats, parties and appointments the app already listens to are in the
+// Firestore cache, so a confirmed cached hit opens the target without a
+// server round trip. Anything uncertain (not cached, missing, no access)
+// still asks the server before the row is reported unavailable.
+async function targetReadable(reference, allowed) {
+  try {
+    const cached = await getDocFromCache(reference);
+    if (cached.exists() && allowed(cached.data())) return true;
+  } catch { /* not in the local cache */ }
+  const snap = await getDoc(reference);
+  return snap.exists() && allowed(snap.data());
+}
 export async function inboxTargetAvailable(row, uid) {
   const { db } = requireFirebase(), target = row.target || {};
-  if (target.conversationId) {
-    const snap = await getDoc(doc(db, 'conversations', target.conversationId));
-    return snap.exists() && snap.data().participants?.includes(uid);
-  }
-  if (row.type === 'group_message' && target.partyId) {
-    const snap = await getDoc(doc(db, 'groupChats', target.partyId));
-    return snap.exists() && snap.data().memberIds?.includes(uid);
-  }
-  if (target.partyId) return (await getDoc(doc(db, 'parties', target.partyId))).exists();
-  if (target.appointmentId) return (await getDoc(doc(db, 'appointments', target.appointmentId))).exists();
+  if (target.conversationId) return targetReadable(doc(db, 'conversations', target.conversationId), data => data.participants?.includes(uid) === true);
+  if (row.type === 'group_message' && target.partyId) return targetReadable(doc(db, 'groupChats', target.partyId), data => data.memberIds?.includes(uid) === true);
+  if (target.partyId) return targetReadable(doc(db, 'parties', target.partyId), () => true);
+  if (target.appointmentId) return targetReadable(doc(db, 'appointments', target.appointmentId), () => true);
   return true;
 }
 

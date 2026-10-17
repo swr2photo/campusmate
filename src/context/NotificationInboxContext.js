@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { clearPendingInboxReads, inboxCall, markInboxRead, visibleNotification, watchInbox, watchPendingInboxReads } from '../services/notificationInboxService';
-import { mergeInboxSnapshot, overlayInboxReadReceipts, restoreInboxCache } from '../utils/notificationInboxCache';
+import { mergeInboxSnapshot, overlayInboxMarkedAll, overlayInboxReadReceipts, restoreInboxCache } from '../utils/notificationInboxCache';
 
 const InboxContext = createContext(null);
 export function NotificationInboxProvider({ children }) {
@@ -16,6 +16,7 @@ export function NotificationInboxProvider({ children }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [face, setFace] = useState({ uid: null, row: null });
   const [pendingReads, setPendingReads] = useState({ uid: null, receipts: [] });
+  const [markedAll, setMarkedAll] = useState({ uid: null, at: 0 });
   useEffect(() => {
     if (!uid) return undefined;
     const stop = watchPendingInboxReads(uid, receipts => {
@@ -78,17 +79,29 @@ export function NotificationInboxProvider({ children }) {
     const merged = face.uid === uid && face.row?.status === 'required'
       ? [face.row, ...all.filter(row => row.id !== face.row.id)]
       : all.map(row => row.id === face.row?.id && face.uid === uid ? face.row : row);
-    return overlayInboxReadReceipts(merged, pendingReads.uid === uid ? pendingReads.receipts : []);
-  }, [current.rows, uid, face, expiryTick, pendingReads]);
+    const read = overlayInboxReadReceipts(merged, pendingReads.uid === uid ? pendingReads.receipts : []);
+    return overlayInboxMarkedAll(read, markedAll.uid === uid ? markedAll.at : 0);
+  }, [current.rows, uid, face, expiryTick, pendingReads, markedAll]);
+  // While "อ่านทั้งหมด" is applied locally the server count can lag behind;
+  // it cannot exceed the loaded rows that are still unread.
+  const count = markedAll.uid === uid && markedAll.at
+    ? Math.min(current.count, rows.filter(row => !row.readAt).length) : current.count;
   const markAll = async () => {
-    let result;
-    do { result = await inboxCall('markAllNotificationInboxRead', uid); } while (result.hasMore && activeUid.current === uid);
+    const at = Date.now();
+    setMarkedAll({ uid, at });
+    try {
+      let result;
+      do { result = await inboxCall('markAllNotificationInboxRead', uid); } while (result.hasMore && activeUid.current === uid);
+    } catch (error) {
+      setMarkedAll(prev => (prev.at === at ? { uid: null, at: 0 } : prev));
+      throw error;
+    }
   };
   const loadMore = async () => {
     if (!uid || loadingMore || !current.hasMore) return;
     setLoadingMore(true); setWindowState({ uid, size: pageSize + 30 });
   };
-  return <InboxContext.Provider value={{ ...current, uid, rows, loadingMore, loadMore, markAll,
+  return <InboxContext.Provider value={{ ...current, uid, rows, count, loadingMore, loadMore, markAll,
     retry: () => setRetryRevision(value => value + 1), markRead: id => markInboxRead(uid, id) }}>{children}</InboxContext.Provider>;
 }
 export const useNotificationInbox = () => useContext(InboxContext) || { rows: [], count: 0, loading: false };

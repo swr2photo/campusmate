@@ -17,3 +17,14 @@ export function overlayInboxReadReceipts(rows, receipts) {
     ...row, readAt: { seconds: Math.floor(pending.get(row.id) / 1000) },
   });
 }
+
+// "อ่านทั้งหมด" marks every row created up to the tap on the server. Show that
+// at once instead of waiting for the callable and the listener echo; rows
+// that arrive afterwards stay unread.
+const createdMillis = value => value?.toMillis?.() || (value?.seconds ? value.seconds * 1000 : Number(value) || 0);
+export function overlayInboxMarkedAll(rows, markedAt) {
+  if (!markedAt) return rows;
+  return rows.map(row => row.readAt || createdMillis(row.createdAt) > markedAt ? row : {
+    ...row, readAt: { seconds: Math.floor(markedAt / 1000) },
+  });
+}

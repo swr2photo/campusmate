@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, Pressable, useColorScheme, View } from 'react-native';
+import { Pressable, useColorScheme, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { BottomSheet, Host, HStack, Image, List, Picker, ProgressView, ScrollView, Section, Spacer, SwipeActions, VStack } from '@expo/ui/swift-ui';
 import { accessibilityLabel, background, buttonBorderShape, buttonStyle, contentShape, controlSize, foregroundStyle, frame, lineLimit, listRowBackground, listStyle, multilineTextAlignment, onAppear, padding, pickerStyle, presentationDetents, presentationDragIndicator, scrollContentBackground, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
@@ -22,8 +22,8 @@ export default function NotificationsRoute() {
   const unreadLabel = inbox.count ? `ยังไม่อ่าน (${inbox.count > 99 ? '99+' : inbox.count})` : 'ยังไม่อ่าน';
 
   return <View style={{ flex: 1, backgroundColor: c.canvas }}>
-    <Stack.Screen options={{ headerShown: true, title: 'แจ้งเตือน', headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="ทำเครื่องหมายว่าอ่านทั้งหมดแล้ว" disabled={page.busy || !inbox.count} onPress={page.allRead} hitSlop={8} style={{ minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' }}>
-      {page.busy ? <ActivityIndicator size="small" color={c.primary} /> : <AppText style={{ color: inbox.count ? c.primary : c.inkSoft, fontSize: 15, fontWeight: '600' }}>อ่านทั้งหมด</AppText>}
+    <Stack.Screen options={{ headerShown: true, title: 'แจ้งเตือน', headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="ทำเครื่องหมายว่าอ่านทั้งหมดแล้ว" disabled={!inbox.count} onPress={page.allRead} hitSlop={8} style={{ minHeight: 44, paddingHorizontal: 8, justifyContent: 'center' }}>
+      <AppText style={{ color: inbox.count ? c.primary : c.inkSoft, fontSize: 15, fontWeight: '600' }}>อ่านทั้งหมด</AppText>
     </Pressable> }} />
 
     <Host colorScheme={colorScheme} seedColor={c.primary} style={{ width: '100%', height: 52 }}>

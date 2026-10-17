@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { createNotificationReadOutbox } from '../src/utils/notificationReadOutbox.js';
 
-function service(realOutbox = false) {
+function service(realOutbox = false, { cachedDocs = new Map(), serverDocs = new Map() } = {}) {
+  const serverReads = [];
   let authCallback, stopped = 0, authStopped = false, countReads = 0, foregroundCallback;
   const timers = new Set();
   const appState = { currentState: 'active', addEventListener: (_name, callback) => { foregroundCallback = callback; return { remove: () => { foregroundCallback = null; } }; } };
@@ -25,10 +26,20 @@ function service(realOutbox = false) {
     Timestamp: { now: () => 123 }, waitForAuthReady: async () => auth.currentUser,
     getFunctions: () => ({}), httpsCallable: () => async () => ({ data: { ok: true } }),
     getCountFromServer: async () => { countReads++; return { data: () => ({ count: 3 }) }; },
+    getDocFromCache: async (reference) => {
+      if (!cachedDocs.has(reference.path)) throw new Error('Failed to get document from cache');
+      const data = cachedDocs.get(reference.path);
+      return { exists: () => data !== null, data: () => data };
+    },
+    getDoc: async (reference) => {
+      serverReads.push(reference.path);
+      const data = serverDocs.get(reference.path) ?? null;
+      return { exists: () => data !== null, data: () => data };
+    },
   });
   const source = fs.readFileSync('src/services/notificationInboxService.js', 'utf8').replace(/^import .*;\r?\n/gm, '').replaceAll('export ', '');
-  vm.runInContext(source + '\nglobalThis.api = { watchInbox, visibleNotification, inboxCall, markInboxRead, watchPendingInboxReads, retryInboxReadWrites };', context);
-  return { api: context.api, subscriptions, auth, disk, writes, acknowledge, emit: user => { auth.currentUser = user; authCallback(user); },
+  vm.runInContext(source + '\nglobalThis.api = { watchInbox, visibleNotification, inboxCall, markInboxRead, watchPendingInboxReads, retryInboxReadWrites, inboxTargetAvailable };', context);
+  return { api: context.api, subscriptions, auth, disk, writes, acknowledge, serverReads, emit: user => { auth.currentUser = user; authCallback(user); },
     tick: () => timers.forEach(callback => callback()),
     appState: state => { appState.currentState = state; foregroundCallback?.(state); },
     stats: () => ({ stopped, authStopped, countReads, timers: timers.size, foregroundAttached: !!foregroundCallback }) };
@@ -88,4 +99,21 @@ test('expiry refreshes the badge while active and on return without background p
   s.appState('active'); assert.equal(s.stats().countReads, 2);
   s.emit({ uid: 'bob' }); s.tick(); assert.equal(s.stats().countReads, 2);
   assert.equal(s.stats().timers, 0); assert.equal(s.stats().foregroundAttached, false); stop();
+});
+
+test('a notification for a cached chat opens without a server read; uncertain targets still ask the server', async () => {
+  const chat = { type: 'message', target: { conversationId: 'room' } };
+  const cached = service(false, { cachedDocs: new Map([['conversations/room', { participants: ['alice', 'bob'] }]]) });
+  assert.equal(await cached.api.inboxTargetAvailable(chat, 'alice'), true);
+  assert.deepEqual(cached.serverReads, []);
+  const uncached = service(false, { serverDocs: new Map([['conversations/room', { participants: ['alice'] }]]) });
+  assert.equal(await uncached.api.inboxTargetAvailable(chat, 'alice'), true);
+  assert.deepEqual(uncached.serverReads, ['conversations/room']);
+  const removed = service(false, { cachedDocs: new Map([['conversations/room', { participants: ['alice'] }]]),
+    serverDocs: new Map([['conversations/room', { participants: ['bob'] }]]) });
+  assert.equal(await removed.api.inboxTargetAvailable(chat, 'carol'), false);
+  assert.deepEqual(removed.serverReads, ['conversations/room']);
+  const party = service(false, { cachedDocs: new Map([['parties/p1', null]]) });
+  assert.equal(await party.api.inboxTargetAvailable({ type: 'party', target: { partyId: 'p1' } }, 'alice'), false);
+  assert.deepEqual(party.serverReads, ['parties/p1']);
 });

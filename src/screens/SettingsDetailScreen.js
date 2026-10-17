@@ -36,6 +36,15 @@ export default function SettingsDetailScreen({ section }) {
     catch (reason) { setError(reason?.message || 'บันทึกไม่สำเร็จ กรุณาลองอีกครั้ง'); return false; }
     finally { pending.current = false; setBusy(false); }
   };
+  // A flipped switch shows its new value at once; the stored value takes over
+  // when the save ends, and a failed save drops the draft so it flips back.
+  const [toggleDrafts, setToggleDrafts] = useState({});
+  const saveToggle = async (key, next, action) => {
+    if (pending.current) return;
+    setToggleDrafts((current) => ({ ...current, [key]: next }));
+    await save(action);
+    setToggleDrafts(({ [key]: _saved, ...rest }) => rest);
+  };
   const saveUsername = async () => {
     const trimmed = username.trim();
     if (trimmed && !/^[\p{L}\p{N}_.-]{2,30}$/u.test(trimmed)) {
@@ -58,9 +67,9 @@ export default function SettingsDetailScreen({ section }) {
     ];
     content = <>
       {items.map(([key, label, description]) => <SettingsSection key={key}>
-        <SettingsGroup><SettingsToggle label={label} value={profile?.privacy?.[key] !== false}
-          disabled={busy || !profile} busy={busy}
-          onValueChange={(value) => save(() => saveProfile({ privacy: { ...profile?.privacy, [key]: value } }))} /></SettingsGroup>
+        <SettingsGroup><SettingsToggle label={label} value={toggleDrafts[key] ?? (profile?.privacy?.[key] !== false)}
+          disabled={!profile} busy={busy}
+          onValueChange={(value) => saveToggle(key, value, () => saveProfile({ privacy: { ...profile?.privacy, [key]: value } }))} /></SettingsGroup>
         <SettingsDescription>{description}</SettingsDescription>
       </SettingsSection>)}
       <SettingsDescription>บันทึกการอนุญาตนี้ไว้ในโปรไฟล์ ระบบแสดงสถานะการใช้งานยังไม่เปิดให้ใช้งานในขณะนี้</SettingsDescription>
@@ -102,8 +111,8 @@ export default function SettingsDetailScreen({ section }) {
     const value = section === 'push' ? profile?.notificationsEnabled !== false : preferences.notifications.team;
     content = <SettingsSection>
       <SettingsGroup><SettingsToggle label={section === 'team' ? 'แสดงประกาศจาก Team CampusMate' : `รับการแจ้งเตือน${section === 'push' ? 'แบบ Push' : section === 'email' ? 'ทางอีเมล' : 'ทาง SMS'}`}
-        value={unavailable ? false : value} disabled={locked || unavailable || (section === 'push' && !profile)} busy={busy}
-        onValueChange={(next) => save(() => section === 'push'
+        value={unavailable ? false : (toggleDrafts[section] ?? value)} disabled={!ready || unavailable || (section === 'push' && !profile)} busy={busy}
+        onValueChange={(next) => saveToggle(section, next, () => section === 'push'
           ? saveProfile({ notificationsEnabled: next })
           : updatePreferences({ notifications: { team: next } }))} /></SettingsGroup>
       <SettingsDescription>{unavailable

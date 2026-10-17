@@ -107,13 +107,15 @@ export function SettingsRow({ label, description, value, onPress, last = false, 
   ) : <View style={rowStyle}>{inner}</View>;
 }
 
+// The switch stays on screen while a save runs: callers show the new value
+// right away, so swapping it for a spinner only hid the change for 1–3 s.
 export function SettingsToggle({ label, value, onValueChange, disabled = false, busy = false, last = true }) {
   const palette = useSettingsPalette();
   return (
-    <SettingsRow label={label} last={last} busy={busy}>
-      {!busy ? <Host accessible accessibilityLabel={label} accessibilityRole="switch" accessibilityState={{ checked: value, disabled }} colorScheme={palette.isDark ? 'dark' : 'light'} seedColor={SETTINGS_RED} style={styles.switchHost} matchContents>
-        <Switch value={value} onValueChange={onValueChange} disabled={disabled} />
-      </Host> : null}
+    <SettingsRow label={label} last={last}>
+      <Host accessible accessibilityLabel={label} accessibilityRole="switch" accessibilityState={{ checked: value, disabled: disabled || busy, busy }} colorScheme={palette.isDark ? 'dark' : 'light'} seedColor={SETTINGS_RED} style={styles.switchHost} matchContents>
+        <Switch value={value} onValueChange={onValueChange} disabled={disabled || busy} />
+      </Host>
     </SettingsRow>
   );
 }

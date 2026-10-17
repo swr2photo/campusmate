@@ -221,3 +221,23 @@ test('ios chat: a room still preparing its key keeps the send lock until the sen
   h.deliveries[0].resolve(true); await first;
   assert.equal(h.context.sendingRef.current, false);
 });
+
+const settingsDetail = load('src/screens/SettingsDetailScreen.js');
+test('settings switch shows its new value while saving and flips back when the save fails', async () => {
+  let drafts = {}, release;
+  const errors = [];
+  const context = vm.createContext({ console: quiet, Promise, pending: { current: false }, setBusy() {},
+    setError: (message) => { if (message) errors.push(message); },
+    setToggleDrafts: (update) => { drafts = typeof update === 'function' ? update(drafts) : update; },
+  });
+  vm.runInContext(`globalThis.save = ${variable(settingsDetail, 'save')};\nglobalThis.saveToggle = ${variable(settingsDetail, 'saveToggle')};`, context);
+  const saving = context.saveToggle('push', false, () => new Promise((resolve) => { release = resolve; }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(drafts.push, false);
+  assert.equal(await context.saveToggle('team', true, async () => {}), undefined); // one save at a time
+  assert.equal('team' in drafts, false);
+  release(); await saving;
+  assert.equal('push' in drafts, false);
+  await context.saveToggle('push', true, async () => { throw new Error('offline'); });
+  assert.equal('push' in drafts, false); assert.deepEqual(errors, ['offline']);
+});

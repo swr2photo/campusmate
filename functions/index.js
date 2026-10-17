@@ -7,7 +7,6 @@ import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
-import { ImageAnnotatorClient } from '@google-cloud/vision';
 import { logger } from 'firebase-functions';
 import { defineSecret } from 'firebase-functions/params';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
@@ -1342,10 +1341,13 @@ export const getR2ChatUploadUrl = onCall({
   }
 });
 
+// Loaded on first use: the Vision SDK (gRPC/gax) is the heaviest import in
+// this codebase, and every function's cold start loads index.js.
 let visionClientInstance = null;
-function getVisionClient() {
+async function getVisionClient() {
   if (!visionClientInstance) {
     try {
+      const { ImageAnnotatorClient } = await import('@google-cloud/vision');
       visionClientInstance = new ImageAnnotatorClient();
     } catch (err) {
       logger.warn('Could not initialize Google Cloud Vision Client with ADC, using fallback:', err);
@@ -1407,7 +1409,7 @@ export const checkImageSafety = onCall({ region: REGION, maxInstances: 30 }, asy
     }
 
     // 2. Fallback engine: Google Cloud Vision SafeSearch
-    const visionClient = getVisionClient();
+    const visionClient = await getVisionClient();
     const result = await detectSafeSearch(imageBase64, {
       visionClient,
       apiKey: process.env.GOOGLE_VISION_API_KEY || process.env.EXPO_PUBLIC_FIREBASE_API_KEY,

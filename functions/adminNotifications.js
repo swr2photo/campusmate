@@ -2,11 +2,13 @@ import { persistInbox } from './notificationInbox.js';
 import {createHash,randomUUID} from 'node:crypto';
 import {FieldValue,Timestamp} from 'firebase-admin/firestore';
 import {HttpsError} from 'firebase-functions/v2/https';
-import {Expo} from 'expo-server-sdk';
+import {getExpoSdk} from './expoSdk.js';
 import {buildExpoPushMessage} from './pushMessage.js';
 import {validateNotification,effectiveOperations} from './adminOperations.js';
 const chunk=(rows,n)=>Array.from({length:Math.ceil(rows.length/n)},(_,i)=>rows.slice(i*n,(i+1)*n));
 export async function notificationRecipients({db,auth,data,policy,allowMissing=false}){
+ // expo-server-sdk loads on first use (see expoSdk.js) instead of in every cold start.
+ const {Expo}=await getExpoSdk();
  const users=[];
  if(data.audience==='all'){
   let cursor;do{const page=await auth.listUsers(100,cursor);users.push(...page.users);cursor=page.pageToken;if(users.length>policy.maxNotificationRecipients)throw new HttpsError('resource-exhausted','จำนวนบัญชีเกินเพดานต่อครั้ง กรุณาเลือกผู้รับหรือปรับเพดานในหน้าตั้งค่า');}while(cursor);
@@ -32,7 +34,8 @@ export async function previewNotification({db,auth,actor,input}){
  const id=randomUUID();await db.doc('adminNotificationPreviews/'+id).set({actor,...data,uids:recipients.uids,requested:recipients.requested,excluded:recipients.excluded,devices:recipients.registrations.length,expiresAt:Timestamp.fromMillis(Date.now()+300000),createdAt:FieldValue.serverTimestamp()});
  return {id,title:data.title,body:data.body,route:data.route,audience:data.audience,recipients:recipients.uids.length,devices:recipients.registrations.length,excluded:recipients.excluded,expiresAt:new Date(Date.now()+300000).toISOString()};
 }
-export async function sendNotification({db,auth,actor,id,client=new Expo()}){
+export async function sendNotification({db,auth,actor,id,client}){
+ client||=new (await getExpoSdk()).Expo();
  if(typeof id!=='string'||! /^[0-9a-f-]{36}$/.test(id))throw new HttpsError('invalid-argument','คำขอส่งไม่ถูกต้อง');
  const preview=db.doc('adminNotificationPreviews/'+id),job=db.doc('adminNotificationJobs/'+id),lock=db.doc('adminNotificationLocks/'+actor),log=db.doc('adminAudit/'+id);
  const policy=effectiveOperations((await db.doc('app_config/adminOperations').get()).data());if(!policy.customNotificationsEnabled)throw new HttpsError('failed-precondition','การส่งแจ้งเตือนถูกปิดในหน้าตั้งค่า');
@@ -69,7 +72,8 @@ export async function sendNotification({db,auth,actor,id,client=new Expo()}){
   const result={persisted,accepted,failed,state:'unknown'};await Promise.allSettled([job.update({result,tickets,state:'unknown'}),log.update({state:'unknown',notification:result})]);throw new HttpsError('unavailable','ส่งไม่ครบหรือยังยืนยันผลไม่ได้ กรุณาตรวจประวัติก่อนส่งใหม่');
  }
 }
-export async function refreshNotificationReceipts({db,id,client=new Expo()}){
+export async function refreshNotificationReceipts({db,id,client}){
+ client||=new (await getExpoSdk()).Expo();
  if(typeof id!=='string'||! /^[0-9a-f-]{36}$/.test(id))throw new HttpsError('invalid-argument','รหัสแจ้งเตือนไม่ถูกต้อง');
  const ref=db.doc('adminNotificationJobs/'+id),snapshot=await ref.get();if(!snapshot.exists)throw new HttpsError('not-found','ไม่พบการส่ง');
  const records=snapshot.data().tickets||[],ids=records.map(t=>t.id).filter(Boolean),counts={handedOff:0,error:0,pending:0},invalid=[];

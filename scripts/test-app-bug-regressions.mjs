@@ -131,6 +131,24 @@ test('flushing only queued messages keeps live subscriptions and skips the sync 
   assert.deepEqual(await flush(['sendGroupMessage', 'saveDecision']), { retryKeyBumps: 1, toasts: ['ซิงค์ข้อมูลสำเร็จ'] });
 });
 
+test('a peer device key change re-runs only the conversation subscription', () => {
+  const source = read('src/context/AppContext.js');
+  const marker = source.indexOf('  // A participant publishing a new device key changes the shared profile,');
+  const start = source.indexOf('  useEffect(', marker);
+  const end = source.indexOf('\n  useEffect(', start + 1);
+  const bumps = { retryKey: 0, conversationRetryKey: 0 };
+  const ctx = vm.createContext({ user: { id: 'me' }, sharedProfiles: [{ id: 'peer' }], hasPendingEncryptionConversation: true,
+    encryptionProfileFingerprintRef: { current: '' }, encryptionProfileFingerprint: '[["peer",[]]]',
+    useEffect: (effect) => effect(),
+    setRetryKey: () => { bumps.retryKey += 1; }, setConversationRetryKey: () => { bumps.conversationRetryKey += 1; },
+  });
+  vm.runInContext(source.slice(start, end), ctx);
+  ctx.encryptionProfileFingerprint = '[["peer",[["device","key"]]]]';
+  vm.runInContext(source.slice(start, end), ctx);
+  vm.runInContext(source.slice(start, end), ctx);
+  assert.deepEqual({ ...bumps }, { retryKey: 0, conversationRetryKey: 2 });
+});
+
 test('offline encrypted group queue retries without duplicate message IDs, archives failures and supports retry', async () => {
   const storage = new Map();
   const api = moduleWithMocks('src/services/offlineStorage.js', {

@@ -1317,11 +1317,13 @@ export function AppProvider({ children }) {
   // A participant publishing a new device key changes the shared profile,
   // not the conversation document. Re-run the conversation hydration once so
   // a pending legacy room can migrate as soon as that key becomes available.
+  // Only the conversation subscription needs it: the global retryKey also
+  // rebuilt the discovery deck, decisions and profile right after launch.
   useEffect(() => {
     if (!user?.id || !sharedProfiles.length || !hasPendingEncryptionConversation) return;
     if (encryptionProfileFingerprintRef.current === encryptionProfileFingerprint) return;
     encryptionProfileFingerprintRef.current = encryptionProfileFingerprint;
-    setRetryKey((current) => current + 1);
+    setConversationRetryKey((current) => current + 1);
   }, [encryptionProfileFingerprint, hasPendingEncryptionConversation, sharedProfiles.length, user?.id]);
 
   useEffect(() => {

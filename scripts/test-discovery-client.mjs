@@ -85,6 +85,40 @@ test('live skip hides its card and an empty Rewind snapshot overrides the old de
   assert.deepEqual(evaluate([]), ['skipped', 'unseen']);
 });
 
+test('secure skip and like hide the card before the callable answers and restore it on failure', async () => {
+  const source = read('src/context/AppContext.js');
+  const slice = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+  const actions = slice('  const dismissProfile = async', '\n  const resetMatching')
+    + slice('  const matchProfile = async', '\n  const sendMessage');
+  let hidden = [], pending = [];
+  const context = vm.createContext({ Array,
+    user: { id: 'owner' }, profile: { id: 'owner' }, secureDiscoveryConfigured: () => true,
+    setOptimisticHiddenIds: (update) => { hidden = update(hidden); },
+    recordSecureDiscoveryAction: () => new Promise((resolve, reject) => { pending.push({ resolve, reject }); }),
+    createConversation: async () => 'c-owner-liked',
+  });
+  vm.runInContext(`${actions}\nglobalThis.actions = { dismissProfile, matchProfile };`, context);
+  const { dismissProfile, matchProfile } = context.actions;
+
+  const skip = dismissProfile('skipped');
+  assert.deepEqual(Array.from(hidden), ['skipped']);
+  pending.shift().reject(new Error('offline'));
+  await assert.rejects(skip, /offline/);
+  assert.deepEqual(Array.from(hidden), []);
+
+  const like = matchProfile({ id: 'liked' });
+  assert.deepEqual(Array.from(hidden), ['liked']);
+  pending.shift().resolve({ status: 'accepted' });
+  assert.deepEqual(JSON.parse(JSON.stringify(await like)), { matched: true, conversationId: 'c-owner-liked' });
+  assert.deepEqual(Array.from(hidden), ['liked']);
+
+  const failedLike = matchProfile({ id: 'retry' });
+  assert.deepEqual(Array.from(hidden), ['liked', 'retry']);
+  pending.shift().reject(new Error('cold start timeout'));
+  await assert.rejects(failedLike, /cold start timeout/);
+  assert.deepEqual(Array.from(hidden), ['liked']);
+});
+
 test('discovery revisions refresh every loaded page and remove identities that became private', async () => {
   let revision = 1;
   const f = fixture(async (_name, { cursor }) => cursor

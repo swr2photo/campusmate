@@ -617,7 +617,10 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const { profile: myProfile } = useAppProfile();
   const myFavoriteTracks = Array.isArray(myProfile?.favoriteTracks) ? myProfile.favoriteTracks : [];
   const { dismissProfile, loadMoreProfiles, matchProfile, sendActivityInvite } = useAppActions();
-  const [processing, setProcessing] = useState(false);
+  // Decisions run in the background; only a second decision on the same
+  // person waits for the first. `processing` keeps the next-card fallback.
+  const [pendingDecisionCount, setPendingDecisionCount] = useState(0);
+  const processing = pendingDecisionCount > 0;
   const [sessionExcludedIds, setSessionExcludedIds] = useState([]);
   const [rawDirectProfile, setDirectProfile] = useState(null);
   const [profileLookupState, setProfileLookupState] = useState(() => (profileId ? 'loading' : 'idle'));
@@ -637,6 +640,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const flyOpacity = useSharedValue(1);
   const swipeLock = useSharedValue(0);
   const decisionStarted = useRef(false);
+  const decisionsInFlight = useRef(new Set());
   const candidateCache = useRef(new Map());
   const [exitingCard, setExitingCard] = useState(null);
 
@@ -912,13 +916,14 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   }, [onClose]);
 
   const handleDecision = useCallback(async (decision) => {
-    if (!candidate || processing) return;
+    if (!candidate || decisionsInFlight.current.has(candidate.id)) return;
 
     const candidateId = candidate.id;
     const candidateName = candidate.name || 'เพื่อน';
     const isMatched = isCandidateMatched;
 
-    setProcessing(true);
+    decisionsInFlight.current.add(candidateId);
+    setPendingDecisionCount((count) => count + 1);
     setSessionExcludedIds((current) => [...current, candidateId]);
     decisionStarted.current = false;
 
@@ -955,16 +960,30 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
       setSessionExcludedIds((current) => current.filter((id) => id !== candidateId));
       onToast?.(`Error: ${error.message}`, 'info');
     } finally {
-      setProcessing(false);
+      decisionsInFlight.current.delete(candidateId);
+      setPendingDecisionCount((count) => count - 1);
     }
-  }, [candidate, dismissProfile, isCandidateMatched, matchProfile, onToast, processing, sendActivityInvite]);
+  }, [candidate, dismissProfile, isCandidateMatched, matchProfile, onToast, sendActivityInvite]);
 
   const clearExitingCard = useCallback(() => {
     setExitingCard(null);
   }, []);
 
+  const resetSwipe = useCallback(() => {
+    decisionStarted.current = false;
+    swipeLock.set(0);
+    translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+    translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+    cardScale.set(withSpring(1, { duration: 400, dampingRatio: 1 }));
+    cardOpacity.set(withTiming(1, { duration: 120, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
+  }, [cardOpacity, cardScale, swipeLock, translateX, translateY]);
+
   const finishSwipe = useCallback((decision) => {
-    if (processing || decisionStarted.current || !candidate) return;
+    if (decisionStarted.current || !candidate) return;
+    if (decisionsInFlight.current.has(candidate.id)) {
+      resetSwipe();
+      return;
+    }
     decisionStarted.current = true;
     swipeLock.set(1);
     const isLike = decision === 'like';
@@ -987,16 +1006,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     flyOpacity.set(withTiming(0, { duration: 200, easing: Easing.bezier(0.23, 1, 0.32, 1) }, (finished) => {
       if (finished) scheduleOnRN(clearExitingCard);
     }));
-  }, [candidate, cardOpacity, cardScale, clearExitingCard, flyOpacity, flyX, handleDecision, processing, swipeLock, translateX, translateY]);
-
-  const resetSwipe = useCallback(() => {
-    decisionStarted.current = false;
-    swipeLock.set(0);
-    translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
-    translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
-    cardScale.set(withSpring(1, { duration: 400, dampingRatio: 1 }));
-    cardOpacity.set(withTiming(1, { duration: 120, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
-  }, [cardOpacity, cardScale, swipeLock, translateX, translateY]);
+  }, [candidate, cardOpacity, cardScale, clearExitingCard, flyOpacity, flyX, handleDecision, resetSwipe, swipeLock, translateX, translateY]);
 
   const panGesture = useMemo(() => Gesture.Pan()
     .enabled(!isViewOnly)
@@ -1242,9 +1252,8 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
             <Animated.View style={[styles.actionGroup, skipActionScaleStyle]}>
               <Pressable
                 accessibilityLabel="ไม่เลือก"
-                disabled={processing}
                 onPress={() => finishSwipe('skip')}
-                style={({ pressed }) => [styles.actionButton, styles.skipButton, pressed && styles.pressed, processing && styles.disabled]}
+                style={({ pressed }) => [styles.actionButton, styles.skipButton, pressed && styles.pressed]}
               >
                 <Animated.View pointerEvents="none" style={[styles.actionButtonHighlight, { backgroundColor: swipeCoral }, skipActionBgStyle]} />
                 <View style={[styles.actionIcon, styles.skipIcon]}>
@@ -1259,9 +1268,8 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
             <Animated.View style={[styles.actionGroup, likeActionScaleStyle]}>
               <Pressable
                 accessibilityLabel={isCandidateMatched ? 'ไปห้องแชต' : 'ถูกใจ'}
-                disabled={processing}
                 onPress={() => finishSwipe('like')}
-                style={({ pressed }) => [styles.actionButton, styles.likeButton, pressed && styles.pressed, processing && styles.disabled]}
+                style={({ pressed }) => [styles.actionButton, styles.likeButton, pressed && styles.pressed]}
               >
                 <Animated.View pointerEvents="none" style={[styles.actionButtonHighlight, { backgroundColor: colors.primary }, likeActionBgStyle]} />
                 <View style={[styles.actionIcon, styles.likeIcon]}>

@@ -2112,9 +2112,15 @@ export function AppProvider({ children }) {
   const dismissProfile = async (profileId) => {
     if (!user?.id || !profileId) return;
     if (secureDiscoveryConfigured()) {
-      const result = await recordSecureDiscoveryAction(profileId, 'skip');
-      setOptimisticHiddenIds((prev) => [...prev, profileId]);
-      return result;
+      // Advance the deck on tap; the callable round trip (and any cold start)
+      // runs behind it, and a failed skip puts the card back.
+      setOptimisticHiddenIds((prev) => (prev.includes(profileId) ? prev : [...prev, profileId]));
+      try {
+        return await recordSecureDiscoveryAction(profileId, 'skip');
+      } catch (error) {
+        setOptimisticHiddenIds((current) => current.filter((id) => id !== profileId));
+        throw error;
+      }
     }
     setOptimisticHiddenIds((prev) => [...prev, profileId]);
     return runOrQueue(
@@ -2437,8 +2443,14 @@ export function AppProvider({ children }) {
   const matchProfile = async (candidate) => {
     if (!user?.id || !candidate?.id) return { matched: false };
     if (secureDiscoveryConfigured()) {
-      const result = await recordSecureDiscoveryAction(candidate.id, 'like');
-      setOptimisticHiddenIds((prev) => [...prev, candidate.id]);
+      setOptimisticHiddenIds((prev) => (prev.includes(candidate.id) ? prev : [...prev, candidate.id]));
+      let result;
+      try {
+        result = await recordSecureDiscoveryAction(candidate.id, 'like');
+      } catch (error) {
+        setOptimisticHiddenIds((current) => current.filter((id) => id !== candidate.id));
+        throw error;
+      }
       if (result.status !== 'accepted') return { matched: false };
       try {
         const conversationId = await createConversation(user.id, profile, candidate);

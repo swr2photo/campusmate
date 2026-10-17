@@ -263,23 +263,31 @@ export default function HomeScreen({ onOpenLikes }) {
     }
   }, [hasMoreProfiles, isLoadingMoreProfiles, loadMoreProfiles, recycleSkippedProfiles, rewind.guard]);
 
+  // dismissProfile/matchProfile hide the card synchronously, so pass and like
+  // must not hold the action bar for the server round trip. Only a second
+  // decision on the same person is blocked while the first is in flight.
+  const decisionsInFlight = useRef(new Set());
+
   const handlePass = useCallback(async () => {
-    if (!currentProfile || actionInProgress) return;
-    setActionInProgress(true);
+    if (!currentProfile || actionInProgress || decisionsInFlight.current.has(currentProfile.id)) return;
+    const candidateId = currentProfile.id;
+    decisionsInFlight.current.add(candidateId);
     try {
-      await dismissProfile(currentProfile.id);
+      await dismissProfile(candidateId);
     } catch (error) {
       console.warn('[HomeScreen] dismissProfile error:', error?.message || error);
+      showToast('ข้ามไม่สำเร็จ กรุณาลองอีกครั้ง', 'info');
     } finally {
-      setActionInProgress(false);
+      decisionsInFlight.current.delete(candidateId);
     }
-  }, [actionInProgress, currentProfile, dismissProfile]);
+  }, [actionInProgress, currentProfile, dismissProfile, showToast]);
 
   const handleMatch = useCallback(async () => {
-    if (!currentProfile || actionInProgress) return;
-    setActionInProgress(true);
+    if (!currentProfile || actionInProgress || decisionsInFlight.current.has(currentProfile.id)) return;
+    const candidate = currentProfile;
+    decisionsInFlight.current.add(candidate.id);
     try {
-      const result = await matchProfile(currentProfile);
+      const result = await matchProfile(candidate);
       if (result?.queued) showToast('บันทึกถูกใจไว้แล้ว จะส่งเมื่อเชื่อมต่ออินเทอร์เน็ต', 'info');
       if (result?.matched && result?.conversationId) {
         router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
@@ -288,15 +296,16 @@ export default function HomeScreen({ onOpenLikes }) {
       console.warn('[HomeScreen] matchProfile error:', error?.message || error);
       showToast(error?.discoveryActionCommitted ? 'บันทึกถูกใจแล้ว แต่เปิดแชตไม่สำเร็จ ลองเปิดจากหน้าแชตอีกครั้ง' : 'ส่งถูกใจไม่สำเร็จ กรุณาลองอีกครั้ง', 'info');
     } finally {
-      setActionInProgress(false);
+      decisionsInFlight.current.delete(candidate.id);
     }
   }, [actionInProgress, currentProfile, matchProfile, showToast]);
 
   const handleSuperLike = useCallback(async () => {
-    if (!currentProfile || actionInProgress) return;
-    setActionInProgress(true);
+    if (!currentProfile || actionInProgress || decisionsInFlight.current.has(currentProfile.id)) return;
+    const candidate = currentProfile;
+    decisionsInFlight.current.add(candidate.id);
     try {
-      const result = await matchProfile(currentProfile);
+      const result = await matchProfile(candidate);
       if (result?.queued) showToast('บันทึกถูกใจไว้แล้ว จะส่งเมื่อเชื่อมต่ออินเทอร์เน็ต', 'info');
       if (result?.matched && result?.conversationId) {
         router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
@@ -305,7 +314,7 @@ export default function HomeScreen({ onOpenLikes }) {
       console.warn('[HomeScreen] superLike error:', error?.message || error);
       showToast(error?.discoveryActionCommitted ? 'บันทึกถูกใจแล้ว แต่เปิดแชตไม่สำเร็จ ลองเปิดจากหน้าแชตอีกครั้ง' : 'ส่งถูกใจไม่สำเร็จ กรุณาลองอีกครั้ง', 'info');
     } finally {
-      setActionInProgress(false);
+      decisionsInFlight.current.delete(candidate.id);
     }
   }, [actionInProgress, currentProfile, matchProfile, showToast]);
 

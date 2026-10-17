@@ -75,7 +75,10 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const { conversations } = useAppConversations();
   const { profile: currentProfile } = useAppProfile();
   const { dismissProfile, loadMoreProfiles, matchProfile, sendActivityInvite } = useAppActions();
-  const [processing, setProcessing] = useState(false);
+  // Decisions run in the background; only a second decision on the same
+  // person waits for the first. `processing` keeps the next-card fallbacks.
+  const [pendingDecisionCount, setPendingDecisionCount] = useState(0);
+  const processing = pendingDecisionCount > 0;
   const [sessionExcludedIds, setSessionExcludedIds] = useState([]);
   const [rawDirectProfile, setDirectProfile] = useState(null);
 
@@ -92,8 +95,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const cardOpacity = useSharedValue(1);
   const swipeLock = useSharedValue(0);
   const decisionStarted = useRef(false);
-  const decisionInFlight = useRef(false);
-  const decisionCandidateId = useRef(null);
+  const decisionsInFlight = useRef(new Set());
   const candidateCache = useRef(new Map());
 
   useEffect(() => {
@@ -181,7 +183,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     // Keep the profile opened from Home as the first card when it is present.
     const isDecisionExcluded = (id) => (
       decidedIds.has(id)
-      || (decisionInFlight.current && decisionCandidateId.current === id)
+      || decisionsInFlight.current.has(id)
     );
     const requestedProfile = profileId && candidatePool.find((item) => (
       item.id === profileId && !isDecisionExcluded(item.id)
@@ -237,12 +239,11 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   }, [onClose]);
 
   const handleDecision = useCallback(async (decision) => {
-    if (!candidate || processing || decisionInFlight.current) return;
+    if (!candidate || decisionsInFlight.current.has(candidate.id)) return;
 
     const candidateId = candidate.id;
-    decisionInFlight.current = true;
-    decisionCandidateId.current = candidateId;
-    setProcessing(true);
+    decisionsInFlight.current.add(candidateId);
+    setPendingDecisionCount((count) => count + 1);
     setSessionExcludedIds((current) => [...current, candidateId]);
     decisionStarted.current = false;
     translateX.set(0);
@@ -276,14 +277,26 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
       setSessionExcludedIds((current) => current.filter((id) => id !== candidateId));
       onToast?.(`Error: ${error.message}`, 'info');
     } finally {
-      setProcessing(false);
-      decisionInFlight.current = false;
-      decisionCandidateId.current = null;
+      decisionsInFlight.current.delete(candidateId);
+      setPendingDecisionCount((count) => count - 1);
     }
-  }, [candidate, cardOpacity, cardScale, dismissProfile, isCandidateMatched, matchProfile, onToast, processing, sendActivityInvite, translateX, translateY]);
+  }, [candidate, cardOpacity, cardScale, dismissProfile, isCandidateMatched, matchProfile, onToast, sendActivityInvite, translateX, translateY]);
+
+  const resetSwipe = useCallback(() => {
+    decisionStarted.current = false;
+    swipeLock.set(0);
+    translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+    translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
+    cardScale.set(withSpring(1, { duration: 400, dampingRatio: 1 }));
+    cardOpacity.set(withTiming(1, { duration: 120, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
+  }, [cardOpacity, cardScale, swipeLock, translateX, translateY]);
 
   const finishSwipe = useCallback((decision) => {
-    if (processing || decisionStarted.current || decisionInFlight.current) return;
+    if (decisionStarted.current) return;
+    if (candidate && decisionsInFlight.current.has(candidate.id)) {
+      resetSwipe();
+      return;
+    }
     decisionStarted.current = true;
     swipeLock.set(1);
     const buttonCenterOffset = (screenWidth / 2) - actionSideInset - (actionButtonWidth / 2);
@@ -297,16 +310,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     cardOpacity.set(withDelay(110, withTiming(0, { duration: 170, easing: easeOut }, (finished) => {
       if (finished) scheduleOnRN(handleDecision, decision);
     })));
-  }, [handleDecision, processing, swipeLock, translateX, translateY, cardScale, cardOpacity]);
-
-  const resetSwipe = useCallback(() => {
-    decisionStarted.current = false;
-    swipeLock.set(0);
-    translateX.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
-    translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
-    cardScale.set(withSpring(1, { duration: 400, dampingRatio: 1 }));
-    cardOpacity.set(withTiming(1, { duration: 120, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
-  }, [cardOpacity, cardScale, swipeLock, translateX, translateY]);
+  }, [candidate, handleDecision, resetSwipe, swipeLock, translateX, translateY, cardScale, cardOpacity]);
 
   const panGesture = useMemo(() => Gesture.Pan()
     .enabled(!isViewOnly)
@@ -533,7 +537,6 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
           <View pointerEvents="box-none" style={decisionStyles.actions}>
             <Animated.View style={skipActionScaleStyle}>
               <DecisionAction
-                disabled={processing}
                 label="ไม่เลือก"
                 onPress={() => finishSwipe('skip')}
                 palette={palette}
@@ -545,7 +548,6 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
             </Animated.View>
             <Animated.View style={likeActionScaleStyle}>
               <DecisionAction
-                disabled={processing}
                 icon={isCandidateMatched ? 'message.fill' : 'heart.fill'}
                 label={isCandidateMatched ? 'ไปห้องแชต' : 'ถูกใจ'}
                 onPress={() => finishSwipe('like')}
@@ -953,7 +955,7 @@ function ProfileInfoRow({ icon, label, value, palette, showDivider = false }) {
 
 
 
-function DecisionAction({ colorScheme, disabled: isDisabled, icon, label, onPress, palette, type, activeStyle, activeColor }) {
+function DecisionAction({ colorScheme, disabled: isDisabled = false, icon, label, onPress, palette, type, activeStyle, activeColor }) {
   const isLike = type === 'like';
   const systemImageName = icon || (isLike ? 'heart.fill' : 'xmark');
   return (

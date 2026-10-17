@@ -98,14 +98,17 @@ const home = load('src/screens/HomeScreen.js');
 for (const name of ['handleMatch', 'handleSuperLike']) test(`${name} reports queued and failed actions`, async () => {
   const call = home.nodes.find(n => n.type === 'VariableDeclarator' && n.id?.name === name).init;
   for (const queued of [true, false]) {
-    const messages = [];
+    const messages = [], decisionsInFlight = { current: new Set() };
     const context = vm.createContext({ console: quiet, currentProfile: { id: 'target' }, actionInProgress: false,
-      setActionInProgress: () => {}, matchProfile: async () => { if (!queued) throw new Error('failed'); return { queued: true }; },
-      showToast: message => messages.push(message), router: { push() {} },
+      // The card is hidden by matchProfile itself, so the bar must stay usable.
+      setActionInProgress: () => { throw new Error('like must not lock the action bar'); },
+      matchProfile: async () => { if (!queued) throw new Error('failed'); return { queued: true }; },
+      showToast: message => messages.push(message), router: { push() {} }, decisionsInFlight,
     });
     vm.runInContext('globalThis.press = ' + home.code(call.arguments[0]), context);
     await context.press();
     assert.match(messages[0], queued ? /จะส่งเมื่อ/ : /ไม่สำเร็จ/);
+    assert.equal(decisionsInFlight.current.size, 0);
   }
 });
 

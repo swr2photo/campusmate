@@ -876,6 +876,11 @@ export function AppProvider({ children }) {
   const networkReadyRef = useRef(false);
   const latestPublicProfileRef = useRef(null);
   const flushingQueueRef = useRef(false);
+  // The composer no longer waits for the server, so two sends to one room can
+  // be in flight together. Their transactions could commit out of order and
+  // leave lastMessageId on the older message, so each room's writes run in
+  // send order while every bubble still appears at once.
+  const sendChainsRef = useRef(new Map());
   const encryptionProfileFingerprintRef = useRef('');
   const offlineSnapshotSignatureRef = useRef('');
   const matchedConversationSyncRef = useRef(new Set());
@@ -2622,12 +2627,19 @@ export function AppProvider({ children }) {
       };
     }));
     try {
-      const sendResult = await runOrQueue(
+      const previousSend = sendChainsRef.current.get(conversationId) || Promise.resolve();
+      const sending = previousSend.then(() => runOrQueue(
         'sendMessage',
         { conversationId, text: trimmedText, options: clientOptions },
         () => updateConversationMessage(conversationId, user.id, trimmedText, clientOptions),
         { dedupeKey: `message:${clientOptions.clientMessageId}` }
-      );
+      ));
+      const settled = sending.then(() => {}, () => {});
+      sendChainsRef.current.set(conversationId, settled);
+      void settled.then(() => {
+        if (sendChainsRef.current.get(conversationId) === settled) sendChainsRef.current.delete(conversationId);
+      });
+      const sendResult = await sending;
       if (activeUserIdRef.current !== user.id) return false;
       setConversations((current) => current.map((conversation) => {
         if (conversation.id !== conversationId) return conversation;

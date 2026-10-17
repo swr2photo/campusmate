@@ -89,7 +89,8 @@ test('pair message remains pending after enqueue and only queue acknowledgement 
   const end = source.indexOf('\n  const retryFailedMessage', start);
   let rooms = [{ id: 'room', participants: ['me', 'other'], messages: [] }];
   const ctx = vm.createContext({ user: { id: 'me' }, activeUserIdRef: { current: 'me' }, conversations: rooms,
-    setConversations: (update) => { rooms = update(rooms); }, createClientMessageId: () => 'outbox', runOrQueue: async () => ({ queued: true }), console });
+    setConversations: (update) => { rooms = update(rooms); }, createClientMessageId: () => 'outbox', runOrQueue: async () => ({ queued: true }), console,
+    sendChainsRef: { current: new Map() } });
   vm.runInContext(source.slice(start, end) + ';globalThis.send = sendMessage;', ctx);
   assert.equal(await ctx.send('room', 'offline message'), true);
   assert.equal(rooms[0].messages[0].pendingSync, true);
@@ -105,6 +106,31 @@ test('pair message remains pending after enqueue and only queue acknowledgement 
   await ctx.sync();
   assert.equal(rooms[0].messages[0].pendingSync, false);
   assert.equal(rooms[0].messages[0].sendStatus, 'sent');
+});
+
+test('overlapping sends to one room commit in send order while both bubbles show at once', async () => {
+  const source = read('src/context/AppContext.js');
+  const start = source.indexOf('  const sendMessage = async (');
+  const end = source.indexOf('\n  const retryFailedMessage', start);
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  let rooms = [{ id: 'room', participants: ['me', 'other'], messages: [] }], ids = 0;
+  const started = [], finish = {};
+  const ctx = vm.createContext({ user: { id: 'me' }, activeUserIdRef: { current: 'me' }, conversations: rooms, console,
+    setConversations: (update) => { rooms = update(rooms); }, createClientMessageId: () => `m${++ids}`,
+    sendChainsRef: { current: new Map() }, updateConversationMessage: () => {},
+    runOrQueue: (_type, payload) => { started.push(payload.text); return new Promise((resolve, reject) => { finish[payload.text] = { resolve, reject }; }); },
+  });
+  vm.runInContext(source.slice(start, end) + ';globalThis.send = sendMessage;', ctx);
+  const first = ctx.send('room', 'A'), second = ctx.send('room', 'B');
+  await tick();
+  assert.deepEqual(Array.from(rooms[0].messages, (message) => message.text), ['A', 'B']);
+  assert.deepEqual(started, ['A']); // B waits for A's commit
+  finish.A.reject(Object.assign(new Error('denied'), { code: 'permission-denied' }));
+  await assert.rejects(first, /denied/); await tick();
+  assert.deepEqual(started, ['A', 'B']); // a failed send does not block the next one
+  finish.B.resolve(true);
+  assert.equal(await second, true);
+  assert.equal(ctx.sendChainsRef.current.size, 0);
 });
 
 test('flushing only queued messages keeps live subscriptions and skips the sync toast', async () => {

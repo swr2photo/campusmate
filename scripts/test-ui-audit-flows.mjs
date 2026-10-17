@@ -67,18 +67,19 @@ for (const platform of ['js', 'ios.js']) {
 
 const app = load('src/context/AppContext.js');
 function likeHarness({ failure, result = {}, chatFailure, secure = false } = {}) {
-  let hidden = ['other'];
+  let hidden = ['other'], pendingHidden = [];
   const context = vm.createContext({ console: quiet, user: { id: 'me' }, profile: {},
     secureDiscoveryConfigured: () => secure, recordSecureDiscoveryAction: async () => {
       if (failure) throw failure; return { status: 'accepted' };
     }, createConversation: async () => { if (chatFailure) throw chatFailure; return 'room'; },
-    setOptimisticHiddenIds: fn => { hidden = fn(hidden); }, setRemovedUserIds: fn => fn(new Set()),
+    setOptimisticHiddenIds: fn => { hidden = fn(hidden); }, setPendingSecureHiddenIds: fn => { pendingHidden = fn(pendingHidden); },
+    setRemovedUserIds: fn => fn(new Set()),
     acceptedIncomingLikes: [], activeConversations: [], removedUserIds: new Set(),
     runOrQueue: async () => { if (failure) throw failure; return result; }, saveDecision: () => {},
     ensureConversation: async () => { if (chatFailure) throw chatFailure; return 'room'; }, updateHiddenConversations: fn => fn([]),
   });
   vm.runInContext('globalThis.like = ' + variable(app, 'matchProfile'), context);
-  return { like: () => context.like({ id: 'target' }), get hidden() { return Array.from(hidden); } };
+  return { like: () => context.like({ id: 'target' }), get hidden() { return [...Array.from(hidden), ...Array.from(pendingHidden)]; } };
 }
 test('rejected like restores only its own card', async () => {
   const h = likeHarness({ failure: new Error('permission-denied') });

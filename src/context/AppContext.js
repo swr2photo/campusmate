@@ -851,6 +851,14 @@ export function AppProvider({ children }) {
   const [retryKey, setRetryKey] = useState(0);
   const [conversationRetryKey, setConversationRetryKey] = useState(0);
   const [optimisticHiddenIds, setOptimisticHiddenIds] = useState([]);
+  // Secure decisions still waiting for the server. They hide their card at
+  // once but stay out of the offline snapshot, so a decision that never
+  // reached the server cannot hide that card on this device forever.
+  const [pendingSecureHiddenIds, setPendingSecureHiddenIds] = useState([]);
+  const hiddenProfileIds = useMemo(
+    () => (pendingSecureHiddenIds.length ? [...optimisticHiddenIds, ...pendingSecureHiddenIds] : optimisticHiddenIds),
+    [optimisticHiddenIds, pendingSecureHiddenIds]
+  );
   const [isOnline, setIsOnline] = useState(true);
   const [networkReady, setNetworkReady] = useState(false);
   const [cacheHydratedUserId, setCacheHydratedUserId] = useState(null);
@@ -950,6 +958,7 @@ export function AppProvider({ children }) {
       setCampusSpots([]);
       setSelectedMeetup(null);
       setOptimisticHiddenIds([]);
+      setPendingSecureHiddenIds([]);
       setBlockedUserIds([]);
       return undefined;
     }
@@ -988,6 +997,7 @@ export function AppProvider({ children }) {
       setCampusSpots([]);
       setSelectedMeetup(null);
       setOptimisticHiddenIds([]);
+      setPendingSecureHiddenIds([]);
       setBlockedUserIds([]);
     }
 
@@ -2048,12 +2058,12 @@ export function AppProvider({ children }) {
 
   const visibleDiscoveryProfileCount = useMemo(() => {
     if (!remoteAvailableResult) return sharedProfiles.length === 0 ? 0 : null;
-    const hiddenIds = new Set(optimisticHiddenIds);
+    const hiddenIds = new Set(hiddenProfileIds);
     return remoteAvailableResult.profiles.reduce(
       (count, item) => count + (hiddenIds.has(item.id) ? 0 : 1),
       0
     );
-  }, [optimisticHiddenIds, remoteAvailableResult, sharedProfiles.length]);
+  }, [hiddenProfileIds, remoteAvailableResult, sharedProfiles.length]);
 
   // If a page contains no local match (or the user has consumed it), scan a
   // few more pages automatically. The cap keeps an account with no matching
@@ -2121,13 +2131,15 @@ export function AppProvider({ children }) {
     if (!user?.id || !profileId) return;
     if (secureDiscoveryConfigured()) {
       // Advance the deck on tap; the callable round trip (and any cold start)
-      // runs behind it, and a failed skip puts the card back.
-      setOptimisticHiddenIds((prev) => (prev.includes(profileId) ? prev : [...prev, profileId]));
+      // runs behind it. Only a confirmed skip joins optimisticHiddenIds (and
+      // the offline snapshot); a failed one puts the card back.
+      setPendingSecureHiddenIds((prev) => (prev.includes(profileId) ? prev : [...prev, profileId]));
       try {
-        return await recordSecureDiscoveryAction(profileId, 'skip');
-      } catch (error) {
-        setOptimisticHiddenIds((current) => current.filter((id) => id !== profileId));
-        throw error;
+        const result = await recordSecureDiscoveryAction(profileId, 'skip');
+        setOptimisticHiddenIds((prev) => (prev.includes(profileId) ? prev : [...prev, profileId]));
+        return result;
+      } finally {
+        setPendingSecureHiddenIds((current) => current.filter((id) => id !== profileId));
       }
     }
     setOptimisticHiddenIds((prev) => [...prev, profileId]);
@@ -2451,13 +2463,13 @@ export function AppProvider({ children }) {
   const matchProfile = async (candidate) => {
     if (!user?.id || !candidate?.id) return { matched: false };
     if (secureDiscoveryConfigured()) {
-      setOptimisticHiddenIds((prev) => (prev.includes(candidate.id) ? prev : [...prev, candidate.id]));
+      setPendingSecureHiddenIds((prev) => (prev.includes(candidate.id) ? prev : [...prev, candidate.id]));
       let result;
       try {
         result = await recordSecureDiscoveryAction(candidate.id, 'like');
-      } catch (error) {
-        setOptimisticHiddenIds((current) => current.filter((id) => id !== candidate.id));
-        throw error;
+        setOptimisticHiddenIds((prev) => (prev.includes(candidate.id) ? prev : [...prev, candidate.id]));
+      } finally {
+        setPendingSecureHiddenIds((current) => current.filter((id) => id !== candidate.id));
       }
       if (result.status !== 'accepted') return { matched: false };
       try {
@@ -3243,12 +3255,12 @@ export function AppProvider({ children }) {
     [availableProfiles]
   );
   const filteredAvailableProfiles = useMemo(() => {
-    const hiddenIds = new Set([...optimisticHiddenIds, ...blockedUserIds]);
+    const hiddenIds = new Set([...hiddenProfileIds, ...blockedUserIds]);
     const visible = hiddenIds.size === 0 && !isResolvingDistances
       ? availableProfiles
       : availableProfiles.filter((profileItem) => !hiddenIds.has(profileItem.id) && !profileItem.distancePending);
     return orderRecommendedProfiles(visible, preferences.recommendation);
-  }, [availableProfiles, blockedUserIds, isResolvingDistances, optimisticHiddenIds, preferences.recommendation]);
+  }, [availableProfiles, blockedUserIds, hiddenProfileIds, isResolvingDistances, preferences.recommendation]);
 
   const combinedAppointments = useMemo(() => {
     const result = [];

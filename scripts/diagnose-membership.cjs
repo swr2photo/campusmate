@@ -34,7 +34,17 @@ async function main() {
         if (!before.ok && before.status !== 404) throw new Error(`Entitlement read failed: ${before.status}`);
         const document = before.ok ? await before.json() : null;
         const verified = entitlementFromSubscriber(await fetchRevenueCatSubscriber(uid, key, fetch, project.id), Date.now(), true);
-        verified.syncGeneration = Number(document?.fields?.syncGeneration?.integerValue || 0) + 1;
+        // Bump the server synchronizer's generation (entitlementSyncs/{uid}) so a
+        // server sync still holding an older RevenueCat response skips its write.
+        const generationUrl = `https://firestore.googleapis.com/v1/projects/campusmate-7f1ab/databases/(default)/documents/entitlementSyncs/${encodeURIComponent(uid)}`;
+        const generationBefore = await fetch(generationUrl, { headers });
+        if (!generationBefore.ok && generationBefore.status !== 404) throw new Error(`Sync generation read failed: ${generationBefore.status}`);
+        const generationDocument = generationBefore.ok ? await generationBefore.json() : null;
+        const generationQuery = new URLSearchParams(generationDocument ? { 'currentDocument.updateTime': generationDocument.updateTime } : { 'currentDocument.exists': 'false' });
+        generationQuery.append('updateMask.fieldPaths', 'syncGeneration');
+        const bumped = await fetch(`${generationUrl}?${generationQuery}`, { method: 'PATCH', headers, body: JSON.stringify({ fields: {
+          syncGeneration: { integerValue: String(Number(generationDocument?.fields?.syncGeneration?.integerValue || 0) + 1) } } }) });
+        if (!bumped.ok) throw new Error(`Concurrent sync or write failure: ${bumped.status}`);
         const fields = Object.fromEntries(Object.entries(verified).map(([k,v]) => [k, v === null ? { nullValue: null } : typeof v === 'number' ? { integerValue: String(v) } : { stringValue: v }]));
         const query = new URLSearchParams(document ? { 'currentDocument.updateTime': document.updateTime } : { 'currentDocument.exists': 'false' });
         for (const field of Object.keys(fields)) query.append('updateMask.fieldPaths', field);

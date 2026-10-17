@@ -1092,7 +1092,9 @@ export const deleteUserData = onCall({ region: REGION }, async (request) => {
   deletions.push(db.recursiveDelete(db.collection('users').doc(userId)));
   deletions.push(db.collection('profiles').doc(userId).delete());
   deletions.push(db.collection('discoveryProfiles').doc(userId).delete());
-  for (const name of ['entitlements', 'profileVisibility', 'discoveryState', 'matchingSignals']) {
+  // Deleting entitlementSyncs also makes a membership sync already in flight
+  // skip its write, so it cannot recreate entitlements/{uid} afterwards.
+  for (const name of ['entitlements', 'entitlementSyncs', 'profileVisibility', 'discoveryState', 'matchingSignals']) {
     deletions.push(db.doc(`${name}/${userId}`).delete());
   }
   for (const name of ['discoveryActions', 'rewindReceipts', 'likePageCursors', 'discoveryPageCursors']) {

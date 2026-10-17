@@ -2,7 +2,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {FieldValue,Timestamp} from 'firebase-admin/firestore';
 import {HttpsError} from 'firebase-functions/v2/https';
 const safeUid=uid=>typeof uid==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(uid);
-const ownedCollections=['users','profiles','discoveryProfiles','entitlements','profileVisibility','discoveryState','matchingSignals','discoveryActions','rewindReceipts','likePageCursors','discoveryPageCursors','emailVerificationLocks','campusEmailChangeLocks'];
+const ownedCollections=['users','profiles','discoveryProfiles','entitlements','entitlementSyncs','profileVisibility','discoveryState','matchingSignals','discoveryActions','rewindReceipts','likePageCursors','discoveryPageCursors','emailVerificationLocks','campusEmailChangeLocks'];
 async function target(auth,actor,uid){
  if(!safeUid(uid))throw new HttpsError('invalid-argument','UID ไม่ถูกต้อง');
  const user=await auth.getUser(uid);

@@ -131,6 +131,40 @@ test('flushing only queued messages keeps live subscriptions and skips the sync 
   assert.deepEqual(await flush(['sendGroupMessage', 'saveDecision']), { retryKeyBumps: 1, toasts: ['ซิงค์ข้อมูลสำเร็จ'] });
 });
 
+test('a syncNow call arriving while a flush is running drains newly queued items without concurrent flushes', async () => {
+  const source = read('src/context/AppContext.js');
+  const syncStart = source.indexOf('  const syncNow = useCallback(');
+  const syncEnd = source.indexOf('\n  useEffect(', syncStart);
+  const queue = [{ type: 'sendGroupMessage', payload: { partyId: 'party', id: 'm1' } }];
+  const delivered = [];
+  let activeFlushes = 0, maxConcurrentFlushes = 0;
+  const ctx = vm.createContext({ console, user: { id: 'me' }, activeUserIdRef: { current: 'me' }, useCallback: (fn) => fn,
+    isOnline: true, flushingQueueRef: { current: false },
+    getOfflineQueueCount: async () => queue.length,
+    setPendingSyncCount: () => {}, setLastSyncError: () => {}, setIsSyncing: () => {}, setLastSyncedAt: () => {},
+    setRetryKey: () => {}, refreshQueueCount: () => {}, executeQueuedOperation: async (op) => { delivered.push(op.payload.id); },
+    setConversations: () => {}, showInAppNotification: () => {},
+    flushOfflineQueue: async (_uid, execute) => {
+      activeFlushes += 1;
+      maxConcurrentFlushes = Math.max(maxConcurrentFlushes, activeFlushes);
+      const snapshot = queue.splice(0);
+      for (const op of snapshot) {
+        if (op.payload.id === 'm1') {
+          queue.push({ type: 'sendGroupMessage', payload: { partyId: 'party', id: 'm2' } });
+          void ctx.sync();
+        }
+        await execute(op);
+      }
+      activeFlushes -= 1;
+      return { pendingCount: queue.length, syncedCount: snapshot.length, failed: [] };
+    },
+  });
+  vm.runInContext(source.slice(syncStart, syncEnd) + ';globalThis.sync = syncNow;', ctx);
+  await Promise.all([ctx.sync(), ctx.sync()]);
+  assert.equal(maxConcurrentFlushes, 1);
+  assert.deepEqual(delivered, ['m1', 'm2']);
+});
+
 test('a peer device key change re-runs only the conversation subscription', () => {
   const source = read('src/context/AppContext.js');
   const marker = source.indexOf('  // A participant publishing a new device key changes the shared profile,');

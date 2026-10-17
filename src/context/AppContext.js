@@ -1905,58 +1905,75 @@ export function AppProvider({ children }) {
   }, [isOnline, queueOperation]);
 
   const syncNow = useCallback(async () => {
-    if (!user?.id || !isOnline || flushingQueueRef.current) return;
-    const queueCount = await getOfflineQueueCount(user.id);
-    if (queueCount === 0) {
-      setPendingSyncCount(0);
-      setLastSyncError(null);
+    if (!user?.id || !isOnline) return;
+    if (flushingQueueRef.current) {
+      flushingQueueRef.current = 'again';
       return;
     }
     flushingQueueRef.current = true;
-    setIsSyncing(true);
-    setLastSyncError(null);
+    let syncingStarted = false;
     try {
-      const updateMessageStatus = (operation, sendStatus) => {
-        if (activeUserIdRef.current !== user.id || operation.type !== 'sendMessage') return;
-        const { conversationId, options } = operation.payload || {};
-        setConversations((current) => current.map((room) => room.id !== conversationId ? room : {
-          ...room, messages: (room.messages || []).map((message) => message.id === options?.clientMessageId
-            ? { ...message, pendingSync: sendStatus !== 'sent', sendStatus } : message),
-        }));
-      };
-      let syncedOnlyMessages = true;
-      const result = await flushOfflineQueue(user.id, async (operation) => {
-        if (activeUserIdRef.current !== user.id) throw Object.assign(new Error('Account changed'), { code: 'cancelled' });
-        await executeQueuedOperation(operation);
-        updateMessageStatus(operation, 'sent');
-        if (operation.type !== 'sendMessage' && operation.type !== 'sendGroupMessage') syncedOnlyMessages = false;
-      });
-      if (activeUserIdRef.current !== user.id) return;
-      result.failed.forEach(({ operation }) => updateMessageStatus(operation, 'failed'));
-      setPendingSyncCount(result.pendingCount);
-      if (result.syncedCount > 0) setLastSyncedAt(Date.now());
-      // Sent messages already show their own status and the live listeners
-      // receive the committed docs. Rebuilding every subscription (deck,
-      // inbox, decisions, profile) and toasting after each group message made
-      // party chats stutter, so only other queued work does that.
-      if (result.syncedCount > 0 && !syncedOnlyMessages) {
-        setRetryKey((current) => current + 1);
-        showInAppNotification({
-          title: 'ซิงค์ข้อมูลสำเร็จ',
-          message: `ส่งข้อมูลที่ค้างไว้ ${result.syncedCount} รายการเรียบร้อยแล้ว`,
-          tone: 'success',
-          icon: 'arrow.clockwise',
+      while (flushingQueueRef.current) {
+        flushingQueueRef.current = true;
+        const queueCount = await getOfflineQueueCount(user.id);
+        if (activeUserIdRef.current !== user.id) return;
+        if (queueCount === 0) {
+          if (flushingQueueRef.current === 'again') continue;
+          setPendingSyncCount(0);
+          setLastSyncError(null);
+          return;
+        }
+        if (!syncingStarted) {
+          syncingStarted = true;
+          setIsSyncing(true);
+        }
+        setLastSyncError(null);
+        const updateMessageStatus = (operation, sendStatus) => {
+          if (activeUserIdRef.current !== user.id || operation.type !== 'sendMessage') return;
+          const { conversationId, options } = operation.payload || {};
+          setConversations((current) => current.map((room) => room.id !== conversationId ? room : {
+            ...room, messages: (room.messages || []).map((message) => message.id === options?.clientMessageId
+              ? { ...message, pendingSync: sendStatus !== 'sent', sendStatus } : message),
+          }));
+        };
+        let syncedOnlyMessages = true;
+        const result = await flushOfflineQueue(user.id, async (operation) => {
+          if (activeUserIdRef.current !== user.id) throw Object.assign(new Error('Account changed'), { code: 'cancelled' });
+          await executeQueuedOperation(operation);
+          updateMessageStatus(operation, 'sent');
+          if (operation.type !== 'sendMessage' && operation.type !== 'sendGroupMessage') syncedOnlyMessages = false;
         });
+        if (activeUserIdRef.current !== user.id) return;
+        result.failed.forEach(({ operation }) => updateMessageStatus(operation, 'failed'));
+        setPendingSyncCount(result.pendingCount);
+        if (result.syncedCount > 0) setLastSyncedAt(Date.now());
+        // Sent messages already show their own status and the live listeners
+        // receive the committed docs. Rebuilding every subscription (deck,
+        // inbox, decisions, profile) and toasting after each group message made
+        // party chats stutter, so only other queued work does that.
+        if (result.syncedCount > 0 && !syncedOnlyMessages) {
+          setRetryKey((current) => current + 1);
+          showInAppNotification({
+            title: 'ซิงค์ข้อมูลสำเร็จ',
+            message: `ส่งข้อมูลที่ค้างไว้ ${result.syncedCount} รายการเรียบร้อยแล้ว`,
+            tone: 'success',
+            icon: 'arrow.clockwise',
+          });
+        }
+        if (result.retryableError) {
+          setLastSyncError(result.retryableError);
+          break;
+        }
+        if (result.failed.length) setLastSyncError(result.failed[0].error);
+        if (flushingQueueRef.current !== 'again') break;
       }
-      if (result.retryableError) setLastSyncError(result.retryableError);
-      else if (result.failed.length) setLastSyncError(result.failed[0].error);
     } catch (error) {
       if (activeUserIdRef.current !== user.id) return;
       setLastSyncError(error);
       await refreshQueueCount();
     } finally {
       flushingQueueRef.current = false;
-      if (activeUserIdRef.current === user.id) setIsSyncing(false);
+      if (syncingStarted && activeUserIdRef.current === user.id) setIsSyncing(false);
     }
   }, [isOnline, refreshQueueCount, user?.id]);
 

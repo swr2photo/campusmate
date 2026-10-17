@@ -303,7 +303,7 @@ export default function GroupChatRoomScreen() {
             </Text>
             {mine && item.sendStatus === 'failed' ? <Pressable accessibilityRole="button" onPress={() => {
               if (!canSend) { setError('กรุณารอเตรียมกุญแจกลุ่มก่อนส่งใหม่'); return; }
-              void retryGroupMessage(partyId, userId, chat.currentEpoch, item, currentKey).catch((reason) => setError(reason.message));
+              void retryGroupMessage(partyId, userId, chat.currentEpoch, item, currentKey).then(() => syncNow?.()).catch((reason) => setError(reason.message));
             }}><Text style={{ color: colors.primary }}>ลองส่งใหม่</Text></Pressable> : null}
           </View>;
         }}

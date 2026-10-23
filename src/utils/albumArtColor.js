@@ -1,6 +1,8 @@
 import jpeg from 'jpeg-js';
 
 const colorCache = new Map();
+// Gamma-space luma ceiling; keeps white mini-player text at or above ~4.5:1.
+const MAX_CARD_LUMA = 100;
 
 function toThumbUri(uri) {
   if (typeof uri !== 'string' || !uri) return '';
@@ -34,6 +36,12 @@ function toneForCard(r, g, b) {
     nr = clamp(nr + lift * 70, 0, 255);
     ng = clamp(ng + lift * 70, 0, 255);
     nb = clamp(nb + lift * 70, 0, 255);
+  } else if (luma > MAX_CARD_LUMA) {
+    // Bright covers (white/yellow/pastel) would leave white text below 4.5:1.
+    const scale = MAX_CARD_LUMA / luma;
+    nr *= scale;
+    ng *= scale;
+    nb *= scale;
   }
   return rgbToCss(nr, ng, nb);
 }

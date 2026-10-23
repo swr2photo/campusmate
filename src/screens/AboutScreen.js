@@ -1,15 +1,20 @@
+import { Pressable } from '../components/NativePressable';
+import NativeCard from '../components/NativeCard';
 import Text from '../components/AppText';
 import React from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Linking, ScrollView, StyleSheet, View } from 'react-native';
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
+import { getCurrentAppVersion, getCurrentAppBuild } from '../services/versionCheckService';
 import FeatureIcon from '../components/FeatureIcon';
 import { LEGAL_CONTACT, LEGAL_LAST_UPDATED } from '../content/legalDocuments';
 import { radius, spacing, type, useTheme } from '../theme';
 
 export default function AboutScreen() {
   const { colors } = useTheme();
-  const version = `v${Constants.expoConfig?.version || '1.0.0'}`;
+  const build = getCurrentAppBuild();
+  const rawVersion = getCurrentAppVersion() || Constants.expoConfig?.version || '3.1.7';
+  const version = `v${rawVersion}${build ? ` (${build})` : ''}`;
   return (
     <ScrollView
       contentContainerStyle={styles.content}
@@ -27,14 +32,14 @@ export default function AboutScreen() {
         พ.ร.บ. คุ้มครองข้อมูลส่วนบุคคล พ.ศ. 2562 และคุณสามารถอ่าน ใช้สิทธิ์ หรือถอนความยินยอมได้จากเอกสารด้านล่าง
       </Text>
 
-      <View style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
+      <NativeCard style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
         <AboutRow icon="lock.shield.fill" label="นโยบายความเป็นส่วนตัว (PDPA)" onPress={() => router.push('/privacy-policy')} colors={colors} />
         <AboutRow icon="hand.raised.fill" label="เงื่อนไขการให้บริการ" onPress={() => router.push('/terms')} colors={colors} />
         <AboutRow icon="checkmark.seal.fill" label="นโยบายชุมชนและความปลอดภัย" onPress={() => router.push('/community-guidelines')} colors={colors} />
         <AboutRow icon="doc.text.fill" label="ข้อกำหนดทางกฎหมาย" onPress={() => router.push('/legal-notice')} colors={colors} last />
-      </View>
+      </NativeCard>
 
-      <View style={[styles.contactCard, { backgroundColor: colors.card, borderColor: colors.line }]}>
+      <NativeCard style={[styles.contactCard, { backgroundColor: colors.card, borderColor: colors.line }]}>
         <Text style={[styles.contactTitle, { color: colors.ink }]}>ติดต่อเรื่องข้อมูลส่วนบุคคล</Text>
         <Text style={[styles.contactCopy, { color: colors.inkMuted }]}>
           ปรับปรุงเอกสารล่าสุด {LEGAL_LAST_UPDATED}
@@ -42,7 +47,7 @@ export default function AboutScreen() {
         <Pressable accessibilityRole="link" onPress={() => Linking.openURL(`mailto:${LEGAL_CONTACT.dpoEmail}`)}>
           <Text style={[styles.contactLink, { color: colors.primary }]}>{LEGAL_CONTACT.dpoEmail}</Text>
         </Pressable>
-      </View>
+      </NativeCard>
     </ScrollView>
   );
 }

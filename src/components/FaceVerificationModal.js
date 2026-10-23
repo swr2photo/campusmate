@@ -1,6 +1,7 @@
+import { Pressable, TouchableOpacity } from './NativePressable';
 import Text from './AppText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Dimensions, Modal, Platform, Pressable, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, AppState, Dimensions, Modal, Platform, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
@@ -10,6 +11,7 @@ import FaceVerificationDetails from './FaceVerificationDetails';
 import LivenessVerificationSheet from './LivenessVerificationSheet';
 import { startFaceVerificationSession, submitFaceVerification } from '../services/faceVerificationService';
 import { isLivenessEnabled } from '../services/photoVerificationService';
+import { RUST_BACKEND } from '../services/rust/backend';
 import { useTheme } from '../theme';
 
 function ovalSize(windowWidth) {
@@ -29,7 +31,8 @@ const USE_SYSTEM_CAMERA = Platform.OS === 'android' && Number(Platform.Version) 
 const LIVENESS = isLivenessEnabled();
 
 export default function FaceVerificationModal(props) {
-  return LIVENESS ? <LivenessVerificationSheet {...props} /> : <SelfieVerificationModal {...props} />;
+  return (LIVENESS || RUST_BACKEND || process.env.EXPO_PUBLIC_FACE_LIVENESS === 'true')
+    ? <LivenessVerificationSheet {...props} /> : <SelfieVerificationModal {...props} />;
 }
 
 function SelfieVerificationModal({
@@ -37,6 +40,7 @@ function SelfieVerificationModal({
   onClose,
   onSuccess,
   avatarUri,
+  candidateAvatarUri = null,
 }) {
   const { colors, isDark } = useTheme();
   const [permission, requestPermission] = useCameraPermissions();
@@ -61,7 +65,8 @@ function SelfieVerificationModal({
   const warmSession = () => {
     if (sessionRef.current.id || sessionRef.current.pending) return;
     const ticket = sessionTicket.current;
-    sessionRef.current.pending = startFaceVerificationSession()
+    // `candidateAvatarUri` may still be a pending upload.
+    sessionRef.current.pending = Promise.resolve(candidateAvatarUri).then(startFaceVerificationSession)
       .then((id) => {
         if (sessionTicket.current !== ticket) return null;
         sessionRef.current.id = id;
@@ -86,7 +91,7 @@ function SelfieVerificationModal({
       sessionRef.current.id = null;
       if (id) return id;
     }
-    return startFaceVerificationSession();
+    return startFaceVerificationSession(await candidateAvatarUri);
   };
 
   useEffect(() => {
@@ -106,7 +111,7 @@ function SelfieVerificationModal({
     }
     const listener = AppState.addEventListener('change', (state) => setForeground(state === 'active'));
     return () => { listener.remove(); generation.current += 1; };
-  }, [visible]);
+  }, [visible, candidateAvatarUri]);
 
   const [step, setStep] = useState('idle'); // 'idle' | 'capturing' | 'verifying' | 'success' | 'error'
   const [errorMessage, setErrorMessage] = useState('');
@@ -170,7 +175,7 @@ function SelfieVerificationModal({
 
       if (result.success) {
         setStep('success');
-        onSuccess?.(result);
+        await onSuccess?.(result);
       } else {
         warmSession();
         setErrorMessage(result.message || 'ใบหน้าไม่ตรงกับรูปโปรไฟล์หลัก');

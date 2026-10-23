@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React from 'react';
-import { StyleSheet, View, Pressable } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 
 /**
@@ -45,7 +47,7 @@ export default class AppErrorBoundary extends React.Component {
 
       return (
         <View style={styles.container}>
-          <View style={styles.card}>
+          <NativeCard style={styles.card}>
             <View style={{ marginBottom: 12 }}>
               <FeatureIcon name="exclamationmark.triangle" size={36} color="#DC2626" />
             </View>
@@ -60,7 +62,7 @@ export default class AppErrorBoundary extends React.Component {
             >
               <Text style={styles.buttonText}>ลองใหม่อีกครั้ง</Text>
             </Pressable>
-          </View>
+          </NativeCard>
         </View>
       );
     }

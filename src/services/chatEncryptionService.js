@@ -34,6 +34,14 @@ function isObject(value) {
 
 function bytesToBase64(bytes) {
   const input = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  if (typeof globalThis.btoa === 'function') {
+    const CHUNK_SIZE = 0x8000;
+    const chunks = [];
+    for (let index = 0; index < input.length; index += CHUNK_SIZE) {
+      chunks.push(String.fromCharCode.apply(null, input.subarray(index, index + CHUNK_SIZE)));
+    }
+    return globalThis.btoa(chunks.join(''));
+  }
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   let output = '';
   const chunks = [];
@@ -62,6 +70,14 @@ function base64Value(code) {
 
 function base64ToBytes(value) {
   if (typeof value !== 'string') throw new Error('Invalid base64 value');
+  if (typeof globalThis.atob === 'function') {
+    const raw = globalThis.atob(value.replace(/\s/g, ''));
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+      bytes[i] = raw.charCodeAt(i);
+    }
+    return bytes;
+  }
   const normalized = value.replace(/\s/g, '').replace(/=+$/, '');
   if (!normalized || normalized.length % 4 === 1) throw new Error('Invalid base64 length');
   const bytes = new Uint8Array(Math.floor(normalized.length * 3 / 4));

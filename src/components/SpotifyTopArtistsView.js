@@ -1,3 +1,4 @@
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
@@ -31,7 +32,7 @@ export default function SpotifyTopArtistsView({
         contentContainerStyle={styles.scrollList}
       >
         {artists.map((artist, idx) => (
-          <View
+          <NativeCard
             key={artist.id || `artist-${idx}`}
             style={[
               styles.artistCard,
@@ -61,7 +62,7 @@ export default function SpotifyTopArtistsView({
                 {artist.genres[0]}
               </Text>
             ) : null}
-          </View>
+          </NativeCard>
         ))}
       </ScrollView>
     </View>

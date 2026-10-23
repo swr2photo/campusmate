@@ -1,9 +1,12 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
-import React, { useState } from 'react';
-import { Modal, View, Pressable, ScrollView, ActivityIndicator, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import React, { useRef, useState } from 'react';
+import { Modal, View, ScrollView, ActivityIndicator, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import { showAlert } from '../utils/appAlert';
+import { GlassBackground, GlassIconButton, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 const REPORT_REASONS = [
   { id: 'nudity', label: 'ภาพลามกอนาจาร / โป๊เปลือย', icon: 'exclamationmark.triangle' },
@@ -24,6 +27,9 @@ export default function ReportModal({
   const [selectedReason, setSelectedReason] = useState(REPORT_REASONS[0].id);
   const [details, setDetails] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const submitLock = useRef(false);
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
 
   const palette = {
     card: colors.card || '#1A1E26',
@@ -36,25 +42,29 @@ export default function ReportModal({
   };
 
   const handleClose = () => {
-    if (submitting) return;
+    if (submitting || submitLock.current) return;
     setDetails('');
     setSelectedReason(REPORT_REASONS[0].id);
     onClose?.();
   };
 
   const handleSubmit = async () => {
+    if (submitLock.current) return;
     if (!selectedReason) {
       showAlert('กรุณาเลือกเหตุผล', 'โปรดระบุเหตุผลในการรายงาน', { tone: 'warning' });
       return;
     }
 
+    submitLock.current = true;
     setSubmitting(true);
     try {
       await onSubmit?.({
         reason: selectedReason,
         details: details.trim(),
       });
-      handleClose();
+      setDetails('');
+      setSelectedReason(REPORT_REASONS[0].id);
+      onClose?.();
       showAlert(
         'รายงานเรียบร้อยแล้ว',
         'ขอบคุณสำหรับการรายงาน เราจะตรวจสอบเนื้อหาและดำเนินการตามมาตรฐานความปลอดภัยโดยเร็วที่สุด',
@@ -63,6 +73,7 @@ export default function ReportModal({
     } catch (err) {
       showAlert('ส่งรายงานไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     } finally {
+      submitLock.current = false;
       setSubmitting(false);
     }
   };
@@ -80,7 +91,10 @@ export default function ReportModal({
       >
         <Pressable onPress={handleClose} style={StyleSheet.absoluteFill} />
         
-        <View style={[styles.card, { backgroundColor: palette.card, borderColor: palette.line }]}>
+        <NativeCard style={[styles.card, glass
+          ? { backgroundColor: 'transparent', borderColor: 'transparent' }
+          : { backgroundColor: palette.card, borderColor: palette.line }]}>
+          <GlassBackground style={{ borderRadius: 24 }} tintColor={glassTint} />
           {/* Header */}
           <View style={styles.header}>
             <View style={[styles.iconCircle, { backgroundColor: 'rgba(255, 75, 75, 0.15)' }]}>
@@ -94,9 +108,16 @@ export default function ReportModal({
                 รายงานจะถูกส่งให้ผู้ดูแลระบบตรวจสอบโดยรักษาข้อมูลเป็นความลับ
               </Text>
             </View>
-            <Pressable hitSlop={10} onPress={handleClose} style={styles.closeBtn}>
-              <FeatureIcon color={palette.inkMuted} name="xmark" size={16} />
-            </Pressable>
+            <GlassIconButton
+              accessibilityLabel="ปิด"
+              fallbackBackgroundColor="transparent"
+              hitSlop={10}
+              icon="xmark"
+              iconColor={palette.inkMuted}
+              iconSize={16}
+              onPress={handleClose}
+              size={44}
+            />
           </View>
 
           <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={styles.scroll}>
@@ -108,6 +129,10 @@ export default function ReportModal({
                 return (
                   <Pressable
                     key={item.id}
+                    accessibilityRole="radio"
+                    accessibilityLabel={item.label}
+                    accessibilityState={{ checked: isSelected, disabled: submitting }}
+                    disabled={submitting}
                     onPress={() => setSelectedReason(item.id)}
                     style={({ pressed }) => [
                       styles.reasonItem,
@@ -130,6 +155,8 @@ export default function ReportModal({
             {/* Additional Details */}
             <Text style={[styles.sectionLabel, { color: palette.ink, marginTop: 14 }]}>รายละเอียดเพิ่มเติม (ถ้ามี)</Text>
             <TextInput
+              accessibilityLabel="รายละเอียดเพิ่มเติมในการรายงาน"
+              editable={!submitting}
               maxLength={500}
               multiline
               numberOfLines={3}
@@ -145,13 +172,15 @@ export default function ReportModal({
 
             {/* Safety policy note */}
             <Text style={[styles.policyNotice, { color: palette.inkMuted }]}>
-              🛡️ เนื้อหาที่รายงานจะถูกซ่อนจากหน้าจอของคุณทันที และทีมงานจะตรวจสอบเพื่อดำเนินการระงับหรือแบนบัญชีตามนโยบายความปลอดภัย
+              ทีมงานจะตรวจสอบรายงานตามนโยบายความปลอดภัย หากไม่ต้องการพบหรือสนทนากับผู้ใช้นี้ คุณสามารถบล็อกผู้ใช้ได้
             </Text>
           </ScrollView>
 
           {/* Actions */}
           <View style={styles.footer}>
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="ยกเลิกการรายงาน"
               disabled={submitting}
               onPress={handleClose}
               style={({ pressed }) => [styles.cancelBtn, { borderColor: palette.line }, pressed && { opacity: 0.75 }]}
@@ -159,9 +188,12 @@ export default function ReportModal({
               <Text style={[styles.cancelBtnText, { color: palette.inkMuted }]}>ยกเลิก</Text>
             </Pressable>
             <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={submitting ? 'กำลังส่งรายงาน' : 'ส่งรายงาน'}
+              accessibilityState={{ busy: submitting, disabled: submitting }}
               disabled={submitting}
               onPress={handleSubmit}
-              style={({ pressed }) => [styles.submitBtn, { backgroundColor: palette.danger }, pressed && { opacity: 0.8 }]}
+              style={({ pressed }) => [styles.submitBtn, { backgroundColor: palette.primary }, pressed && { opacity: 0.8 }]}
             >
               {submitting ? (
                 <ActivityIndicator color="#FFFFFF" size="small" />
@@ -170,7 +202,7 @@ export default function ReportModal({
               )}
             </Pressable>
           </View>
-        </View>
+        </NativeCard>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -194,12 +226,6 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     width: '100%',
     zIndex: 10,
-  },
-  closeBtn: {
-    alignItems: 'center',
-    height: 32,
-    justifyContent: 'center',
-    width: 32,
   },
   footer: {
     flexDirection: 'row',
@@ -240,6 +266,7 @@ const styles = StyleSheet.create({
     width: 9,
   },
   reasonItem: {
+    minHeight: 48,
     alignItems: 'center',
     borderRadius: 14,
     borderWidth: 1,
@@ -255,6 +282,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   reasonText: {
+    flex: 1,
     fontSize: 14,
   },
   scroll: {
@@ -268,7 +296,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderRadius: 14,
     flex: 1,
-    height: 44,
+    minHeight: 48,
+    paddingVertical: 12,
     justifyContent: 'center',
   },
   submitBtnText: {
@@ -281,7 +310,8 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     flex: 1,
-    height: 44,
+    minHeight: 48,
+    paddingVertical: 12,
     justifyContent: 'center',
   },
   cancelBtnText: {

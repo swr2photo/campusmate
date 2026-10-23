@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React from 'react';
-import { Image, Pressable, StyleSheet, View } from 'react-native';
+import { Image, StyleSheet, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import ExpoImage from './CachedImage';
 import { getImageRequestUri } from '../utils/useRemoteImage';
@@ -52,9 +54,9 @@ export function IconButton({ icon, onPress, tintColor, accessibilityLabel, style
 export function IosLikeCard({ children, style, accent, onPress }) {
   const { colors } = useTheme();
   const content = (
-    <View style={[styles.card, { backgroundColor: colors.card }, accent && { borderTopColor: accent, borderTopWidth: 2 }, style]}>
+    <NativeCard style={[styles.card, { backgroundColor: colors.card }, accent && { borderTopColor: accent, borderTopWidth: 2 }, style]}>
       {children}
-    </View>
+    </NativeCard>
   );
   if (!onPress) return content;
   return <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [pressed && styles.pressed]}>{content}</Pressable>;
@@ -86,7 +88,7 @@ export function IosLikePill({ children, active = false, color, onPress, style, i
   return onPress ? <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [pressed && styles.pressed]}>{content}</Pressable> : content;
 }
 
-export function IosLikeAvatar({ uri, emoji, color, size = 56, online = false, cacheScope, cacheVersion }) {
+export function IosLikeAvatar({ uri, emoji, color, icon, size = 56, online = false, cacheScope, cacheVersion }) {
   const { colors } = useTheme();
   const displayUri = getImageRequestUri(uri, cacheVersion);
   const backgroundColor = color || colors.primarySoft;
@@ -105,7 +107,7 @@ export function IosLikeAvatar({ uri, emoji, color, size = 56, online = false, ca
       ) : emoji ? (
         <Text style={{ fontSize: size * 0.48 }}>{emoji}</Text>
       ) : (
-        <FeatureIcon color={colors.inkSoft} name="person.fill" size={size * 0.46} />
+        <FeatureIcon color={icon ? colors.primary : colors.inkSoft} name={icon || "person.fill"} size={size * 0.46} />
       )}
       {online ? <View style={[styles.onlineDot, { backgroundColor: colors.green, borderColor: colors.card }]} /> : null}
     </View>

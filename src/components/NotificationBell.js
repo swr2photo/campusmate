@@ -1,5 +1,6 @@
+import { Pressable } from './NativePressable';
 import React from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import AppText from './AppText';

@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Linking, ScrollView, StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import { LEGAL_CONTACT, LEGAL_LAST_UPDATED } from '../content/legalDocuments';
 import { radius, spacing, type, useTheme } from '../theme';
@@ -38,7 +40,7 @@ export default function LegalDocumentView({
         </View>
       ))}
 
-      <View style={[styles.contactCard, { backgroundColor: colors.card, borderColor: colors.line }]}>
+      <NativeCard style={[styles.contactCard, { backgroundColor: colors.card, borderColor: colors.line }]}>
         <Text style={[styles.contactTitle, { color: colors.ink }]}>ช่องทางติดต่อ</Text>
         <Text style={[styles.contactCopy, { color: colors.inkMuted }]}>
           เรื่องข้อมูลส่วนบุคคล การสนับสนุน และการใช้สิทธิ์ตาม PDPA
@@ -49,7 +51,7 @@ export default function LegalDocumentView({
         >
           <Text style={[styles.contactLink, { color: colors.primary }]}>{LEGAL_CONTACT.dpoEmail}</Text>
         </Pressable>
-      </View>
+      </NativeCard>
     </ScrollView>
   );
 }

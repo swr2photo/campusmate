@@ -1,6 +1,7 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Image, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { AppState, Image, Modal, Platform, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import FeatureIcon from './FeatureIcon';

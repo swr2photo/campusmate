@@ -1,7 +1,8 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Modal, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, Modal, StyleSheet, View } from 'react-native';
 import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { scheduleOnRN } from 'react-native-worklets';
@@ -13,6 +14,8 @@ import { VIDEO_MODES } from '../utils/chatVideoPolicy';
 import { scheduleIdleTask } from '../utils/scheduleIdleTask';
 import { initialVideoRange, moveVideoHandle, videoTime } from '../utils/videoEdit';
 import { showAlert } from '../utils/appAlert';
+import { GlassBackground, useLiquidGlass } from './LiquidGlassSurface';
+import useAutoplayPreference, { useAutoplayMuted } from '../hooks/useAutoplayPreference';
 
 function moveHandleWorklet(startMs, endMs, handle, value, duration) {
   'worklet';
@@ -84,7 +87,12 @@ function Handle({ side, startMsSV, endMsSV, durationSV, widthSV, onCommit, disab
 }
 
 export default function ChatVideoComposer({ asset, recipientName, recipientAvatar, onSend, onClose }) {
+  const glass = useLiquidGlass();
   const insets = useSafeAreaInsets();
+  const autoplayAllowed = useAutoplayPreference();
+  const autoplayMuted = useAutoplayMuted();
+  const autoplayStarted = useRef(false);
+  const playbackTouched = useRef(false);
   const [range, setRange] = useState(() => initialVideoRange(asset.duration));
   const [duration, setDuration] = useState(asset.duration);
   const [muted, setMuted] = useState(false);
@@ -107,6 +115,12 @@ export default function ChatVideoComposer({ asset, recipientName, recipientAvata
   const durationSV = useSharedValue(duration);
   const widthSV = useSharedValue(width);
   const player = useVideoPlayer(asset.uri, p => { p.timeUpdateEventInterval = 0.1; p.staysActiveInBackground = false; });
+  useEffect(() => {
+    if (!ready || playbackTouched.current) return;
+    player.muted = autoplayMuted;
+    if (autoplayAllowed && !autoplayStarted.current) { autoplayStarted.current = true; player.play(); }
+    else if (!autoplayAllowed) { player.pause(); autoplayStarted.current = false; }
+  }, [autoplayAllowed, autoplayMuted, player, ready]);
   useEffect(() => {
     startMsSV.set(range.startMs);
     endMsSV.set(range.endMs);
@@ -155,6 +169,7 @@ export default function ChatVideoComposer({ asset, recipientName, recipientAvata
     return () => { active = false; thumbnailTask?.cancel?.(); subs.forEach(sub => sub.remove()); background.remove(); };
   }, [player]);
   const select = useCallback((next) => {
+    playbackTouched.current = true;
     setRange(next);
     player.pause();
     player.currentTime = next.startMs / 1000;
@@ -201,19 +216,20 @@ export default function ChatVideoComposer({ asset, recipientName, recipientAvata
       showAlert('ส่งวิดีโอไม่สำเร็จ', error.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     });
   };
-  const icon = (name, label, action, disabled = sending, color = '#fff') => <Pressable style={styles.button} accessibilityLabel={label} disabled={disabled} onPress={action}><Ionicons name={name} size={25} color={color} /></Pressable>;
+  const icon = (name, label, action, disabled = sending, color = '#fff') => <Pressable style={[styles.button, glass && styles.glassClear]} accessibilityLabel={label} disabled={disabled} onPress={action}><GlassBackground colorScheme="dark" style={{ borderRadius: 23 }} /><Ionicons name={name} size={25} color={color} /></Pressable>;
   return <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={() => { if (!busy.current) onClose(); }}>
     <GestureHandlerRootView style={styles.screen}>
     <View style={[styles.screen, { paddingTop: insets.top, paddingBottom: Math.max(12, insets.bottom) }]}>
       <View style={styles.header}>{icon('close', 'ปิดวิดีโอ', onClose)}<Text style={styles.recipient} numberOfLines={1}>ส่งถึง {recipientName || 'เพื่อน'}</Text>
-        <Pressable style={styles.button} disabled={sending} accessibilityLabel="เพิ่มคำบรรยาย" onPress={() => setShowCaption(!showCaption)}><Text style={styles.aa}>Aa</Text></Pressable></View>
+        <Pressable style={[styles.button, glass && styles.glassClear]} disabled={sending} accessibilityLabel="เพิ่มคำบรรยาย" onPress={() => setShowCaption(!showCaption)}><GlassBackground colorScheme="dark" style={{ borderRadius: 23 }} /><Text style={styles.aa}>Aa</Text></Pressable></View>
       <View style={styles.preview}><VideoView player={player} style={StyleSheet.absoluteFill} nativeControls={false} contentFit="contain" allowsVideoFrameAnalysis={false} allowsPictureInPicture={false} fullscreenOptions={{ enable: false }} />{!ready && <ActivityIndicator color="#fff" />}</View>
       <View style={styles.controls}>
         {icon(playing ? 'pause' : 'play', playing ? 'หยุดชั่วคราว' : 'เล่นช่วงที่เลือก', () => {
-          if (playing) player.pause(); else { if (position < range.startMs || position >= range.endMs) player.currentTime = range.startMs / 1000; player.play(); }
+          playbackTouched.current = true;
+          if (playing) player.pause(); else { player.muted = muted; if (position < range.startMs || position >= range.endMs) player.currentTime = range.startMs / 1000; player.play(); }
         }, !ready || sending)}
         <Text style={styles.time}>{videoTime(position)} / {videoTime(duration)}</Text>
-        {icon(muted ? 'volume-mute' : 'volume-high', muted ? 'เปิดเสียงวิดีโอที่ส่ง' : 'ปิดเสียงวิดีโอที่ส่ง', () => { player.muted = !muted; setMuted(!muted); }, sending, muted ? '#fcd34d' : '#fff')}
+        {icon(muted ? 'volume-mute' : 'volume-high', muted ? 'เปิดเสียงวิดีโอที่ส่ง' : 'ปิดเสียงวิดีโอที่ส่ง', () => { playbackTouched.current = true; player.muted = !muted; setMuted(!muted); }, sending, muted ? '#fcd34d' : '#fff')}
       </View>
       <View style={styles.timelineArea}><Text style={styles.hint}>{duration > 60000 ? 'วิดีโอยาวเกิน 60 วินาที · ลากขอบเพื่อเลือกช่วง' : 'ลากขอบเพื่อตัด · แตะภาพเพื่อเลื่อนเวลา'}</Text>
         <View style={styles.timeline} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
@@ -242,6 +258,7 @@ export default function ChatVideoComposer({ asset, recipientName, recipientAvata
 }
 
 const styles = StyleSheet.create({
+  glassClear: { backgroundColor: 'transparent' },
   screen: { flex: 1, backgroundColor: '#080808' }, header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10, gap: 12 }, recipient: { flex: 1, color: '#ddd', textAlign: 'center', fontSize: 13 }, button: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#242424', justifyContent: 'center', alignItems: 'center' }, aa: { color: '#fff', fontSize: 24 },
   preview: { flex: 1, minHeight: 100, justifyContent: 'center' }, controls: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 8, gap: 12 }, time: { color: '#fff', flex: 1, fontVariant: ['tabular-nums'] },
   timelineArea: { paddingHorizontal: 28, paddingTop: 8 }, timeline: { height: 56, marginTop: 12, marginBottom: 10, backgroundColor: '#292929' }, frames: { flex: 1, flexDirection: 'row' }, shade: { position: 'absolute', top: 0, bottom: 0, backgroundColor: '#0009' }, shadeStart: { left: 0 }, shadeEnd: { right: 0 }, selection: { position: 'absolute', top: 0, bottom: 0, left: 0, borderTopWidth: 3, borderBottomWidth: 3, borderColor: '#fcd34d' }, cursor: { position: 'absolute', width: 2, top: 0, bottom: 0, backgroundColor: '#fff' }, handle: { position: 'absolute', top: -5, bottom: -5, left: 0, width: 28, alignItems: 'center', justifyContent: 'center' }, grip: { height: 56, width: 12, borderRadius: 4, backgroundColor: '#fcd34d' }, labels: { flexDirection: 'row', justifyContent: 'space-between' }, hint: { color: '#c5c5c5', fontSize: 11 },

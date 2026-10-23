@@ -1,5 +1,6 @@
+import { Pressable } from '../NativePressable';
 import React from 'react';
-import { Pressable, StyleSheet } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { MotiView } from 'moti';
 
 /**

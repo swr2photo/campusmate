@@ -3,6 +3,7 @@ import { fetch } from 'expo/fetch';
 import { getCurrentAuthUserId, getCurrentUserIdToken } from './authService';
 import { createFirebaseIdentityClient } from './firebaseIdentityProtocol.mjs';
 import { createPhotoVerification } from './photoVerificationProtocol.mjs';
+import { RUST_BACKEND, rustAccessToken, rustUid, rustOrigin } from './rust/backend';
 
 // The native module wraps AWS's official SwiftUI / Jetpack Compose liveness
 // components (see native-spikes/face-liveness). Until a build includes it,
@@ -24,9 +25,8 @@ const bridge = {
 export const FACE_CONSENT_VERSION = process.env.EXPO_PUBLIC_FACE_CONSENT_VERSION || 'face-consent-2026-10';
 
 /**
- * The liveness flow replaces the old selfie check only when the build sets
- * EXPO_PUBLIC_FACE_LIVENESS=true *and* includes the native module, so a
- * misconfigured build keeps the existing flow instead of a dead button.
+ * Capability check for entry points. A build that explicitly requests liveness
+ * must show an unavailable result when misconfigured, never switch to a selfie.
  */
 export function isLivenessEnabled() {
   if (process.env.EXPO_PUBLIC_FACE_LIVENESS !== 'true' || !bridge.isAvailable()) return false;
@@ -39,12 +39,21 @@ export function isLivenessEnabled() {
 let flow;
 export function getPhotoVerification() {
   if (!flow) {
-    const client = createFirebaseIdentityClient({
-      origin: process.env.EXPO_PUBLIC_IDENTITY_BACKEND_URL,
-      fetch,
-      getIdToken: () => getCurrentUserIdToken(),
-      getUserId: getCurrentAuthUserId,
-    });
+    let client;
+    try {
+      client = createFirebaseIdentityClient({
+        origin: RUST_BACKEND ? rustOrigin() : process.env.EXPO_PUBLIC_IDENTITY_BACKEND_URL,
+        fetch,
+        getIdToken: RUST_BACKEND ? async () => (await rustAccessToken()).token : () => getCurrentUserIdToken(),
+        getUserId: RUST_BACKEND ? rustUid : getCurrentAuthUserId,
+      });
+    } catch {
+      // Keep configuration errors in the flow's safe result handling rather
+      // than throwing while React mounts the verification sheet.
+      client = { request: async () => {
+        throw Object.assign(new Error('Identity unavailable'), { code: 'IDENTITY_UNAVAILABLE' });
+      } };
+    }
     flow = createPhotoVerification({ client, bridge, consentVersion: FACE_CONSENT_VERSION });
   }
   return flow;

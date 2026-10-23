@@ -1,7 +1,8 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Dimensions, FlatList, Keyboard, Platform, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Dimensions, FlatList, Keyboard, Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, {
   Easing,
   Extrapolation,
@@ -24,6 +25,7 @@ import {
 } from '../services/giphyService';
 import { EMOJI_CATEGORIES } from '../data/iosEmojiCategories';
 import { project, rubberband } from '../utils/motion';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 const EASE_OUT = Easing.bezier(0.23, 1, 0.32, 1);
 
@@ -170,6 +172,8 @@ export default function ChatGiphyPickerSheet({
 
   // Palette tokens
   const bg = isDark ? '#121620' : '#FFFFFF';
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const cardBg = isDark ? '#1E2433' : '#F1F5F9';
   const textPrimary = isDark ? '#F8FAFC' : '#0F172A';
   const textSecondary = isDark ? '#94A3B8' : '#64748B';
@@ -380,12 +384,13 @@ export default function ChatGiphyPickerSheet({
           {
             height: expandedHeight,
             paddingBottom: insets.bottom,
-            backgroundColor: bg,
-            borderTopColor: borderColor,
+            backgroundColor: glass ? 'transparent' : bg,
+            borderTopColor: glass ? 'transparent' : borderColor,
           },
           sheetStyle,
         ]}
       >
+        <GlassBackground style={styles.sheetGlass} tintColor={glassTint} />
         {/* Drag handle / Header */}
         <GestureDetector gesture={panGesture}>
           <View style={styles.header}>
@@ -524,7 +529,7 @@ export default function ChatGiphyPickerSheet({
               ) : null
             }
             renderItem={({ item }) => (
-              <Pressable
+              <Pressable nativeCardSurface
                 accessibilityLabel={`ส่งสติกเกอร์ ${item.title}`}
                 onPress={() => onSelectGif?.(item)}
                 style={({ pressed }) => [styles.stickerCard, pressed && styles.pressedCard]}
@@ -568,7 +573,7 @@ export default function ChatGiphyPickerSheet({
                   );
                   return (
                     <View key={gif.id} style={styles.column}>
-                      <Pressable
+                      <Pressable nativeCardSurface
                         accessibilityLabel={`ส่งภาพ ${gif.title}`}
                         onPress={() => onSelectGif?.(gif)}
                         style={({ pressed }) => [
@@ -698,6 +703,10 @@ const styles = StyleSheet.create({
     width: '100%',
     flexShrink: 0,
     zIndex: 9999,
+  },
+  sheetGlass: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
   },
   sheetContainer: {
     position: 'absolute',

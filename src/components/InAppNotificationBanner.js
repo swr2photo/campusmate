@@ -1,6 +1,7 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, Image, Modal, PanResponder, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { Animated, Image, Modal, PanResponder, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme';
 import FeatureIcon from './FeatureIcon';
@@ -10,7 +11,7 @@ let bannerQueue = [];
 let nextBannerId = 1;
 
 /**
- * Imperative trigger for Instagram-style top dropdown notification banner.
+ * Imperative trigger for a banner that slides up from the bottom of the screen.
  * Supports rich options or status shorthand:
  *   showInAppNotification({ title, message, tone: 'success', ... })
  *   showInAppNotification('บันทึกสำเร็จ', 'success')
@@ -22,7 +23,13 @@ export function showInAppNotification(options = {}, fallbackTone = 'info') {
     opts = { message: options, tone: fallbackTone };
   } else if (!options || typeof options !== 'object') {
     opts = { message: String(options ?? ''), tone: fallbackTone };
+  } else {
+    opts = { ...options };
   }
+
+  const stripStatusSuffix = (str) => typeof str === 'string' ? str.replace(/\s*\[\d{3}\]/g, '').trim() : str;
+  if (opts.message) opts.message = stripStatusSuffix(opts.message);
+  if (opts.title) opts.title = stripStatusSuffix(opts.title);
 
   // Automatic tone inference if tone was not explicitly specified or is generic
   let tone = opts.tone;
@@ -117,7 +124,7 @@ export default function InAppNotificationHost() {
   const { colors, isDark } = useTheme();
   const [current, setCurrent] = useState(null);
 
-  const translateY = useRef(new Animated.Value(-160)).current;
+  const translateY = useRef(new Animated.Value(180)).current;
   const scale = useRef(new Animated.Value(0.92)).current;
   const dismissTimer = useRef(null);
   const isDismissing = useRef(false);
@@ -133,7 +140,7 @@ export default function InAppNotificationHost() {
 
       Animated.parallel([
         Animated.timing(translateY, {
-          toValue: -160,
+          toValue: 180,
           duration: 220,
           useNativeDriver: true,
         }),
@@ -165,7 +172,7 @@ export default function InAppNotificationHost() {
       isDismissing.current = false;
       setCurrent(bannerItem);
 
-      translateY.setValue(-160);
+      translateY.setValue(180);
       scale.setValue(0.92);
 
       Animated.parallel([
@@ -212,12 +219,12 @@ export default function InAppNotificationHost() {
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dy) > 4,
       onPanResponderMove: (_, gesture) => {
-        if (gesture.dy < 0) {
+        if (gesture.dy > 0) {
           translateY.setValue(gesture.dy);
         }
       },
       onPanResponderRelease: (_, gesture) => {
-        if (gesture.dy < -18 || gesture.vy < -0.4) {
+        if (gesture.dy > 18 || gesture.vy > 0.4) {
           dismiss();
         } else if (Math.abs(gesture.dy) < 6 && Math.abs(gesture.dx) < 6) {
           const banner = current;
@@ -237,59 +244,8 @@ export default function InAppNotificationHost() {
 
   if (!current) return null;
 
-  const topInset = Math.max(insets.top, Platform.OS === 'android' ? 14 : 20);
-
-  const getBadgeStyle = (item) => {
-    if (item.tone === 'success') {
-      return {
-        bg: isDark ? 'rgba(24, 168, 120, 0.22)' : 'rgba(24, 168, 120, 0.14)',
-        borderColor: isDark ? 'rgba(24, 168, 120, 0.45)' : 'rgba(24, 168, 120, 0.3)',
-        iconColor: colors.green || '#18A878',
-      };
-    }
-    if (item.tone === 'danger' || item.tone === 'error') {
-      return {
-        bg: isDark ? 'rgba(214, 84, 84, 0.24)' : 'rgba(214, 84, 84, 0.14)',
-        borderColor: isDark ? 'rgba(214, 84, 84, 0.45)' : 'rgba(214, 84, 84, 0.3)',
-        iconColor: colors.danger || '#D65454',
-      };
-    }
-    if (item.tone === 'warning') {
-      return {
-        bg: isDark ? 'rgba(216, 144, 27, 0.24)' : 'rgba(216, 144, 27, 0.15)',
-        borderColor: isDark ? 'rgba(216, 144, 27, 0.45)' : 'rgba(216, 144, 27, 0.3)',
-        iconColor: colors.amber || '#D8901B',
-      };
-    }
-    if (item.tone === 'info') {
-      return {
-        bg: isDark ? 'rgba(40, 105, 199, 0.24)' : 'rgba(40, 105, 199, 0.14)',
-        borderColor: isDark ? 'rgba(40, 105, 199, 0.45)' : 'rgba(40, 105, 199, 0.3)',
-        iconColor: colors.blue || '#2869C7',
-      };
-    }
-    if (item.type === 'like' || item.type === 'match') {
-      return {
-        bg: isDark ? 'rgba(244, 124, 107, 0.25)' : 'rgba(244, 124, 107, 0.15)',
-        borderColor: isDark ? 'rgba(244, 124, 107, 0.45)' : 'rgba(244, 124, 107, 0.3)',
-        iconColor: colors.coral || '#F47C6B',
-      };
-    }
-    if (item.type === 'admin_announcement') {
-      return {
-        bg: isDark ? 'rgba(40, 105, 199, 0.24)' : 'rgba(40, 105, 199, 0.14)',
-        borderColor: isDark ? 'rgba(40, 105, 199, 0.45)' : 'rgba(40, 105, 199, 0.3)',
-        iconColor: colors.primary || '#2869C7',
-      };
-    }
-    return {
-      bg: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)',
-      borderColor: isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.08)',
-      iconColor: colors.primary || '#2869C7',
-    };
-  };
-
-  const badgeStyle = getBadgeStyle(current);
+  const bottomInset = Math.max(insets.bottom, 12);
+  const textColor = colors.ink || '#25272B';
 
   return (
     <Modal
@@ -306,7 +262,7 @@ export default function InAppNotificationHost() {
       >
         <View
           pointerEvents="box-none"
-          style={[styles.overlayContainer, { top: topInset + 6 }]}
+          style={[styles.overlayContainer, { bottom: bottomInset + 8 }]}
         >
           <Animated.View
             style={[
@@ -319,48 +275,29 @@ export default function InAppNotificationHost() {
           >
             <LiquidGlassView
               glassEffectStyle="regular"
+              borderWidth={0}
+              specular={false}
               style={styles.bannerGlass}
             >
-              {/* Specular highlight rim at top */}
-              <View
-                pointerEvents="none"
-                style={[
-                  styles.specularTopLine,
-                  {
-                    backgroundColor: isDark
-                      ? 'rgba(255, 255, 255, 0.25)'
-                      : 'rgba(255, 255, 255, 0.85)',
-                  },
-                ]}
-              />
-
               <View style={styles.contentRow}>
-                {/* Avatar / Glass Icon Badge */}
-                <View style={styles.avatarContainer}>
-                  {current.avatarUri ? (
+                {/* Avatar / Icon Badge without colored frame */}
+                {current.avatarUri ? (
+                  <View style={styles.avatarContainer}>
                     <Image
                       source={{ uri: current.avatarUri }}
                       style={styles.avatarImage}
                       resizeMode="cover"
                     />
-                  ) : (
-                    <View
-                      style={[
-                        styles.iconBadge,
-                        {
-                          backgroundColor: badgeStyle.bg,
-                          borderColor: badgeStyle.borderColor,
-                        },
-                      ]}
-                    >
-                      <FeatureIcon
-                        name={current.icon || 'bell.fill'}
-                        size={20}
-                        color={badgeStyle.iconColor}
-                      />
-                    </View>
-                  )}
-                </View>
+                  </View>
+                ) : (
+                  <View style={styles.iconContainer}>
+                    <FeatureIcon
+                      name={current.icon || 'bell.fill'}
+                      size={22}
+                      color={textColor}
+                    />
+                  </View>
+                )}
 
                 {/* Text Content */}
                 <View style={styles.textContainer}>
@@ -368,7 +305,7 @@ export default function InAppNotificationHost() {
                     <Text
                       style={[
                         styles.title,
-                        { color: colors.ink || '#25272B' },
+                        { color: textColor },
                         !current.message && styles.titleSingleLine,
                       ]}
                       numberOfLines={!current.message ? 2 : 1}
@@ -430,14 +367,6 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     paddingHorizontal: 15,
   },
-  specularTopLine: {
-    position: 'absolute',
-    top: 0,
-    left: 20,
-    right: 20,
-    height: 1,
-    borderRadius: 0.5,
-  },
   contentRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -447,18 +376,18 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   avatarImage: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: '#E2E8F0',
   },
-  iconBadge: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    borderWidth: 1,
+  iconContainer: {
+    width: 32,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: 10,
+    flexShrink: 0,
   },
   textContainer: {
     flex: 1,

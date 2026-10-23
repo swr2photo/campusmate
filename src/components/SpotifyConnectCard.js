@@ -1,3 +1,5 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 /**
  * SpotifyConnectCard.js
@@ -6,7 +8,7 @@ import Text from './AppText';
  * Shows connection status and Premium badge.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
 import FeatureIcon from './FeatureIcon';
@@ -18,13 +20,14 @@ import {
   fetchSpotifyTopArtists,
 } from '../services/spotifyAuthService';
 import SpotifyNowPlayingCard from './SpotifyNowPlayingCard';
+import { SoundWave } from './illustrations';
 import { useTheme } from '../theme';
 
 // Spotify brand green
 const SPOTIFY_GREEN = '#1DB954';
 const SPOTIFY_BLACK = '#191414';
 
-export default function SpotifyConnectCard({ onConnectionChange, onSyncMusic }) {
+export default function SpotifyConnectCard({ onConnectionChange, onSyncMusic, style }) {
   const { colors } = useTheme();
   const [status, setStatus] = useState({ connected: false });
   const [loading, setLoading] = useState(true);
@@ -70,8 +73,8 @@ export default function SpotifyConnectCard({ onConnectionChange, onSyncMusic }) 
       if (!result.isPremium) {
         setAlertConfig({
           visible: true,
-          title: 'Spotify Free Account',
-          message: 'บัญชีของคุณไม่ใช่ Spotify Premium\nจะสามารถใช้ฟีเจอร์บางอย่างได้ แต่การเล่นเพลงเต็มต้องใช้ Premium เท่านั้นครับ',
+          title: 'เชื่อมต่อแล้ว (บัญชีฟรี)',
+          message: 'เลือกเพลงโปรดและฟังตัวอย่างได้ตามปกติ ส่วนการเล่นเพลงเต็มเพลงต้องใช้ Spotify Premium',
           tone: 'error',
           icon: 'music.note',
           buttonLabel: 'เข้าใจแล้ว',
@@ -116,16 +119,16 @@ export default function SpotifyConnectCard({ onConnectionChange, onSyncMusic }) 
   const renderContent = () => {
     if (loading) {
       return (
-        <View style={[styles.card, { backgroundColor: colors.surface || '#FFF', borderColor: colors.line || '#E2E8F0' }]}>
+        <NativeCard style={[styles.card, { backgroundColor: colors.surface || '#FFF', borderColor: colors.line || '#E2E8F0' }, style]}>
           <ActivityIndicator color={SPOTIFY_GREEN} />
-          <Text style={[styles.loadingText, { color: colors.inkSoft }]}>กำลังตรวจสอบ Spotify...</Text>
-        </View>
+          <Text style={[styles.loadingText, { color: colors.inkSoft }]}>กำลังเชื่อมกับ Spotify…</Text>
+        </NativeCard>
       );
     }
 
     if (status.connected) {
       return (
-        <View style={[styles.card, { backgroundColor: SPOTIFY_BLACK, borderColor: '#333' }]}>
+        <NativeCard style={[styles.card, { backgroundColor: SPOTIFY_BLACK, borderColor: '#333' }, style]}>
           <View style={styles.headerRow}>
             <View style={styles.spotifyBrand}>
               <FontAwesome5 name="spotify" size={20} color={SPOTIFY_GREEN} style={{ marginRight: 6 }} />
@@ -140,8 +143,8 @@ export default function SpotifyConnectCard({ onConnectionChange, onSyncMusic }) 
                 </View>
               )}
             </View>
-            <Pressable onPress={handleDisconnect} hitSlop={8}>
-              <Text style={styles.disconnectText}>ยกเลิก</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="ยกเลิกการเชื่อมต่อ Spotify" onPress={handleDisconnect} hitSlop={12} style={styles.disconnect}>
+              <Text style={styles.disconnectText}>ยกเลิกการเชื่อมต่อ</Text>
             </Pressable>
           </View>
 
@@ -154,43 +157,50 @@ export default function SpotifyConnectCard({ onConnectionChange, onSyncMusic }) 
             <View style={styles.featureRow}>
               <FeatureIcon color={SPOTIFY_GREEN} name="checkmark.circle.fill" size={14} />
               <Text style={styles.featureText}>
-                เชื่อมต่อ Spotify Premium · แนะนำเพลงและเทียบรสนิยมดนตรีอัตโนมัติ
+                พร้อมแล้ว! เราจะช่วยหาเพื่อนที่ฟังเพลงแนวเดียวกับคุณ
               </Text>
             </View>
           ) : (
             <View style={styles.featureRow}>
               <FeatureIcon color="#F59E0B" name="exclamationmark.triangle.fill" size={14} />
               <Text style={[styles.featureText, { color: '#F59E0B' }]}>
-                อัปเกรดเป็น Premium เพื่อเทียบรสนิยมเพลงเต็มรูปแบบ
+                ใช้ Premium เพื่อฟังเพลงเต็มเพลงในแอปได้
               </Text>
             </View>
           )}
 
+          <SoundWave bars={24} height={22} barWidth={3} gap={3} color={SPOTIFY_GREEN} style={styles.wave} />
           <View style={{ marginTop: 10 }}>
             <SpotifyNowPlayingCard />
           </View>
-        </View>
+        </NativeCard>
       );
     }
 
     return (
-      <Pressable
+      <Pressable nativeCardSurface
+        accessibilityRole="button"
+        accessibilityLabel="เชื่อมต่อ Spotify"
         onPress={handleConnect}
         style={({ pressed }) => [
           styles.card,
-          { backgroundColor: colors.surface || '#FFF', borderColor: colors.line || '#E2E8F0' },
+          { backgroundColor: SPOTIFY_BLACK, borderColor: '#2A2A2A' },
+          style,
           pressed && { opacity: 0.9 },
         ]}
       >
+        <SoundWave bars={24} height={34} barWidth={4} gap={4} color={SPOTIFY_GREEN} style={styles.heroWave} />
         <View style={styles.connectRow}>
-          <FontAwesome5 name="spotify" size={32} color={SPOTIFY_GREEN} style={{ marginRight: 12 }} />
+          <FontAwesome5 name="spotify" size={30} color={SPOTIFY_GREEN} />
           <View style={styles.connectCopy}>
-            <Text style={[styles.connectTitle, { color: colors.ink }]}>เชื่อมต่อ Spotify Premium</Text>
-            <Text style={[styles.connectSub, { color: colors.inkSoft }]}>
-              เล่นเพลงเต็มคุณภาพสูง 320kbps แทน YouTube
+            <Text style={[styles.connectTitle, { color: '#FFFFFF' }]}>เชื่อมต่อ Spotify</Text>
+            <Text style={[styles.connectSub, { color: 'rgba(255,255,255,0.72)' }]}>
+              ให้เพื่อนรู้จักคุณผ่านเพลงที่ชอบ และเจอคนที่ฟังแนวเดียวกัน
             </Text>
           </View>
-          <FeatureIcon color={colors.inkSoft || '#6B7078'} name="chevron.right" size={16} />
+          <View style={styles.connectPill}>
+            <Text style={styles.connectPillText}>เชื่อมต่อ</Text>
+          </View>
         </View>
       </Pressable>
     );
@@ -251,10 +261,35 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.5,
   },
+  disconnect: {
+    minHeight: 44,
+    justifyContent: 'center',
+  },
   disconnectText: {
-    color: '#EF4444',
+    color: '#FF8A80',
     fontSize: 13,
     fontWeight: '600',
+  },
+  wave: {
+    alignSelf: 'center',
+    marginTop: 12,
+    opacity: 0.9,
+  },
+  heroWave: {
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  connectPill: {
+    backgroundColor: SPOTIFY_GREEN,
+    borderRadius: 999,
+    justifyContent: 'center',
+    minHeight: 36,
+    paddingHorizontal: 14,
+  },
+  connectPillText: {
+    color: SPOTIFY_BLACK,
+    fontSize: 13,
+    fontWeight: '800',
   },
   userRow: {
     alignItems: 'center',
@@ -298,6 +333,7 @@ const styles = StyleSheet.create({
   },
   connectSub: {
     fontSize: 12,
+    lineHeight: 17,
     marginTop: 2,
   },
 });

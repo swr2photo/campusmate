@@ -51,6 +51,8 @@ export default function StorysetStateView({
             iconName={actionIcon}
             label={actionLabel}
             loading={actionLoading}
+            // One line at normal sizes; larger Dynamic Type wraps instead of truncating.
+            numberOfLines={2}
             onPress={onAction}
             style={[
               styles.actionButton,
@@ -109,12 +111,13 @@ const styles = StyleSheet.create({
     maxWidth: 290,
     textAlign: 'center',
   },
+  // A definite width: a shrink-to-fit ('auto') container measured Thai labels
+  // a little narrower than they render on iOS, cutting or wrapping the last word.
   actionContainer: {
-    marginTop: spacing.md,
-    width: 'auto',
-    minWidth: 210,
-    maxWidth: 300,
     alignSelf: 'center',
+    marginTop: spacing.md,
+    maxWidth: 320,
+    width: '100%',
   },
   actionButton: {
     borderRadius: radius.pill,

@@ -1,6 +1,7 @@
+import { Pressable } from '../components/NativePressable';
 import Text from '../components/AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Platform, StyleSheet, View } from 'react-native';
 import { usePathname } from 'expo-router';
 import { openChatRoom } from '../utils/openChatRoom';
 import { useAppActions, useAppAppointments, useAppConversations, useAppFeed, useAppProfile } from '../context/AppContext';

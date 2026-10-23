@@ -2,7 +2,6 @@ import Constants from 'expo-constants';
 import { getTaskManager } from './optionalTaskManager';
 import { AppState, Platform } from 'react-native';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { requireFirebase } from './dbService';
 import {
   ANDROID_MESSAGING_NOTIFICATION_MODE,
   BACKGROUND_NOTIFICATION_TASK,
@@ -455,7 +454,6 @@ async function readStoredRegistration() {
 }
 
 async function saveRegistration(userId, expoPushToken) {
-  const { app } = requireFirebase();
   const projectId = getProjectId();
   const registerPushToken = getCallable('registerPushToken');
   await registerPushToken({
@@ -470,6 +468,12 @@ async function saveRegistration(userId, expoPushToken) {
   const registration = { userId, expoPushToken };
   await setEncryptedItem(REGISTRATION_KEY, JSON.stringify(registration));
   return registration;
+}
+
+export async function getPushPermissionStatusAsync() {
+  if (!isNotificationsAvailable || !Notifications) return 'unavailable';
+  const permission = await Notifications.getPermissionsAsync();
+  return hasNotificationPermission(permission) ? 'granted' : permission?.canAskAgain === false ? 'denied' : 'undetermined';
 }
 
 export async function registerForPushNotificationsAsync(userId) {
@@ -500,7 +504,6 @@ export async function unregisterPushNotificationsAsync(userId) {
   const registration = await readStoredRegistration();
   if (!registration?.expoPushToken || registration.userId !== userId) return false;
 
-  const { app } = requireFirebase();
   const unregisterPushToken = getCallable('unregisterPushToken');
   await unregisterPushToken({ expoPushToken: registration.expoPushToken });
   await removeEncryptedItem(REGISTRATION_KEY);

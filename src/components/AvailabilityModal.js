@@ -1,6 +1,7 @@
+import { Pressable, TouchableOpacity } from './NativePressable';
 import Text from './AppText';
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Modal, Pressable, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, Modal, ScrollView, Platform } from 'react-native';
 import Animated, {
   cancelAnimation,
   Easing,
@@ -93,11 +94,14 @@ const sortAvailabilitySlots = (value) => (
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAlert } from '../utils/appAlert';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 export default function AvailabilityModal({ visible, onClose, availabilitySlots, onSave }) {
   const { colors: themeColors } = useTheme();
   const insets = useSafeAreaInsets();
   const styles = getStyles(themeColors, insets);
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   
   // Local state for editing
   const [slots, setSlots] = useState([]);
@@ -245,7 +249,8 @@ export default function AvailabilityModal({ visible, onClose, availabilitySlots,
         <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)' }, fadeStyle]}>
           <Pressable onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
         </Animated.View>
-        <Animated.View style={[styles.container, sheetStyle]}>
+        <Animated.View style={[styles.container, glass && { backgroundColor: 'transparent' }, sheetStyle]}>
+          <GlassBackground style={{ borderTopLeftRadius: 24, borderTopRightRadius: 24 }} tintColor={glassTint} />
           <GestureDetector gesture={panGesture}>
           <View accessibilityHint="ลากลงเพื่อปิด" style={styles.header}>
             <View style={styles.handle} />

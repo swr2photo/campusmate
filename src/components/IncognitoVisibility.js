@@ -1,6 +1,7 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React, { useEffect, useState } from 'react';
-import { Pressable, Switch, View } from 'react-native';
+import { Switch, View } from 'react-native';
 import { router } from 'expo-router';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';

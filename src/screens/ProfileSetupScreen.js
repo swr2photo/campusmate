@@ -1,13 +1,24 @@
+import { Pressable } from '../components/NativePressable';
+import NativeCard from '../components/NativeCard';
 import Text, { AppTextInput as TextInput } from '../components/AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AccessibilityInfo, ActivityIndicator, Animated, BackHandler, Image, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { AccessibilityInfo, BackHandler, Keyboard, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import Animated, { FadeInLeft, FadeInRight, useAnimatedStyle, useReducedMotion, useSharedValue, withSpring } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import FeatureIcon from '../components/FeatureIcon';
-import AvailabilityModal from '../components/AvailabilityModal';
+import BentoPhotoGrid from '../components/BentoPhotoGrid';
 import FaceVerificationModal from '../components/FaceVerificationModal';
 import LiquidGlassView from '../components/LiquidGlassView';
-import { Chip, PrimaryButton } from '../components/ui';
+import ProfileActivityChip from '../components/ProfileActivityChip';
+import ProfileFavoriteTrackRow from '../components/ProfileFavoriteTrackRow';
+import SpotifyConnectCard from '../components/SpotifyConnectCard';
+import SpotifyTrackSearchSheet, { MAX_FAVORITE_TRACKS } from '../components/SpotifyTrackSearchSheet';
+import { WelcomeScene } from '../components/illustrations';
+import { Chip, PrimaryButton, TonalButton } from '../components/ui';
+import { uploadGalleryImage } from '../services/profileGalleryService';
 import { useAppActions, useAppProfile } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -19,8 +30,10 @@ import {
   sanitizeActivityDetails,
 } from '../data/activityCategories';
 import { FACULTIES } from '../data/faculties';
+import { useResponsiveSize } from '../hooks/useResponsiveSize';
 import { compressProfileImage, MAX_PROFILE_IMAGE_SIZE_MB, validateImageSize } from '../utils/compressImage';
-import { formatAvailabilitySlots } from '../utils/formatters';
+import { isSpotifyFeatureAllowed } from '../utils/featureFlags';
+import { isCommittedProfilePhoto } from '../utils/profilePhoto';
 import { showAlert } from '../utils/appAlert';
 import {
   ACADEMIC_YEARS,
@@ -31,7 +44,7 @@ import {
   STUDENT_ID_REQUIRED_MESSAGE,
   STUDENT_YEAR_UNAVAILABLE_MESSAGE,
 } from '../utils/studentId';
-import { radius, spacing, type, useTheme } from '../theme';
+import { motion, radius, spacing, type, useTheme } from '../theme';
 import {
   AGES,
   AndroidReadOnlyRow,
@@ -40,17 +53,16 @@ import {
   getProfileValidationError,
 } from './ProfileScreen';
 
-// First-run profile setup, one short step at a time. Only what matching needs
-// is asked here; music, gallery, activity details and privacy live in the
-// regular profile editor and settings afterwards.
-const STEPS = [
-  { id: 'basic', icon: 'person.fill', title: 'มาทำความรู้จักกัน', subtitle: 'ข้อมูลนี้จะแสดงบนการ์ดของคุณ' },
-  { id: 'photo', icon: 'camera.fill', title: 'เพิ่มรูปโปรไฟล์', subtitle: 'ใช้รูปที่เห็นหน้าชัด ระบบจะยืนยันใบหน้าว่าเป็นคุณจริง' },
-  { id: 'interests', icon: 'sparkles', title: 'คุณชอบทำอะไร', subtitle: 'เลือกได้หลายอย่าง เพื่อเจอเพื่อนที่ชอบเหมือนกัน' },
-  { id: 'availability', icon: 'clock.fill', title: 'ว่างช่วงไหนบ้าง', subtitle: 'เพื่อนจะได้รู้ว่าชวนคุณได้เมื่อไร' },
-  { id: 'bio', icon: 'quote.bubble.fill', title: 'แนะนำตัวสั้น ๆ', subtitle: 'ประโยคเดียวก็พอ แก้ไขภายหลังได้เสมอ' },
+// First-run profile wizard: four short steps, one idea each. Only what
+// matching needs is required; music is optional and can be skipped.
+const ALL_STEPS = [
+  { id: 'intro', icon: 'hand.wave.fill', title: 'ยินดีต้อนรับสู่ CampusMate!', subtitle: 'มาทำความรู้จักกันสักนิด ใช้เวลาไม่ถึง 2 นาที' },
+  { id: 'photos', icon: 'camera.fill', title: 'โชว์ความเป็นตัวคุณ', subtitle: 'รูปหลักควรเห็นหน้าชัด แล้วเราจะชวนยืนยันใบหน้าสั้น ๆ ให้เพื่อนมั่นใจว่าเป็นคุณจริง' },
+  { id: 'lifestyle', icon: 'sparkles', title: 'ชอบทำอะไรบ้าง?', subtitle: 'เลือกได้หลายอย่าง เพื่อเจอเพื่อนที่ชอบเหมือนกัน' },
+  { id: 'music', icon: 'music.note', title: 'เพลงที่ฟังวนบ่อย ๆ', subtitle: 'แชร์เพลงโปรดให้เพื่อนรู้จักสไตล์คุณ ข้ามขั้นนี้ไปก่อนก็ได้' },
 ];
 
+const PHOTO_SLOTS = 6;
 const FACULTY_OPTIONS = FACULTIES.map((faculty) => ({ label: faculty, value: faculty }));
 const YEAR_OPTIONS = ACADEMIC_YEARS.map((year) => ({ label: year, value: year }));
 const DEFAULT_AGE = '20';
@@ -63,34 +75,62 @@ const BIO_STARTERS = [
 ];
 
 function getStepError(stepId, values) {
-  const { age, avatarUri, bio, faculty, gender, interests, name, pace, studentId, year, availabilitySlots } = values;
-  if (stepId === 'basic') {
-    if (!name || name.trim().length < 2) return 'กรุณากรอกชื่อของคุณ (อย่างน้อย 2 ตัวอักษร)';
+  const { age, avatarUri, bio, faculty, gender, interests, name, pace, studentId, year } = values;
+  if (stepId === 'intro') {
+    if (!name || name.trim().length < 2) return 'บอกชื่อที่อยากให้เพื่อนเรียกก่อนนะ (อย่างน้อย 2 ตัวอักษร)';
     if (!studentId) return STUDENT_ID_REQUIRED_MESSAGE;
     if (!faculty || faculty === 'all') return STUDENT_FACULTY_UNAVAILABLE_MESSAGE;
     if (!year) return STUDENT_YEAR_UNAVAILABLE_MESSAGE;
     const parsedAge = Number(age);
-    if (!age || !Number.isInteger(parsedAge) || parsedAge < 18 || parsedAge > 100) return 'กรุณาระบุอายุระหว่าง 18–100 ปี';
-    if (!gender) return 'กรุณาเลือกเพศของคุณ';
+    if (!age || !Number.isInteger(parsedAge) || parsedAge < 18 || parsedAge > 100) return 'เลือกอายุของคุณ (18–100 ปี)';
+    if (!gender) return 'เลือกเพศที่ต้องการแสดง';
   }
-  if (stepId === 'photo' && !avatarUri) return 'กรุณาเพิ่มรูปโปรไฟล์ของคุณ';
-  if (stepId === 'interests') {
+  if (stepId === 'photos' && !avatarUri) return 'เพิ่มรูปหลักสักรูปก่อนไปต่อ';
+  if (stepId === 'lifestyle') {
     const safeList = Array.isArray(interests) ? interests : [];
-    if (!safeList.length) return 'กรุณาเลือกกิจกรรมหรือความสนใจอย่างน้อย 1 รายการ';
-    if (safeList.includes('running') && !pace) return 'กรุณาเลือกเพซวิ่งเมื่อเลือกวิ่งออกกำลังกาย';
+    if (!safeList.length) return 'เลือกกิจกรรมที่ชอบอย่างน้อย 1 อย่าง';
+    if (safeList.includes('running') && !pace) return 'เลือกเพซวิ่งที่สบายสำหรับคุณ';
+    if (!bio.trim()) return 'เขียนแนะนำตัวสั้น ๆ สักประโยค';
   }
-  if (stepId === 'availability' && (!Array.isArray(availabilitySlots) || !availabilitySlots.length)) return 'กรุณาเลือกช่วงเวลาที่สะดวกอย่างน้อย 1 ช่วง';
-  if (stepId === 'bio' && !bio.trim()) return 'กรุณาเขียนแนะนำตัวสั้น ๆ';
   return null;
 }
 
+function StepProgress({ index, total, colors }) {
+  const reduceMotion = useReducedMotion();
+  const [width, setWidth] = useState(0);
+  const fill = useSharedValue(0);
+  useEffect(() => {
+    if (!width) return;
+    const target = (width * (index + 1)) / total;
+    fill.set(reduceMotion ? target : withSpring(target, motion.spring.snappy));
+  }, [fill, index, reduceMotion, total, width]);
+  const fillStyle = useAnimatedStyle(() => ({ width: fill.get() }));
+  return (
+    <View
+      accessible
+      accessibilityRole="progressbar"
+      accessibilityLabel={`ขั้นตอนที่ ${index + 1} จาก ${total}`}
+      accessibilityValue={{ min: 1, max: total, now: index + 1 }}
+      onLayout={({ nativeEvent }) => setWidth(nativeEvent.layout.width)}
+      style={[progressStyles.track, { backgroundColor: colors.surfaceContainerHigh || colors.line }]}
+    >
+      <Animated.View style={[progressStyles.fill, { backgroundColor: colors.primary }, fillStyle]} />
+    </View>
+  );
+}
+
+const progressStyles = StyleSheet.create({
+  track: { height: 6, borderRadius: 3, overflow: 'hidden' },
+  fill: { height: 6, borderRadius: 3 },
+});
+
 export default function ProfileSetupScreen({ onComplete }) {
   const { colors } = useTheme();
-  const styles = useMemo(() => getStyles(colors), [colors]);
-  const { width: windowWidth } = useWindowDimensions();
+  const responsive = useResponsiveSize();
+  const styles = useMemo(() => getStyles(colors, responsive.gutter), [colors, responsive.gutter]);
   const { showToast, showImageModeration } = useToast();
   const { profile } = useAppProfile();
-  const { saveProfile, markFaceVerified } = useAppActions();
+  const { markFaceVerified } = useAppActions();
   const { user } = useAuth();
 
   // The route only mounts this once a profile exists, so the draft is seeded
@@ -100,18 +140,26 @@ export default function ProfileSetupScreen({ onComplete }) {
     email: profile?.email || user?.email || '',
     campusEmail: profile?.campusEmail || user?.campusEmail || user?.email || '',
   }));
+  const steps = useMemo(
+    () => (isSpotifyFeatureAllowed(user, initialProfile) ? ALL_STEPS : ALL_STEPS.filter((item) => item.id !== 'music')),
+    [initialProfile, user],
+  );
   const academicProfile = useMemo(() => getStudentAcademicProfile(initialProfile), [initialProfile]);
   const studentId = academicProfile.studentId || initialProfile.studentId || '';
   const derivedFaculty = studentId ? getFacultyFromStudentId(studentId) : '';
   const derivedYear = studentId ? getAcademicYearFromStudentId(studentId) : '';
 
   const [stepIndex, setStepIndex] = useState(0);
+  const [direction, setDirection] = useState(1);
   const [name, setName] = useState(initialProfile.name || '');
   const [faculty, setFaculty] = useState(derivedFaculty || initialProfile.faculty || academicProfile.faculty || '');
   const [year, setYear] = useState(derivedYear || initialProfile.year || academicProfile.year || '');
   const [age, setAge] = useState(initialProfile.age ? String(initialProfile.age) : DEFAULT_AGE);
   const [gender, setGender] = useState(initialProfile.gender || DEFAULT_GENDER);
   const [avatarUri, setAvatarUri] = useState(initialProfile.avatarUri || null);
+  const [gallery, setGallery] = useState(() => (
+    Array.isArray(initialProfile.gallery) ? initialProfile.gallery.filter((uri) => typeof uri === 'string' && uri) : []
+  ));
   // Mirrors the server-owned badge; the client never writes it.
   const [faceVerification, setFaceVerification] = useState(initialProfile.isFaceVerified === true);
   const [interests, setInterests] = useState(() => {
@@ -119,61 +167,48 @@ export default function ProfileSetupScreen({ onComplete }) {
     return Array.isArray(list) ? list : [];
   });
   const [pace, setPace] = useState(() => getRunningPace(sanitizeActivityDetails(initialProfile.activityDetails)) || '');
-  const [availabilitySlots, setAvailabilitySlots] = useState(() => (
-    Array.isArray(initialProfile.availabilitySlots) ? initialProfile.availabilitySlots : []
-  ));
   const [bio, setBio] = useState(initialProfile.bio || '');
-  const [showAvailabilityModal, setShowAvailabilityModal] = useState(false);
+  const [favoriteTracks, setFavoriteTracks] = useState(() => (
+    Array.isArray(initialProfile.favoriteTracks) ? initialProfile.favoriteTracks.slice(0, MAX_FAVORITE_TRACKS) : []
+  ));
+  const [showSpotifySearch, setShowSpotifySearch] = useState(false);
   const [showFaceVerificationModal, setShowFaceVerificationModal] = useState(false);
-  const [isProcessingImage, setIsProcessingImage] = useState(false);
+  const [verificationCandidate, setVerificationCandidate] = useState(null);
+  const [uploadingSlot, setUploadingSlot] = useState(null);
+  const photoOwnerRef = useRef(profile?.id);
+  photoOwnerRef.current = profile?.id;
+  useEffect(() => () => { photoOwnerRef.current = null; }, []);
   const [saving, setSaving] = useState(false);
   const verificationPassedRef = useRef(false);
   const scrollRef = useRef(null);
-  const stepAnim = useRef(new Animated.Value(1)).current;
-  const [reduceMotion, setReduceMotion] = useState(false);
 
-  const step = STEPS[stepIndex];
-  const isLastStep = stepIndex === STEPS.length - 1;
-  const values = { age, avatarUri, bio, faculty, gender, interests, name, pace, studentId, year, availabilitySlots };
+  const step = steps[stepIndex];
+  const isLastStep = stepIndex === steps.length - 1;
+  const busyWithPhoto = uploadingSlot != null;
+  const values = { age, avatarUri, bio, faculty, gender, interests, name, pace, studentId, year };
   // HIG (Entering data): keep Next unavailable until the step's required data exists.
   const pendingRequirement = getStepError(step.id, values);
 
   useEffect(() => {
-    let mounted = true;
-    AccessibilityInfo.isReduceMotionEnabled().then((enabled) => { if (mounted) setReduceMotion(Boolean(enabled)); }).catch(() => {});
-    const sub = AccessibilityInfo.addEventListener?.('reduceMotionChanged', (enabled) => setReduceMotion(Boolean(enabled)));
-    return () => {
-      mounted = false;
-      sub?.remove?.();
-    };
-  }, []);
-
-  useEffect(() => {
     scrollRef.current?.scrollTo({ y: 0, animated: false });
-    if (reduceMotion) {
-      stepAnim.setValue(1);
-      return;
-    }
-    // Prevent white screen: Start from 0.85 rather than 0 so content is never blank, with a fallback completion handler.
-    stepAnim.setValue(0.85);
-    Animated.timing(stepAnim, { toValue: 1, duration: 180, useNativeDriver: true }).start(({ finished }) => {
-      if (!finished) stepAnim.setValue(1);
-    });
-  }, [reduceMotion, stepIndex, stepAnim]);
+    AccessibilityInfo.announceForAccessibility?.(`ขั้นตอนที่ ${stepIndex + 1} จาก ${steps.length} ${step.title}`);
+  }, [step.title, stepIndex, steps.length]);
 
-  const goBack = useCallback(() => {
+  const moveTo = useCallback((next) => {
     Keyboard.dismiss();
-    setStepIndex((current) => Math.max(0, current - 1));
-  }, []);
+    setDirection(next > stepIndex ? 1 : -1);
+    setStepIndex(Math.max(0, Math.min(steps.length - 1, next)));
+    Haptics.selectionAsync().catch(() => {});
+  }, [stepIndex, steps.length]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (stepIndex > 0) goBack();
-      else showToast('กรุณาสร้างโปรไฟล์ให้เสร็จสมบูรณ์ก่อนเข้าใช้งาน', 'info');
+      if (stepIndex > 0) moveTo(stepIndex - 1);
+      else showToast('สร้างโปรไฟล์ให้เสร็จก่อนนะ แล้วค่อยเริ่มหาเพื่อนกัน', 'info');
       return true;
     });
     return () => subscription.remove();
-  }, [goBack, showToast, stepIndex]);
+  }, [moveTo, showToast, stepIndex]);
 
   const toggleInterest = useCallback((id) => {
     setInterests((current) => {
@@ -182,11 +217,10 @@ export default function ProfileSetupScreen({ onComplete }) {
     });
   }, []);
 
-  // The server compares the selfie with the *saved* main photo and revokes the
-  // badge whenever that photo changes, so the photo is saved before verifying.
+  // Upload an immutable candidate; only the verification server publishes it.
   const pickAvatar = async () => {
-    if (isProcessingImage) return;
-    let saved = false;
+    if (busyWithPhoto) return;
+    const ownerId = profile?.id;
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
@@ -197,43 +231,85 @@ export default function ProfileSetupScreen({ onComplete }) {
       });
       if (result.canceled || !result.assets?.[0]) return;
       const asset = result.assets[0];
-      setIsProcessingImage(true);
+      setUploadingSlot(0);
       const sizeValidation = await validateImageSize(asset.uri, asset.fileSize, MAX_PROFILE_IMAGE_SIZE_MB);
       if (!sizeValidation.valid) {
         showAlert('รูปภาพมีขนาดใหญ่เกินไป', sizeValidation.error, { tone: 'warning' });
         return;
       }
       const compressed = await compressProfileImage(asset.uri);
-      const committed = await saveProfile({ avatarUri: compressed });
-      setAvatarUri(committed?.avatarUri || compressed);
-      setFaceVerification(false);
-      saved = true;
+      const uri = await uploadGalleryImage(compressed, ownerId);
+      if (photoOwnerRef.current !== ownerId) return;
+      setVerificationCandidate({ uri, ownerId });
+      verificationPassedRef.current = false;
+      setShowFaceVerificationModal(true);
     } catch (error) {
       console.warn('[ProfileSetup] Image save failed:', error?.message || error);
       if (error?.isModerationViolation || error?.isModerationUnavailable) showImageModeration(error);
-      else showAlert('ไม่สามารถบันทึกรูปภาพได้', error?.message || 'กรุณาลองเลือกรูปภาพใหม่อีกครั้ง', { tone: 'danger' });
+      else showAlert('ยังบันทึกรูปไม่ได้', error?.message || 'ลองเลือกรูปใหม่อีกครั้งนะ', { tone: 'danger' });
     } finally {
-      setIsProcessingImage(false);
-    }
-    if (saved) {
-      verificationPassedRef.current = false;
-      setShowFaceVerificationModal(true);
+      setUploadingSlot(null);
     }
   };
 
-  const handleFaceVerified = () => {
-    // The server already recorded the result; only mirror it locally.
+  // Extra photos are optional; each is uploaded (and moderated) before it shows.
+  const pickGalleryPhoto = async (slotIndex) => {
+    if (busyWithPhoto) return;
+    const ownerId = profile?.id;
+    const galleryIndex = Math.min(slotIndex - 1, gallery.length);
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [2, 3],
+        quality: 0.8,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+      setUploadingSlot(galleryIndex + 1);
+      const sizeValidation = await validateImageSize(asset.uri, asset.fileSize, MAX_PROFILE_IMAGE_SIZE_MB);
+      if (!sizeValidation.valid) {
+        showAlert('รูปภาพมีขนาดใหญ่เกินไป', sizeValidation.error, { tone: 'warning' });
+        return;
+      }
+      const resized = await ImageManipulator.manipulateAsync(asset.uri, [{ resize: { width: 800 } }], {
+        compress: 0.8, format: ImageManipulator.SaveFormat.JPEG,
+      });
+      const url = await uploadGalleryImage(resized.uri, ownerId);
+      if (photoOwnerRef.current !== ownerId) return;
+      setGallery((current) => {
+        const next = [...current];
+        next[Math.min(galleryIndex, next.length)] = url;
+        return next.filter(Boolean);
+      });
+    } catch (error) {
+      console.warn('[ProfileSetup] Gallery photo failed:', error?.message || error);
+      if (error?.isModerationViolation || error?.isModerationUnavailable) showImageModeration(error);
+      else showToast(error?.message || 'ยังเพิ่มรูปนี้ไม่ได้ ลองอีกครั้งนะ', 'info');
+    } finally {
+      setUploadingSlot(null);
+    }
+  };
+
+  const handleFaceVerified = async () => {
+    const candidate = verificationCandidate;
+    if (!candidate || photoOwnerRef.current !== candidate.ownerId) return;
+    const committed = await markFaceVerified?.(candidate.uri);
+    if (photoOwnerRef.current !== candidate.ownerId) return;
+    if (!isCommittedProfilePhoto(committed, candidate.uri)) {
+      throw new Error('ยังบันทึกรูปใหม่ไม่สำเร็จ กรุณาลองอีกครั้ง');
+    }
+    setAvatarUri(committed.avatarUri);
     verificationPassedRef.current = true;
     setFaceVerification(true);
-    markFaceVerified?.();
     showToast('ยืนยันใบหน้าสำเร็จ', 'success');
   };
 
   const finish = async () => {
     const fullError = getProfileValidationError({ ...values, availability: '', requireComplete: true });
     if (fullError) {
-      const failingStep = STEPS.findIndex((item) => getStepError(item.id, values));
-      if (failingStep >= 0) setStepIndex(failingStep);
+      const failingStep = steps.findIndex((item) => getStepError(item.id, values));
+      if (failingStep >= 0) moveTo(failingStep);
       showToast(fullError, 'info');
       return;
     }
@@ -257,13 +333,13 @@ export default function ProfileSetupScreen({ onComplete }) {
         activityDetails,
         pace: getRunningPace(activityDetails),
         skill: initialProfile.skill || '',
-        availability: `ระบุ ${availabilitySlots.length} ช่วงเวลา`,
-        availabilitySlots,
+        availability: null,
+        availabilitySlots: null,
         bio: bio.trim(),
         interests: activities,
         avatarUri,
-        gallery: Array.isArray(initialProfile.gallery) ? initialProfile.gallery : [],
-        favoriteTracks: Array.isArray(initialProfile.favoriteTracks) ? initialProfile.favoriteTracks : [],
+        gallery: gallery.filter(Boolean),
+        favoriteTracks,
         isDiscoverable: initialProfile.isDiscoverable ?? true,
         notificationsEnabled: initialProfile.notificationsEnabled ?? true,
         privacy: initialProfile.privacy || {},
@@ -271,7 +347,7 @@ export default function ProfileSetupScreen({ onComplete }) {
     } catch (error) {
       console.error('[ProfileSetup] save failed', error?.message || error);
       if (error?.isModerationViolation || error?.isModerationUnavailable) showImageModeration(error);
-      else showToast(error?.message || 'สร้างโปรไฟล์ไม่สำเร็จ', 'info');
+      else showToast(error?.message || 'ยังสร้างโปรไฟล์ไม่สำเร็จ ลองอีกครั้งนะ', 'info');
     } finally {
       setSaving(false);
     }
@@ -279,8 +355,8 @@ export default function ProfileSetupScreen({ onComplete }) {
 
   const goNext = () => {
     Keyboard.dismiss();
-    if (isProcessingImage) {
-      showToast('กำลังประมวลผลรูปภาพ กรุณารอสักครู่...', 'info');
+    if (busyWithPhoto) {
+      showToast('กำลังเตรียมรูปให้อยู่ รอสักครู่นะ', 'info');
       return;
     }
     const error = getStepError(step.id, values);
@@ -289,23 +365,20 @@ export default function ProfileSetupScreen({ onComplete }) {
       return;
     }
     if (isLastStep) void finish();
-    else setStepIndex((current) => current + 1);
+    else moveTo(stepIndex + 1);
   };
 
-  const photoSize = Math.min(windowWidth - spacing.xl * 2, 240);
-
-  const renderBasic = () => (
+  const renderIntro = () => (
     <View style={styles.stack}>
       <View style={styles.field}>
-        <Text style={styles.fieldLabel}>ชื่อที่แสดง</Text>
+        <Text style={styles.fieldLabel}>ชื่อที่อยากให้เพื่อนเรียก</Text>
         <TextInput
-          accessibilityLabel="ชื่อที่แสดง"
+          accessibilityLabel="ชื่อที่อยากให้เพื่อนเรียก"
           autoCorrect={false}
-          autoFocus={!name}
           clearButtonMode="while-editing"
           maxLength={40}
           onChangeText={setName}
-          placeholder="เพื่อน ๆ เรียกคุณว่าอะไร"
+          placeholder="เช่น มายด์, ต้นกล้า"
           placeholderTextColor={colors.inkSoft}
           returnKeyType="done"
           style={styles.nameInput}
@@ -314,22 +387,27 @@ export default function ProfileSetupScreen({ onComplete }) {
         />
       </View>
 
-      <View style={styles.groupCard}>
-        {derivedFaculty ? (
-          <AndroidReadOnlyRow helper="ดึงจากรหัสนักศึกษาอัตโนมัติ" icon="building.columns.fill" label="คณะ" value={faculty} />
-        ) : (
-          <AndroidSelectionRow icon="building.columns.fill" label="คณะ" onSelect={setFaculty} options={FACULTY_OPTIONS} placeholder="เลือกคณะ" required value={faculty} />
-        )}
-        {derivedYear ? (
-          <AndroidReadOnlyRow helper="ดึงจากรหัสนักศึกษาอัตโนมัติ" icon="graduationcap.fill" label="ชั้นปี" value={year} />
-        ) : (
-          <AndroidSelectionRow icon="graduationcap.fill" label="ชั้นปี" onSelect={setYear} options={YEAR_OPTIONS} placeholder="เลือกชั้นปี" required value={year} />
-        )}
-        <AndroidSelectionRow icon="calendar" label="อายุ" onSelect={setAge} options={AGES} placeholder="เลือกอายุ" required value={age} />
+      <View style={styles.field}>
+        <Text style={styles.fieldLabel}>ข้อมูลการศึกษา</Text>
+        <NativeCard style={styles.groupCard}>
+          {derivedFaculty ? (
+            <AndroidReadOnlyRow helper="ตั้งให้อัตโนมัติจากรหัสนักศึกษา" icon="building.columns.fill" label="คณะ" value={faculty} />
+          ) : (
+            <AndroidSelectionRow icon="building.columns.fill" label="คณะ" onSelect={setFaculty} options={FACULTY_OPTIONS} placeholder="เลือกคณะ" required value={faculty} />
+          )}
+          {derivedYear ? (
+            <AndroidReadOnlyRow helper="ตั้งให้อัตโนมัติจากรหัสนักศึกษา" icon="graduationcap.fill" label="ชั้นปี" value={year} />
+          ) : (
+            <AndroidSelectionRow icon="graduationcap.fill" label="ชั้นปี" onSelect={setYear} options={YEAR_OPTIONS} placeholder="เลือกชั้นปี" required value={year} />
+          )}
+        </NativeCard>
       </View>
 
       <View style={styles.field}>
-        <Text style={styles.fieldLabel}>เพศ</Text>
+        <Text style={styles.fieldLabel}>เกี่ยวกับคุณ</Text>
+        <NativeCard style={styles.groupCard}>
+          <AndroidSelectionRow icon="calendar" label="อายุ" onSelect={setAge} options={AGES} placeholder="เลือกอายุ" required value={age} />
+        </NativeCard>
         <View style={styles.wrapRow}>
           {GENDERS.map((option) => (
             <Chip active={gender === option.value} key={option.value} label={option.label} onPress={() => setGender(option.value)} />
@@ -339,60 +417,31 @@ export default function ProfileSetupScreen({ onComplete }) {
     </View>
   );
 
-  const renderPhoto = () => (
-    <View style={[styles.stack, styles.centered]}>
-      <Pressable
-        accessibilityLabel={avatarUri ? 'เปลี่ยนรูปโปรไฟล์' : 'เพิ่มรูปโปรไฟล์'}
-        accessibilityRole="button"
-        disabled={isProcessingImage}
-        onPress={pickAvatar}
-        style={({ pressed }) => [
-          styles.photoSlot,
-          { width: photoSize, height: photoSize, borderRadius: photoSize / 2 },
-          !avatarUri && styles.photoSlotEmpty,
-          pressed && styles.pressed,
-        ]}
-      >
-        {avatarUri ? (
-          <Image source={{ uri: avatarUri }} style={StyleSheet.absoluteFill} />
-        ) : (
-          <View style={styles.photoEmptyContent}>
-            <View style={styles.photoPlusCircle}>
-              <FeatureIcon color={colors.onPrimary} name="plus" size={26} />
-            </View>
-            <Text style={styles.photoEmptyText}>แตะเพื่อเลือกรูป</Text>
-          </View>
-        )}
-        {isProcessingImage ? (
-          <View style={styles.photoLoading}>
-            <ActivityIndicator color="#FFFFFF" />
-          </View>
-        ) : null}
-      </Pressable>
-
-      {avatarUri ? (
-        <View style={styles.photoActions}>
-          {faceVerification ? (
-            <View style={styles.verifiedPill}>
-              <FeatureIcon color={colors.green} name="checkmark.seal.fill" size={15} />
-              <Text style={styles.verifiedText}>ยืนยันใบหน้าแล้ว</Text>
-            </View>
-          ) : null}
-          <Pressable accessibilityRole="button" disabled={isProcessingImage} hitSlop={8} onPress={pickAvatar} style={styles.linkButton}>
-            <FeatureIcon color={colors.primary} name="pencil" size={14} />
-            <Text style={styles.linkButtonText}>เปลี่ยนรูป</Text>
-          </Pressable>
+  const renderPhotos = () => (
+    <View style={styles.stack}>
+      <BentoPhotoGrid
+        photos={[avatarUri, ...gallery]}
+        slots={PHOTO_SLOTS}
+        busyIndex={uploadingSlot}
+        disabled={busyWithPhoto}
+        identityPrefix={`setup:${profile?.id || 'me'}`}
+        avatarRevision={profile?.avatarRevision}
+        onPressSlot={(index) => (index === 0 ? pickAvatar() : pickGalleryPhoto(index))}
+        onRemove={(index) => setGallery((current) => current.filter((_, position) => position !== index - 1))}
+      />
+      {avatarUri && faceVerification ? (
+        <View style={styles.verifiedPill}>
+          <FeatureIcon color={colors.green} name="checkmark.seal.fill" size={15} />
+          <Text style={styles.verifiedText}>ยืนยันใบหน้าแล้ว</Text>
         </View>
       ) : null}
-
-      <View style={styles.tipCard}>
+      <View style={styles.tipList}>
         {[
-          'เห็นใบหน้าชัด อยู่คนเดียวในรูป',
-          'หลังเลือกรูป จะมีการถ่ายเซลฟีสั้น ๆ เพื่อยืนยันตัวตน',
-          'เพิ่มรูปอื่น ๆ ได้ภายหลังในหน้าโปรไฟล์',
-        ].map((tip) => (
+          ['face.smiling', 'รูปหลักเห็นหน้าชัด อยู่คนเดียวในรูป'],
+          ['photo.on.rectangle', 'รูปอื่น ๆ เพิ่มตอนนี้หรือภายหลังก็ได้'],
+        ].map(([icon, tip]) => (
           <View key={tip} style={styles.tipRow}>
-            <FeatureIcon color={colors.primary} name="checkmark.circle.fill" size={16} />
+            <FeatureIcon color={colors.primary} name={icon} size={16} />
             <Text style={styles.tipText}>{tip}</Text>
           </View>
         ))}
@@ -400,26 +449,22 @@ export default function ProfileSetupScreen({ onComplete }) {
     </View>
   );
 
-  const renderInterests = () => {
+  const renderLifestyle = () => {
     const safeInterests = Array.isArray(interests) ? interests : [];
     return (
       <View style={styles.stack}>
-        <View style={styles.interestGrid}>
+        <View style={styles.chipGrid}>
           {SELECTABLE_ACTIVITY_CATEGORIES.map((category) => (
-            <View key={category.id} style={styles.interestGridItem}>
-              <Chip
-                active={safeInterests.includes(category.id)}
-                color={category.color}
-                iconName={category.symbol}
-                label={category.label}
-                onPress={() => toggleInterest(category.id)}
-                style={styles.interestChip}
-              />
-            </View>
+            <ProfileActivityChip
+              key={category.id}
+              category={category}
+              selected={safeInterests.includes(category.id)}
+              onPress={() => toggleInterest(category.id)}
+            />
           ))}
         </View>
         {safeInterests.includes('running') ? (
-          <View style={styles.groupCard}>
+          <NativeCard style={styles.groupCard}>
             <View style={styles.inlineHeader}>
               <FeatureIcon color={colors.coral} name="speedometer" size={16} />
               <Text style={styles.fieldLabel}>เพซวิ่งของคุณ</Text>
@@ -429,63 +474,13 @@ export default function ProfileSetupScreen({ onComplete }) {
                 <Chip active={pace === option} color={colors.coral} key={option} label={option} onPress={() => setPace(option)} />
               ))}
             </View>
-          </View>
+          </NativeCard>
         ) : null}
-        <Text style={styles.footnote}>รายละเอียดของแต่ละกิจกรรมเพิ่มได้ภายหลังในหน้าแก้ไขโปรไฟล์</Text>
-      </View>
-    );
-  };
 
-  const renderAvailability = () => {
-    const summary = formatAvailabilitySlots(availabilitySlots);
-    return (
-      <View style={styles.stack}>
-        <Pressable
-          accessibilityLabel="เลือกช่วงเวลาว่างสะดวก"
-          accessibilityRole="button"
-          onPress={() => setShowAvailabilityModal(true)}
-          style={({ pressed }) => [styles.availabilityCard, pressed && styles.pressed]}
-        >
-          <View style={styles.availabilityIcon}>
-            <FeatureIcon color={colors.primary} name="calendar" size={22} />
-          </View>
-          <View style={styles.flex}>
-            <Text style={styles.availabilityTitle}>
-              {availabilitySlots.length ? `เลือกไว้ ${availabilitySlots.length} ช่วงเวลา` : 'เลือกวันและเวลาที่ว่าง'}
-            </Text>
-            <Text numberOfLines={3} style={styles.availabilitySubtitle}>
-              {summary || 'เลือกได้หลายวันและหลายช่วงเวลา'}
-            </Text>
-          </View>
-          <FeatureIcon color={colors.inkSoft} name="chevron.right" size={18} />
-        </Pressable>
-        <Text style={styles.footnote}>ช่วงเวลานี้ใช้แนะนำเพื่อนที่ว่างตรงกัน และปรับได้ตลอดเวลา</Text>
-      </View>
-    );
-  };
-
-  const renderBio = () => {
-    const facultyLine = [faculty, year].filter(Boolean).join(' · ');
-    const safeInterests = Array.isArray(interests) ? interests : [];
-    const interestLabels = safeInterests
-      .map((id) => ACTIVITY_CATEGORIES.find((item) => item.id === id)?.shortLabel)
-      .filter(Boolean);
-    return (
-      <View style={styles.stack}>
-        <View style={styles.previewCard}>
-          {avatarUri ? <Image source={{ uri: avatarUri }} style={styles.previewAvatar} /> : <View style={styles.previewAvatar} />}
-          <View style={styles.flex}>
-            <Text numberOfLines={1} style={styles.previewName}>{name.trim()}{age ? `, ${age}` : ''}</Text>
-            {facultyLine ? <Text numberOfLines={1} style={styles.previewMeta}>{facultyLine}</Text> : null}
-            {interestLabels.length ? (
-              <Text numberOfLines={1} style={styles.previewInterests}>{interestLabels.join(' · ')}</Text>
-            ) : null}
-          </View>
-        </View>
-
-        <View>
+        <View style={styles.field}>
+          <Text style={styles.fieldLabel}>แนะนำตัวสั้น ๆ</Text>
           <TextInput
-            accessibilityLabel="คำแนะนำตัวสั้น ๆ"
+            accessibilityLabel="แนะนำตัวสั้น ๆ"
             maxLength={BIO_MAX_LENGTH}
             multiline
             onChangeText={setBio}
@@ -496,10 +491,7 @@ export default function ProfileSetupScreen({ onComplete }) {
             value={bio}
           />
           <Text style={styles.counter}>{bio.length}/{BIO_MAX_LENGTH}</Text>
-        </View>
-
-        <View style={styles.field}>
-          <Text style={styles.fieldLabel}>ไม่รู้จะเริ่มยังไง? ลองแตะ</Text>
+          <Text style={styles.footnote}>ไม่รู้จะเริ่มยังไง? แตะประโยคด้านล่างได้เลย</Text>
           <View style={styles.wrapRow}>
             {BIO_STARTERS.map((starter) => (
               <Chip
@@ -517,47 +509,54 @@ export default function ProfileSetupScreen({ onComplete }) {
     );
   };
 
+  const renderMusic = () => (
+    <View style={styles.stack}>
+      <SpotifyConnectCard style={styles.spotifyCard} />
+      <View style={styles.field}>
+        <Text style={styles.fieldLabel}>เพลงโปรด ({favoriteTracks.length}/{MAX_FAVORITE_TRACKS})</Text>
+        {favoriteTracks.map((track) => (
+          <ProfileFavoriteTrackRow
+            key={track.id}
+            track={track}
+            onRemove={(id) => setFavoriteTracks((current) => current.filter((item) => item.id !== id))}
+          />
+        ))}
+        {favoriteTracks.length < MAX_FAVORITE_TRACKS ? (
+          <TonalButton iconName="magnifyingglass" label="ค้นหาและเพิ่มเพลง" onPress={() => setShowSpotifySearch(true)} />
+        ) : (
+          <Text style={styles.footnote}>ครบ {MAX_FAVORITE_TRACKS} เพลงแล้ว ลบเพลงเดิมเพื่อเพิ่มเพลงใหม่ได้</Text>
+        )}
+      </View>
+    </View>
+  );
+
   const renderCurrentStep = () => {
-    try {
-      switch (step.id) {
-        case 'basic': return renderBasic();
-        case 'photo': return renderPhoto();
-        case 'interests': return renderInterests();
-        case 'availability': return renderAvailability();
-        case 'bio': return renderBio();
-        default: return renderBasic();
-      }
-    } catch (err) {
-      console.warn('[ProfileSetupScreen] Error rendering step:', step.id, err?.message || err);
-      return (
-        <View style={styles.errorCard}>
-          <FeatureIcon color={colors.danger} name="exclamationmark.triangle.fill" size={28} />
-          <Text style={styles.errorText}>เกิดข้อผิดพลาดในการแสดงผลขั้นตอนนี้</Text>
-        </View>
-      );
+    switch (step.id) {
+      case 'photos': return renderPhotos();
+      case 'lifestyle': return renderLifestyle();
+      case 'music': return renderMusic();
+      default: return renderIntro();
     }
   };
+
+  const entering = (direction > 0 ? FadeInRight : FadeInLeft).springify().damping(20).stiffness(180);
+  const primaryLabel = !isLastStep ? 'ถัดไป'
+    : step.id === 'music' && !favoriteTracks.length ? 'ข้ามและสร้างโปรไฟล์' : 'สร้างโปรไฟล์';
 
   return (
     <SafeAreaView edges={['top', 'bottom']} style={styles.safe}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <View style={styles.header}>
           {stepIndex > 0 ? (
-            <Pressable accessibilityLabel="ย้อนกลับ" accessibilityRole="button" hitSlop={8} onPress={goBack} style={styles.headerButton}>
+            <Pressable accessibilityLabel="ย้อนกลับ" accessibilityRole="button" hitSlop={8} onPress={() => moveTo(stepIndex - 1)} style={styles.headerButton}>
               <FeatureIcon color={colors.ink} name="chevron.left" size={20} />
             </Pressable>
           ) : <View style={styles.headerButton} />}
-          <Text style={styles.headerTitle}>สร้างโปรไฟล์</Text>
-          <Text style={styles.headerStep}>{stepIndex + 1}/{STEPS.length}</Text>
+          <Text style={styles.headerStep}>ขั้นตอนที่ {stepIndex + 1} จาก {steps.length}</Text>
+          <View style={styles.headerButton} />
         </View>
-        <View
-          accessibilityLabel={`ขั้นตอนที่ ${stepIndex + 1} จาก ${STEPS.length}`}
-          accessibilityRole="progressbar"
-          style={styles.progressRow}
-        >
-          {STEPS.map((item, index) => (
-            <View key={item.id} style={[styles.progressSegment, index <= stepIndex && styles.progressSegmentActive]} />
-          ))}
+        <View style={styles.progressRow}>
+          <StepProgress index={stepIndex} total={steps.length} colors={colors} />
         </View>
 
         <ScrollView
@@ -567,17 +566,22 @@ export default function ProfileSetupScreen({ onComplete }) {
           ref={scrollRef}
           showsVerticalScrollIndicator={false}
         >
-          <Animated.View
-            style={{
-              opacity: stepAnim,
-              transform: [{ translateY: stepAnim.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
-            }}
-          >
-            <View style={styles.stepIcon}>
-              <FeatureIcon color={colors.primary} name={step.icon} size={22} />
-            </View>
-            <Text accessibilityRole="header" style={styles.title}>{step.title}</Text>
-            <Text style={styles.subtitle}>{step.subtitle}</Text>
+          <Animated.View key={step.id} entering={entering}>
+            {step.id === 'intro' ? (
+              <View style={styles.hero}>
+                <WelcomeScene size={responsive.illustration.hero} />
+                <Text accessibilityRole="header" style={[styles.title, styles.centerText, { fontSize: responsive.font.display }]}>{step.title}</Text>
+                <Text style={[styles.subtitle, styles.centerText]}>{step.subtitle}</Text>
+              </View>
+            ) : (
+              <View style={styles.stepHeader}>
+                <View style={styles.stepIcon}>
+                  <FeatureIcon color={colors.primary} name={step.icon} size={22} />
+                </View>
+                <Text accessibilityRole="header" style={[styles.title, { fontSize: responsive.font.display }]}>{step.title}</Text>
+                <Text style={styles.subtitle}>{step.subtitle}</Text>
+              </View>
+            )}
             {renderCurrentStep()}
           </Animated.View>
         </ScrollView>
@@ -593,9 +597,9 @@ export default function ProfileSetupScreen({ onComplete }) {
             style={styles.footerGlass}
           >
             <PrimaryButton
-              disabled={Boolean(pendingRequirement) || isProcessingImage}
+              disabled={Boolean(pendingRequirement) || busyWithPhoto}
               iconName={isLastStep ? 'checkmark.circle.fill' : undefined}
-              label={isLastStep ? 'สร้างโปรไฟล์' : 'ถัดไป'}
+              label={primaryLabel}
               loading={saving}
               onPress={goNext}
               style={styles.footerButton}
@@ -604,84 +608,71 @@ export default function ProfileSetupScreen({ onComplete }) {
         </View>
       </KeyboardAvoidingView>
 
-      <AvailabilityModal
-        availabilitySlots={availabilitySlots}
-        onClose={() => setShowAvailabilityModal(false)}
-        onSave={setAvailabilitySlots}
-        visible={showAvailabilityModal}
-      />
       <FaceVerificationModal
-        avatarUri={avatarUri}
+        avatarUri={verificationCandidate?.uri || avatarUri}
+        candidateAvatarUri={verificationCandidate?.uri}
         onClose={() => {
           setShowFaceVerificationModal(false);
+          setVerificationCandidate(null);
           if (!verificationPassedRef.current) {
-            showToast('บันทึกรูปแล้ว ยืนยันใบหน้าภายหลังได้จากหน้าโปรไฟล์', 'info');
+            showToast('รูปหลักจะเปลี่ยนหลังยืนยันใบหน้าผ่านแล้ว ลองอีกครั้งได้ทุกเมื่อ', 'info');
           }
         }}
         onSuccess={handleFaceVerified}
         visible={showFaceVerificationModal}
       />
+      {showSpotifySearch ? (
+        <SpotifyTrackSearchSheet
+          excludeIds={favoriteTracks.map((track) => track.id)}
+          onClose={() => setShowSpotifySearch(false)}
+          onSelect={(track) => {
+            setFavoriteTracks((current) => {
+              if (current.some((item) => item.id === track.id) || current.length >= MAX_FAVORITE_TRACKS) return current;
+              return [...current, track];
+            });
+            setShowSpotifySearch(false);
+          }}
+          visible
+        />
+      ) : null}
     </SafeAreaView>
   );
 }
 
-const getStyles = (colors) => StyleSheet.create({
+const getStyles = (colors, gutter) => StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.canvas },
   flex: { flex: 1, minWidth: 0 },
   header: { alignItems: 'center', flexDirection: 'row', height: 52, paddingHorizontal: spacing.md },
   headerButton: { alignItems: 'center', height: 44, justifyContent: 'center', width: 44 },
-  headerTitle: { color: colors.ink, flex: 1, fontSize: type.h3, fontWeight: '800', textAlign: 'center' },
-  headerStep: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '700', textAlign: 'center', width: 44 },
-  progressRow: { flexDirection: 'row', gap: 6, paddingHorizontal: spacing.lg, paddingBottom: spacing.sm },
-  progressSegment: { backgroundColor: colors.line, borderRadius: radius.pill, flex: 1, height: 4 },
-  progressSegmentActive: { backgroundColor: colors.primary },
-  content: { padding: spacing.lg, paddingBottom: spacing.xxxl },
+  headerStep: { color: colors.inkMuted, flex: 1, fontSize: type.caption, fontWeight: '700', textAlign: 'center' },
+  progressRow: { paddingHorizontal: gutter, paddingBottom: spacing.sm },
+  content: { paddingHorizontal: gutter, paddingTop: spacing.sm, paddingBottom: spacing.xxxl, width: '100%', maxWidth: 640, alignSelf: 'center' },
+  hero: { alignItems: 'center', marginBottom: spacing.xl },
+  stepHeader: { marginBottom: spacing.xl },
   stepIcon: { alignItems: 'center', backgroundColor: colors.primarySoft, borderRadius: 16, borderCurve: 'continuous', height: 48, justifyContent: 'center', marginBottom: spacing.md, width: 48 },
-  title: { color: colors.ink, fontSize: type.h1, fontWeight: '900', letterSpacing: -0.4, lineHeight: 36 },
-  subtitle: { color: colors.inkMuted, fontSize: type.subheadline, lineHeight: 22, marginBottom: spacing.xl, marginTop: spacing.xs },
+  title: { color: colors.ink, fontWeight: '900', letterSpacing: -0.4, lineHeight: 36, marginTop: spacing.sm },
+  centerText: { textAlign: 'center' },
+  subtitle: { color: colors.inkMuted, fontSize: type.subheadline, lineHeight: 22, marginTop: spacing.xs },
   stack: { gap: spacing.lg },
-  centered: { alignItems: 'center' },
   field: { gap: spacing.sm },
   fieldLabel: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '800' },
   nameInput: { backgroundColor: colors.card, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.lg, borderWidth: 1, color: colors.ink, fontSize: 20, fontWeight: '700', minHeight: 56, paddingHorizontal: spacing.lg },
-  groupCard: { backgroundColor: colors.card, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.lg, borderWidth: 1, gap: spacing.sm, padding: spacing.md },
+  groupCard: { backgroundColor: colors.card, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.xl, borderWidth: StyleSheet.hairlineWidth, gap: spacing.sm, padding: spacing.md },
   wrapRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  chipGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   inlineHeader: { alignItems: 'center', flexDirection: 'row', gap: 6 },
-  pressed: { opacity: 0.75 },
-  photoSlot: { alignItems: 'center', backgroundColor: colors.surfaceRaised, justifyContent: 'center', overflow: 'hidden' },
-  photoSlotEmpty: { borderColor: colors.primary, borderStyle: 'dashed', borderWidth: 2 },
-  photoEmptyContent: { alignItems: 'center', gap: spacing.sm },
-  photoPlusCircle: { alignItems: 'center', backgroundColor: colors.primary, borderRadius: 28, height: 56, justifyContent: 'center', width: 56 },
-  photoEmptyText: { color: colors.primary, fontSize: type.subheadline, fontWeight: '800' },
-  photoLoading: { ...StyleSheet.absoluteFillObject, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center' },
-  photoActions: { alignItems: 'center', flexDirection: 'row', gap: spacing.md },
-  verifiedPill: { alignItems: 'center', backgroundColor: colors.greenSoft, borderRadius: radius.pill, flexDirection: 'row', gap: 4, paddingHorizontal: spacing.md, paddingVertical: 6 },
+  verifiedPill: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: colors.greenSoft, borderRadius: radius.pill, flexDirection: 'row', gap: 4, paddingHorizontal: spacing.md, paddingVertical: 6 },
   verifiedText: { color: colors.green, fontSize: type.caption, fontWeight: '800' },
-  linkButton: { alignItems: 'center', flexDirection: 'row', gap: 4, minHeight: 44, paddingHorizontal: spacing.sm },
-  linkButtonText: { color: colors.primary, fontSize: type.subheadline, fontWeight: '800' },
-  tipCard: { alignSelf: 'stretch', backgroundColor: colors.card, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.lg, borderWidth: 1, gap: spacing.sm, padding: spacing.md },
-  tipRow: { alignItems: 'flex-start', flexDirection: 'row', gap: spacing.sm },
-  tipText: { color: colors.ink, flex: 1, fontSize: type.caption, lineHeight: 19 },
-  interestGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4 },
-  interestGridItem: { marginBottom: 8, paddingHorizontal: 4, width: '50%' },
-  interestChip: { alignItems: 'center', justifyContent: 'center', minHeight: 46, paddingVertical: 10, width: '100%' },
+  tipList: { gap: spacing.sm },
+  tipRow: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm },
+  tipText: { color: colors.inkMuted, flex: 1, fontSize: type.caption, lineHeight: 19 },
   footnote: { color: colors.inkSoft, fontSize: type.caption2, lineHeight: 18 },
-  availabilityCard: { alignItems: 'center', backgroundColor: colors.card, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.md, minHeight: 76, padding: spacing.md },
-  availabilityIcon: { alignItems: 'center', backgroundColor: colors.primarySoft, borderRadius: 14, height: 44, justifyContent: 'center', width: 44 },
-  availabilityTitle: { color: colors.ink, fontSize: type.body, fontWeight: '800' },
-  availabilitySubtitle: { color: colors.inkMuted, fontSize: type.caption, lineHeight: 18, marginTop: 2 },
-  previewCard: { alignItems: 'center', backgroundColor: colors.card, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.md, padding: spacing.md },
-  previewAvatar: { backgroundColor: colors.surfaceRaised, borderRadius: 28, height: 56, width: 56 },
-  previewName: { color: colors.ink, fontSize: type.body, fontWeight: '800' },
-  previewMeta: { color: colors.inkMuted, fontSize: type.caption, marginTop: 2 },
-  previewInterests: { color: colors.primary, fontSize: type.caption, fontWeight: '700', marginTop: 2 },
-  bioInput: { backgroundColor: colors.card, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.lg, borderWidth: 1, color: colors.ink, fontSize: type.body, lineHeight: 22, minHeight: 130, padding: spacing.md },
-  counter: { color: colors.inkSoft, fontSize: type.caption2, marginTop: 4, textAlign: 'right' },
-  footer: { paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, paddingTop: spacing.xs },
+  bioInput: { backgroundColor: colors.card, borderColor: colors.line, borderCurve: 'continuous', borderRadius: radius.lg, borderWidth: 1, color: colors.ink, fontSize: type.body, lineHeight: 22, minHeight: 120, padding: spacing.md },
+  counter: { color: colors.inkSoft, fontSize: type.caption2, textAlign: 'right' },
+  spotifyCard: { marginHorizontal: 0, marginVertical: 0 },
+  footer: { paddingHorizontal: gutter, paddingBottom: spacing.sm, paddingTop: spacing.xs },
   requirementHint: { color: colors.inkMuted, fontSize: type.caption, marginBottom: spacing.sm, textAlign: 'center' },
   footerGlass: { borderRadius: radius.pill, borderCurve: 'continuous', padding: 4 },
   footerGlassContent: { alignItems: 'stretch', width: '100%' },
   footerButton: { alignSelf: 'stretch', borderRadius: radius.pill },
-  errorCard: { alignItems: 'center', backgroundColor: colors.dangerSoft || '#FEE2E2', borderRadius: radius.lg, gap: spacing.sm, padding: spacing.xl },
-  errorText: { color: colors.danger, fontSize: type.subheadline, fontWeight: '700', textAlign: 'center' },
 });

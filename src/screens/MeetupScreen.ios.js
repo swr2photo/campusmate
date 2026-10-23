@@ -1,3 +1,4 @@
+import { Pressable } from '../components/NativePressable';
 import { Button, Text } from '../components/NativeTypography';
 import { font } from '../components/brandFont';
 import { useNativePalette } from '../theme';
@@ -5,7 +6,7 @@ import RNText from '../components/AppText';
 import PlacePhoto from '../components/PlacePhoto';
 import PlacePreviewCard from '../components/PlacePreviewCard';
 import PlaceDetailSheet from '../components/PlaceDetailSheet';
-import { Keyboard, Modal, Pressable, useColorScheme, View, ScrollView as RNScrollView, useWindowDimensions, StyleSheet } from 'react-native';
+import { Keyboard, Modal, Platform, useColorScheme, View, ScrollView as RNScrollView, useWindowDimensions, StyleSheet } from 'react-native';
 import ExpoImage from '../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SymbolView } from 'expo-symbols';
@@ -28,6 +29,7 @@ import { approvePartyRequest, cancelParty, createParty, rejectPartyRequest, requ
 import { preparePartyApproval } from '../services/groupChatEncryption';
 import { useConfirm } from '../context/ConfirmContext';
 import { buildPartySchedule, defaultScheduleWindow } from '../utils/partySchedule';
+import { useIsTabPreview } from '../context/TabPreviewContext';
 
 const CATEGORIES = [
   { id: 'all', label: 'ทั้งหมด', symbol: 'square.grid.2x2.fill' },
@@ -66,13 +68,15 @@ const insetShape = shapes.roundedRectangle({ cornerRadius: 16, roundedCornerStyl
 
 export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId = null }) {
   const router = useRouter();
+  const isTabPreview = useIsTabPreview();
   const tourScrollRef = useRef(null);
   const palette = usePalette();
   const { confirm } = useConfirm();
   const colorScheme = useColorScheme();
   const { width: windowWidth } = useWindowDimensions();
+  const isTablet = (Platform.OS === 'ios' && Boolean(Platform.isPad)) || windowWidth >= 700;
   const [measuredWidth, setMeasuredWidth] = useState(null);
-  const layoutWidth = Math.min(measuredWidth || windowWidth, windowWidth, 760);
+  const layoutWidth = Math.min(measuredWidth || windowWidth, windowWidth, isTablet ? 1040 : 920);
   const bannerWidth = layoutWidth - 40;
   const { campusSpots = [], selectedMeetup } = useAppFeed();
   const { profile: myProfile } = useAppProfile();
@@ -281,22 +285,29 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       const nextWidth = nativeEvent.layout.width;
       if (nextWidth > 0) setMeasuredWidth(current => current != null && Math.abs(current - nextWidth) < 1 ? current : nextWidth);
     }} style={{ flex: 1, backgroundColor: palette.background }}>
-      {/* Native UISearchController + bar buttons: iOS 26+ renders them as system Liquid Glass. */}
-      <Stack.SearchBar
-        autoCapitalize="none"
-        cancelButtonText="ยกเลิก"
-        hideWhenScrolling={false}
-        onCancelButtonPress={() => setQuery('')}
-        onChangeText={(event) => setQuery(event.nativeEvent.text)}
-        placeholder={partyOnly ? 'ค้นหากิจกรรมหรือสถานที่ตี้' : 'ค้นหาสถานที่หรือกิจกรรม'}
-        placement="stacked"
-        textColor={palette.text}
-        tintColor={palette.accent}
-      />
-      <Stack.Toolbar placement="right">
-        <Stack.Toolbar.Button accessibilityLabel="เปิดแผนที่" icon="map" onPress={() => openMapForSpot()} />
-        <Stack.Toolbar.Button accessibilityLabel="สร้างกิจกรรม" icon="plus" onPress={() => openScheduleFor(visibleSpots[0] || campusSpots[0])} />
-      </Stack.Toolbar>
+      {/* Native UISearchController + bar button (system Liquid Glass on iOS 26+).
+          Skipped when this screen is a neighbour-tab preview inside Messages or
+          Profile: there they attached to that tab's navigation bar (the stray
+          search field and map button). The map stays reachable from the map
+          card, place details and party cards. */}
+      {isTabPreview ? null : (
+        <>
+          <Stack.SearchBar
+            autoCapitalize="none"
+            cancelButtonText="ยกเลิก"
+            hideWhenScrolling
+            onCancelButtonPress={() => setQuery('')}
+            onChangeText={(event) => setQuery(event.nativeEvent.text)}
+            placeholder={partyOnly ? 'ค้นหากิจกรรมหรือสถานที่ตี้' : 'ค้นหาสถานที่หรือกิจกรรม'}
+            placement="stacked"
+            textColor={palette.text}
+            tintColor={palette.accent}
+          />
+          <Stack.Toolbar placement="right">
+            <Stack.Toolbar.Button accessibilityLabel="สร้างกิจกรรม" icon="plus" onPress={() => openScheduleFor(visibleSpots[0] || campusSpots[0])} />
+          </Stack.Toolbar>
+        </>
+      )}
       {partyOnly ? <TourTarget id="party-finder.list" style={{ flex: 1 }}>
         <PartyFinderSection
           targetPartyId={targetPartyId}
@@ -323,11 +334,19 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       </TourTarget> : <RNScrollView
         ref={tourScrollRef}
         style={{ flex: 1, width: '100%' }}
-        contentContainerStyle={{ paddingTop: 12, paddingBottom: 80, paddingHorizontal: 20 }}
+        contentContainerStyle={{
+          alignSelf: 'center',
+          maxWidth: isTablet ? 1040 : undefined,
+          paddingBottom: 80,
+          paddingHorizontal: isTablet ? 24 : 20,
+          paddingTop: 12,
+          width: '100%',
+        }}
         showsVerticalScrollIndicator={false}
         contentInsetAdjustmentBehavior="automatic"
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
+        scrollEventThrottle={16}
       >
         {!partyOnly && (
           <View style={{ gap: 16 }}>
@@ -382,14 +401,18 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
             </View>
 
             {visibleSpots.length ? (
-              <View style={{ gap: 12 }}>
+              <View style={[
+                { gap: 12 },
+                isTablet && { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+              ]}>
                 {visibleSpots.map((spot) => (
-                  <PlacePreviewCard
-                    key={spot.id}
-                    spot={spot}
-                    selected={selectedMeetup?.id === spot.id}
-                    onPress={setDetailSpot}
-                  />
+                  <View key={spot.id} style={isTablet ? { width: '48.8%' } : { width: '100%' }}>
+                    <PlacePreviewCard
+                      spot={spot}
+                      selected={selectedMeetup?.id === spot.id}
+                      onPress={setDetailSpot}
+                    />
+                  </View>
                 ))}
               </View>
             ) : (

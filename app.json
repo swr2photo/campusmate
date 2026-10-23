@@ -3,8 +3,8 @@
     "name": "CampusMate",
     "slug": "campusmate",
     "scheme": "campusmate",
-    "version": "3.1.4",
-    "orientation": "default",
+    "version": "3.1.7",
+    "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/icon.png",
     "assetBundlePatterns": [
@@ -19,13 +19,14 @@
         "NSMicrophoneUsageDescription": "CampusMate ใช้ไมโครโฟนเพื่อโทรด้วยเสียง วิดีโอคอล และส่งข้อความเสียง ตามความยินยอมของคุณ",
         "NSPhotoLibraryUsageDescription": "CampusMate เข้าถึงคลังรูปภาพเฉพาะเมื่อคุณเลือกส่งรูปหรือวิดีโอในห้องแชต",
         "NSLocationWhenInUseUsageDescription": "CampusMate ใช้ตำแหน่งขณะใช้งานเพื่อคำนวณระยะทางกับเพื่อนและจุดนัดหมายในรั้วมหาวิทยาลัย พิกัดจริงไม่ถูกแสดงบนโปรไฟล์สาธารณะ",
-        "CADisableMinimumFrameDurationOnPhone": true
+        "CADisableMinimumFrameDurationOnPhone": true,
+        "EXDevMenuShowFloatingActionButton": false
       }
     },
     "android": {
       "package": "com.campusmate.app",
       "googleServicesFile": "./google-services.json",
-      "versionCode": 93,
+      "versionCode": 97,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1E6FE0"
@@ -158,7 +159,7 @@
       "revenueCatAndroidKey": "goog_wGhMIrpFIUnKKTRWhfdemIvuxOi"
     },
     "owner": "doralikon",
-    "runtimeVersion": "3.1.4",
+    "runtimeVersion": "3.1.7",
     "updates": {
       "url": "https://u.expo.dev/5ca64c3a-3182-460f-87f6-2342aaba4e2f"
     }

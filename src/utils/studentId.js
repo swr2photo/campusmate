@@ -59,6 +59,14 @@ export function getAcademicYearFromStudentId(studentId, date = new Date()) {
   return `ชั้นปีที่ ${yearsSinceAdmission + 1}`;
 }
 
+/** Year values are already stored as "ชั้นปีที่ 1". Don't prefix that again. */
+export function formatStudyYearLabel(year) {
+  const value = String(year || '').replace(/\s+/g, ' ').trim();
+  if (!value) return '';
+  if (value.startsWith('ชั้นปี')) return value;
+  return `ชั้นปี ${value}`;
+}
+
 export const ACADEMIC_YEARS = [
   'ชั้นปีที่ 1',
   'ชั้นปีที่ 2',

@@ -7,9 +7,9 @@ export function normalizeRustOrigin(value) {
   return url.origin;
 }
 
-export function createRustBackendClient({ baseURL, fetch, storage, timeoutMs = 12000, now = Date.now }) {
+export function createRustBackendClient({ baseURL, fetch, storage, timeoutMs = 25000, now = Date.now }) {
   const origin = normalizeRustOrigin(baseURL);
-  let session = null, epoch = 0, refreshing = null, restoring = null, writes = Promise.resolve();
+  let session = null, epoch = 0, refreshing = null, restoring = null, launching = true, writes = Promise.resolve();
   const listeners = new Set();
   const notify = () => listeners.forEach(listener => { try { listener(session?.user ?? null); } catch { /* Subscribers cannot interrupt credential persistence. */ } });
   const persist = action => {
@@ -26,7 +26,11 @@ export function createRustBackendClient({ baseURL, fetch, storage, timeoutMs = 1
   async function call(path, { method = 'POST', body, token } = {}) {
     if (!/^\/v1\/[a-zA-Z0-9/_-]+$/.test(path)) throw new Error('API path ไม่ถูกต้อง');
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     try {
       const response = await fetch(`${origin}${path}`, {
         method, redirect: 'error', signal: controller.signal,
@@ -45,6 +49,23 @@ export function createRustBackendClient({ baseURL, fetch, storage, timeoutMs = 1
         });
       }
       return value;
+    } catch (error) {
+      if (timedOut) {
+        throw Object.assign(new Error('หมดเวลาเชื่อมต่อกับเซิร์ฟเวอร์ (timeout/aborted)'), {
+          code: 'deadline-exceeded',
+          status: 408,
+          cause: error,
+        });
+      }
+      const msg = String(error?.message || '').toLowerCase();
+      if (error?.name === 'AbortError' || msg.includes('cancel') || msg.includes('abort')) {
+        throw Object.assign(new Error('คำขอถูกยกเลิก (cancelled/aborted)'), {
+          code: 'cancelled',
+          status: 499,
+          cause: error,
+        });
+      }
+      throw error;
     } finally { clearTimeout(timer); }
   }
   async function accept(value, expected) {
@@ -78,6 +99,38 @@ export function createRustBackendClient({ baseURL, fetch, storage, timeoutMs = 1
     })();
     refreshing = pending;
     try { return await pending; } finally { if (refreshing === pending) refreshing = null; }
+  }
+  async function restore() {
+    if (session?.accessToken) return session.user;
+    if (restoring) return restoring;
+    const expected = epoch;
+    const pending = (async () => {
+      let saved;
+      try { saved = await storage.read(); }
+      catch (error) {
+        if (epoch !== expected) throw changed();
+        if (!(error instanceof SyntaxError)) throw error;
+        launching = false;
+        await persist(() => storage.clear()); return null;
+      }
+      if (epoch !== expected) throw changed();
+      launching = false;
+      if (!saved) return null;
+      if (!/^[0-9a-f]{64}$/.test(saved.refreshToken) || typeof saved.user?.uid !== 'string' || !saved.user.uid.length || saved.user.uid.length > 128) {
+        await persist(() => storage.clear()); return null;
+      }
+      session = { ...saved, expiresAt: 0 };
+      await refresh(); return session?.user ?? null;
+    })();
+    restoring = pending;
+    try { return await pending; } finally { if (restoring === pending) restoring = null; }
+  }
+  // The app renders its cached account before secure storage has been read.
+  // Until that first read, callers wait for the stored session instead of
+  // being told to sign in. Any sign-in/out bumps the epoch and ends the wait,
+  // so a late read can never revive a session that was replaced or cleared.
+  async function settled() {
+    if (!session?.user && launching && epoch === 0) await restore();
   }
   return {
     origin,
@@ -116,28 +169,13 @@ export function createRustBackendClient({ baseURL, fetch, storage, timeoutMs = 1
       const value = await call('/v1/auth/signup', { body: { email, password } });
       return accept(value, expected);
     },
-    async restore() {
-      if (session?.accessToken) return session.user;
-      if (restoring) return restoring;
+    restore,
+    // The signed-in user (null when signed out), after the launch restore.
+    async ready() {
       const expected = epoch;
-      const pending = (async () => {
-        let saved;
-        try { saved = await storage.read(); }
-        catch (error) {
-          if (epoch !== expected) throw changed();
-          if (!(error instanceof SyntaxError)) throw error;
-          await persist(() => storage.clear()); return null;
-        }
-        if (epoch !== expected) throw changed();
-        if (!saved) return null;
-        if (!/^[0-9a-f]{64}$/.test(saved.refreshToken) || typeof saved.user?.uid !== 'string' || !saved.user.uid.length || saved.user.uid.length > 128) {
-          await persist(() => storage.clear()); return null;
-        }
-        session = { ...saved, expiresAt: 0 };
-        await refresh(); return session?.user ?? null;
-      })();
-      restoring = pending;
-      try { return await pending; } finally { if (restoring === pending) restoring = null; }
+      if (!session?.user) await settled();
+      if (epoch !== expected) throw changed();
+      return session?.user ?? null;
     },
     async signOut() {
       const previous = session;
@@ -155,6 +193,8 @@ export function createRustBackendClient({ baseURL, fetch, storage, timeoutMs = 1
     },
     async request(path, options = {}) {
       const expected = epoch;
+      if (!session?.user) await settled();
+      if (epoch !== expected) throw changed();
       if (!session?.user) throw Object.assign(new Error('กรุณาเข้าสู่ระบบ'), { code: 'unauthenticated' });
       if (session.expiresAt <= now() + 30000) await refresh();
       if (epoch !== expected) throw changed();
@@ -175,6 +215,8 @@ export function createRustBackendClient({ baseURL, fetch, storage, timeoutMs = 1
     // (Server-Sent Events, native file uploads). Never persist the result.
     async accessToken() {
       const expected = epoch;
+      if (!session?.user) await settled();
+      if (epoch !== expected) throw changed();
       if (!session?.user) throw Object.assign(new Error('กรุณาเข้าสู่ระบบ'), { code: 'unauthenticated' });
       if (session.expiresAt <= now() + 30000) await refresh();
       if (epoch !== expected || !session?.accessToken) throw changed();

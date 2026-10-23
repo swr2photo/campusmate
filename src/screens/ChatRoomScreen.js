@@ -1,3 +1,8 @@
+import { useChatImageOutbox } from '../context/ChatImageOutboxContext';
+import ChatImageUploadBubble from '../components/ChatImageUploadBubble';
+import { Pressable } from '../components/NativePressable';
+import { useChatPresence } from '../context/ChatPresenceContext';
+import NativeCard from '../components/NativeCard';
 import Text from '../components/AppText';
 import { AppTextInput as TextInput } from '../components/AppText';
 import { randomUUID } from 'expo-crypto';
@@ -19,7 +24,7 @@ import ReplyPreview from '../components/ReplyPreview';
 import MessageTimeSwipeArea from '../components/MessageTimeSwipeArea';
 import { createReplySnapshot, resolveMessageReply } from '../utils/messageReply';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActionSheetIOS, ActivityIndicator, Animated, AppState, Easing, FlatList, Image, Keyboard, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { ActionSheetIOS, ActivityIndicator, Animated, AppState, Easing, FlatList, Image, Keyboard, Linking, Modal, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import Reanimated, {
   Extrapolation,
@@ -29,10 +34,9 @@ import Reanimated, {
   withSpring,
   withTiming,
 } from 'react-native-reanimated';
-import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { scheduleOnRN } from 'react-native-worklets';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { project, rubberband } from '../utils/motion';
 import { router, useLocalSearchParams } from 'expo-router';
 import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, startAfter } from 'firebase/firestore';
 import { requireFirebase } from '../services/dbService';
@@ -67,10 +71,13 @@ import ChatMediaPickerSheet, { MEDIA_PICKER_COLLAPSED_HEIGHT } from '../componen
 import ChatGiphyPickerSheet from '../components/ChatGiphyPickerSheet';
 import SpotifyTrackSearchSheet from '../components/SpotifyTrackSearchSheet';
 import TrackPreviewButton from '../components/TrackPreviewButton';
+import TrackShareCard from '../components/TrackShareCard';
+import { chatImageSize, isGifMessage, isChatMediaPlaceholder } from '../utils/chatMediaLayout';
 import ChatImageViewerModal from '../components/ChatImageViewerModal';
 import ChatImageEditorModal from '../components/ChatImageEditorModal';
 import { Image as ExpoImage } from 'expo-image';
 import ReportModal from '../components/ReportModal';
+import ChatSettingsSheet from '../components/ChatSettingsSheet';
 import {
   extractFirstImageUrl,
   getPastedImageFromClipboard,
@@ -88,6 +95,7 @@ import {
   stopAudioRecording,
   takeChatPhoto,
   uploadChatMedia,
+  verifyImageSafety,
   preCacheDecryptedMedia,
   getDecryptedMediaUri,
 } from '../services/chatMediaService';
@@ -283,6 +291,7 @@ export default function ChatRoomScreen() {
     [allConversations, conversations, normalizedChatId]
   );
   const markedReadRef = useRef(null);
+  const presence = useChatPresence(normalizedChatId);
 
   useEffect(() => {
     if (normalizedChatId) {
@@ -295,9 +304,10 @@ export default function ChatRoomScreen() {
 
   const activeUnreadCount = chat?.unreadCounts?.[currentUserId] || 0;
 
-  const myChatSettings = chat?.participantSettings?.[currentUserId] || {};
+  const myChatSettings = chat?.participantSettings?.[currentUserId] || chat?.mySettings || {};
   const showPinnedMeetup = myChatSettings.showPinnedMeetup !== false;
   const isMuted = Boolean(myChatSettings.isMuted);
+  const isMarkedUnread = myChatSettings.markedUnread === true;
 
   const [actionMessage, setActionMessage] = useState(null);
   const [replyingTo, setReplyingTo] = useState(null);
@@ -488,17 +498,17 @@ export default function ChatRoomScreen() {
   }, [chat?.id, currentUserId, sendMessage]);
 
   useEffect(() => {
-    if (!activeUnreadCount || !chat?.id) {
+    if ((!activeUnreadCount && !isMarkedUnread) || !chat?.id) {
       markedReadRef.current = null;
       return;
     }
-    const readKey = `${chat.id}:${activeUnreadCount}`;
+    const readKey = `${chat.id}:${activeUnreadCount}:${isMarkedUnread ? 'marked' : 'unmarked'}`;
     if (markedReadRef.current === readKey) return;
     markedReadRef.current = readKey;
     Promise.resolve(markAsRead(chat.id)).catch(() => {
       if (markedReadRef.current === readKey) markedReadRef.current = null;
     });
-  }, [chat?.id, activeUnreadCount, markAsRead]);
+  }, [chat?.id, activeUnreadCount, isMarkedUnread, markAsRead]);
 
   const onBack = () => {
     if (router.canGoBack()) {
@@ -520,6 +530,16 @@ export default function ChatRoomScreen() {
   const [editingMediaUris, setEditingMediaUris] = useState([]);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [mediaComposerDraft, setMediaComposerDraft] = useState(null);
+
+  const openMediaComposerDraft = useCallback((draft) => {
+    setMediaComposerDraft(draft);
+    if (!draft || draft.type === 'video' || !chat?.id || !currentUserId) return;
+    getOrFetchConversationKey(chat.id, currentUserId).catch(() => {});
+    const uris = draft.uris?.length ? draft.uris : (draft.uri ? [draft.uri] : []);
+    for (const uri of uris) {
+      if (uri) verifyImageSafety(uri).catch(() => {});
+    }
+  }, [chat?.id, currentUserId]);
   const [clipboardImageDetected, setClipboardImageDetected] = useState(false);
 
   const checkClipboard = useCallback(async () => {
@@ -598,6 +618,8 @@ export default function ChatRoomScreen() {
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [newMessagesBelow, setNewMessagesBelow] = useState(0);
   const [isListAnchored, setIsListAnchored] = useState(false);
+  const isListAnchoredRef = useRef(isListAnchored);
+  isListAnchoredRef.current = isListAnchored;
   const lastSeenMessageIdRef = useRef(null);
   const isNearBottomRef = useRef(true);
   const bottomAnchoredRef = useRef(false);
@@ -652,6 +674,8 @@ export default function ChatRoomScreen() {
       const nextById = new Map();
       const decryptedList = rawDocs.map((doc) => {
         const stamp = [
+          currentKey ? 'key-ready' : 'key-pending',
+          toDate(doc.createdAt)?.getTime() || 0, doc.pendingSync || '', doc.sendStatus || '',
           doc.ciphertext || '',
           doc.nonce || '',
           JSON.stringify(doc.reactions || {}),
@@ -703,6 +727,9 @@ export default function ChatRoomScreen() {
         messagesQuery,
         (snapshot) => {
           try {
+            // A cold memory cache can emit an empty local snapshot before the
+            // server answers. It must not erase the persisted conversation.
+            if (snapshot.empty && snapshot.metadata?.fromCache) return;
             if (snapshot.docs.length >= 40) {
               setHasMoreOlder(true);
               oldestDocRef.current = snapshot.docs[snapshot.docs.length - 1];
@@ -806,6 +833,7 @@ export default function ChatRoomScreen() {
   }, [chat?.historyClearedAt, currentUserId, hasMoreOlder, isLoadingOlder, normalizedChatId]);
 
   const [localPendingMediaMessages, setLocalPendingMediaMessages] = useState([]);
+  const { messages: imageUploadMessages, enqueue: enqueueImages } = useChatImageOutbox(normalizedChatId);
 
   const effectiveMessages = useMemo(() => {
     const cachedMessages = Array.isArray(chat?.messages) ? chat.messages : [];
@@ -821,7 +849,11 @@ export default function ChatRoomScreen() {
     const pendingLocalMedia = localPendingMediaMessages.filter(
       (m) => !baseIds.has(m.id) && !(m.mediaUrl && baseMediaUrls.has(m.mediaUrl))
     );
-    const combined = [...base, ...pendingOptimistic, ...pendingLocalMedia];
+    const confirmedIds = new Set(base.filter(message => !message.pendingSync).map(message => message.id));
+    const pendingImages = imageUploadMessages.filter(message => !confirmedIds.has(message.id));
+    const pendingImageIds = new Set(pendingImages.map(message => message.id));
+    const combined = [...base.filter(message => !pendingImageIds.has(message.id)), ...pendingImages,
+      ...pendingOptimistic.filter(message => !pendingImageIds.has(message.id)), ...pendingLocalMedia];
     const seenIds = new Set();
     const uniqueMessages = [];
     for (const msg of combined) {
@@ -833,7 +865,7 @@ export default function ChatRoomScreen() {
     return uniqueMessages.sort(
       (a, b) => (toDate(messageTimestamp(a))?.getTime() || 0) - (toDate(messageTimestamp(b))?.getTime() || 0)
     );
-  }, [chat?.messages, currentUserId, localPendingMediaMessages, scopedDirectMessages, scopedOlderMessages]);
+  }, [chat?.messages, currentUserId, imageUploadMessages, localPendingMediaMessages, scopedDirectMessages, scopedOlderMessages]);
 
   useEffect(() => {
     if (!normalizedChatId || scopedDirectMessages === null || !cacheConversationMessages) return undefined;
@@ -1083,7 +1115,7 @@ export default function ChatRoomScreen() {
 
   const scrollToLatest = useCallback((animated = false, force = false) => {
     if (!listRef.current) return;
-    const allowAnimated = Boolean(animated && bottomAnchoredRef.current && isListAnchored);
+    const allowAnimated = Boolean(animated && bottomAnchoredRef.current && isListAnchoredRef.current);
     const run = () => {
       try {
         listRef.current?.scrollToEnd({ animated: allowAnimated });
@@ -1098,7 +1130,7 @@ export default function ChatRoomScreen() {
     if (force) {
       requestAnimationFrame(run);
     }
-  }, [isListAnchored]);
+  }, []);
 
   const handleScroll = useCallback((event) => {
     const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent;
@@ -1572,96 +1604,17 @@ export default function ChatRoomScreen() {
   const handleSendImage = useCallback(async (imageUri, captionText, viewMode = 'chat') => {
     const uris = Array.isArray(imageUri) ? imageUri.filter(Boolean) : (imageUri ? [imageUri] : []);
     if (!uris.length || !chat?.id) return;
-    setSelectedImage(null);
-    setInputText('');
-    setIsMediaPickerOpen(false);
-    const replySnapshot = replyingTo;
-    setReplyingTo(null);
-    const safeCaption = (captionText || '').trim();
-    const stamp = Date.now();
-    const pending = uris.map((uri, index) => ({
-      id: `temp-img-${stamp}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-      uri,
-      caption: index === 0 ? safeCaption : '',
-    }));
-    const pendingIds = new Set(pending.map((item) => item.id));
-
-    setLocalPendingMediaMessages((prev) => [
-      ...prev,
-      ...pending.map((item, index) => ({
-        id: item.id,
-        sender: 'me',
-        senderId: currentUserId,
-        text: item.caption || '[รูปภาพ]',
-        createdAt: stamp + index,
-        time: stamp + index,
-        mediaType: 'image',
-        mediaUrl: item.uri,
-        viewMode,
-        isUploading: true,
-        pendingSync: true,
-        replyTo: index === 0 && replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
-      })),
-    ]);
-    scrollToLatest(true, true);
-
-    let sentCount = 0;
     try {
-      const conversationKey = await getOrFetchConversationKey(chat.id, currentUserId);
-      const uploadResults = new Array(pending.length);
-      let nextUploadIndex = 0;
-      let uploadFailed = false;
-      const startNextUpload = () => {
-        if (uploadFailed || nextUploadIndex >= pending.length) return;
-        const index = nextUploadIndex++;
-        uploadResults[index] = uploadChatMedia(pending[index].uri, {
-          conversationId: chat.id,
-          mediaType: 'image',
-          extension: 'jpg',
-          conversationKey,
-        }).then(
-          (downloadUrl) => ({ ok: true, downloadUrl }),
-          (error) => {
-            uploadFailed = true;
-            return { ok: false, error };
-          }
-        );
-      };
-      startNextUpload();
-      startNextUpload();
-      for (let index = 0; index < pending.length; index += 1) {
-        const item = pending[index];
-        const uploadResult = await uploadResults[index];
-        if (!uploadResult.ok) throw uploadResult.error;
-        const { downloadUrl } = uploadResult;
-        preCacheDecryptedMedia(downloadUrl, item.uri, { conversationKey });
-        await sendMessage(chat.id, item.caption || '[รูปภาพ]', {
-          mediaType: 'image',
-          viewMode,
-          mediaUrl: downloadUrl,
-          clientMessageId: item.id,
-          replyTo: index === 0 && replySnapshot ? createReplySnapshot(replySnapshot) : undefined,
-        });
-        sentCount += 1;
-        setLocalPendingMediaMessages((prev) => prev.filter((message) => message.id !== item.id));
-        startNextUpload();
-      }
+      enqueueImages(chat.id, uris, captionText, viewMode, createReplySnapshot(replyingTo));
+      setSelectedImage(null);
+      setInputText('');
+      setIsMediaPickerOpen(false);
+      setReplyingTo(null);
       scrollToLatest(true, true);
-    } catch (err) {
-      if (err.isModerationViolation || err.isModerationUnavailable) {
-        showImageModeration(err);
-        if (sentCount === 0) {
-          setSelectedImage({ uri: uris[0], uris });
-          setInputText(safeCaption);
-          setReplyingTo(replySnapshot);
-        }
-      } else {
-        showAlert('ส่งรูปภาพไม่สำเร็จ', err.message || 'กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
-      }
-    } finally {
-      setLocalPendingMediaMessages((prev) => prev.filter((message) => !pendingIds.has(message.id)));
+    } catch (error) {
+      showAlert('ส่งรูปภาพไม่สำเร็จ', error.message || 'กรุณาลองอีกครั้ง', { tone: 'danger' });
     }
-  }, [chat?.id, currentUserId, replyingTo, scrollToLatest, sendMessage, showImageModeration]);
+  }, [chat?.id, enqueueImages, replyingTo, scrollToLatest]);
 
   const handleSendGif = useCallback(
     async (gif) => {
@@ -1807,6 +1760,7 @@ export default function ChatRoomScreen() {
 
   const replyMessagesById = useMemo(() => new Map(effectiveMessages.map(message => [message.id, message])), [effectiveMessages]);
   const renderMessage = useCallback(({ item, index }) => {
+    if (item.imageOutbox) return <ChatImageUploadBubble item={item} />;
     item = resolveMessageReply(item, replyMessagesById);
     const previousMessage = effectiveMessages[index - 1];
     const currentMessageDate = toDate(messageTimestamp(item));
@@ -1849,7 +1803,7 @@ export default function ChatRoomScreen() {
     return (
       <SafeAreaView style={styles.roomContainer}>
         <View style={styles.roomHeader}>
-          <Pressable accessibilityLabel="ย้อนกลับ" onPress={onBack} style={styles.backButton}>
+          <Pressable accessibilityLabel="ย้อนกลับ" hitSlop={5} onPress={onBack} style={styles.backButton}>
             <FeatureIcon color={colors.ink} name="chevron.left" size={23} />
           </Pressable>
           <Text style={styles.roomName}>ไม่พบห้องสนทนา</Text>
@@ -1869,7 +1823,7 @@ export default function ChatRoomScreen() {
         style={{ flex: 1 }}
       >
         <View style={styles.roomHeader}>
-          <Pressable accessibilityLabel="ย้อนกลับ" onPress={onBack} style={styles.backButton}>
+          <Pressable accessibilityLabel="ย้อนกลับ" hitSlop={5} onPress={onBack} style={styles.backButton}>
             <FeatureIcon color={colors.ink} name="chevron.left" size={23} />
           </Pressable>
           <Pressable
@@ -1881,7 +1835,7 @@ export default function ChatRoomScreen() {
             <Avatar avatarColor={chat.avatarColor} cacheScope={chat.profileId} cacheVersion={chat.participantProfiles?.[chat.profileId]?.avatarRevision} colors={colors} emoji={chat.avatar} size={44} uri={chat.avatarUri} />
             <View style={styles.roomIdentity}>
               <Text numberOfLines={1} style={styles.roomName}>{chat.name}</Text>
-              <Text numberOfLines={1} style={styles.roomSubtitle}>{chat.subtitle || 'เพื่อนใน CampusMate'}</Text>
+              <Text numberOfLines={1} style={styles.roomSubtitle}>{presence.label || chat.subtitle || 'เพื่อนใน CampusMate'}</Text>
             </View>
           </Pressable>
           <View style={styles.headerRightActions}>
@@ -1901,6 +1855,7 @@ export default function ChatRoomScreen() {
                 <Pressable
                   accessibilityLabel="โทรด้วยเสียง"
                   accessibilityRole="button"
+                  hitSlop={5}
                   onPress={() => startVoiceCall(chat, chat?.id)}
                   style={({ pressed }) => [styles.headerCallBtn, pressed && styles.pressed]}
                 >
@@ -1909,6 +1864,7 @@ export default function ChatRoomScreen() {
                 <Pressable
                   accessibilityLabel="วิดีโอคอล"
                   accessibilityRole="button"
+                  hitSlop={5}
                   onPress={() => startVideoCall(chat, chat?.id)}
                   style={({ pressed }) => [styles.headerCallBtn, pressed && styles.pressed]}
                 >
@@ -1919,6 +1875,7 @@ export default function ChatRoomScreen() {
             <Pressable
               accessibilityLabel="ตั้งค่าแชต"
               accessibilityRole="button"
+              hitSlop={5}
               onPress={() => setIsSettingsOpen(true)}
               style={({ pressed }) => [styles.headerMoreBtn, pressed && styles.pressed]}
             >
@@ -1929,7 +1886,7 @@ export default function ChatRoomScreen() {
 
         {partnerMeetup && showPinnedMeetup ? (
           <View style={styles.pinnedMeetupContainer}>
-            <View style={[styles.chatMeetupCard, !isBannerExpanded && styles.chatMeetupCardCompact]}>
+            <NativeCard style={[styles.chatMeetupCard, !isBannerExpanded && styles.chatMeetupCardCompact]}>
               <View style={styles.chatMeetupHeader}>
                 <Pressable
                   onPress={() => setIsBannerExpanded((curr) => !curr)}
@@ -2058,7 +2015,7 @@ export default function ChatRoomScreen() {
                   </Pressable>
                 </View>
               ) : null}
-            </View>
+            </NativeCard>
           </View>
         ) : null}
 
@@ -2069,8 +2026,8 @@ export default function ChatRoomScreen() {
             onHide={hideAllMessageTimes}
           >
             <FlatList
-            contentContainerStyle={styles.messageList}
-            style={{ flex: 1, opacity: isListAnchored || effectiveMessages.length === 0 ? 1 : 0 }}
+            contentContainerStyle={[styles.messageList, { paddingTop: 16, paddingBottom: 16, paddingHorizontal: 16 }]}
+            style={{ flex: 1 }}
             data={effectiveMessages}
             keyExtractor={(item) => item.id}
             keyboardDismissMode="none"
@@ -2088,10 +2045,10 @@ export default function ChatRoomScreen() {
                   </View>
                 ) : null}
                 <View style={chat.encryptionPending ? styles.e2eePendingBanner : styles.e2eeBanner}>
-                  <FeatureIcon color={chat.encryptionPending ? '#A15C00' : colors.primary} name="lock.shield.fill" size={14} />
+                  <FeatureIcon color={chat.encryptionPending ? '#A15C00' : '#9CA3AF'} name="lock.shield.fill" size={13} />
                   <Text style={chat.encryptionPending ? styles.e2eePendingText : styles.e2eeText}>
                     {chat.encryptionPending
-                      ? 'กำลังเชื่อมกุญแจเข้ารหัส ส่งข้อความได้เลย ไม่ต้องรออัปเดตแอป'
+                      ? 'กำลังเตรียมความปลอดภัยให้แชตนี้ ส่งข้อความได้เลย'
                       : 'แชตนี้เข้ารหัสแบบต้นทางถึงปลายทาง'}
                   </Text>
                 </View>
@@ -2381,15 +2338,15 @@ export default function ChatRoomScreen() {
               ) : (
                 <View style={styles.inputCapsule}>
                   <Pressable
-                    accessibilityLabel="เปิดกล้อง"
+                    accessibilityLabel="เปิดเมนูไฟล์แนบ"
                     focusable={false}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    onPress={handleOpenCamera}
+                    onPress={handlePickImage}
                     style={({ pressed }) => [styles.capsuleSmileyBtn, pressed && styles.pressed]}
                   >
                     <FeatureIcon
                       color={colors.ink}
-                      name="camera.fill"
+                      name="plus"
                       size={22}
                     />
                   </Pressable>
@@ -2415,7 +2372,7 @@ export default function ChatRoomScreen() {
                     placeholder={
                       selectedImage
                         ? 'เพิ่มคำอธิบายรูปภาพ...'
-                        : 'ส่งข้อความ...'
+                        : 'พิมพ์ข้อความ...'
                     }
                     placeholderTextColor={colors.inkSoft}
                     keyboardAppearance={isDark ? 'dark' : 'light'}
@@ -2443,72 +2400,8 @@ export default function ChatRoomScreen() {
                       </Pressable>
                     ) : (
                       <View style={styles.capsuleActionsRow}>
-                        <Pressable
-                          accessibilityLabel="ส่งข้อความเสียง"
-                          focusable={false}
-                          hitSlop={6}
-                          onPress={handleStartRecording}
-                          style={({ pressed }) => [styles.capsuleActionIconBtn, pressed && styles.pressed]}
-                        >
-                          <FeatureIcon color={colors.ink} name="mic" size={22} />
-                        </Pressable>
-
-                        <Pressable
-                          accessibilityLabel="ส่งรูปภาพ"
-                          focusable={false}
-                          hitSlop={6}
-                          onPress={handlePickImage}
-                          style={({ pressed }) => [styles.capsuleActionIconBtn, pressed && styles.pressed]}
-                        >
-                          <FeatureIcon color={colors.ink} name="photo" size={22} />
-                        </Pressable>
-
-                        <Pressable
-                          accessibilityLabel="ค้นหาและส่ง GIF"
-                          focusable={false}
-                          hitSlop={6}
-                          onPress={() => {
-                            Keyboard.dismiss();
-                            if (isMediaPickerOpen) setIsMediaPickerOpen(false);
-                            if (showQuickEmoji) setShowQuickEmoji(false);
-                            if (isSpotifyPickerOpen) setIsSpotifyPickerOpen(false);
-                            setIsGiphyPickerOpen((prev) => !prev);
-                          }}
-                          style={({ pressed }) => [
-                            styles.capsuleActionIconBtn,
-                            isGiphyPickerOpen && { backgroundColor: colors.primarySoft, borderRadius: 12 },
-                            pressed && styles.pressed,
-                          ]}
-                        >
-                          <View style={[styles.gifCapsuleBadge, { borderColor: isGiphyPickerOpen ? colors.primary : colors.ink }]}>
-                            <Text style={[styles.gifCapsuleBadgeText, { color: isGiphyPickerOpen ? colors.primary : colors.ink }]}>
-                              GIF
-                            </Text>
-                          </View>
-                        </Pressable>
-
-                        {canUseSpotify ? (
-                          <Pressable
-                            accessibilityLabel="ค้นหาและส่งเพลง Spotify"
-                            focusable={false}
-                            hitSlop={6}
-                            onPress={() => {
-                              Keyboard.dismiss();
-                              if (isMediaPickerOpen) setIsMediaPickerOpen(false);
-                              if (showQuickEmoji) setShowQuickEmoji(false);
-                              if (isGiphyPickerOpen) setIsGiphyPickerOpen(false);
-                              // Defer open so keyboard teardown does not contend with Modal mount.
-                              requestAnimationFrame(() => setIsSpotifyPickerOpen(true));
-                            }}
-                            style={({ pressed }) => [
-                              styles.capsuleActionIconBtn,
-                              isSpotifyPickerOpen && { backgroundColor: colors.primarySoft, borderRadius: 12 },
-                              pressed && styles.pressed,
-                            ]}
-                          >
-                            <FeatureIcon color={isSpotifyPickerOpen ? colors.primary : colors.ink} name="music.note" size={22} />
-                          </Pressable>
-                        ) : null}
+                        <Pressable accessibilityLabel="เปิดกล้อง" onPress={handleOpenCamera} hitSlop={6} style={styles.capsuleActionIconBtn}><FeatureIcon color={colors.ink} name="camera.fill" size={22} /></Pressable>
+                        <Pressable accessibilityLabel="ส่งข้อความเสียง" onPress={handleStartRecording} hitSlop={6} style={styles.capsuleActionIconBtn}><FeatureIcon color={colors.ink} name="mic" size={22} /></Pressable>
                       </View>
                     )}
                   </View>
@@ -2520,7 +2413,7 @@ export default function ChatRoomScreen() {
 
         {cameraOpen && <ChatCameraModal recipientName={chat?.name} recipientAvatar={chat?.avatarUri}
           onClose={() => setCameraOpen(false)}
-          onCapture={(asset) => { setCameraOpen(false); setMediaComposerDraft(asset); }} />}
+          onCapture={(asset) => { setCameraOpen(false); openMediaComposerDraft(asset); }} />}
         {mediaComposerDraft && <ChatMediaComposer asset={mediaComposerDraft} recipientName={chat?.name} recipientAvatar={chat?.avatarUri}
           onClose={() => setMediaComposerDraft(null)}
           onSend={(asset, mode) => asset.type === 'video'
@@ -2556,20 +2449,22 @@ export default function ChatRoomScreen() {
       </KeyboardAvoidingView>
       {isMediaPickerOpen ? (
         <ChatMediaPickerSheet
+          onSelectGif={() => setIsGiphyPickerOpen(true)}
+          onSelectMusic={canUseSpotify ? () => setIsSpotifyPickerOpen(true) : undefined}
           overlay
           onSelectVideo={handlePickVideo}
           colors={{ ...colors, bg: colors.canvas }}
           isOpen={isMediaPickerOpen}
           onClose={() => setIsMediaPickerOpen(false)}
           onOpenEditor={(uri, uris) => {
-            setMediaComposerDraft({ uri, uris: uris?.length ? uris : [uri], type: 'image', edit: true });
+            openMediaComposerDraft({ uri, uris: uris?.length ? uris : [uri], type: 'image', edit: true });
             setEditingMediaUris(uris?.length ? uris : [uri]);
             setIsMediaPickerOpen(false);
           }}
           onSelectPhoto={(photoUri) => {
             if (photoUri) {
               setIsMediaPickerOpen(false);
-              setMediaComposerDraft({ uri: Array.isArray(photoUri) ? photoUri[0] : photoUri, uris: Array.isArray(photoUri) ? photoUri : [photoUri], type: 'image' });
+              openMediaComposerDraft({ uri: Array.isArray(photoUri) ? photoUri[0] : photoUri, uris: Array.isArray(photoUri) ? photoUri : [photoUri], type: 'image' });
             }
           }}
           onSelectMedia={(selected) => {
@@ -2577,7 +2472,7 @@ export default function ChatRoomScreen() {
             const first = list[0];
             if (!first?.uri) return;
             setIsMediaPickerOpen(false);
-            setMediaComposerDraft({
+            openMediaComposerDraft({
               ...first,
               type: first.type || (first.mediaType === 'video' ? 'video' : 'image'),
               uri: first.uri,
@@ -2590,7 +2485,7 @@ export default function ChatRoomScreen() {
               const res = await pickChatImages();
               if (res?.length > 0) {
                 const uris = res.map((r) => r.uri);
-                setMediaComposerDraft({ uri: uris[0], uris, type: 'image' });
+                openMediaComposerDraft({ uri: uris[0], uris, type: 'image' });
                 setIsMediaPickerOpen(false);
               }
             } catch (err) {
@@ -2599,7 +2494,7 @@ export default function ChatRoomScreen() {
           }}
         />
       ) : null}
-      <ChatSettingsModal
+      <ChatSettingsSheet
         chat={chat}
         currentUserId={currentUserId}
         colors={colors}
@@ -2691,7 +2586,7 @@ export default function ChatRoomScreen() {
         onSend={(finalUris, caption) => {
           setEditingMedia(null);
           setEditingMediaUris([]);
-          handleSendImage(finalUris, caption);
+          void handleSendImage(finalUris, caption);
         }}
         visible={Boolean(editingMedia)}
       />
@@ -2699,410 +2594,9 @@ export default function ChatRoomScreen() {
   );
 }
 
-function ChatSettingsModal({
-  chat,
-  colors,
-  isMuted,
-  isOpen,
-  onClose,
-  onNavigateMeetup,
-  onNavigateProfile,
-  onRemoveConversation,
-  onBlockUser,
-  onReportUser,
-  onToggleMute,
-  onTogglePinnedMeetup,
-  partnerMeetup,
-  showPinnedMeetup,
-}) {
-  const translateY = useSharedValue(500);
-  const fadeAnim = useSharedValue(0);
-  const sheetHeight = useSharedValue(500);
-  const dragContext = useSharedValue(0);
-  const isClosingSV = useSharedValue(0);
-  const isClosingRef = useRef(false);
-  const pendingCloseCallbackRef = useRef(null);
-
-  const finishClose = useCallback(() => {
-    const callback = pendingCloseCallbackRef.current;
-    pendingCloseCallbackRef.current = null;
-    onClose();
-    isClosingRef.current = false;
-    isClosingSV.set(0);
-    if (typeof callback === 'function') {
-      setTimeout(callback, 80);
-    }
-  }, [isClosingSV, onClose]);
-
-  const closeWithAnimation = useCallback((callback) => {
-    if (isClosingRef.current || isClosingSV.get()) return;
-    isClosingRef.current = true;
-    isClosingSV.set(1);
-    pendingCloseCallbackRef.current = typeof callback === 'function' ? callback : null;
-    const height = Math.max(sheetHeight.get(), 500);
-    translateY.set(withSpring(height, {
-      duration: 300,
-      dampingRatio: 1,
-      overshootClamping: true,
-    }, (finished) => {
-      if (finished) scheduleOnRN(finishClose);
-    }));
-    fadeAnim.set(withTiming(0, { duration: 180 }));
-  }, [fadeAnim, finishClose, isClosingSV, sheetHeight, translateY]);
-
-  useEffect(() => {
-    if (isOpen) {
-      isClosingRef.current = false;
-      isClosingSV.set(0);
-      pendingCloseCallbackRef.current = null;
-      translateY.set(500);
-      fadeAnim.set(0);
-      translateY.set(withSpring(0, { duration: 400, dampingRatio: 0.8 }));
-      fadeAnim.set(withTiming(1, { duration: 180 }));
-    }
-  }, [fadeAnim, isClosingSV, isOpen, translateY]);
-
-  const pan = useMemo(() => Gesture.Pan()
-    .activeOffsetY([-10, 10])
-    .onStart(() => {
-      dragContext.set(translateY.get());
-    })
-    .onUpdate((e) => {
-      const next = dragContext.get() + e.translationY;
-      const height = Math.max(sheetHeight.get(), 1);
-      translateY.set(next >= 0 ? next : rubberband(next, height));
-    })
-    .onEnd((e, success) => {
-      if (!success) {
-        translateY.set(withSpring(0, {
-          duration: 400,
-          dampingRatio: 0.8,
-          velocity: e.velocityY,
-        }));
-        return;
-      }
-      const height = Math.max(sheetHeight.get(), 1);
-      const projected = translateY.get() + project(e.velocityY);
-      if (projected > height * 0.4 || e.velocityY > 800) {
-        if (isClosingSV.get()) return;
-        isClosingSV.set(1);
-        translateY.set(withSpring(height, {
-          duration: 300,
-          dampingRatio: 1,
-          velocity: e.velocityY,
-          overshootClamping: true,
-        }, (finished) => {
-          if (finished) scheduleOnRN(finishClose);
-        }));
-        fadeAnim.set(withTiming(0, { duration: 180 }));
-      } else {
-        translateY.set(withSpring(0, {
-          duration: 400,
-          dampingRatio: 0.8,
-          velocity: e.velocityY,
-        }));
-      }
-    }), [dragContext, fadeAnim, finishClose, isClosingSV, sheetHeight, translateY]);
-
-  const backdropStyle = useAnimatedStyle(() => ({
-    opacity: fadeAnim.get(),
-  }));
-  const sheetStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.get() }],
-  }));
-
-  return (
-    <Modal animationType="none" transparent visible={isOpen} onRequestClose={() => closeWithAnimation()}>
-      <GestureHandlerRootView style={{ flex: 1 }}>
-      <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-        <Reanimated.View
-          style={[
-            StyleSheet.absoluteFill,
-            { backgroundColor: 'rgba(0,0,0,0.5)' },
-            backdropStyle,
-          ]}
-        >
-          <Pressable onPress={() => closeWithAnimation()} style={{ flex: 1 }} />
-        </Reanimated.View>
-
-        <Reanimated.View
-          onLayout={(e) => {
-            const height = e.nativeEvent?.layout?.height;
-            if (height) sheetHeight.set(height);
-          }}
-          style={[
-            {
-              backgroundColor: colors.card,
-              borderTopLeftRadius: 28,
-              borderTopRightRadius: 28,
-              maxHeight: '88%',
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: -6 },
-              shadowOpacity: 0.16,
-              shadowRadius: 20,
-              zIndex: 10,
-              elevation: 20,
-            },
-            sheetStyle,
-          ]}
-        >
-          {/* Handle - Draggable bar */}
-          <GestureDetector gesture={pan}>
-            <View
-              style={{ alignItems: 'center', justifyContent: 'center', width: '100%', paddingTop: 10, paddingBottom: 10 }}
-            >
-              <View style={{ width: 44, height: 5, borderRadius: 2.5, backgroundColor: colors.line }} />
-            </View>
-          </GestureDetector>
-
-          <ScrollView
-            bounces={false}
-            contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 36 }}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            {/* Title Header */}
-            <View style={{ marginBottom: 18 }}>
-              <Text style={{ fontSize: 18, fontWeight: '800', color: colors.ink }}>
-                ตั้งค่าห้องสนทนา
-              </Text>
-              <Text style={{ fontSize: 12, color: colors.inkMuted, marginTop: 2 }}>
-                บันทึกการตั้งค่าเฉพาะบัญชีนี้ในฐานข้อมูล
-              </Text>
-            </View>
-
-            {/* Setting 1: Toggle Meetup Banner */}
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                paddingVertical: 14,
-                paddingHorizontal: 16,
-                backgroundColor: colors.canvas,
-                borderRadius: 18,
-                marginBottom: 10,
-              }}
-            >
-              <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={{ fontSize: 15, fontWeight: '700', color: colors.ink, marginBottom: 3 }}>
-                  แสดงแถบจุดนัดหมายที่ปักหมุด
-                </Text>
-                <Text style={{ fontSize: 12, color: colors.inkMuted, lineHeight: 16 }}>
-                  {showPinnedMeetup ? 'เปิดแสดงข้อมูลสถานที่และเวลาไว้ด้านบนของแชต' : 'ซ่อนแถบจุดนัดหมายไว้เพื่อเพิ่มพื้นที่อ่านข้อความ'}
-                </Text>
-              </View>
-              <Switch
-                ios_backgroundColor={colors.line}
-                trackColor={{ false: colors.line, true: colors.primary }}
-                thumbColor={colors.onPrimary}
-                value={showPinnedMeetup}
-                onValueChange={onTogglePinnedMeetup}
-              />
-            </View>
-
-            {/* Setting 2: Mute Chat Notifications */}
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                paddingVertical: 14,
-                paddingHorizontal: 16,
-                backgroundColor: colors.canvas,
-                borderRadius: 18,
-                marginBottom: 10,
-              }}
-            >
-              <View style={{ flex: 1, paddingRight: 12 }}>
-                <Text style={{ fontSize: 15, fontWeight: '700', color: colors.ink, marginBottom: 3 }}>
-                  ปิดการแจ้งเตือนแชตนี้
-                </Text>
-                <Text style={{ fontSize: 12, color: colors.inkMuted, lineHeight: 16 }}>
-                  {isMuted ? 'ปิดเสียงและการแจ้งเตือนข้อความใหม่จากห้องนี้' : 'รับการแจ้งเตือนข้อความใหม่ตามปกติ'}
-                </Text>
-              </View>
-              <Switch
-                ios_backgroundColor={colors.line}
-                trackColor={{ false: colors.line, true: colors.primary }}
-                thumbColor={colors.onPrimary}
-                value={isMuted}
-                onValueChange={onToggleMute}
-              />
-            </View>
-
-            {/* Setting 3: View Profile Shortcut */}
-            <Pressable
-              onPress={() => {
-                closeWithAnimation(() => {
-                  onNavigateProfile?.();
-                });
-              }}
-              style={({ pressed }) => ({
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                paddingVertical: 14,
-                paddingHorizontal: 16,
-                backgroundColor: colors.canvas,
-                borderRadius: 18,
-                marginBottom: 10,
-                opacity: pressed ? 0.75 : 1,
-              })}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 15, fontWeight: '700', color: colors.ink, marginBottom: 2 }}>
-                  ดูโปรไฟล์ของ {chat?.name || 'เพื่อน'}
-                </Text>
-                <Text style={{ fontSize: 12, color: colors.inkMuted }}>
-                  ดูข้อมูลส่วนตัว คณะ และกิจกรรมที่สนใจ
-                </Text>
-              </View>
-              <Text style={{ fontSize: 18, color: colors.inkMuted, marginLeft: 8 }}>›</Text>
-            </Pressable>
-
-            {/* Setting 4: View Meetup Places */}
-            {partnerMeetup ? (
-              <Pressable
-                onPress={() => {
-                  closeWithAnimation(() => {
-                    onNavigateMeetup?.();
-                  });
-                }}
-                style={({ pressed }) => ({
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  paddingVertical: 14,
-                  paddingHorizontal: 16,
-                  backgroundColor: colors.canvas,
-                  borderRadius: 18,
-                  marginBottom: 16,
-                  opacity: pressed ? 0.75 : 1,
-                })}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 15, fontWeight: '700', color: colors.ink, marginBottom: 2 }}>
-                    ดูจุดนัดหมาย ({partnerMeetup.name})
-                  </Text>
-                  <Text style={{ fontSize: 12, color: colors.inkMuted }}>
-                    เปิดหน้ารวมสถานที่และแผนที่นัดหมายทั้งหมด
-                  </Text>
-                </View>
-                <Text style={{ fontSize: 18, color: colors.inkMuted, marginLeft: 8 }}>›</Text>
-              </Pressable>
-            ) : null}
-
-            {/* Safety: Report User */}
-            {onReportUser ? (
-              <Pressable
-                onPress={() => {
-                  closeWithAnimation(() => {
-                    onReportUser?.();
-                  });
-                }}
-                style={({ pressed }) => ({
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  paddingVertical: 13,
-                  paddingHorizontal: 16,
-                  backgroundColor: colors.canvas,
-                  borderWidth: 1,
-                  borderColor: 'rgba(255, 75, 75, 0.4)',
-                  borderRadius: 18,
-                  marginBottom: 10,
-                  opacity: pressed ? 0.75 : 1,
-                })}
-              >
-                <FeatureIcon color="#FF4B4B" name="exclamationmark.bubble" size={16} />
-                <Text style={{ fontSize: 15, fontWeight: '700', color: '#FF4B4B', marginLeft: 8 }}>
-                  รายงานผู้ใช้นี้
-                </Text>
-              </Pressable>
-            ) : null}
-
-            {/* Safety: Block User */}
-            {onBlockUser ? (
-              <Pressable
-                onPress={() => {
-                  closeWithAnimation(() => {
-                    onBlockUser?.();
-                  });
-                }}
-                style={({ pressed }) => ({
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  paddingVertical: 13,
-                  paddingHorizontal: 16,
-                  backgroundColor: colors.canvas,
-                  borderWidth: 1,
-                  borderColor: 'rgba(255, 75, 75, 0.4)',
-                  borderRadius: 18,
-                  marginBottom: 10,
-                  opacity: pressed ? 0.75 : 1,
-                })}
-              >
-                <FeatureIcon color="#FF4B4B" name="hand.raised" size={16} />
-                <Text style={{ fontSize: 15, fontWeight: '700', color: '#FF4B4B', marginLeft: 8 }}>
-                  บล็อกผู้ใช้นี้
-                </Text>
-              </Pressable>
-            ) : null}
-
-            {/* Destructive: Unmatch and Delete Conversation */}
-            {onRemoveConversation ? (
-              <Pressable
-                onPress={() => {
-                  closeWithAnimation(() => {
-                    onRemoveConversation?.();
-                  });
-                }}
-                style={({ pressed }) => ({
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  paddingVertical: 13,
-                  paddingHorizontal: 16,
-                  backgroundColor: '#FEE2E2',
-                  borderRadius: 18,
-                  marginBottom: 12,
-                  opacity: pressed ? 0.75 : 1,
-                })}
-              >
-                <FeatureIcon color="#EF4444" name="trash" size={16} />
-                <Text style={{ fontSize: 15, fontWeight: '700', color: '#EF4444', marginLeft: 8 }}>
-                  ยกเลิกการจับคู่และลบห้องสนทนา
-                </Text>
-              </Pressable>
-            ) : null}
-
-            {/* Done Button */}
-            <Pressable
-              onPress={() => closeWithAnimation()}
-              style={({ pressed }) => ({
-                backgroundColor: colors.primary,
-                borderRadius: 16,
-                paddingVertical: 14,
-                alignItems: 'center',
-                marginTop: 4,
-                opacity: pressed ? 0.85 : 1,
-              })}
-            >
-              <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '700' }}>
-                เสร็จสิ้น
-              </Text>
-            </Pressable>
-          </ScrollView>
-        </Reanimated.View>
-      </View>
-      </GestureHandlerRootView>
-    </Modal>
-  );
-}
 
 function ImageLinkPreview({ imageUrl, onPreviewImage, mine, colors }) {
+  const { width: screenWidth } = useWindowDimensions();
   const [loadError, setLoadError] = useState(false);
   const [aspectRatio, setAspectRatio] = useState(1.33);
 
@@ -3121,8 +2615,7 @@ function ImageLinkPreview({ imageUrl, onPreviewImage, mine, colors }) {
 
   if (loadError) return null;
 
-  const cardWidth = 216;
-  const cardHeight = Math.min(Math.max(Math.round(cardWidth / aspectRatio), 120), 250);
+  const { width: cardWidth, height: cardHeight } = chatImageSize(screenWidth, aspectRatio);
 
   return (
     <Pressable
@@ -3216,7 +2709,10 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
   );
   const { retryFailedMessage } = useAppActions();
   const statusText = formatStatusTime(item, mine, isLatest, otherReadAt, otherUnread, mediaViewedAt);
-  const { count: reactionCount, uniqueEmojis } = getMessageReactionSummary(item.reactions);
+  const { count: reactionCount, uniqueEmojis } = useMemo(
+    () => getMessageReactionSummary(item.reactions),
+    [item.reactions]
+  );
 
   const bounceAnim = useRef(new Animated.Value(1)).current;
   const highlightAnim = useRef(new Animated.Value(0)).current;
@@ -3307,14 +2803,19 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
     };
   });
 
-  const handleLongPress = () => {
+  const handleLongPress = (_event, mediaDetails) => {
     longPressRef.current = true;
     lastTapAtRef.current = 0;
     if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
     const extraData = {
       imageSize: currentImageSizeRef.current,
       aspectRatio: currentRatioRef.current,
+      ...mediaDetails,
     };
+    if (mediaDetails?.layout) {
+      onSelectMessage({ ...item, ...extraData });
+      return;
+    }
     if (bubbleRef.current?.measureInWindow) {
       bubbleRef.current.measureInWindow((x, y, width, height) => {
         onSelectMessage({
@@ -3398,6 +2899,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                   (item.mediaUrl && (item.mediaType === 'image' || item.mediaType === 'gif' || item.mediaType === 'video' || !item.mediaType)) && styles.imageBubble,
                   (Array.isArray(item.mediaUrls) && item.mediaUrls.length > 1) && styles.stackedImageBubble,
                   item.mediaType === 'call' && styles.callBubbleWrapper,
+                  item.mediaType === 'track' && [styles.trackBubbleWrapper, mine && styles.trackBubbleWrapperMine],
                   pressed && styles.pressed,
                 ]}
               >
@@ -3447,46 +2949,28 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                 ) : null}
 
                 {item.mediaType === 'track' ? (
-                  <Pressable
-                    onPress={() => {
-                      const url = item.externalUrl || (item.trackId ? `https://open.spotify.com/track/${item.trackId}` : null);
-                      if (url) Linking.openURL(url).catch(() => {});
-                    }}
-                    style={({ pressed }) => [
-                      styles.trackBubble,
-                      mine ? styles.trackBubbleMine : styles.trackBubbleTheirs,
-                      pressed && { opacity: 0.88 },
-                    ]}
-                  >
-                    {item.albumArt ? (
-                      <ExpoImage contentFit="cover" source={{ uri: item.albumArt }} style={styles.trackBubbleArt} />
-                    ) : (
-                      <View style={[styles.trackBubbleArt, styles.trackBubbleArtFallback, { backgroundColor: mine ? 'rgba(255,255,255,0.2)' : colors.primarySoft }]}>
-                        <FeatureIcon color={mine ? '#FFFFFF' : colors.primary} name="music.note" size={18} />
-                      </View>
-                    )}
-                    <View style={styles.trackBubbleMeta}>
-                      <Text numberOfLines={1} style={[styles.trackBubbleName, mine && styles.trackBubbleNameMine]}>
-                        {item.trackName || item.text || 'Spotify'}
-                      </Text>
-                      <Text numberOfLines={1} style={[styles.trackBubbleArtists, mine && styles.trackBubbleArtistsMine]}>
-                        {item.artists || 'Unknown'}
-                      </Text>
-                      <Text style={[styles.trackBubbleCta, mine && styles.trackBubbleCtaMine]}>เปิดฟังเต็มเพลง</Text>
-                    </View>
-                    <TrackPreviewButton
-                      backgroundColor={mine ? 'rgba(255,255,255,0.22)' : colors.primarySoft}
-                      color={mine ? '#FFFFFF' : colors.primary}
-                      previewEndMs={item.previewEndMs}
-                      previewStartMs={item.previewStartMs}
-                      previewUrl={item.previewUrl}
-                      size={34}
-                      track={item}
-                      trackArtists={item.artists}
-                      trackName={item.trackName || item.text}
-                      youtubeVideoId={item.youtubeVideoId}
-                    />
-                  </Pressable>
+                  <View style={[mine ? { alignSelf: 'flex-end' } : { alignSelf: 'flex-start' }]}>
+                    <TrackShareCard
+                      albumArt={item.albumArt}
+                      artists={item.artists}
+                      name={item.trackName || item.text}
+                      onLongPress={handleLongPress}
+                    >
+                      <TrackPreviewButton
+                        fill
+                        backgroundColor="transparent"
+                        color="#FFFFFF"
+                        previewEndMs={item.previewEndMs}
+                        previewStartMs={item.previewStartMs}
+                        previewUrl={item.previewUrl}
+                        size={36}
+                        track={item}
+                        trackArtists={item.artists}
+                        trackName={item.trackName || item.text}
+                        youtubeVideoId={item.youtubeVideoId}
+                      />
+                    </TrackShareCard>
+                  </View>
                 ) : null}
 
                 {/* Image Message / Stacked Image Cards */}
@@ -3504,6 +2988,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                   ) : (
                     <View style={styles.bubbleImageContainer}>
                       <DecryptedChatImage
+                        isGif={isGifMessage(item)}
                         conversationId={chat?.id}
                         isUploading={Boolean(item.isUploading)}
                         mediaUrl={item.mediaUrl}
@@ -3534,7 +3019,7 @@ const ChatMessageItem = React.memo(function ChatMessageItem({
                 })() : null}
 
                 {/* Text / Caption */}
-                {item.mediaType !== 'call' && item.mediaType !== 'track' && item.text && item.text !== '[รูปภาพ]' && !item.text.startsWith('[รูปภาพ ') && item.text !== '[ข้อความเสียง]' && item.text !== '[วิดีโอ]' && item.text !== '[GIF]' && item.text.toUpperCase() !== '[GIF]' ? (
+                {item.mediaType !== 'call' && item.mediaType !== 'track' && item.text && !isChatMediaPlaceholder(item.text) && item.text !== '[รูปภาพ]' && !item.text.startsWith('[รูปภาพ ') && item.text !== '[ข้อความเสียง]' && item.text !== '[วิดีโอ]' && item.text !== '[GIF]' && item.text.toUpperCase() !== '[GIF]' ? (
                   <Text
                     style={[
                       styles.bubbleText,
@@ -3668,23 +3153,31 @@ function areChatMessageItemPropsEqual(previous, next) {
     && (toDate(messageTimestamp(previousItem))?.getTime() || 0) === (toDate(messageTimestamp(nextItem))?.getTime() || 0);
 }
 
-function ReactionBadge({ count, colors, emojis, styles }) {
+const ReactionBadge = React.memo(function ReactionBadge({ count, colors, emojis, styles }) {
   const popAnim = useRef(new Animated.Value(1)).current;
   const isFirstMount = useRef(true);
+  const emojiKey = Array.isArray(emojis) ? emojis.join(',') : '';
+  const prevKeyRef = useRef(`${count}:${emojiKey}`);
 
   useEffect(() => {
+    const currentKey = `${count}:${emojiKey}`;
     if (isFirstMount.current) {
       isFirstMount.current = false;
+      prevKeyRef.current = currentKey;
       return;
     }
+    if (prevKeyRef.current === currentKey) {
+      return;
+    }
+    prevKeyRef.current = currentKey;
     popAnim.setValue(0.7);
     Animated.spring(popAnim, {
       toValue: 1,
-      friction: 4,
-      tension: 220,
+      friction: 7,
+      tension: 140,
       useNativeDriver: true,
     }).start();
-  }, [count, emojis]);
+  }, [count, emojiKey, popAnim]);
 
   const visibleEmojis = (Array.isArray(emojis) ? emojis : []).filter(Boolean).slice(0, 2);
   const badgeWidth = Math.max(
@@ -3707,7 +3200,7 @@ function ReactionBadge({ count, colors, emojis, styles }) {
       ) : null}
     </Animated.View>
   );
-}
+});
 
 function Avatar({ avatarColor, cacheScope, cacheVersion, colors, emoji, size, uri }) {
   const isUrl = typeof uri === 'string' && (uri.startsWith('http') || uri.startsWith('file://') || uri.startsWith('data:'));
@@ -3785,26 +3278,26 @@ const createStyles = (colors) => StyleSheet.create({
   headerCallBtn: {
     alignItems: 'center',
     backgroundColor: colors.card,
-    borderRadius: 20,
-    height: 40,
+    borderRadius: 19,
+    height: 38,
     justifyContent: 'center',
-    width: 40,
+    width: 38,
   },
   headerMoreBtn: {
     alignItems: 'center',
     backgroundColor: colors.card,
-    borderRadius: 20,
-    height: 40,
+    borderRadius: 19,
+    height: 38,
     justifyContent: 'center',
-    width: 40,
+    width: 38,
   },
   backButton: {
     alignItems: 'center',
     backgroundColor: colors.card,
-    borderRadius: 20,
-    height: 40,
+    borderRadius: 19,
+    height: 38,
     justifyContent: 'center',
-    width: 40,
+    width: 38,
   },
   bubble: {
     borderRadius: 16,
@@ -3820,6 +3313,8 @@ const createStyles = (colors) => StyleSheet.create({
     borderWidth: 0,
     maxWidth: 280,
   },
+  trackBubbleWrapper: { backgroundColor: 'transparent', paddingHorizontal: 0, paddingVertical: 0, borderWidth: 0, overflow: 'visible' },
+  trackBubbleWrapperMine: { alignSelf: 'flex-end' },
   bubbleText: {
     color: colors.ink,
     fontSize: 13.5,
@@ -3835,8 +3330,8 @@ const createStyles = (colors) => StyleSheet.create({
     width: '100%',
   },
   composer: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
     width: '100%',
   },
   dayDivider: { ...type.caption2, color: colors.inkSoft, marginVertical: spacing.md, textAlign: 'center' },
@@ -3896,7 +3391,7 @@ const createStyles = (colors) => StyleSheet.create({
     fontWeight: '700',
     textAlign: 'center',
   },
-  messageList: { alignSelf: 'center', maxWidth: 760, paddingBottom: spacing.lg, paddingHorizontal: spacing.md, paddingTop: spacing.md, width: '100%' },
+  messageList: { alignSelf: 'center', maxWidth: 760, paddingBottom: 16, paddingHorizontal: 16, paddingTop: 16, width: '100%' },
   messageRow: { alignItems: 'flex-end', flexDirection: 'row', gap: 7, marginBottom: 10, position: 'relative', width: '100%' },
   messageRowMine: { justifyContent: 'flex-end' },
   dragTimeGutter: {
@@ -3930,10 +3425,38 @@ const createStyles = (colors) => StyleSheet.create({
   replyComposerCopy: { backgroundColor: colors.card, borderRadius: radius.sm, flex: 1, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
   replyComposerText: { ...type.caption, color: colors.inkSoft, marginTop: 1 },
   replyComposerTitle: { ...type.caption, color: colors.primary, fontWeight: '800' },
-  e2eeBanner: { alignItems: 'center', backgroundColor: colors.primarySoft, borderRadius: radius.sm, flexDirection: 'row', gap: spacing.xs, marginBottom: spacing.sm, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
-  e2eePendingBanner: { alignItems: 'center', backgroundColor: 'rgba(255,149,0,0.12)', borderRadius: radius.sm, flexDirection: 'row', gap: spacing.xs, marginBottom: spacing.sm, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
-  e2eeText: { ...type.caption2, color: colors.primary, flex: 1 },
-  e2eePendingText: { ...type.caption2, color: '#A15C00', flex: 1 },
+  e2eeBanner: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(156, 163, 175, 0.12)',
+    borderRadius: 14,
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: spacing.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  e2eePendingBanner: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(255, 149, 0, 0.12)',
+    borderRadius: 14,
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: spacing.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  e2eeText: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  e2eePendingText: {
+    color: '#A15C00',
+    fontSize: 12,
+    fontWeight: '500',
+  },
   roomContainer: { backgroundColor: colors.canvas, flex: 1 },
   roomHeader: { alignItems: 'center', borderBottomColor: colors.line, borderBottomWidth: 1, flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   headerPartnerPressable: { alignItems: 'center', flex: 1, flexDirection: 'row', gap: spacing.sm },
@@ -3941,57 +3464,74 @@ const createStyles = (colors) => StyleSheet.create({
   roomName: { ...type.headline, color: colors.ink },
   roomSubtitle: { ...type.caption, color: colors.inkSoft },
   inputCapsule: {
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    borderColor: colors.line,
-    borderRadius: 24,
-    borderWidth: 1,
-    flexDirection: 'row',
     minHeight: 46,
-    paddingLeft: 8,
-    paddingRight: 6,
-    paddingVertical: 4,
-    width: '100%',
+    maxHeight: 110,
+    borderRadius: 23,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.card,
+    overflow: 'hidden',
   },
   capsuleTrailingContainer: {
     alignItems: 'center',
     flexDirection: 'row',
+    flexShrink: 0,
+    justifyContent: 'center',
+    minHeight: 36,
   },
   capsuleSmileyBtn: {
     alignItems: 'center',
+    borderRadius: 18,
+    flexShrink: 0,
     height: 36,
     justifyContent: 'center',
     width: 36,
   },
   capsuleTextInput: {
+    minWidth: 0,
     ...type.body,
     backgroundColor: 'transparent',
     borderWidth: 0,
     color: colors.ink,
     flex: 1,
-    fontSize: 15,
-    ...(Platform.OS === 'ios' ? { lineHeight: 20 } : {}),
-    marginHorizontal: 4,
-    maxHeight: 120,
+    fontSize: 16,
+    ...(Platform.OS === 'ios' ? { lineHeight: 22 } : {}),
+    marginHorizontal: 0,
+    maxHeight: 100,
     minHeight: 36,
-    paddingHorizontal: 6,
-    paddingVertical: Platform.OS === 'android' ? 6 : 8,
+    paddingHorizontal: 10,
+    paddingVertical: Platform.OS === 'android' ? 2 : 4,
     textAlignVertical: 'center',
   },
   capsuleSendButton: {
     alignItems: 'center',
     alignSelf: 'center',
-    backgroundColor: '#3B5AFE',
+    backgroundColor: '#2563EB',
     borderRadius: 18,
     elevation: 0,
     flexShrink: 0,
     height: 36,
     justifyContent: 'center',
+    marginLeft: 6,
     maxHeight: 36,
-    maxWidth: 46,
+    maxWidth: 36,
     minHeight: 36,
-    minWidth: 46,
-    paddingHorizontal: 12,
+    minWidth: 36,
+    width: 36,
+    paddingHorizontal: 0,
+  },
+  capsuleActionIconBtn: {
+    alignItems: 'center',
+    borderRadius: 18,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
   },
   sendDisabled: { opacity: 0.4 },
   quickEmojiBar: {
@@ -4128,6 +3668,7 @@ const createStyles = (colors) => StyleSheet.create({
   capsuleActionsRow: {
     alignItems: 'center',
     flexDirection: 'row',
+    flexShrink: 0,
     gap: 4,
     paddingRight: 4,
   },
@@ -4441,15 +3982,15 @@ const createStyles = (colors) => StyleSheet.create({
   },
   trackBubble: { alignItems: 'center', borderRadius: 14, flexDirection: 'row', gap: 10, maxWidth: 260, minWidth: 200, padding: 10 },
   trackBubbleMine: { backgroundColor: 'rgba(255,255,255,0.14)' },
-  trackBubbleTheirs: { backgroundColor: 'rgba(15,27,51,0.04)' },
+  trackBubbleTheirs: { backgroundColor: colors.surfaceRaised },
   trackBubbleArt: { borderRadius: 8, height: 52, width: 52 },
   trackBubbleArtFallback: { alignItems: 'center', justifyContent: 'center' },
   trackBubbleMeta: { flex: 1, minWidth: 0 },
-  trackBubbleName: { color: '#25272B', fontSize: 14, fontWeight: '800' },
+  trackBubbleName: { color: colors.ink, fontSize: 14, fontWeight: '800' },
   trackBubbleNameMine: { color: '#FFFFFF' },
-  trackBubbleArtists: { color: '#6B7078', fontSize: 12, fontWeight: '600', marginTop: 2 },
+  trackBubbleArtists: { color: colors.inkMuted, fontSize: 12, fontWeight: '600', marginTop: 2 },
   trackBubbleArtistsMine: { color: 'rgba(255,255,255,0.75)' },
-  trackBubbleCta: { color: '#3986E8', fontSize: 11, fontWeight: '800', marginTop: 4 },
+  trackBubbleCta: { color: colors.accentText, fontSize: 11, fontWeight: '800', marginTop: 4 },
   trackBubbleCtaMine: { color: 'rgba(255,255,255,0.9)' },
   gifCapsuleBadgeText: {
     fontSize: 10,

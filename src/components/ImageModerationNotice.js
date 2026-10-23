@@ -1,16 +1,22 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Modal, ScrollView, StyleSheet, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useTheme } from '../theme';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 export default function ImageModerationNotice({ notice, onClose }) {
   const { colors } = useTheme();
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const unavailable = notice?.isModerationUnavailable;
   return (
     <Modal visible={!!notice} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
       <View style={styles.overlay}>
-        <View accessibilityViewIsModal style={[styles.card, { backgroundColor: colors.card }]}>
+        <NativeCard accessibilityViewIsModal style={[styles.card, { backgroundColor: glass ? 'transparent' : colors.card }]}>
+          <GlassBackground style={{ borderRadius: 28 }} tintColor={glassTint} />
           <ScrollView bounces={false} contentContainerStyle={styles.content}>
             <View style={[styles.icon, { backgroundColor: colors.primarySoft }]}>
               <Ionicons name={unavailable ? 'cloud-offline-outline' : 'image-outline'} size={30} color={colors.primary} />
@@ -31,7 +37,7 @@ export default function ImageModerationNotice({ notice, onClose }) {
               <Text style={styles.buttonText}>กลับไปแก้ไข</Text>
             </Pressable>
           </ScrollView>
-        </View>
+        </NativeCard>
       </View>
     </Modal>
   );

@@ -1,3 +1,4 @@
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React from 'react';
 import { StyleSheet, View } from 'react-native';
@@ -22,7 +23,7 @@ export default function SpotifyTasteMatchCard({
   const badgeColor = isHighMatch ? SPOTIFY_GREEN : (score >= 65 ? (colors.primary || '#3986E8') : '#8B5CF6');
 
   return (
-    <View
+    <NativeCard
       style={[
         styles.card,
         {
@@ -89,7 +90,7 @@ export default function SpotifyTasteMatchCard({
           </Text>
         </View>
       ) : null}
-    </View>
+    </NativeCard>
   );
 }
 

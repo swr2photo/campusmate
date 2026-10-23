@@ -75,8 +75,6 @@ const publicProfileFields = [
   'activityDetails',
   'skill',
   'pace',
-  'availability',
-  'availabilitySlots',
   'bio',
   'avatar',
   'avatarColor',
@@ -440,8 +438,11 @@ function sanitizeProfileForFirestore(userId, source = {}) {
     }
   }
   if (Object.prototype.hasOwnProperty.call(source, 'availabilitySlots')) {
-    const value = sanitizeProfileList(source.availabilitySlots, 50, 200);
-    if (value !== undefined) profile.availabilitySlots = value;
+    if (source.availabilitySlots === null) profile.availabilitySlots = null;
+    else {
+      const value = sanitizeProfileList(source.availabilitySlots, 50, 200);
+      if (value !== undefined) profile.availabilitySlots = value;
+    }
   }
   if (Object.prototype.hasOwnProperty.call(source, 'activityDetails')) {
     profile.activityDetails = source.activityDetails === null
@@ -650,8 +651,6 @@ function toPublicProfile(userId, data) {
     activityDetails: privacy.showActivity !== false,
     skill: privacy.showActivity !== false,
     pace: privacy.showActivity !== false,
-    availability: privacy.showAvailability !== false,
-    availabilitySlots: privacy.showAvailability !== false,
   };
 
   publicProfileFields.forEach((field) => {
@@ -843,13 +842,13 @@ export function mergeProfileRecords(...records) {
   return merged.id ? normalizeProfileRecord(merged.id, merged) : null;
 }
 
-export function isProfileReadyForDiscovery(profile) {
+export function isProfileReadyForDiscovery(profile, { publicProjection = false } = {}) {
   if (!profile || typeof profile !== 'object') return false;
   const normalized = normalizeProfileRecord(profile?.id, profile);
-  return isNormalizedProfileReady(normalized);
+  return isNormalizedProfileReady(normalized, publicProjection);
 }
 
-function isNormalizedProfileReady(normalized) {
+function isNormalizedProfileReady(normalized, publicProjection = false) {
   if (!normalized?.id) return false;
 
   // 1. ผู้ใช้ใหม่ที่ยังตั้งค่าโปรไฟล์ไม่เสร็จ (isNewUser: true)
@@ -868,6 +867,11 @@ function isNormalizedProfileReady(normalized) {
   // 3. ต้องมีรูปโปรไฟล์
   const avatar = normalized.avatarUri || normalized.avatar;
   if (!avatar || typeof avatar !== 'string' || !avatar.trim()) return false;
+
+  // Secure discovery already checks the owner's complete record. Its public
+  // projection deliberately omits private demographics; don't require them
+  // here or recover them from an older device cache.
+  if (publicProjection) return true;
 
   // 4. ต้องเลือกคณะ (ไม่เป็นค่าว่าง หรือ 'all')
   if (!normalized.faculty || normalized.faculty === 'all' || !String(normalized.faculty).trim()) return false;
@@ -891,14 +895,16 @@ function isNormalizedProfileReady(normalized) {
   return true;
 }
 
-async function getProfileDocFresh(reference) {
+async function getProfileDocFresh(reference, { timeoutMs = 2000, allowCache = true } = {}) {
   try {
     const serverPromise = getDocFromServer(reference);
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('timeout')), 2000)
+      setTimeout(() => reject(Object.assign(new Error('timeout'), { code: 'unavailable' })), timeoutMs)
     );
     return await Promise.race([serverPromise, timeoutPromise]);
-  } catch {
+  } catch (error) {
+    // A verification commit must not be judged from a stale cache.
+    if (!allowCache) throw error;
     // Offline mode or slow network uses the local Firestore cache.
     return getDoc(reference);
   }
@@ -1062,14 +1068,7 @@ function matchesPreferences(profile, preferences = {}, currentUserProfile = null
   }
   if (paces.size && !paces.has(profile.pace)) return false;
   if (!matchesActivityDetailFilters(profile, preferences.activityDetails)) return false;
-  if (preferences.availabilityPeriods?.length && !matchesAvailabilityPeriods(profile, preferences.availabilityPeriods)) {
-    return false;
-  }
-  if (preferences.weekdays?.length && !matchesAvailabilityWeekdays(profile, preferences.weekdays)) {
-    return false;
-  }
   if (preferences.requirePhoto && !profileHasPhoto(profile)) return false;
-  if (preferences.requireAvailability && !profileHasAvailability(profile)) return false;
   return true;
 }
 
@@ -1240,7 +1239,7 @@ export function subscribeToUserProfile(userId, onChange, onError) {
   }, onError);
 }
 
-export async function getUserProfile(userId) {
+export async function getUserProfile(userId, options = {}) {
   if (!userId) return null;
   if (RUST_BACKEND) return rustGetUserProfile(userId);
   if (secureDiscoveryConfigured()) {
@@ -1251,7 +1250,11 @@ export async function getUserProfile(userId) {
     if (currentUser?.uid !== userId) return getPublicProfile(userId);
   }
   const { db } = requireFirebase();
-  const privateSnapshot = await getProfileDocFresh(doc(db, 'users', userId));
+  const fresh = options.fresh === true;
+  const privateSnapshot = await getProfileDocFresh(
+    doc(db, 'users', userId),
+    fresh ? { timeoutMs: 8000, allowCache: false } : {},
+  );
   if (privateSnapshot.exists()) {
     return normalizeProfileRecord(userId, privateSnapshot.data());
   }
@@ -1285,10 +1288,16 @@ export async function createUserProfile(userId, data, { onlyIfMissing = false } 
     mergeProfileInput(existingPrivateData, data || {})
   );
   // Seed legacy avatars once; unrelated profile saves must preserve this value.
-  if (!Number.isSafeInteger(profileData.avatarRevision)) {
-    profileData.avatarRevision = Number.isSafeInteger(existingPrivateData.avatarRevision)
-      ? existingPrivateData.avatarRevision
-      : (typeof existingPrivateData.updatedAt?.toMillis === 'function' ? existingPrivateData.updatedAt.toMillis() : 0);
+  if (existingPrivateData.avatarRevision !== undefined) {
+    profileData.avatarRevision = existingPrivateData.avatarRevision;
+  } else if (!Number.isSafeInteger(profileData.avatarRevision)) {
+    delete profileData.avatarRevision;
+  }
+  // If an avatarUri is already committed to the document, avoid modifying it
+  // directly in client writes to comply with security rules (avatarUri changes
+  // must go through face-verification or server callable).
+  if (existingPrivateData.avatarUri && profileData.avatarUri !== existingPrivateData.avatarUri) {
+    profileData.avatarUri = existingPrivateData.avatarUri;
   }
   // Profile saves can run at the same time as the first E2EE publication.
   // Always carry this device's public key in the complete profile projection
@@ -1394,6 +1403,8 @@ export async function createUserProfile(userId, data, { onlyIfMissing = false } 
 
   // อัพเดท participantProfiles ใน conversations ที่ user นี้เป็นสมาชิก
   // เพื่อให้อีกเครื่องเห็นชื่อ/รูปที่เปลี่ยนแปลงทันที
+  // This derived fan-out must not delay acknowledging the owner profile.
+  void (async () => {
   try {
     const { auth } = requireFirebase();
     if (auth?.currentUser?.uid === userId) {
@@ -1423,6 +1434,7 @@ export async function createUserProfile(userId, data, { onlyIfMissing = false } 
   } catch (error) {
     console.warn('[createUserProfile] Conversation sync warning:', error?.message || error);
   }
+  })();
   return profileData;
 }
 
@@ -1959,6 +1971,7 @@ export function filterAvailableProfiles(
   allProfiles,
   outgoingDecisions = [],
   currentUserProfileOverride = null,
+  { publicProjection = false } = {},
 ) {
   const removedUserIds = new Set();
   const hiddenIds = new Set();
@@ -1996,9 +2009,9 @@ export function filterAvailableProfiles(
     if (
       profile.id === currentUserId
       || profile.isDiscoverable === false
-      || !isProfileReadyForDiscovery(profile)
+      || !isProfileReadyForDiscovery(profile, { publicProjection })
       || hiddenIds.has(profile.id)
-      || !matchesPreferences(profile, compiledPreferences, currentUserProfile)
+      || (!publicProjection && !matchesPreferences(profile, compiledPreferences, currentUserProfile))
     ) return;
 
     const cardProfile = { ...profile };
@@ -2027,12 +2040,13 @@ export function hydrateDecisionLikes(decisions, allProfiles, direction) {
     .map((decision) => {
       const profileId = decisionProfileId(decision, direction);
       if (!profileId || typeof profileId !== 'string') return null;
-      const profileData = profilesById.get(profileId);
+      const profileData = profilesById.get(profileId) || decision.profile;
       // Drop deleted or non-existent profiles so ghost cards never appear
       if (!profileData || profileData.isDeleted) return null;
       // Both pending and accepted cards in Likes require a verified profile.
       // Conversation participant snapshots are handled independently.
-      if (profileData.isFaceVerified !== true) return null;
+      const isVerified = profileData.isFaceVerified === true || profileData.isAdmin === true || profileData.role === 'admin';
+      if (!isVerified) return null;
       if (
         profileData.name === 'เพื่อนใหม่'
         && !profileData.avatarUri
@@ -2656,6 +2670,20 @@ function subscribeToConversationsLegacy(currentUserId, callback, onError) {
 function conversationRenderSignature(conversation) {
   const unreadCounts = Object.entries(conversation.unreadCounts || {})
     .sort(([firstId], [secondId]) => firstId.localeCompare(secondId));
+  const readReceipts = Object.entries(conversation.readReceipts || {})
+    .sort(([firstId], [secondId]) => firstId.localeCompare(secondId))
+    .map(([id, timestamp]) => [id, toMillis(timestamp)]);
+  const settingsSignature = (settings = {}) => [
+    settings.isPinned === true,
+    settings.markedUnread === true,
+    settings.isMuted === true,
+    settings.isHidden === true,
+    settings.showPinnedMeetup === true,
+    toMillis(settings.historyClearedAt),
+  ];
+  const participantSettings = Object.entries(conversation.participantSettings || {})
+    .sort(([firstId], [secondId]) => firstId.localeCompare(secondId))
+    .map(([id, settings]) => [id, settingsSignature(settings)]);
   const lastPreview = conversation.messages?.[conversation.messages.length - 1];
   return JSON.stringify([
     conversation.id,
@@ -2670,8 +2698,14 @@ function conversationRenderSignature(conversation) {
     conversation.encryptionError,
     Boolean(conversation.isHidden),
     unreadCounts,
+    readReceipts,
+    participantSettings,
+    settingsSignature(conversation.mySettings),
     lastPreview?.id,
     lastPreview?.text,
+    lastPreview?.senderId,
+    lastPreview?.sendStatus,
+    Boolean(lastPreview?.pendingSync),
   ]);
 }
 
@@ -3496,6 +3530,7 @@ export async function markConversationAsRead(conversationId, currentUserId) {
   await updateDoc(doc(db, 'conversations', conversationId), {
     [`unreadCounts.${currentUserId}`]: 0,
     [`readReceipts.${currentUserId}`]: serverTimestamp(),
+    [`participantSettings.${currentUserId}.markedUnread`]: false,
   });
 }
 
@@ -3754,7 +3789,7 @@ export async function cancelAppointment(appointmentId, currentUserId) {
 
 export async function updateChatSettings(conversationId, currentUserId, settings) {
   const convRef = RUST_BACKEND ? null : doc(requireFirebase().db, 'conversations', conversationId);
-  const allowedSettings = new Set(['isMuted', 'showPinnedMeetup', 'isHidden']);
+  const allowedSettings = new Set(['isMuted', 'showPinnedMeetup', 'isHidden', 'isPinned', 'markedUnread']);
   const updates = {};
   for (const [key, value] of Object.entries(settings)) {
     if (!allowedSettings.has(key) || typeof value !== 'boolean') {
@@ -4019,7 +4054,15 @@ async function rustCreateUserProfile(userId, data, { onlyIfMissing = false } = {
   });
   // A full save replaces the profile: fields the app no longer sends are removed.
   const full = { ...Object.fromEntries(RUST_PROFILE_FIELDS.map((field) => [field, undefined])), ...privateData };
-  await rustSaveProfile(rustProfilePatch(full, existing), {
+  const patch = rustProfilePatch(full, existing);
+  // Once a main photo exists the server owns it: only photo verification
+  // replaces it and bumps avatarRevision. Sending either back (a cached or
+  // defaulted revision, the same URI) would read as an unverified change.
+  if (existing.avatarUri) {
+    delete patch.avatarRevision;
+    if (patch.avatarUri === existing.avatarUri) delete patch.avatarUri;
+  }
+  await rustSaveProfile(patch, {
     isDiscoverable: profileData.isDiscoverable !== false,
   });
   const saved = await rustMyProfile();
@@ -4150,7 +4193,10 @@ async function rustSendMessage(conversationId, currentUserId, text, options = {}
     throw Object.assign(new Error('Message length is invalid'), { code: 'invalid-argument' });
   }
   const message = buildRustMessage(currentUserId, safeText, options, messageId);
-  const encrypted = encryptMessageRecord(message, encryptionSetup.conversationKey);
+  const encrypted = options.encryptedRecord || encryptMessageRecord(message, encryptionSetup.conversationKey);
+  if (options.encryptedRecord && (encrypted.id !== messageId || encrypted.senderId !== currentUserId || encrypted.encrypted !== true)) {
+    throw new Error('ข้อมูลข้อความที่รอส่งไม่ตรงกับบัญชีหรือรายการนี้ กรุณาลองใหม่');
+  }
   const result = await rpc('chatSend', {
     conversationId,
     messageId,

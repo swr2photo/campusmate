@@ -1,6 +1,7 @@
+import { Pressable } from '../NativePressable';
 import Text from '../AppText';
 import React from 'react';
-import { Image, Modal, Pressable, StyleSheet, View } from 'react-native';
+import { Image, Modal, StyleSheet, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MotiView } from 'moti';
 import LottieViewSafe from './LottieViewSafe';

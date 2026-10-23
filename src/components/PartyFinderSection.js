@@ -1,16 +1,18 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, FlatList, Modal, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import FeatureIcon from './FeatureIcon';
 import NativeAdCard from './NativeAdCard';
 import LiquidGlassSegmentedControl from './LiquidGlassSegmentedControl';
-import { partyBannerGradient } from './PartyFinderEntry';
 import { insertActivityAdSlots } from '../utils/adPolicy';
 import { useAppFeed, useAppProfile } from '../context/AppContext';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { radius, spacing, useTheme } from '../theme';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 
 function startMillis(party) {
@@ -167,6 +169,8 @@ function PartyDetailModal({
   onOpenMap,
   onLoadMoreRequests,
 }) {
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const { profile: currentProfile } = useAppProfile();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
@@ -203,7 +207,8 @@ function PartyDetailModal({
     <Modal visible={visible} animationType={Platform.OS === 'ios' ? 'slide' : 'none'} transparent onRequestClose={onClose} onDismiss={flushAction}>
       <View style={styles.modalOverlay}>
         <Pressable style={styles.modalDismissArea} onPress={onClose} />
-        <View style={[styles.modalSheet, { backgroundColor: colors.card }]}>
+        <NativeCard style={[styles.modalSheet, { backgroundColor: glass ? 'transparent' : colors.card }]}>
+          <GlassBackground style={{ borderTopLeftRadius: 24, borderTopRightRadius: 24 }} tintColor={glassTint} />
           {/* Clean Modal Header - without fake photo */}
           <View style={[styles.modalHeaderBar, { borderBottomColor: colors.line }]}>
             <View style={styles.modalHeaderTitleRow}>
@@ -232,7 +237,7 @@ function PartyDetailModal({
           <ScrollView style={[styles.modalContent, { maxHeight: windowHeight * 0.48 }]} contentContainerStyle={styles.modalContentInner} showsVerticalScrollIndicator={false}>
             <View style={styles.modalPhoto}><PartyPhoto spot={spot} party={party} colors={colors} /></View>
             {/* Host Banner */}
-            <View style={[styles.modalHostCard, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
+            <NativeCard style={[styles.modalHostCard, { backgroundColor: colors.surfaceRaised, borderColor: colors.line }]}>
               <HostAvatar uri={hostAvatarUri} name={hostName} size={46} colors={colors} />
               <View style={styles.modalHostMeta}>
                 <View style={styles.modalHostNameRow}>
@@ -245,7 +250,7 @@ function PartyDetailModal({
                   {[hostFaculty, hostYear].filter(Boolean).join(' · ') || 'นักศึกษา ม.อ.'}
                 </Text>
               </View>
-            </View>
+            </NativeCard>
 
             {/* Details Pills */}
             <View style={styles.modalMetaRow}>
@@ -418,7 +423,7 @@ function PartyDetailModal({
               <Text style={[styles.modalSecondaryBtnText, { color: colors.danger }]}>ยกเลิกตี้นี้</Text>
             </Pressable> : null}
           </View>
-        </View>
+        </NativeCard>
       </View>
     </Modal>
   );
@@ -485,7 +490,7 @@ function PartyCard({ party, spot, colors, busy, onSelect, onJoin, onWithdraw, on
   const select = () => onSelect?.(party);
   const spotName = party.spotName || spot?.name || 'จุดนัดหมาย ม.อ.';
   const category = party.categoryLabel || spot?.categoryLabel;
-  return <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
+  return <NativeCard style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
     <Pressable accessibilityRole="button" accessibilityLabel={`ดูรายละเอียดตี้ของ ${hostName} ที่ ${spotName}`} onPress={select} style={({ pressed }) => pressed && styles.pressed}>
       <View>
         <PartyPhoto spot={spot} party={party} colors={colors} />
@@ -528,7 +533,7 @@ function PartyCard({ party, spot, colors, busy, onSelect, onJoin, onWithdraw, on
       <PartyCardAction party={party} remaining={remaining} colors={colors} busy={busy} onSelect={select} onJoin={onJoin} onWithdraw={onWithdraw} onOpenChat={onOpenChat} />
       <Pressable accessibilityRole="button" accessibilityLabel="ดูรายละเอียดตี้" onPress={select} style={[styles.detailIconBtn, { backgroundColor: colors.surfaceRaised }]}><FeatureIcon name="chevron.right" size={17} color={colors.inkMuted} /></Pressable>
     </View>
-  </View>;
+  </NativeCard>;
 }
 
 function PartyQuickAction({ colors, icon, label, onPress, secondary = false, color }) {
@@ -588,6 +593,8 @@ export default function PartyFinderSection({
 }) {
   const { colors, isDark } = useTheme();
   const { campusSpots = [] } = useAppFeed();
+  const { width: windowWidth } = useWindowDimensions();
+  const isTablet = (Platform.OS === 'ios' && Boolean(Platform.isPad)) || windowWidth >= 700;
   const [tab, setTab] = useState('open');
   const [category, setCategory] = useState('all');
   const [selectedPartyId, setSelectedPartyId] = useState(targetPartyId);
@@ -612,11 +619,6 @@ export default function PartyFinderSection({
     () => parties.filter((party) => !party.isPast && !party.isMember && !party.isUserHost),
     [parties]
   );
-  const stats = useMemo(() => [
-    { id: 'open', label: 'เปิดรับ', value: openParties.length },
-    { id: 'today', label: 'นัดวันนี้', value: openParties.filter((party) => party.urgencyBadge?.type === 'today').length },
-    { id: 'mine', label: 'ตี้ของฉัน', value: parties.filter((party) => party.isUserHost || party.isMember).length },
-  ], [openParties, parties]);
 
   const tabParties = useMemo(() => {
     if (tab === 'mine') return parties.filter((party) => party.isUserHost || party.isMember);
@@ -646,38 +648,8 @@ export default function PartyFinderSection({
   }, [parties, selectedPartyId]);
 
   const feedRows = useMemo(() => insertActivityAdSlots(visible), [visible]);
-  const header = <View style={styles.feedHeader}>
-      <LinearGradient colors={partyBannerGradient(isDark)} end={{ x: 1, y: 1 }} start={{ x: 0, y: 0 }} style={styles.hero}>
-        <View pointerEvents="none" style={styles.heroOrb} />
-        <View style={styles.headingText}>
-          <View style={styles.heroEyebrow}>
-            <View style={styles.bannerLiveDot} />
-            <Text style={styles.heroEyebrowText}>อัปเดตสด · รอบ ม.อ.</Text>
-          </View>
-          <Text accessibilityRole="header" style={styles.heroTitle}>ไปทำกิจกรรมด้วยกัน</Text>
-          <Text style={styles.heroSubtitle}>เลือกตี้ที่ใช่ หรือเปิดตี้ชวนเพื่อนใหม่</Text>
-        </View>
-        <View style={styles.statRow}>
-          {stats.map((item) => (
-            <View accessible accessibilityLabel={`${item.label} ${item.value} ตี้`} key={item.id} style={styles.statTile}>
-              <Text style={styles.statValue}>{item.value}</Text>
-              <Text numberOfLines={1} style={styles.statLabel}>{item.label}</Text>
-            </View>
-          ))}
-        </View>
-        {onCreateParty ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="เปิดตี้ใหม่"
-            onPress={onCreateParty}
-            style={({ pressed }) => [styles.createBtn, pressed && styles.pressed]}
-          >
-            <FeatureIcon name="plus" size={16} color="#1F56A8" />
-            <Text style={styles.createBtnText}>เปิดตี้ใหม่</Text>
-          </Pressable>
-        ) : null}
-      </LinearGradient>
-
+  const header = (
+    <View style={styles.feedHeader}>
       <LiquidGlassSegmentedControl activeTab={tab} onChangeTab={setTab} tabs={tabs} />
 
       {categories.length > 1 ? (
@@ -700,7 +672,7 @@ export default function PartyFinderSection({
       ) : null}
 
       {error ? (
-        <View style={[styles.stateCard, { borderColor: colors.danger, backgroundColor: colors.dangerSoft }]}>
+        <NativeCard style={[styles.stateCard, { borderColor: colors.danger, backgroundColor: colors.dangerSoft }]}>
           <FeatureIcon name="exclamationmark.triangle.fill" size={32} color={colors.danger} />
           <Text style={[styles.stateText, { color: colors.danger }]}>
             {typeof error === 'string' ? error : error?.message || 'เกิดข้อผิดพลาดในการโหลดรายการตี้'}
@@ -710,17 +682,18 @@ export default function PartyFinderSection({
               <Text style={styles.retryBtnText}>ลองใหม่อีกครั้ง</Text>
             </Pressable>
           ) : null}
-        </View>
+        </NativeCard>
       ) : null}
-    </View>;
+    </View>
+  );
   const empty = (
       loading ? (
-        <View style={[styles.stateCard, { borderColor: colors.line, backgroundColor: colors.card }]}>
+        <NativeCard style={[styles.stateCard, { borderColor: colors.line, backgroundColor: colors.card }]}>
           <ActivityIndicator color={colors.primary} />
           <Text style={[styles.stateText, { color: colors.inkMuted }]}>กำลังโหลดรายการตี้...</Text>
-        </View>
+        </NativeCard>
       ) : !visible.length && !error ? (
-        <View style={[styles.stateCard, { borderColor: colors.line, backgroundColor: colors.card }]}>
+        <NativeCard style={[styles.stateCard, { borderColor: colors.line, backgroundColor: colors.card }]}>
           <FeatureIcon name="person.3.fill" size={32} color={colors.inkMuted} />
           <Text style={[styles.stateText, { color: colors.inkMuted }]}>
             {tab === 'open'
@@ -731,7 +704,7 @@ export default function PartyFinderSection({
           </Text>
           <Text style={[styles.stateHint, { color: colors.inkMuted }]}>{tab === 'requests' ? 'คำขอที่ส่งและคำขอจากเพื่อนจะอยู่ที่นี่' : 'เปิดตี้ของคุณ ชวนเพื่อนมาเข้าร่วมกิจกรรมด้วยกัน'}</Text>
           {tab !== 'requests' && onCreateParty ? <Pressable accessibilityRole="button" onPress={onCreateParty} style={[styles.retryBtn, { backgroundColor: colors.primary }]}><Text style={[styles.retryBtnText, { color: colors.onPrimary }]}>เปิดตี้ใหม่</Text></Pressable> : null}
-        </View>
+        </NativeCard>
       ) : null
   );
   const footer = (
@@ -746,7 +719,7 @@ export default function PartyFinderSection({
         data={feedRows}
         keyExtractor={(item) => item.id}
         contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={[styles.feedContent, contentContainerStyle]}
+        contentContainerStyle={[styles.feedContent, isTablet && styles.tabletFeedContent, contentContainerStyle]}
         initialNumToRender={3}
         maxToRenderPerBatch={3}
         windowSize={5}
@@ -808,22 +781,9 @@ export default function PartyFinderSection({
 const styles = StyleSheet.create({
   root: { flex: 1, width: '100%' },
   feedContent: { flexGrow: 1, width: '100%', maxWidth: 760, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 8, paddingBottom: 32 },
+  tabletFeedContent: { maxWidth: 1040, paddingHorizontal: 28 },
   feedHeader: { gap: 16, paddingBottom: 20 },
   feedSeparator: { height: 20 },
-  hero: { borderRadius: 26, borderCurve: 'continuous', gap: 14, overflow: 'hidden', padding: 18 },
-  heroOrb: { position: 'absolute', right: -60, top: -80, width: 200, height: 200, borderRadius: 100, backgroundColor: 'rgba(255,255,255,0.09)' },
-  headingText: { minWidth: 0, gap: 4 },
-  heroEyebrow: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.pill, backgroundColor: 'rgba(255,255,255,0.18)' },
-  bannerLiveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#5BE3AE' },
-  heroEyebrowText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
-  heroTitle: { color: '#FFFFFF', fontSize: 24, lineHeight: 32, fontWeight: '900', letterSpacing: -0.3 },
-  heroSubtitle: { color: 'rgba(255,255,255,0.86)', fontSize: 14, lineHeight: 20 },
-  statRow: { flexDirection: 'row', gap: 8 },
-  statTile: { flex: 1, minWidth: 0, alignItems: 'center', gap: 1, paddingVertical: 10, borderRadius: 16, borderCurve: 'continuous', backgroundColor: 'rgba(255,255,255,0.14)' },
-  statValue: { color: '#FFFFFF', fontSize: 22, lineHeight: 28, fontWeight: '900' },
-  statLabel: { color: 'rgba(255,255,255,0.86)', fontSize: 12, fontWeight: '600' },
-  createBtn: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 18, borderRadius: radius.pill, backgroundColor: '#FFFFFF' },
-  createBtnText: { color: '#1F56A8', fontSize: 15, fontWeight: '800' },
   categoryRow: { gap: 8, paddingVertical: 2 },
   categoryChip: { minHeight: 36, justifyContent: 'center', paddingHorizontal: 14, borderRadius: radius.pill, borderWidth: StyleSheet.hairlineWidth },
   categoryChipText: { fontSize: 13, fontWeight: '700' },

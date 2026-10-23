@@ -1,7 +1,8 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { ActivityIndicator, Dimensions, Keyboard, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Dimensions, Keyboard, Modal, Platform, StyleSheet, View } from 'react-native';
 import Animated, {
   Easing,
   cancelAnimation,
@@ -22,6 +23,7 @@ import { getDecryptedMediaUri, getSyncCachedMediaUri } from '../services/chatMed
 import { measureImageAspectRatio, getCachedAspectRatio, copyImageToClipboard, saveImageToGallery } from '../utils/chatImageUtils';
 import { project, rubberband } from '../utils/motion';
 import { showAlert } from '../utils/appAlert';
+import { GlassBackground, useLiquidGlass } from './LiquidGlassSurface';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const EASE_OUT = Easing.bezier(0.23, 1, 0.32, 1);
@@ -55,6 +57,7 @@ export default function ChatImageViewerModal({
   const [copyToast, setCopyToast] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const glass = useLiquidGlass();
   const isKeyboardOpenRef = useRef(false);
   const wasVisibleRef = useRef(false);
   const keyboardTranslateY = useSharedValue(0);
@@ -302,7 +305,6 @@ export default function ChatImageViewerModal({
         scheduleOnRN(showControls);
       }
     },
-    [hideControls, showControls]
   );
 
   const currentIndexRef = useRef(currentIndex);
@@ -651,8 +653,9 @@ export default function ChatImageViewerModal({
             accessibilityLabel="ปิดหน้าดูรูปภาพ"
             hitSlop={12}
             onPress={onClose}
-            style={({ pressed }) => [styles.headerCloseBtn, pressed && styles.pressed]}
+            style={({ pressed }) => [styles.headerCloseBtn, glass && styles.glassClear, pressed && styles.pressed]}
           >
+            <GlassBackground colorScheme="dark" style={{ borderRadius: 20 }} />
             <FeatureIcon color="#FFFFFF" name="xmark" size={18} />
           </Pressable>
 
@@ -675,8 +678,9 @@ export default function ChatImageViewerModal({
               disabled={isSaving}
               hitSlop={12}
               onPress={handleSaveCurrentImage}
-              style={({ pressed }) => [styles.headerCloseBtn, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.headerCloseBtn, glass && styles.glassClear, pressed && styles.pressed]}
             >
+              <GlassBackground colorScheme="dark" style={{ borderRadius: 20 }} />
               {isSaving ? (
                 <ActivityIndicator color="#FFFFFF" size="small" />
               ) : (
@@ -688,8 +692,9 @@ export default function ChatImageViewerModal({
               accessibilityLabel="คัดลอกรูปภาพ"
               hitSlop={12}
               onPress={handleCopyCurrentImage}
-              style={({ pressed }) => [styles.headerCloseBtn, pressed && styles.pressed]}
+              style={({ pressed }) => [styles.headerCloseBtn, glass && styles.glassClear, pressed && styles.pressed]}
             >
+              <GlassBackground colorScheme="dark" style={{ borderRadius: 20 }} />
               <FeatureIcon color="#FFFFFF" name="doc.on.doc" size={17} />
             </Pressable>
           </View>}
@@ -833,6 +838,7 @@ const styles = StyleSheet.create({
     top: 0,
     zIndex: 20,
   },
+  glassClear: { backgroundColor: 'transparent' },
   headerCloseBtn: {
     alignItems: 'center',
     backgroundColor: 'rgba(255, 255, 255, 0.20)',

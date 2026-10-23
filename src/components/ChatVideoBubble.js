@@ -1,7 +1,8 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Keyboard, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, Keyboard, Modal, Platform, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -25,6 +26,7 @@ import { useAppActions } from '../context/AppContext';
 import { createReplySnapshot } from '../utils/messageReply';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { showAlert } from '../utils/appAlert';
+import { GlassIconButton } from './LiquidGlassSurface';
 
 // Serialise native capture acquisition/release, including rapid close/reopen.
 let activeSession = null;
@@ -495,9 +497,16 @@ function VideoSession({ item, conversationId, currentUserId, mine = false, onClo
     <Modal visible animationType="none" onRequestClose={onClose}>
       <GestureHandlerRootView style={[styles.sessionRoot, { paddingTop: insets.top }]}>
         <View style={styles.sessionHeader}>
-          <Pressable accessibilityLabel="ปิดวิดีโอ" onPress={onClose} style={styles.closeBtn}>
-            <Ionicons name="close" size={28} color="#fff" />
-          </Pressable>
+          <GlassIconButton
+            accessibilityLabel="ปิดวิดีโอ"
+            colorScheme="dark"
+            fallbackBackgroundColor="transparent"
+            icon="xmark"
+            iconColor="#FFFFFF"
+            iconSize={18}
+            onPress={onClose}
+            size={44}
+          />
           <Text style={styles.sessionTitle}>วิดีโอ</Text>
           <Text style={styles.sessionMode}>{VIDEO_MODES[item.videoMode] || VIDEO_MODES.chat}</Text>
         </View>

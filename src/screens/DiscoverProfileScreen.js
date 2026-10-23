@@ -1,6 +1,17 @@
+import { Pressable } from '../components/NativePressable';
+import NativeAnimatedCard from '../components/NativeAnimatedCard';
+import { withTimeout } from '../utils/withTimeout';
+import {
+  noteProfileOpened,
+  noteSwipeDismiss,
+  rewindEligibleProfileId,
+  subscribeRewindEligibility,
+} from '../utils/rewindEligibility';
+import ProfileSafetyActions from '../components/ProfileSafetyActions';
+import ProfileMusicList from '../components/ProfileMusicList';
 import Text from '../components/AppText';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Dimensions, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Dimensions, Linking, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import Animated, {
   Easing,
   Extrapolation,
@@ -31,15 +42,33 @@ import {
 import { useAppActions, useAppConversations, useAppFeed, useAppProfile } from '../context/AppContext';
 import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
 import FeatureIcon from '../components/FeatureIcon';
-import TrackPreviewButton from '../components/TrackPreviewButton';
+import ProfilePhotoCarousel from '../components/ProfilePhotoCarousel';
 import SpotifyTasteMatchCard from '../components/SpotifyTasteMatchCard';
 import SpotifyTopArtistsView from '../components/SpotifyTopArtistsView';
-import { calculateMusicTasteMatch, openInSpotify } from '../services/spotifyAuthService';
+import { calculateMusicTasteMatch } from '../services/spotifyAuthService';
+import { getDiscoverySummary } from '../utils/discoveryPresentation';
 import { getImageRequestUri, useProfileImagePrefetch } from '../utils/useRemoteImage';
-import { formatAvailabilitySlots, formatDistance, formatReadableDate, genderLabel, getActivityLabel } from '../utils/formatters';
-import { describeActivityDetails } from '../data/activityCategories';
+import { formatDistance, formatReadableDate, genderLabel, getActivityLabel } from '../utils/formatters';
+import { describeActivityDetails, getActivityCategory } from '../data/activityCategories';
 import { radius, spacing, type, useTheme } from '../theme';
 import { project } from '../utils/motion';
+
+function interestTagsBeyondActivities(candidate, activityTags) {
+  const shown = new Set((activityTags || []).map((tag) => String(tag).trim().toLowerCase()));
+  const activityIds = new Set([
+    ...safeStringList(candidate?.activities),
+    ...(Array.isArray(candidate?.activity) ? safeStringList(candidate.activity) : [displayText(candidate?.activity)].filter(Boolean)),
+  ]);
+  return Array.from(new Set([
+    ...safeStringList(candidate?.tags),
+    ...safeStringList(candidate?.interests),
+  ])).filter((tag) => {
+    const key = tag.trim().toLowerCase();
+    if (!key || activityIds.has(key) || shown.has(key)) return false;
+    const category = getActivityCategory(key);
+    return !category || !shown.has(category.label.trim().toLowerCase());
+  });
+}
 
 const { height: screenHeight, width: screenWidth } = Dimensions.get('window');
 const actionButtonWidth = 96;
@@ -88,7 +117,7 @@ function InfoRow({ icon, label, value, colors, styles, isLast = false }) {
   return (
     <View style={[styles.infoRow, isLast && styles.infoRowLast, isMulti && { alignItems: 'flex-start' }]}>
       <View style={[styles.infoIcon, isMulti && { marginTop: 0 }]}>
-        <FeatureIcon color={colors.primary} name={icon} size={18} />
+        <FeatureIcon color={colors.accentText} name={icon} size={18} />
       </View>
       <View style={styles.infoCopy}>
         <Text style={styles.infoLabel}>{label}</Text>
@@ -105,6 +134,9 @@ function openSpotifyUrl(url) {
 
 export function ProfileCardView({
   candidate,
+  cardHeight,
+  fullScreen = false,
+  onDetailsExpandedChange,
   colors,
   insets,
   isDark,
@@ -116,6 +148,11 @@ export function ProfileCardView({
   swipeCoral = null,
   swipeX = null,
 }) {
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [bioExpanded, setBioExpanded] = useState(false);
+  const { width: photoWidth, height: photoHeight } = useWindowDimensions();
+  const heroHeight = cardHeight || Math.round(Math.max(340, photoHeight - (insets?.top || 0) - (insets?.bottom || 0) - 100));
+  const detailsTopInset = fullScreen ? (insets?.top || 0) + 80 : 72;
   const allTags = useMemo(() => {
     if (!candidate) return [];
     return Array.from(new Set([
@@ -134,12 +171,6 @@ export function ProfileCardView({
     if (!candidate || !myProfile) return null;
     return calculateMusicTasteMatch(myProfile, candidate);
   }, [candidate, myProfile]);
-
-  const sharedTracks = useMemo(() => {
-    if (!candidateTracks.length || !Array.isArray(myFavoriteTracks) || !myFavoriteTracks.length) return [];
-    const myIds = new Set(myFavoriteTracks.map((track) => track?.id).filter(Boolean));
-    return candidateTracks.filter((track) => myIds.has(track.id));
-  }, [candidateTracks, myFavoriteTracks]);
 
   const activityDisplay = useMemo(() => {
     if (!candidate) return '';
@@ -199,17 +230,16 @@ export function ProfileCardView({
     return Array.from(new Set(tags));
   }, [candidate, typeof activityDetailRows !== 'undefined' ? activityDetailRows : [], typeof skillDisplay !== 'undefined' ? skillDisplay : '', typeof paceDisplay !== 'undefined' ? paceDisplay : '']);
 
-  const formattedSlots = formatAvailabilitySlots(candidate?.availabilitySlots);
-  const availabilityDisplay = formattedSlots
-    || (!hasCorruptMarker(candidate?.availability) ? displayText(candidate?.availability) : '');
+  const extraInterestTags = useMemo(
+    () => interestTagsBeyondActivities(candidate, activityTags),
+    [activityTags, candidate],
+  );
   const distanceValue = candidate?.distance == null
     ? null
     : (typeof candidate.distance === 'number' ? candidate.distance : Number(candidate.distance));
   const safeDistance = Number.isFinite(distanceValue) ? distanceValue : null;
   const bioDisplay = displayText(candidate?.bio) || 'ยังไม่ได้เขียนคำแนะนำตัว';
-  const compatibilityDisplay = candidate?.compatibility == null
-    ? ''
-    : displayText(candidate.compatibility);
+  const compatibilityDisplay = getDiscoverySummary(candidate).score;
   const avatarColor = typeof candidate?.avatarColor === 'string' && candidate.avatarColor.trim()
     ? candidate.avatarColor
     : (isDark ? colors.surfaceRaised : '#E9EDF4');
@@ -219,20 +249,28 @@ export function ProfileCardView({
     || facultyDisplay
     || yearDisplay
     || activityTags.length
-    || availabilityDisplay
     || safeDistance != null
   );
   const remoteHeroImage = getImageRequestUri(candidate?.avatarUri, candidate?.avatarRevision);
-    const galleryImages = useMemo(() => {
-      const candidateToUse = typeof candidate !== 'undefined' ? candidate : null;
-      if (!candidateToUse || !Array.isArray(candidateToUse.gallery)) return [];
-      return candidateToUse.gallery;
-    }, [candidate]);
-
   const scrollRef = useRef(null);
+  const pendingDetailsScroll = useRef(null);
   useEffect(() => {
+    setDetailsExpanded(false);
+    onDetailsExpandedChange?.(false);
+    pendingDetailsScroll.current = null;
+    setBioExpanded(false);
     scrollRef.current?.scrollTo?.({ y: 0, animated: false });
   }, [candidate?.id]);
+
+  const handleToggleDetails = useCallback(() => {
+    const next = !detailsExpanded;
+    // Reset before shrinking content; otherwise the old offset can hide the photo.
+    if (!next) scrollRef.current?.scrollTo?.({ y: 0, animated: false });
+    pendingDetailsScroll.current = next ? Math.max(0, heroHeight - detailsTopInset) : null;
+    setDetailsExpanded(next);
+    onDetailsExpandedChange?.(next);
+    if (!next) setBioExpanded(false);
+  }, [detailsExpanded, detailsTopInset, heroHeight, onDetailsExpandedChange]);
 
   // Animated.ScrollView keeps the card + white shell on the same native transform tree
   // (plain ScrollView + elevation can leave the white card upright while content tilts).
@@ -242,16 +280,25 @@ export function ProfileCardView({
         pointerEvents: 'none',
         style: [
           styles.scrollContent,
-          { paddingTop: 68 + insets.top, width: '100%' },
+          { paddingTop: 0, width: '100%' },
+          fullScreen && { maxWidth: '100%', alignSelf: 'stretch' },
         ],
       }
     : {
         ref: scrollRef,
         contentContainerStyle: [
           styles.scrollContent,
-          { paddingTop: 68 + insets.top },
+          { paddingTop: 0, paddingBottom: detailsExpanded ? 140 : 0 },
           isViewOnly && { paddingBottom: spacing.xl },
+          fullScreen && { maxWidth: '100%', alignSelf: 'stretch' },
         ],
+        scrollEnabled: detailsExpanded || isViewOnly,
+        onContentSizeChange: () => {
+          if (pendingDetailsScroll.current === null) return;
+          const y = pendingDetailsScroll.current;
+          pendingDetailsScroll.current = null;
+          scrollRef.current?.scrollTo?.({ y, animated: false });
+        },
         nestedScrollEnabled: true,
         showsVerticalScrollIndicator: false,
         style: { width: '100%', height: '100%' },
@@ -269,12 +316,6 @@ export function ProfileCardView({
       opacity: interpolate(swipeX.get(), [-110, -16, 0], [0.5, 0.18, 0], Extrapolation.CLAMP),
     };
   });
-  const heroBlurStyle = useAnimatedStyle(() => {
-    if (!swipeX || isUnderCard) return { opacity: 1 };
-    return {
-      opacity: interpolate(Math.abs(swipeX.get()), [0, 80], [1, 0], Extrapolation.CLAMP),
-    };
-  });
   const underScrimStyle = useAnimatedStyle(() => {
     if (!swipeX || !isUnderCard) return { opacity: 0 };
     return {
@@ -282,98 +323,136 @@ export function ProfileCardView({
     };
   });
 
+  const summaryChips = useMemo(() => {
+    const chips = [];
+    if (facultyDisplay && !hasCorruptMarker(facultyDisplay)) {
+      chips.push({ icon: 'building.columns.fill', label: `คณะ${facultyDisplay.replace(/^คณะ/, '')}` });
+    }
+    if (yearDisplay && !hasCorruptMarker(yearDisplay)) {
+      chips.push({ icon: 'graduationcap.fill', label: yearDisplay });
+    }
+    if (safeDistance != null) {
+      chips.push({ icon: 'location.circle.fill', label: formatDistance(safeDistance) });
+    }
+    // Activities get their own "กิจกรรมที่ชอบ" list once details are open;
+    // showing them in the hero too would list the same tags twice.
+    if (!detailsExpanded) {
+      activityTags.slice(0, 4).forEach((tag) => {
+        chips.push({ icon: 'sparkles', label: tag });
+      });
+    }
+    return isViewOnly ? chips : chips.slice(0, 4);
+  }, [activityTags, detailsExpanded, facultyDisplay, isViewOnly, safeDistance, yearDisplay]);
+
+  const resolvedPhotoWidth = undefined; // The carousel measures the actual card width.
+
   return (
     <Container {...containerProps}>
-      <Animated.View
+      <NativeAnimatedCard
         collapsable={false}
         needsOffscreenAlphaCompositing
         renderToHardwareTextureAndroid
-        style={styles.swipeCard}
+        style={[styles.swipeCard, fullScreen && { borderRadius: 0, borderWidth: 0 }]}
       >
-        <View style={styles.hero}>
-          {remoteHeroImage ? (
-            <Image
-              cachePolicy="memory-disk"
-              contentFit="cover"
-              recyclingKey={candidate?.id}
-              priority="high"
-              source={{ uri: remoteHeroImage }}
-              style={styles.heroImage}
-              transition={0}
-            />
-          ) : (
-            <View
-              accessibilityLabel="ยังไม่มีรูปโปรไฟล์"
-              style={[styles.heroImage, styles.heroPlaceholder, { backgroundColor: avatarColor }]}
-            >
-              <FeatureIcon color={colors.inkMuted} name="person.crop.square.fill" size={86} />
-              <Text style={styles.heroPlaceholderText}>ยังไม่มีรูปโปรไฟล์</Text>
-            </View>
-          )}
-          <View style={styles.heroOverlay} />
-          {isUnderCard ? (
-            <LinearGradient
-              colors={['transparent', 'rgba(0,0,0,0.14)', 'rgba(0,0,0,0.14)']}
-              locations={[0, 0.42, 1]}
-              pointerEvents="none"
-              style={styles.heroBlur}
-            />
-          ) : (
-            <MaskedView
-              pointerEvents="none"
-              style={styles.heroBlur}
-              maskElement={(
-                <LinearGradient
-                  colors={['transparent', '#FFFFFF', '#FFFFFF']}
-                  locations={[0, 0.42, 1]}
-                  style={StyleSheet.absoluteFill}
-                />
-              )}
-            >
-              <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, heroBlurStyle]}>
-                <BlurView intensity={isDark ? 28 : 34} tint="dark" style={StyleSheet.absoluteFill} />
-                <View pointerEvents="none" style={styles.heroBlurScrim} />
-              </Animated.View>
-            </MaskedView>
-          )}
+        <View style={[styles.hero, { height: heroHeight }]}>
+          <ProfilePhotoCarousel
+            profile={candidate}
+            width={resolvedPhotoWidth}
+            height={heroHeight}
+            topInset={fullScreen ? (insets?.top || 0) + 64 : 0}
+            footerBlurHeight={Math.min(190, Math.max(100, Math.round(heroHeight * 0.24)))}
+            interactive={!isUnderCard}
+            swipePhotos={!isUnderCard}
+          />
           <LinearGradient
-            colors={['transparent', 'rgba(0,0,0,0.16)', 'rgba(0,0,0,0.48)']}
-            locations={[0, 0.46, 1]}
+            colors={['transparent', 'rgba(10,18,32,0.22)', 'rgba(10,18,32,0.78)']}
+            locations={[0, 0.44, 1]}
             pointerEvents="none"
             style={styles.heroGradient}
           />
-          <View style={styles.heroCopy}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <Text style={styles.heroName}>{safeDisplayName}{ageDisplay ? `, ${ageDisplay}` : ''}</Text>
-              {candidate?.isFaceVerified === true ? (
-                <View style={{ backgroundColor: 'rgba(35, 123, 231, 0.85)', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                  <FeatureIcon color="#FFFFFF" name="checkmark.seal.fill" size={13} />
-                  <Text style={{ color: '#FFFFFF', fontSize: 11, fontWeight: '800' }}>ยืนยันใบหน้า</Text>
+          <View pointerEvents="box-none" style={[styles.heroCopy, { bottom: (isViewOnly ? 28 : 128) + (fullScreen ? insets?.bottom || 0 : 0) }]}>
+            <View pointerEvents="box-none" style={styles.heroMainRow}>
+              <View pointerEvents="none" style={styles.heroMainCopy}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <Text style={styles.heroName}>{safeDisplayName}{ageDisplay ? ` ${ageDisplay}` : ''}</Text>
+                  {candidate?.isFaceVerified === true ? (
+                    <View style={{ backgroundColor: 'rgba(35, 123, 231, 0.85)', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <FeatureIcon color="#FFFFFF" name="checkmark.seal.fill" size={13} />
+                      <Text style={{ color: '#FFFFFF', fontSize: 11, fontWeight: '800' }}>ยืนยันใบหน้า</Text>
+                    </View>
+                  ) : null}
                 </View>
-              ) : null}
+                {activityDisplay && !isViewOnly ? (
+                  <View style={styles.heroSectionLabelRow}>
+                    <FeatureIcon color="rgba(255,255,255,0.9)" name="tag.fill" size={13} />
+                    <Text numberOfLines={1} style={styles.heroActivity}>{activityDisplay}</Text>
+                  </View>
+                ) : null}
+              </View>
+              {!detailsExpanded && !isUnderCard ? <Pressable accessibilityRole="button" accessibilityLabel="ดูรายละเอียดทั้งหมด" accessibilityState={{ expanded: false }} onPress={handleToggleDetails} style={{ width: 48, height: 48, borderRadius: 24, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}><FeatureIcon name="arrow.up" size={24} color="#111827" /></Pressable> : null}
             </View>
-            {activityDisplay ? <Text style={styles.heroActivity}>{activityDisplay}</Text> : null}
+            {summaryChips.length > 0 ? (
+              <View pointerEvents="none" style={styles.heroChipsContainer}>
+                {summaryChips.map((chip, idx) => (
+                  <View key={`hero-chip-${idx}`} style={styles.heroChipPill}>
+                    <FeatureIcon color="#FFFFFF" name={chip.icon} size={12} />
+                    <Text numberOfLines={1} style={styles.heroChipText}>{chip.label}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
           </View>
         </View>
 
-        <View style={styles.body}>
+        {detailsExpanded ? <View style={styles.body}>
           <View style={styles.identityRow}>
             <View style={styles.identityCopy}>
               <Text style={styles.title}>เกี่ยวกับ {safeDisplayName}</Text>
               <Text style={styles.subtitle}>ข้อมูลที่เจ้าของโปรไฟล์เลือกแสดง</Text>
             </View>
-            {compatibilityDisplay ? (
-              <View style={styles.compatibility}>
-                <Text style={styles.compatibilityValue}>{compatibilityDisplay}%</Text>
-                <Text style={styles.compatibilityLabel}>เข้ากันได้</Text>
-              </View>
-            ) : null}
+            <View style={styles.identityRightRow}>
+              {compatibilityDisplay !== null ? (
+                <View style={styles.compatibility}>
+                  <Text style={styles.compatibilityValue}>{compatibilityDisplay}%</Text>
+                  <Text style={styles.compatibilityLabel}>เข้ากันได้</Text>
+                </View>
+              ) : null}
+              <Pressable
+                accessibilityLabel={detailsExpanded ? 'ย่อรายละเอียดทั้งหมด' : 'แสดงรายละเอียดเต็ม'}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: detailsExpanded }}
+                onPress={handleToggleDetails}
+                style={({ pressed }) => [
+                  styles.fullDetailsPillButton,
+                  { backgroundColor: detailsExpanded ? colors.surfaceRaised : colors.primary },
+                  pressed && styles.pressed,
+                ]}
+              >
+                <FeatureIcon
+                  color={detailsExpanded ? colors.ink : colors.onPrimary}
+                  name={detailsExpanded ? 'chevron.up' : 'chevron.down'}
+                  size={15}
+                />
+                <Text
+                  style={[
+                    styles.fullDetailsPillText,
+                    { color: detailsExpanded ? colors.ink : colors.onPrimary },
+                  ]}
+                >
+                  {detailsExpanded ? 'ย่อรายละเอียด' : 'ดูรายละเอียดทั้งหมด'}
+                </Text>
+              </Pressable>
+            </View>
           </View>
 
+          {detailsExpanded ? <>
           <InfoList styles={styles}>
-            {Array.isArray(candidate?.matchReasons) && candidate.matchReasons.length ? (
-              <InfoRow icon="sparkles" label="จุดที่เข้ากัน" value={candidate.matchReasons.filter((reason) => typeof reason === 'string').slice(0, 3).join(' · ')} colors={colors} styles={styles} />
-            ) : null}
+            {(() => {
+              const reasons = (Array.isArray(candidate?.matchReasons) ? candidate.matchReasons : [])
+                .filter((reason) => typeof reason === 'string' && reason.trim() && !reason.startsWith('ว่างตรงกัน'))
+                .slice(0, 3);
+              return reasons.length ? <InfoRow icon="sparkles" label="จุดที่เข้ากัน" value={reasons.join(' · ')} colors={colors} styles={styles} /> : null;
+            })()}
             {ageDisplay ? <InfoRow icon="calendar" label="อายุ" value={`${ageDisplay} ปี`} colors={colors} styles={styles} /> : null}
             {genderDisplay ? <InfoRow icon="person.2.fill" label="เพศ" value={genderLabel(genderDisplay)} colors={colors} styles={styles} /> : null}
             {(facultyDisplay && !hasCorruptMarker(facultyDisplay)) ? <InfoRow icon="building.columns.fill" label="คณะ" value={facultyDisplay} colors={colors} styles={styles} /> : null}
@@ -393,22 +472,14 @@ export function ProfileCardView({
                   </View>
                 </View>
               ) : null}
-            {availabilityDisplay ? (
-              <InfoRow
-                icon="clock.fill"
-                label="วันและเวลาที่สะดวก"
-                value={availabilityDisplay}
-                colors={colors}
-                styles={styles}
-              />
-            ) : null}
             {safeDistance != null ? <InfoRow icon="location.circle.fill" label="ระยะห่างจากคุณ" value={formatDistance(safeDistance)} colors={colors} styles={styles} /> : null}
+            {extraInterestTags.length ? <InfoRow icon="tag.fill" label="ความสนใจเพิ่มเติม" value={extraInterestTags.join(' · ')} colors={colors} styles={styles} /> : null}
           </InfoList>
 
           {!hasVisibleDetails ? (
             <View style={styles.privacyNotice}>
-              <FeatureIcon color={colors.primary} name="eye.slash.fill" size={18} />
-              <Text style={styles.privacyNoticeText}>ข้อมูลรายละเอียดอื่นถูกซ่อนไว้ตามการตั้งค่าความเป็นส่วนตัว</Text>
+              <FeatureIcon color={colors.accentText} name="eye.slash.fill" size={18} />
+              <Text style={styles.privacyNoticeText}>ยังไม่มีรายละเอียดเพิ่มเติม</Text>
             </View>
           ) : null}
 
@@ -416,32 +487,12 @@ export function ProfileCardView({
 
           <View style={styles.bioSection}>
             <View style={styles.bioTitleRow}>
-              <FeatureIcon color={colors.primary} name="text.quote" size={17} />
+              <FeatureIcon color={colors.accentText} name="text.quote" size={17} />
               <Text style={styles.sectionTitle}>แนะนำตัว</Text>
             </View>
-            <Text numberOfLines={5} style={styles.bio}>{bioDisplay}</Text>
+            <Text numberOfLines={bioExpanded ? undefined : 3} style={styles.bio}>{bioDisplay}</Text>
+            {candidate?.bio ? <Pressable accessibilityRole="button" accessibilityState={{ expanded: bioExpanded }} onPress={() => setBioExpanded(value => !value)} style={{ minHeight: 48, justifyContent: 'center' }}><Text style={{ color: colors.accentText, fontWeight: '700' }}>{bioExpanded ? 'ย่อคำแนะนำตัว' : 'อ่านคำแนะนำตัวทั้งหมด'}</Text></Pressable> : null}
           </View>
-
-            {galleryImages.length > 0 ? (
-              <View style={{ marginTop: spacing.md }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginBottom: spacing.sm, paddingHorizontal: spacing.md }}>
-                  <FeatureIcon name="photo.on.rectangle.angled" size={16} color={colors.inkSoft || '#6B7078'} />
-                  <Text style={{ color: colors.inkSoft || '#6B7078', fontSize: type.caption || 13, fontWeight: '800' }}>แกลเลอรีรูปภาพ</Text>
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: spacing.md, gap: 12 }}>
-                  {galleryImages.map((uri, idx) => (
-                    <Image
-                      key={idx}
-                      contentFit="cover"
-                      source={{ uri }}
-                      style={{ width: 120, height: 160, borderRadius: 12, backgroundColor: '#f0f0f0' }}
-                      transition={0}
-                    />
-                  ))}
-                </ScrollView>
-              </View>
-            ) : null}
-
 
             {tasteMatch && (tasteMatch.hasMatch || candidateTracks.length > 0 || (Array.isArray(candidate?.spotifyTopArtists) && candidate.spotifyTopArtists.length > 0)) ? (
             <SpotifyTasteMatchCard
@@ -459,100 +510,9 @@ export function ProfileCardView({
             </View>
           ) : null}
 
-          {sharedTracks.length ? (
-            <View style={styles.tracksSection}>
-              <Text style={styles.tagsTitle}>เพลงที่ชอบเหมือนกัน</Text>
-              <View style={styles.trackList}>
-                {sharedTracks.map((track) => (
-                  <Pressable
-                    key={`shared-${track.id}`}
-                    onPress={() => openInSpotify(track)}
-                    style={({ pressed }) => [styles.trackRow, pressed && { opacity: 0.85 }]}
-                  >
-                    {track.albumArt ? (
-                      <Image contentFit="cover" source={{ uri: track.albumArt }} style={styles.trackArt} />
-                    ) : (
-                      <View style={[styles.trackArt, styles.trackArtPlaceholder]}>
-                        <FeatureIcon color={colors.primary} name="music.note" size={14} />
-                      </View>
-                    )}
-                    <View style={styles.trackMeta}>
-                      <Text numberOfLines={1} style={styles.trackName}>{track.name}</Text>
-                      <Text numberOfLines={1} style={styles.trackArtists}>{track.artists || 'Unknown'}</Text>
-                    </View>
-                    <TrackPreviewButton
-                      backgroundColor={colors.primarySoft}
-                      color={colors.primary}
-                      previewEndMs={track.previewEndMs}
-                      previewStartMs={track.previewStartMs}
-                      previewUrl={track.previewUrl}
-                      size={32}
-                      track={track}
-                      trackArtists={track.artists}
-                      trackName={track.name}
-                      youtubeVideoId={track.youtubeVideoId}
-                    />
-                    <Pressable
-                      accessibilityLabel={`เปิดใน Spotify ${track.name}`}
-                      hitSlop={8}
-                      onPress={() => openInSpotify(track)}
-                      style={({ pressed }) => [{ marginHorizontal: 4 }, pressed && { opacity: 0.7 }]}
-                    >
-                      <FontAwesome5 name="spotify" size={18} color="#1DB954" />
-                    </Pressable>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          ) : null}
-
-          {candidateTracks.length ? (
-            <View style={styles.tracksSection}>
-              <Text style={styles.tagsTitle}>เพลงโปรด</Text>
-              <View style={styles.trackList}>
-                {candidateTracks.map((track) => (
-                  <Pressable
-                    key={`fav-${track.id}`}
-                    onPress={() => openInSpotify(track)}
-                    style={({ pressed }) => [styles.trackRow, pressed && { opacity: 0.85 }]}
-                  >
-                    {track.albumArt ? (
-                      <Image contentFit="cover" source={{ uri: track.albumArt }} style={styles.trackArt} />
-                    ) : (
-                      <View style={[styles.trackArt, styles.trackArtPlaceholder]}>
-                        <FeatureIcon color={colors.primary} name="music.note" size={14} />
-                      </View>
-                    )}
-                    <View style={styles.trackMeta}>
-                      <Text numberOfLines={1} style={styles.trackName}>{track.name}</Text>
-                      <Text numberOfLines={1} style={styles.trackArtists}>{track.artists || 'Unknown'}</Text>
-                    </View>
-                    <TrackPreviewButton
-                      backgroundColor={colors.primarySoft}
-                      color={colors.primary}
-                      previewEndMs={track.previewEndMs}
-                      previewStartMs={track.previewStartMs}
-                      previewUrl={track.previewUrl}
-                      size={32}
-                      track={track}
-                      trackArtists={track.artists}
-                      trackName={track.name}
-                      youtubeVideoId={track.youtubeVideoId}
-                    />
-                    <Pressable
-                      accessibilityLabel={`เปิดใน Spotify ${track.name}`}
-                      hitSlop={8}
-                      onPress={() => openInSpotify(track)}
-                      style={({ pressed }) => [{ marginHorizontal: 4 }, pressed && { opacity: 0.7 }]}
-                    >
-                      <FontAwesome5 name="spotify" size={18} color="#1DB954" />
-                    </Pressable>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          ) : null}
-        </View>
+          <ProfileMusicList tracks={candidateTracks} myTracks={myFavoriteTracks} />
+          </> : null}
+        </View> : null}
 
         {!isUnderCard && !isViewOnly ? (
           <>
@@ -598,14 +558,22 @@ export function ProfileCardView({
             />
           </Animated.View>
         ) : null}
-      </Animated.View>
+      </NativeAnimatedCard>
     </Container>
   );
+}
+
+function useRewindEligibleId() {
+  const [profileId, setProfileId] = useState(rewindEligibleProfileId);
+  useEffect(() => subscribeRewindEligibility(setProfileId), []);
+  return profileId;
 }
 
 export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onClose, onToast }) {
   const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
+  const { height: deckWindowHeight } = useWindowDimensions();
+  const [cardViewportHeight, setCardViewportHeight] = useState(deckWindowHeight);
   const styles = getStyles(colors, isDark);
   const swipeCoral = isDark ? colors.coral : colors.danger;
   const {
@@ -615,15 +583,48 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     isLoadingMoreProfiles,
     outgoingLikes,
     pendingIncomingLikes,
+    canRewindSkippedProfiles,
+    discoveryRecycledProfileIds,
   } = useAppFeed();
   const { conversations } = useAppConversations();
   const { profile: myProfile } = useAppProfile();
   const myFavoriteTracks = Array.isArray(myProfile?.favoriteTracks) ? myProfile.favoriteTracks : [];
-  const { dismissProfile, loadMoreProfiles, matchProfile, sendActivityInvite } = useAppActions();
+  const { dismissProfile, loadMoreProfiles, matchProfile, recycleSkippedProfiles, ensureConversation } = useAppActions();
+  const rewindingRef = useRef(false);
   const [processing, setProcessing] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [sessionExcludedIds, setSessionExcludedIds] = useState([]);
+  useEffect(() => {
+    if (!discoveryRecycledProfileIds?.length) return;
+    setSessionExcludedIds(ids => ids.filter(id => !discoveryRecycledProfileIds.includes(id)));
+  }, [discoveryRecycledProfileIds]);
   const [rawDirectProfile, setDirectProfile] = useState(null);
   const [profileLookupState, setProfileLookupState] = useState(() => (profileId ? 'loading' : 'idle'));
+
+  const rewindEligibleId = useRewindEligibleId();
+  const rewindEntering = useRef(false);
+  const rewindHold = useSharedValue(0);
+  const handleRewind = useCallback(async () => {
+    if (rewindingRef.current) return;
+    rewindingRef.current = true;
+    rewindEntering.current = true;
+    try {
+      const result = await recycleSkippedProfiles();
+      if (!result?.profile && !result?.busy && !result?.plusRequired) {
+        rewindEntering.current = false;
+        onToast?.('ไม่มีรายการที่ย้อนกลับได้ในขณะนี้', 'info');
+      } else if (result?.profile) {
+        setSessionExcludedIds((ids) => ids.filter((id) => id !== result.profile.id));
+        onToast?.(`ย้อนกลับไปยังโปรไฟล์ของ ${result.profile.name || 'เพื่อน'} แล้ว`, 'success');
+      }
+    } catch (error) {
+      rewindEntering.current = false;
+      if (error?.details?.reason === 'PLUS_REQUIRED') router.push('/membership');
+      else onToast?.(error?.message || 'ย้อนกลับไม่สำเร็จ กรุณาลองอีกครั้ง', 'error');
+    } finally {
+      rewindingRef.current = false;
+    }
+  }, [onToast, recycleSkippedProfiles]);
 
   // Direct profile links follow the same verification requirement as discovery.
   const isDirectAdmin = (rawDirectProfile?.email || '').toLowerCase().trim() === '6710210317@psu.ac.th'
@@ -640,6 +641,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const flyOpacity = useSharedValue(1);
   const swipeLock = useSharedValue(0);
   const decisionStarted = useRef(false);
+  const decisionInFlight = useRef(false);
   const candidateCache = useRef(new Map());
   const [exitingCard, setExitingCard] = useState(null);
 
@@ -730,7 +732,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
         || item?.isAdmin === true || item?.role === 'admin';
       if (!isItemAdmin && item.isFaceVerified !== true) return false;
       const id = item?.id;
-      if (!id || decidedIds.has(id) || seenIds.has(id) || !isProfileReadyForDiscovery(item)) return false;
+      if (!id || decidedIds.has(id) || seenIds.has(id) || !isProfileReadyForDiscovery(item, { publicProjection: secureDiscoveryConfigured() })) return false;
       seenIds.add(id);
       return true;
     });
@@ -753,6 +755,10 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     }
 
     const isDecisionExcluded = (id) => decidedIds.has(id);
+    const restored = [...candidatePool]
+      .filter((item) => Number.isFinite(item.rewindPriority) && !isDecisionExcluded(item.id))
+      .sort((a, b) => b.rewindPriority - a.rewindPriority)[0];
+    if (restored) return restored;
     const requestedProfile = profileId && candidatePool.find((item) => (
       item.id === profileId && !isDecisionExcluded(item.id)
     ));
@@ -868,9 +874,6 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     return Array.from(new Set(tags));
   }, [candidate, typeof activityDetailRows !== 'undefined' ? activityDetailRows : [], typeof skillDisplay !== 'undefined' ? skillDisplay : '', typeof paceDisplay !== 'undefined' ? paceDisplay : '']);
 
-  const formattedSlots = formatAvailabilitySlots(candidate?.availabilitySlots);
-  const availabilityDisplay = formattedSlots
-    || (!hasCorruptMarker(candidate?.availability) ? displayText(candidate?.availability) : '');
   const distanceValue = candidate?.distance == null
     ? null
     : (typeof candidate.distance === 'number' ? candidate.distance : Number(candidate.distance));
@@ -888,7 +891,6 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     || facultyDisplay
     || yearDisplay
     || activityTags.length
-    || availabilityDisplay
     || safeDistance != null
   );
   const remoteHeroImage = getImageRequestUri(candidate?.avatarUri, candidate?.avatarRevision);
@@ -915,7 +917,8 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   }, [onClose]);
 
   const handleDecision = useCallback(async (decision) => {
-    if (!candidate || processing) return;
+    if (!candidate || processing || decisionInFlight.current) return;
+    decisionInFlight.current = true;
 
     const candidateId = candidate.id;
     const candidateName = candidate.name || 'เพื่อน';
@@ -928,21 +931,19 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
     // Immediate optimistic notification so user never experiences lag
     if (decision === 'like') {
       if (isMatched) {
-        onToast?.(`ส่งคำขอร่วมกิจกรรมถึง ${candidateName} แล้ว...`, 'info');
+        onToast?.(`กำลังเปิดห้องแชตกับ ${candidateName}...`, 'info');
       } else {
         onToast?.(`ส่งถูกใจให้ ${candidateName} แล้ว`, 'info');
       }
-    } else {
-      onToast?.('ไม่เลือกโปรไฟล์นี้แล้ว', 'info');
     }
 
     try {
       if (decision === 'like') {
         if (isMatched) {
-          const inviteResult = await sendActivityInvite(candidate);
-          if (inviteResult?.matched && inviteResult?.conversationId) {
+          const inviteResult = await withTimeout(() => ensureConversation(candidate));
+          if (inviteResult) {
             onToast?.(`คุณและ ${candidateName} แมตช์กันแล้ว! 🎉 กำลังเปิดห้องแชต...`, 'success');
-            router.replace({ pathname: '/chat-room', params: { chatId: inviteResult.conversationId } });
+            router.replace({ pathname: '/chat-room', params: { chatId: inviteResult } });
           }
         } else {
           const result = await matchProfile(candidate);
@@ -958,22 +959,24 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
       setSessionExcludedIds((current) => current.filter((id) => id !== candidateId));
       onToast?.(`Error: ${error.message}`, 'info');
     } finally {
+      decisionInFlight.current = false;
       setProcessing(false);
     }
-  }, [candidate, dismissProfile, isCandidateMatched, matchProfile, onToast, processing, sendActivityInvite]);
+  }, [candidate, dismissProfile, isCandidateMatched, matchProfile, onToast, processing, ensureConversation]);
 
   const clearExitingCard = useCallback(() => {
     setExitingCard(null);
   }, []);
 
   const finishSwipe = useCallback((decision) => {
-    if (processing || decisionStarted.current || !candidate) return;
+    if (processing || decisionInFlight.current || decisionStarted.current || !candidate) return;
     decisionStarted.current = true;
     swipeLock.set(1);
     const isLike = decision === 'like';
     const flyOutX = isLike ? screenWidth * 1.35 : -screenWidth * 1.35;
     const startX = translateX.get() || (isLike ? 80 : -80);
     const outgoing = candidate;
+    if (decision === 'skip') noteSwipeDismiss(outgoing.id);
 
     flyX.set(startX);
     flyOpacity.set(1);
@@ -1002,7 +1005,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   }, [cardOpacity, cardScale, swipeLock, translateX, translateY]);
 
   const panGesture = useMemo(() => Gesture.Pan()
-    .enabled(!isViewOnly)
+    .enabled(!isViewOnly && !processing && !detailsExpanded)
     .activeOffsetX([-18, 18])
     .failOffsetY([-24, 24])
     .onUpdate((event) => {
@@ -1022,7 +1025,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
         cardScale.set(withSpring(1, { duration: 400, dampingRatio: 1 }));
         cardOpacity.set(withTiming(1, { duration: 120, easing: Easing.bezier(0.23, 1, 0.32, 1) }));
       }
-    }), [cardOpacity, cardScale, finishSwipe, isViewOnly, swipeLock, translateX, translateY]);
+    }), [cardOpacity, cardScale, finishSwipe, isViewOnly, processing, detailsExpanded, swipeLock, translateX, translateY]);
 
   const topCardStyle = useAnimatedStyle(() => ({
     opacity: cardOpacity.get(),
@@ -1035,8 +1038,22 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
       { scale: cardScale.get() },
     ],
   }));
+  useLayoutEffect(() => {
+    if (!candidate?.id || isViewOnly) return undefined;
+    noteProfileOpened(candidate.id);
+    if (!rewindEntering.current) return undefined;
+    rewindEntering.current = false;
+    rewindHold.set(1);
+    translateX.set(-screenWidth * 0.42);
+    cardOpacity.set(0);
+    translateX.set(withTiming(0, { duration: 380, easing: Easing.bezier(0.22, 1, 0.36, 1) }));
+    cardOpacity.set(withTiming(1, { duration: 260 }));
+    rewindHold.set(withTiming(0, { duration: 380 }));
+    return undefined;
+  }, [candidate?.id, cardOpacity, isViewOnly, rewindHold, translateX]);
+
   const nextCardStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(translateX.get(), [-160, -25, 0, 25, 160], [1, 0.7, 0, 0.7, 1], Extrapolation.CLAMP),
+    opacity: (1 - rewindHold.get()) * interpolate(translateX.get(), [-160, -25, 0, 25, 160], [1, 0.7, 0, 0.7, 1], Extrapolation.CLAMP),
     transform: [
       { scale: interpolate(translateX.get(), [-180, 0, 180], [1, 0.94, 1], Extrapolation.CLAMP) },
       { translateY: interpolate(translateX.get(), [-180, 0, 180], [0, 14, 0], Extrapolation.CLAMP) },
@@ -1121,7 +1138,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
       <SafeAreaView edges={['top', 'right', 'bottom', 'left']} style={styles.container}>
         <View style={styles.emptyState}>
           <FeatureIcon
-            color={waitingForProfile ? colors.primary : colors.inkMuted}
+            color={waitingForProfile ? colors.accentText : colors.inkMuted}
             name={waitingForProfile
               ? 'clock.arrow.2.circlepath'
               : notFound || lookupFailed
@@ -1131,48 +1148,60 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
           />
           <Text style={styles.emptyTitle}>{title}</Text>
           <Text style={styles.emptyText}>{body}</Text>
-          {!waitingForProfile ? (
-            <Pressable onPress={close} style={styles.backButton}>
-              <FeatureIcon color={colors.primary} name="chevron.left" size={18} />
-              <Text style={styles.backButtonText}>กลับไปค้นหาเพื่อน</Text>
+          {!isViewOnly && canRewindSkippedProfiles && !processing ? (
+            <Pressable accessibilityRole="button" accessibilityLabel="ย้อนกลับคนที่ข้าม" onPress={handleRewind} style={styles.backButton}>
+              <FeatureIcon color={colors.accentText} name="arrow.counterclockwise" size={18} />
+              <Text style={styles.backButtonText}>ย้อนกลับคนที่ข้าม</Text>
             </Pressable>
           ) : null}
+            <Pressable onPress={close} style={styles.backButton}>
+              <FeatureIcon color={colors.accentText} name="chevron.left" size={18} />
+              <Text style={styles.backButtonText}>กลับไปค้นหาเพื่อน</Text>
+            </Pressable>
         </View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView edges={['right', 'bottom', 'left']} style={styles.container}>
-      <View style={[styles.fixedHeader, { height: 68 + insets.top, paddingTop: insets.top }]}>
-        <BlurView intensity={isDark ? 34 : 48} tint={isDark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
-        <View
-          pointerEvents="none"
-          style={[styles.fixedHeaderSurface, { backgroundColor: isDark ? 'rgba(20,23,27,0.96)' : 'rgba(246,248,252,0.98)' }]}
-        />
+    <SafeAreaView edges={[]} onLayout={(event) => { const height = Math.round(event.nativeEvent.layout.height); if (height > 0 && height !== cardViewportHeight) setCardViewportHeight(height); }} style={styles.container}>
+      <LinearGradient pointerEvents="none" colors={['rgba(0,0,0,0.64)', 'rgba(0,0,0,0.2)', 'transparent']} style={{ position: 'absolute', left: 0, right: 0, top: 0, height: insets.top + 140, zIndex: 10 }} />
+      <View pointerEvents="box-none" style={[styles.fixedHeader, { height: 48, top: insets.top + 12, backgroundColor: 'transparent', elevation: 24, left: insets.left, right: insets.right }]}>
         <Pressable accessibilityLabel="ย้อนกลับ" onPress={close} style={styles.headerBackButton}>
           <FeatureIcon color={colors.ink} name="chevron.left" size={22} />
         </Pressable>
         <View style={styles.headerCopy}>
-          <Text style={styles.headerTitle}>
+          <Text style={[styles.headerTitle, { color: '#FFFFFF' }]}>
             {isViewOnly ? `โปรไฟล์ ${safeDisplayName}` : 'ค้นหาเพื่อน'}
           </Text>
-          <Text style={styles.headerSubtitle}>
-            {isViewOnly ? ((!hasCorruptMarker(facultyDisplay) && facultyDisplay) || activityDisplay || 'เพื่อนใน CampusMate') : 'ปัดเพื่อดูคนถัดไป'}
+          <Text numberOfLines={1} style={[styles.headerSubtitle, { color: 'rgba(255,255,255,0.88)' }]}>
+            {isViewOnly ? ((!hasCorruptMarker(facultyDisplay) && facultyDisplay) || activityDisplay || 'เพื่อนใน CampusMate') : 'ปัดการ์ดเพื่อเลือก · แตะรูปเพื่อเปลี่ยน'}
           </Text>
         </View>
+        <ProfileSafetyActions key={candidate.id} profile={candidate} onBlocked={close} />
+        {canRewindSkippedProfiles && !isViewOnly ? (
+          <Pressable
+            accessibilityLabel="ย้อนกลับไปยังคนที่กดไม่เลือกไว้"
+            onPress={handleRewind}
+            style={[styles.headerBackButton, { marginLeft: 'auto' }]}
+          >
+            <FeatureIcon color={colors.warning} name="arrow.counterclockwise" size={20} />
+          </Pressable>
+        ) : null}
       </View>
 
       <View collapsable={false} style={styles.cardDeckContainer}>
         {!isViewOnly && nextCandidate ? (
-          <Animated.View
+          <NativeAnimatedCard
             key={`next-${nextCandidate.id}`}
             collapsable={false}
             pointerEvents="none"
             style={[styles.stackedUnderCard, nextCardStyle]}
           >
             <ProfileCardView
+              fullScreen
               candidate={nextCandidate}
+              cardHeight={cardViewportHeight}
               colors={colors}
               insets={insets}
               isDark={isDark}
@@ -1183,7 +1212,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
               styles={styles}
               swipeX={translateX}
             />
-          </Animated.View>
+          </NativeAnimatedCard>
         ) : null}
 
         <GestureDetector gesture={panGesture}>
@@ -1203,7 +1232,10 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
               </>
             ) : null}
             <ProfileCardView
+              fullScreen
               candidate={candidate}
+              onDetailsExpandedChange={setDetailsExpanded}
+              cardHeight={cardViewportHeight}
               colors={colors}
               insets={insets}
               isDark={isDark}
@@ -1225,7 +1257,9 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
             style={[styles.animatedContent, exitingCardStyle]}
           >
             <ProfileCardView
+              fullScreen
               candidate={exitingCard.candidate}
+              cardHeight={cardViewportHeight}
               colors={colors}
               insets={insets}
               isDark={isDark}
@@ -1268,7 +1302,7 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
               >
                 <Animated.View pointerEvents="none" style={[styles.actionButtonHighlight, { backgroundColor: colors.primary }, likeActionBgStyle]} />
                 <View style={[styles.actionIcon, styles.likeIcon]}>
-                  <FeatureIcon color={colors.primary} name={isCandidateMatched ? 'message.fill' : 'heart.fill'} size={23} />
+                  <FeatureIcon color={colors.accentText} name={isCandidateMatched ? 'message.fill' : 'heart.fill'} size={23} />
                   <Animated.View pointerEvents="none" style={[styles.actionIconLayer, likeActionBgStyle]}>
                     <FeatureIcon color="#FFFFFF" name={isCandidateMatched ? 'message.fill' : 'heart.fill'} size={23} />
                   </Animated.View>
@@ -1303,28 +1337,68 @@ export const getStyles = (colors, isDark) => {
   fixedHeader: { alignItems: 'center', backgroundColor: colors.glass, borderBottomWidth: 0, flexDirection: 'row', height: 68, left: 0, paddingHorizontal: spacing.lg, position: 'absolute', right: 0, top: 0, zIndex: 20 },
   fixedHeaderSurface: { bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
   headerBackButton: { alignItems: 'center', backgroundColor: colors.glass, borderColor: colors.glassBorder, borderRadius: 22, borderWidth: 1, height: 44, justifyContent: 'center', width: 44 },
-  headerCopy: { marginLeft: spacing.md },
+  headerCopy: { marginLeft: spacing.sm, flex: 1, minWidth: 0 },
   headerTitle: { color: colors.ink, fontSize: type.section, fontWeight: '900' },
   headerSubtitle: { color: colors.inkMuted, fontSize: type.micro, fontWeight: '600', marginTop: 0 },
-  scrollContent: { paddingBottom: 132, paddingHorizontal: 10, paddingTop: 68 },
-  hero: { backgroundColor: colors.surfaceRaised, borderTopLeftRadius: 24, borderTopRightRadius: 24, height: 420, overflow: 'hidden', position: 'relative', width: '100%' },
-  heroImage: { borderTopLeftRadius: 24, borderTopRightRadius: 24, height: '100%', width: '100%' },
-  heroPlaceholder: { alignItems: 'center', borderTopLeftRadius: 24, borderTopRightRadius: 24, justifyContent: 'center' },
+  scrollContent: { alignSelf: 'center', maxWidth: 820, paddingBottom: 132, paddingHorizontal: 0, paddingTop: 0, width: '100%' },
+  hero: { backgroundColor: colors.surfaceRaised, height: screenHeight, overflow: 'hidden', position: 'relative', width: '100%' },
+  heroImage: { height: '100%', width: '100%' },
+  heroPlaceholder: { alignItems: 'center', justifyContent: 'center' },
   heroPlaceholderText: { color: colors.inkMuted, fontSize: type.body, fontWeight: '800', marginTop: spacing.sm },
-  heroOverlay: { backgroundColor: 'rgba(0,0,0,0.12)', borderTopLeftRadius: 24, borderTopRightRadius: 24, bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
-  heroBlur: { bottom: 0, height: 200, left: 0, position: 'absolute', right: 0 },
-  heroBlurScrim: { backgroundColor: 'rgba(0,0,0,0.14)', bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
+  heroOverlay: { backgroundColor: 'rgba(0,0,0,0.12)', bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
+  heroBlur: { bottom: 0, height: 280, left: 0, position: 'absolute', right: 0 },
+  heroBlurScrim: { backgroundColor: 'rgba(0,0,0,0.25)', bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
   heroGradient: { bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 },
-  heroCopy: { bottom: 48, left: spacing.xl, position: 'absolute', right: spacing.xl },
-  heroName: { color: colors.onPrimary, fontSize: 28, fontWeight: '900', textShadowColor: 'rgba(0,0,0,0.44)', textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 5 },
-  heroActivity: { color: colors.onPrimary, fontSize: type.body, fontWeight: '700', marginTop: 5, textShadowColor: 'rgba(0,0,0,0.44)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
-  body: { backgroundColor: colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -20, paddingBottom: 40, paddingHorizontal: 28, paddingTop: 28, width: '100%' },
-  identityRow: { alignItems: 'center', flexDirection: 'row', marginBottom: spacing.md },
-  identityCopy: { flex: 1, paddingRight: spacing.md },
-  title: { color: colors.ink, fontSize: 21, fontWeight: '900' },
+  heroCopy: { bottom: 36, left: spacing.xl, position: 'absolute', right: spacing.xl, zIndex: 12 },
+  heroMainRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
+  heroMainCopy: { flex: 1, minWidth: 0 },
+  heroName: { color: colors.onPrimary, fontSize: 30, fontWeight: '900', textShadowColor: 'rgba(0,0,0,0.44)', textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 5 },
+  heroSectionLabelRow: { alignItems: 'center', flexDirection: 'row', gap: 6, marginTop: 6 },
+  heroActivity: { color: 'rgba(255,255,255,0.92)', fontSize: type.caption, fontWeight: '700', textShadowColor: 'rgba(0,0,0,0.44)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
+  heroExpandButton: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    elevation: 6,
+    height: 44,
+    justifyContent: 'center',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    width: 44,
+  },
+  heroChipsContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
+  heroChipPill: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.72)',
+    borderColor: 'rgba(255, 255, 255, 0.18)',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  heroChipText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700', maxWidth: 210 },
+  body: { backgroundColor: colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -20, paddingBottom: 40, paddingHorizontal: 28, paddingTop: 24, width: '100%' },
+  identityRow: { alignItems: 'flex-start', flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between', marginBottom: spacing.md },
+  identityCopy: { flex: 1, paddingRight: spacing.sm },
+  identityRightRow: { alignItems: 'center', flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  fullDetailsPillButton: {
+    alignItems: 'center',
+    borderRadius: radius.pill,
+    flexDirection: 'row',
+    gap: 6,
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  fullDetailsPillText: { fontSize: 13, fontWeight: '800' },
+  title: { color: colors.ink, fontSize: 20, fontWeight: '900' },
   subtitle: { color: colors.inkMuted, fontSize: type.caption, marginTop: 4 },
-  compatibility: { alignItems: 'center', backgroundColor: colors.primarySoft, borderRadius: radius.pill, minWidth: 72, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
-  compatibilityValue: { color: colors.primary, fontSize: 17, fontWeight: '900' },
+  compatibility: { alignItems: 'center', backgroundColor: colors.primarySoft, borderRadius: radius.pill, minWidth: 68, paddingHorizontal: spacing.sm, paddingVertical: 6 },
+  compatibilityValue: { color: colors.accentText, fontSize: 16, fontWeight: '900' },
   compatibilityLabel: { color: colors.inkMuted, fontSize: 10, fontWeight: '700', marginTop: 1 },
   infoList: { marginBottom: spacing.xs },
   infoRow: { alignItems: 'center', borderBottomColor: colors.line, borderBottomWidth: StyleSheet.hairlineWidth, flexDirection: 'row', paddingVertical: 8 },
@@ -1345,12 +1419,12 @@ export const getStyles = (colors, isDark) => {
   tagChipText: { color: colors.ink, fontSize: type.caption, fontWeight: '700' },
   tracksSection: { marginTop: spacing.xs },
   trackList: { gap: spacing.sm, marginTop: spacing.sm },
-  trackRow: { alignItems: 'center', backgroundColor: surfaceRaised, borderRadius: 14, flexDirection: 'row', gap: spacing.sm, padding: spacing.sm },
+  trackRow: { alignItems: 'center', backgroundColor: colors.primarySoft, borderWidth: 1, borderColor: colors.line, borderRadius: 14, flexDirection: 'row', gap: spacing.sm, padding: spacing.sm },
   trackArt: { borderRadius: 8, height: 40, width: 40 },
   trackArtPlaceholder: { alignItems: 'center', backgroundColor: colors.primarySoft, justifyContent: 'center' },
   trackMeta: { flex: 1, minWidth: 0 },
   trackName: { color: colors.ink, fontSize: type.caption, fontWeight: '800' },
-  trackArtists: { color: colors.inkSoft, fontSize: type.micro, fontWeight: '600', marginTop: 1 },
+  trackArtists: { color: colors.inkMuted, fontSize: type.micro, fontWeight: '600', marginTop: 1 },
   floatingActions: { alignItems: 'flex-start', bottom: 18, flexDirection: 'row', justifyContent: 'center', gap: 32, left: 0, position: 'absolute', right: 0, zIndex: 30 },
   actionGroup: { alignItems: 'center', justifyContent: 'center', width: actionButtonWidth },
   // Solid, tinted buttons so they read as controls over the white card body
@@ -1361,17 +1435,17 @@ export const getStyles = (colors, isDark) => {
   actionIconLayer: { alignItems: 'center', bottom: 0, justifyContent: 'center', left: 0, position: 'absolute', right: 0, top: 0 },
   skipButton: { backgroundColor: isDark ? colors.surfaceRaised : colors.card },
   skipIcon: { backgroundColor: 'transparent' },
-  skipIconText: { color: colors.primary, fontSize: 28, fontWeight: '500', lineHeight: 34, marginTop: -2 },
+  skipIconText: { color: colors.accentText, fontSize: 28, fontWeight: '500', lineHeight: 34, marginTop: -2 },
   skipButtonText: { color: swipeCoral, fontSize: type.caption, fontWeight: '900', marginTop: 6, textAlign: 'center', width: actionButtonWidth },
   likeButton: { backgroundColor: isDark ? colors.surfaceRaised : colors.card },
   likeIcon: { backgroundColor: 'transparent' },
-  likeButtonText: { color: colors.primary, fontSize: type.caption, fontWeight: '900', marginTop: 6, textAlign: 'center', width: actionButtonWidth },
+  likeButtonText: { color: colors.accentText, fontSize: type.caption, fontWeight: '900', marginTop: 6, textAlign: 'center', width: actionButtonWidth },
   pressed: { opacity: 0.76, transform: [{ scale: 0.98 }] },
   disabled: { opacity: 0.45 },
   emptyState: { alignItems: 'center', flex: 1, justifyContent: 'center', padding: spacing.xl },
   emptyTitle: { color: colors.ink, fontSize: type.section, fontWeight: '900', marginTop: spacing.lg },
   emptyText: { color: colors.inkMuted, fontSize: type.body, lineHeight: 21, marginTop: spacing.sm, textAlign: 'center' },
   backButton: { alignItems: 'center', flexDirection: 'row', marginTop: spacing.lg, padding: spacing.md },
-  backButtonText: { color: colors.primary, fontSize: type.body, fontWeight: '800', marginLeft: spacing.xs },
+  backButtonText: { color: colors.accentText, fontSize: type.body, fontWeight: '800', marginLeft: spacing.xs },
   });
 };

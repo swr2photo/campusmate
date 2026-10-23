@@ -1,5 +1,6 @@
+import { Pressable } from './NativePressable';
 import React from 'react';
-import { Modal, Pressable, StyleSheet, View } from 'react-native';
+import { Modal, StyleSheet, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import LiquidGlassView from './LiquidGlassView';
 import NotificationDetailContent from './NotificationDetailContent';

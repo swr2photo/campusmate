@@ -1,5 +1,6 @@
+import { Pressable } from './NativePressable';
 import React, { useCallback, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import AppText from './AppText';
 import { useAppActions, useAppProfile } from '../context/AppContext';
 import FeatureIcon from './FeatureIcon';

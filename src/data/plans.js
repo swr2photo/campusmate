@@ -40,7 +40,7 @@ export const PLUS_BENEFITS = Object.freeze([
   { feature: 'noAds', icon: 'sparkles', label: 'ใช้งานโดยไม่มีโฆษณา' },
   { feature: 'advancedFilters', icon: 'slider.horizontal.3', label: 'ตัวกรองคณะ ชั้นปี เวลาและจังหวะกิจกรรม' },
   { feature: 'incomingLikeProfiles', icon: 'heart.fill', label: 'ดูว่าใครกดถูกใจคุณ' },
-  { feature: 'unlimitedRewind', icon: 'arrow.uturn.backward', label: 'ย้อนกลับรายการที่ข้ามหรือถูกใจได้ไม่จำกัด' },
+  { feature: 'unlimitedRewind', icon: 'arrow.uturn.backward', label: 'ย้อนกลับคนที่กดไม่เลือกได้ไม่จำกัด' },
   { feature: 'incognito', icon: 'eye.slash.fill', label: 'ให้เฉพาะคนที่คุณถูกใจและคนที่จับคู่แล้วเห็นโปรไฟล์' },
 ]);
 

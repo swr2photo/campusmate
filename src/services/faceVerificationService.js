@@ -41,8 +41,8 @@ export async function prepareSelfieForVerification(uri) {
  * Initiates a face verification session on the backend.
  * Retried once because creating a session has no side effect until a selfie is submitted.
  */
-export async function startFaceVerificationSession() {
-  const data = await callFunction('startFaceVerificationSession', {}, {
+export async function startFaceVerificationSession(candidateAvatarUri = null) {
+  const data = await callFunction('startFaceVerificationSession', candidateAvatarUri ? { candidateAvatarUri } : {}, {
     timeout: 25000,
     retries: 1,
     fallback: 'ไม่สามารถสร้างเซสชันการยืนยันใบหน้าได้',

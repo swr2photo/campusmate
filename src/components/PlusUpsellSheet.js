@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeAnimatedCard from './NativeAnimatedCard';
 import Text from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { AppState, Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { AppState, Modal, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   Easing,
@@ -28,6 +30,7 @@ import { hasPendingAlerts, subscribeAlerts } from '../utils/appAlert';
 import { useAnyOverlayActive, useOverlayGate } from '../utils/overlayGate';
 import { useTheme } from '../theme';
 import { project, rubberband } from '../utils/motion';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 /**
  * CampusMate Plus upsell bottom sheet.
@@ -158,6 +161,8 @@ const SETTLE_SPRING = { duration: 340, dampingRatio: 0.82 };
 
 export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }) {
   const { colors, isDark } = useTheme();
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const insets = useSafeAreaInsets();
   const [mounted, setMounted] = useState(visible);
   const { height: offscreen } = useWindowDimensions();
@@ -239,20 +244,21 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
         onPress={onClose}
         style={StyleSheet.absoluteFill}
       />
-        <Animated.View
+        <NativeAnimatedCard
           accessibilityViewIsModal
           onAccessibilityEscape={onClose}
           onLayout={(event) => { sheetHeight.set(event.nativeEvent.layout.height + 40); }}
           style={[
             styles.sheet,
             {
-              backgroundColor: colors.card,
-              borderColor: colors.line,
+              backgroundColor: glass ? 'transparent' : colors.card,
+              borderColor: glass ? 'transparent' : colors.line,
               paddingBottom: Math.max(insets.bottom, 12) + 12,
             },
             sheetStyle,
           ]}
         >
+          <GlassBackground style={styles.sheetGlass} tintColor={glassTint} />
           <GestureDetector gesture={pan}>
           <View accessibilityHint="ลากลงเพื่อปิด" collapsable={false} style={styles.grabberArea}>
             <View style={[styles.grabber, { backgroundColor: colors.line }]} />
@@ -284,6 +290,7 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
             ))}
           </View>
           <Pressable
+            nativeGestureSurface
             accessibilityRole="button"
             onPress={() => {
               pendingAction.current = onOpenPlans;
@@ -294,6 +301,7 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
             <Text style={[styles.ctaText, { color: colors.onPrimary }]}>ดูแพ็กเกจสมาชิก</Text>
           </Pressable>
           <Pressable
+            nativeGestureSurface
             accessibilityRole="button"
             hitSlop={6}
             onPress={onSnoozeToday}
@@ -302,7 +310,7 @@ export function PlusUpsellSheet({ visible, onClose, onOpenPlans, onSnoozeToday }
             <Text style={[styles.snoozeText, { color: colors.inkMuted }]}>ไม่ต้องแสดงอีกวันนี้</Text>
           </Pressable>
           </ScrollView>
-        </Animated.View>
+        </NativeAnimatedCard>
     </GestureHandlerRootView>
   );
 
@@ -344,6 +352,7 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     width: '100%',
   },
+  sheetGlass: { borderTopLeftRadius: 28, borderTopRightRadius: 28 },
   scroll: { flexShrink: 1 },
   scrollContent: { paddingBottom: 4 },
   grabber: { borderRadius: 3, height: 5, width: 42 },

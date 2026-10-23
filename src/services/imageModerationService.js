@@ -43,37 +43,55 @@ export async function getModerationBase64(localUri) {
   }
 }
 
+const moderationPromiseCache = new Map();
+
 /** Verify before uploading. Service failures are retryable, never violations. */
 export async function verifyImageSafety(localUri) {
-  try {
-    let data;
-    if (RUST_BACKEND) {
-      const resolvedUri = await resolveUriIfNeeded(localUri);
-      const thumbnail = await ImageManipulator.manipulateAsync(resolvedUri, [{ resize: { width: 480 } }], {
-        compress: 0.72, format: ImageManipulator.SaveFormat.JPEG,
-      });
-      data = await uploadRawImage('moderate', thumbnail.uri);
-    } else {
-      const base64 = await getModerationBase64(localUri);
-      if (!base64) throw new Error('Image preparation failed');
-      const { app } = requireFirebase();
-      const check = httpsCallable(getFunctions(app, 'asia-southeast1'), 'checkImageSafety', { timeout: 30000 });
-      ({ data } = await check({ imageBase64: base64 }));
-    }
-    if (data?.status === 'blocked' && data?.isSafe === false && data?.policyVersion === 2) {
-      const error = new Error(data.message || 'ภาพนี้ยังไม่ผ่านเกณฑ์การใช้งาน');
-      error.isModerationViolation = true;
-      error.reason = data.reason;
+  if (!localUri) return true;
+  if (moderationPromiseCache.has(localUri)) {
+    return moderationPromiseCache.get(localUri);
+  }
+
+  const promise = (async () => {
+    try {
+      let data;
+      if (RUST_BACKEND) {
+        const resolvedUri = await resolveUriIfNeeded(localUri);
+        const thumbnail = await ImageManipulator.manipulateAsync(resolvedUri, [{ resize: { width: 360 } }], {
+          compress: 0.60, format: ImageManipulator.SaveFormat.JPEG,
+        });
+        data = await uploadRawImage('moderate', thumbnail.uri);
+      } else {
+        const base64 = await getModerationBase64(localUri);
+        if (!base64) throw new Error('Image preparation failed');
+        const { app } = requireFirebase();
+        const check = httpsCallable(getFunctions(app, 'asia-southeast1'), 'checkImageSafety', { timeout: 30000 });
+        ({ data } = await check({ imageBase64: base64 }));
+      }
+      if (data?.status === 'blocked' && data?.isSafe === false && data?.policyVersion === 2) {
+        const error = new Error(data.message || 'ภาพนี้ยังไม่ผ่านเกณฑ์การใช้งาน');
+        error.isModerationViolation = true;
+        error.reason = data.reason;
+        throw error;
+      }
+      if (data?.status !== 'allowed' || data?.isSafe !== true || data?.policyVersion !== 2) {
+        throw new Error('Image verification unavailable');
+      }
+      return true;
+    } catch (cause) {
+      if (cause.isModerationViolation) throw cause;
+      const error = new Error('ยังตรวจสอบภาพไม่ได้ในขณะนี้ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง');
+      error.isModerationUnavailable = true;
       throw error;
     }
-    if (data?.status !== 'allowed' || data?.isSafe !== true || data?.policyVersion !== 2) {
-      throw new Error('Image verification unavailable');
+  })();
+
+  moderationPromiseCache.set(localUri, promise);
+  promise.catch((err) => {
+    if (!err?.isModerationViolation) {
+      moderationPromiseCache.delete(localUri);
     }
-    return true;
-  } catch (cause) {
-    if (cause.isModerationViolation) throw cause;
-    const error = new Error('ยังตรวจสอบภาพไม่ได้ในขณะนี้ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง');
-    error.isModerationUnavailable = true;
-    throw error;
-  }
+  });
+
+  return promise;
 }

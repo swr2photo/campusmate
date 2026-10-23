@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.CAMERA" />
+  <application>
+    <!-- Not exported: only this app can start the liveness screen. -->
+    <activity
+      android:name="expo.modules.faceliveness.LivenessActivity"
+      android:exported="false"
+      android:excludeFromRecents="true"
+      android:screenOrientation="portrait"
+      android:theme="@android:style/Theme.Material.NoActionBar" />
+  </application>
+</manifest>

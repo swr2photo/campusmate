@@ -1,6 +1,7 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React, { useState } from 'react';
-import { Linking, Pressable, StyleSheet, View } from 'react-native';
+import { Linking, StyleSheet, View } from 'react-native';
 import Image from './CachedImage';
 import { useAppFeed } from '../context/AppContext';
 import { useTheme } from '../theme';

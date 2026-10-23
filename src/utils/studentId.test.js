@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  formatStudyYearLabel,
   getAcademicYearFromStudentId,
   getCurrentAcademicYearCode,
   getFacultyFromStudentId,
@@ -10,6 +11,13 @@ import {
 } from './studentId.js';
 
 const currentAcademicDate = new Date(2026, 8, 22);
+
+test('study year labels are not prefixed twice', () => {
+  assert.equal(formatStudyYearLabel('ชั้นปีที่ 1'), 'ชั้นปีที่ 1');
+  assert.equal(formatStudyYearLabel('1'), 'ชั้นปี 1');
+  assert.equal(formatStudyYearLabel('  ชั้นปีที่ 2  '), 'ชั้นปีที่ 2');
+  assert.equal(formatStudyYearLabel(''), '');
+});
 
 test('student IDs must be exactly ten digits', () => {
   assert.equal(isValidStudentId('6912345678'), true);

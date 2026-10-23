@@ -5,8 +5,36 @@ import { RUST_BACKEND } from './rust/backend';
 import { uploadRawImage } from './rust/media';
 
 const MAX_GALLERY_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_STARTED_UPLOADS = 24;
+// Uploads started as soon as a photo is chosen, by owner and local file, so
+// saving or verifying reuses the finished upload instead of sending it again.
+const startedUploads = new Map();
 
-export async function uploadGalleryImage(uri, userId) {
+/**
+ * Start uploading a local photo now; resolves its moderated URL. Returns null
+ * for photos that are already remote. Transient failures are forgotten so
+ * the next attempt retries; a moderation block is kept, as it will not change.
+ */
+export function prefetchGalleryImage(uri, userId) {
+  if (typeof uri !== 'string' || !userId || /^https:\/\//i.test(uri)) return null;
+  const key = `${userId}\n${uri}`;
+  let upload = startedUploads.get(key);
+  if (!upload) {
+    upload = uploadNow(uri, userId);
+    startedUploads.set(key, upload);
+    upload.catch((error) => {
+      if (!error?.isModerationViolation && startedUploads.get(key) === upload) startedUploads.delete(key);
+    });
+    if (startedUploads.size > MAX_STARTED_UPLOADS) startedUploads.delete(startedUploads.keys().next().value);
+  }
+  return upload;
+}
+
+export function uploadGalleryImage(uri, userId) {
+  return prefetchGalleryImage(uri, userId) ?? uploadNow(uri, userId);
+}
+
+async function uploadNow(uri, userId) {
   if (typeof uri !== 'string' || !userId) throw new Error('ไฟล์รูปภาพไม่ถูกต้อง');
   if (RUST_BACKEND) {
     const data = await uploadRawImage('gallery', uri);

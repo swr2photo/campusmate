@@ -1,6 +1,7 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppActions, useAppSync } from '../context/AppContext';
 import FeatureIcon from './FeatureIcon';
@@ -36,7 +37,7 @@ export default function OfflineBanner() {
     canRetry = true;
   } else if (isOnline && lastSyncError) {
     icon = 'exclamationmark.triangle.fill';
-    label = 'บางรายการซิงก์ไม่สำเร็จ · แตะเพื่อลองใหม่';
+    label = 'บางรายการยังส่งไม่สำเร็จ · แตะเพื่อลองใหม่';
     glassTint = isDark ? 'rgba(214, 84, 84, 0.42)' : 'rgba(214, 84, 84, 0.35)';
     canRetry = true;
   } else if (pendingSyncCount > 0) {

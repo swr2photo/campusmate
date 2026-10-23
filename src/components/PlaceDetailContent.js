@@ -1,5 +1,6 @@
+import { Pressable } from './NativePressable';
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import Text from './AppText';
 import FeatureIcon from './FeatureIcon';
 import PlacePhoto from './PlacePhoto';

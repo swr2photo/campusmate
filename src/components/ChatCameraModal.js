@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Image, Linking, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, Image, Linking, Modal, Platform, StyleSheet, View } from 'react-native';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -9,6 +11,7 @@ import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { prepareRecordedVideo } from '../services/chatVideoService';
 import { showAlert } from '../utils/appAlert';
+import { GlassBackground, useLiquidGlass } from './LiquidGlassSurface';
 
 const PHOTO_TIMEOUT_MS = 12000;
 const PROCESS_TIMEOUT_MS = 18000;
@@ -109,6 +112,7 @@ function ToolButton({
   active = false,
   style,
 }) {
+  const glass = useLiquidGlass();
   return (
     <Pressable
       accessibilityLabel={accessibilityLabel}
@@ -117,11 +121,13 @@ function ToolButton({
       style={({ pressed }) => [
         styles.tool,
         active && styles.toolActive,
+        glass && styles.glassClear,
         pressed && !disabled && styles.toolPressed,
         disabled && styles.toolDisabled,
         style,
       ]}
     >
+      <GlassBackground colorScheme="dark" style={{ borderRadius: 22 }} tintColor={active ? 'rgba(255,213,106,0.35)' : undefined} />
       {children}
     </Pressable>
   );
@@ -150,6 +156,7 @@ export default function ChatCameraModal({ recipientName, recipientAvatar, onCapt
   const [ready, setReady] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [recording, setRecording] = useState(false);
+  const glass = useLiquidGlass();
   const [elapsed, setElapsed] = useState(0);
   const [cameraKey, setCameraKey] = useState(0);
   const started = useRef(0);
@@ -524,10 +531,12 @@ export default function ChatCameraModal({ recipientName, recipientAvatar, onCapt
                 onPress={library}
                 style={({ pressed }) => [
                   styles.galleryButton,
+                  glass && styles.glassClear,
                   pressed && !recording && !processing && styles.toolPressed,
                   (recording || processing) && styles.toolDisabled,
                 ]}
               >
+                <GlassBackground colorScheme="dark" style={{ borderRadius: 16 }} />
                 <Ionicons color="#fff" name="images-outline" size={24} />
               </Pressable>
 
@@ -569,10 +578,12 @@ export default function ChatCameraModal({ recipientName, recipientAvatar, onCapt
                 }}
                 style={({ pressed }) => [
                   styles.flipButton,
+                  glass && styles.glassClear,
                   pressed && !recording && !processing && styles.toolPressed,
                   (recording || processing) && styles.toolDisabled,
                 ]}
               >
+                <GlassBackground colorScheme="dark" style={{ borderRadius: 26 }} />
                 <Ionicons color="#fff" name="camera-reverse-outline" size={26} />
               </Pressable>
             </View>
@@ -580,12 +591,12 @@ export default function ChatCameraModal({ recipientName, recipientAvatar, onCapt
 
           {processing ? (
             <View pointerEvents="none" style={styles.processingScrim}>
-              <View style={styles.processingCard}>
+              <NativeCard style={styles.processingCard}>
                 <ActivityIndicator color="#fff" size="large" />
                 <Text style={styles.processingText}>
                   {mode === 'video' ? 'กำลังเตรียมวิดีโอ' : 'กำลังบันทึกรูปชัด'}
                 </Text>
-              </View>
+              </NativeCard>
             </View>
           ) : null}
         </View>
@@ -668,6 +679,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  glassClear: { backgroundColor: 'transparent', borderColor: 'transparent' },
   tool: {
     alignItems: 'center',
     backgroundColor: 'rgba(12,14,18,0.5)',

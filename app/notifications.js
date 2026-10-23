@@ -1,20 +1,25 @@
+import { Pressable } from '../src/components/NativePressable';
 import React, { useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, View } from 'react-native';
 import { router, Stack } from 'expo-router';
 import { Feather } from '@expo/vector-icons';
 import AppText from '../src/components/AppText';
 import NotificationDetail from '../src/components/NotificationDetail';
-import LiquidGlassView from '../src/components/LiquidGlassView';
+import FilterSegment from '../src/components/FilterSegment';
 import { useNotificationInbox } from '../src/context/NotificationInboxContext';
 import { useFaceVerificationFlow } from '../src/components/FaceVerificationPrompt';
 import { inboxTargetAvailable, timestampMillis } from '../src/services/notificationInboxService';
 import { showAlert } from '../src/utils/appAlert';
 import { useTheme } from '../src/theme';
+import { useAppConversations } from '../src/context/AppContext';
+import { notificationPresentation } from '../src/utils/inboxPresentation';
+import NativeCard from '../src/components/NativeCard';
 
 const iconFor = type => type === 'face_verification' ? 'shield' : type === 'like' || type === 'match' ? 'heart' : type.includes('message') ? 'message-circle' : type.includes('party') ? 'users' : type === 'appointment' ? 'calendar' : 'bell';
 
 export default function NotificationsRoute() {
   const { colors, isDark } = useTheme(), inbox = useNotificationInbox(), face = useFaceVerificationFlow();
+  const { conversations = [] } = useAppConversations();
   const [unread, setUnread] = useState(false), [detail, setDetail] = useState(null), [busy, setBusy] = useState(false);
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const rows = inbox.rows.filter(row => !unread || !row.readAt);
@@ -47,8 +52,8 @@ export default function NotificationsRoute() {
           headerShown: true,
           title: 'แจ้งเตือน',
           headerRight: () => (
-            <Pressable disabled={busy || !inbox.count} onPress={allRead} style={styles.headerAction}>
-              <AppText style={{ color: colors.primary, fontSize: 13, fontWeight: '600' }}>
+            <Pressable accessibilityRole="button" accessibilityLabel="อ่านแจ้งเตือนทั้งหมด" disabled={busy || !inbox.count} onPress={allRead} style={styles.headerAction}>
+              <AppText style={{ color: colors.accentText, fontSize: 13, fontWeight: '700' }}>
                 {busy ? 'กำลังบันทึก…' : 'อ่านทั้งหมด'}
               </AppText>
             </Pressable>
@@ -56,27 +61,14 @@ export default function NotificationsRoute() {
         }}
       />
       <View style={styles.tabsContainer}>
-        <LiquidGlassView glassEffectStyle="clear" style={styles.tabsGlass}>
-          {[{ label: 'ทั้งหมด', value: false }, { label: 'ยังไม่อ่าน', value: true }].map(tab => (
-            <Pressable
-              key={tab.label}
-              onPress={() => setUnread(tab.value)}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: unread === tab.value }}
-              style={[styles.tab, unread === tab.value && styles.tabActive]}
-            >
-              <AppText
-                style={{
-                  color: unread === tab.value ? (isDark ? '#FFFFFF' : '#0B1424') : colors.inkMuted,
-                  fontWeight: unread === tab.value ? '700' : '500',
-                  fontSize: 14,
-                }}
-              >
-                {tab.label}
-              </AppText>
-            </Pressable>
-          ))}
-        </LiquidGlassView>
+        <FilterSegment
+          activeTab={unread ? 'unread' : 'all'}
+          onChangeTab={(tabId) => setUnread(tabId === 'unread')}
+          tabs={[
+            { id: 'all', label: 'ทั้งหมด' },
+            { id: 'unread', label: 'ยังไม่อ่าน', badgeCount: inbox.count },
+          ]}
+        />
       </View>
       {inbox.offline && <AppText style={styles.note}>กำลังแสดงข้อมูลที่บันทึกไว้ เชื่อมต่ออินเทอร์เน็ตเพื่ออัปเดต</AppText>}
       {inbox.error && <Pressable onPress={inbox.retry} style={styles.headerAction}><AppText style={styles.note}>อัปเดตไม่สำเร็จ · แตะเพื่อลองอีกครั้ง</AppText></Pressable>}
@@ -109,8 +101,7 @@ export default function NotificationsRoute() {
             {index === 0 || dayLabel(item) !== dayLabel(rows[index - 1]) ? (
               <AppText style={styles.day}>{dayLabel(item)}</AppText>
             ) : null}
-            <LiquidGlassView
-              glassEffectStyle="regular"
+            <NativeCard
               style={[
                 styles.rowGlass,
                 !item.readAt && {
@@ -140,24 +131,24 @@ export default function NotificationsRoute() {
                   />
                 </View>
                 <View style={styles.copy}>
-                  <AppText style={[styles.title, !item.readAt && { fontWeight: '700' }]}>
-                    {item.title}
-                  </AppText>
+                  <View style={styles.rowHeading}>
+                    <AppText numberOfLines={1} style={[styles.title, !item.readAt && { fontWeight: '700' }]}>
+                      {notificationPresentation(item, conversations).title}
+                    </AppText>
+                    <AppText style={styles.time}>
+                      {timestampMillis(item.createdAt) ? new Date(timestampMillis(item.createdAt)).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : ''}
+                    </AppText>
+                  </View>
                   <AppText style={styles.body} numberOfLines={2}>
-                    {item.body}
+                    {notificationPresentation(item, conversations).body}
                   </AppText>
-                  <AppText style={styles.time}>
-                    {timestampMillis(item.createdAt)
-                      ? new Date(timestampMillis(item.createdAt)).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
-                      : ''}
-                    {item.status === 'completed' ? ' · สำเร็จแล้ว' : ''}
-                  </AppText>
+                  {item.status === 'completed' ? <AppText style={styles.time}>สำเร็จแล้ว</AppText> : null}
                 </View>
                 {!item.readAt && (
                   <View style={[styles.dot, { backgroundColor: colors.primary }]} />
                 )}
               </Pressable>
-            </LiquidGlassView>
+            </NativeCard>
           </View>
         )}
       />
@@ -186,30 +177,11 @@ function createStyles(c, isDark) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: c.canvas },
     tabsContainer: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
-    tabsGlass: {
-      flexDirection: 'row',
-      borderRadius: 16,
-      borderCurve: 'continuous',
-      padding: 4,
-    },
-    tab: {
-      flex: 1,
-      minHeight: 40,
-      alignItems: 'center',
-      justifyContent: 'center',
-      borderRadius: 12,
-      borderCurve: 'continuous',
-    },
-    tabActive: {
-      backgroundColor: isDark ? 'rgba(255, 255, 255, 0.16)' : 'rgba(255, 255, 255, 0.85)',
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.1,
-      shadowRadius: 4,
-      elevation: 2,
-    },
     list: { paddingHorizontal: 16, paddingBottom: 32, flexGrow: 1 },
     rowGlass: {
+      backgroundColor: c.card,
+      borderColor: c.line,
+      borderWidth: 1,
       borderRadius: 20,
       borderCurve: 'continuous',
       marginBottom: 10,
@@ -223,8 +195,8 @@ function createStyles(c, isDark) {
     rowPressable: {
       flexDirection: 'row',
       alignItems: 'flex-start',
-      gap: 12,
-      padding: 16,
+      gap: 10,
+      padding: 12,
     },
     icon: {
       width: 42,
@@ -236,9 +208,10 @@ function createStyles(c, isDark) {
       borderColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.06)',
     },
     copy: { flex: 1, minWidth: 0, gap: 4 },
-    title: { fontSize: 15, fontWeight: '600', color: c.ink },
+    rowHeading: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+    title: { flex: 1, minWidth: 0, fontSize: 15, fontWeight: '600', color: c.ink },
     body: { fontSize: 14, lineHeight: 22, color: c.inkMuted },
-    time: { fontSize: 12, color: c.inkMuted },
+    time: { fontSize: 12, color: c.inkMuted, flexShrink: 0 },
     dot: { width: 8, height: 8, borderRadius: 4, marginTop: 8 },
     day: { fontSize: 13, fontWeight: '700', color: c.inkMuted, marginTop: 14, marginBottom: 8, marginLeft: 4 },
     note: { color: c.inkMuted, fontSize: 12, textAlign: 'center', padding: 12 },

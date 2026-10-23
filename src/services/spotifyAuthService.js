@@ -295,15 +295,25 @@ export async function fetchSpotifyTopTracks(accessToken, limit = 20) {
     });
     if (!response.ok) return [];
     const data = await response.json();
+    // Same field names as the browse/search callables (`name`, `artists`,
+    // `albumArt`, `externalUrl`) so track rows and sent messages render them.
     return (data.items || []).map((t) => {
-      if (!t) return null;
+      const id = typeof t?.id === 'string' ? t.id.trim() : '';
+      const name = typeof t?.name === 'string' ? t.name.trim() : '';
+      if (!id || !name) return null;
+      const artists = (t.artists || [])
+        .map((a) => (typeof a?.name === 'string' ? a.name.trim() : ''))
+        .filter(Boolean)
+        .join(', ');
       return {
-        id: t.id,
-        title: t.name,
-        artist: (t.artists || []).map((a) => a.name).join(', '),
-        coverUrl: t.album?.images?.[0]?.url || '',
-        durationMs: t.duration_ms || 0,
-        previewUrl: t.preview_url || '',
+        id,
+        name,
+        artists,
+        albumArt: t.album?.images?.[0]?.url || '',
+        ...(t.album?.name ? { albumName: t.album.name } : {}),
+        ...(t.duration_ms ? { durationMs: t.duration_ms } : {}),
+        ...(t.preview_url ? { previewUrl: t.preview_url } : {}),
+        externalUrl: t.external_urls?.spotify || `https://open.spotify.com/track/${id}`,
         source: 'spotify',
       };
     }).filter(Boolean);

@@ -1,7 +1,9 @@
+import { Pressable } from '../components/NativePressable';
+import NativeCard from '../components/NativeCard';
 import Text from '../components/AppText';
 import { AppTextInput as TextInput } from '../components/AppText';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, NativeModules, Platform, Pressable, ScrollView, StyleSheet, TurboModuleRegistry, View } from 'react-native';
+import { ActivityIndicator, Image, Keyboard, KeyboardAvoidingView, NativeModules, Platform, ScrollView, StyleSheet, TurboModuleRegistry, View } from 'react-native';
 import * as Google from 'expo-auth-session/providers/google';
 import { makeRedirectUri } from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
@@ -471,7 +473,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                 />
               </View>
 
-              <View style={styles.loginPanel}>
+              <NativeCard style={styles.loginPanel}>
                   {inlineNotice ? (
                     <View
                       accessibilityRole="alert"
@@ -496,7 +498,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                       </View>
 
                       {savedAccounts.map((acc) => (
-                        <View key={acc.id || acc.email} style={styles.savedAccountCard}>
+                        <NativeCard key={acc.id || acc.email} style={styles.savedAccountCard}>
                           <View style={styles.savedIdentityRow}>
                           <View style={[styles.savedAvatar, acc.avatarColor && { backgroundColor: acc.avatarColor }]}>
                             <SavedAccountAvatar account={acc} colors={colors} style={styles.savedAvatarImage} />
@@ -529,7 +531,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                             <FeatureIcon color={colors.inkSoft} name="xmark" size={13} />
                           </Pressable>
                           </View>
-                        </View>
+                        </NativeCard>
                       ))}
 
                       <Pressable
@@ -756,7 +758,7 @@ export default function LoginScreen({ onLoginSuccess }) {
                       ) : null}
                     </View>
                   )}
-              </View>
+              </NativeCard>
               <LegalAuthNotice compact style={[styles.legalNotice, { paddingHorizontal: 0, paddingVertical: 4 }]} />
             </View>
           </ScrollView>

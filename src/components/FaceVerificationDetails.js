@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React from 'react';
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Image, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import FeatureIcon from './FeatureIcon';
 import { useTheme } from '../theme';
@@ -44,26 +46,26 @@ export default function FaceVerificationDetails({ step, errorMessage, avatarUri,
         <Text accessibilityRole="header" style={[styles.title, { color: ink }]}>{title}</Text>
         <Text style={[styles.description, { color: muted }]}>{description}</Text>
       </View>
-      {!busy && !success && !failed ? <View style={[styles.panel, { backgroundColor: card, borderColor: colors.line }]}>
+      {!busy && !success && !failed ? <NativeCard style={[styles.panel, { backgroundColor: card, borderColor: colors.line }]}>
         <Text style={[styles.sectionTitle, { color: ink }]}>ตรวจสอบอย่างไร</Text>
         {instructions.map(([number, heading, copy]) => <View key={number} style={styles.instruction}>
           <View style={[styles.number, { backgroundColor: isDark ? '#203A59' : '#EEF2F7' }]}><Text style={styles.numberText}>{number}</Text></View>
           <View style={styles.instructionBody}><Text style={[styles.instructionTitle, { color: ink }]}>{heading}</Text><Text style={[styles.copy, { color: muted }]}>{copy}</Text></View>
         </View>)}
-      </View> : null}
-      {busy ? <View accessibilityLiveRegion="polite" style={[styles.panel, { backgroundColor: card, borderColor: colors.line }]}>
+      </NativeCard> : null}
+      {busy ? <NativeCard accessibilityLiveRegion="polite" style={[styles.panel, { backgroundColor: card, borderColor: colors.line }]}>
         <Text style={[styles.sectionTitle, { color: ink }]}>{step === 'capturing' ? 'กำลังถ่ายรูป' : 'กำลังเปรียบเทียบรูป'}</Text>
         <Text style={[styles.copy, { color: muted }]}>{step === 'capturing' ? 'มองตรงไปที่กล้องและให้ใบหน้าอยู่ในบริเวณที่มีแสงสม่ำเสมอ' : 'ผลการตรวจสอบจะแสดงบนหน้านี้ หากรูปไม่ชัดเจนหรือยืนยันไม่ผ่าน คุณสามารถลองใหม่ได้'}</Text>
-      </View> : null}
-      {failed ? <View accessibilityRole="alert" style={[styles.panel, { backgroundColor: card, borderColor: '#E27060' }]}>
+      </NativeCard> : null}
+      {failed ? <NativeCard accessibilityRole="alert" style={[styles.panel, { backgroundColor: card, borderColor: '#E27060' }]}>
         <Text style={[styles.sectionTitle, { color: ink }]}>รายละเอียดการตรวจสอบ</Text>
         <Text style={[styles.copy, { color: muted }]}>{errorMessage || 'ตรวจสอบไม่สำเร็จ กรุณาลองอีกครั้ง'}</Text>
         <Text style={[styles.copy, { color: muted, marginTop: 14 }]}>ตรวจว่ารูปโปรไฟล์หลักเป็นรูปของคุณ เห็นใบหน้าชัดเจน และลองถ่ายใหม่ในที่สว่าง หากเป็นปัญหาการเชื่อมต่อ ให้ลองอีกครั้งเมื่ออินเทอร์เน็ตพร้อม</Text>
-      </View> : null}
-      {success ? <View style={[styles.panel, { backgroundColor: card, borderColor: colors.line }]}>
+      </NativeCard> : null}
+      {success ? <NativeCard style={[styles.panel, { backgroundColor: card, borderColor: colors.line }]}>
         <Text style={[styles.sectionTitle, { color: ink }]}>เครื่องหมายยืนยันของคุณ</Text>
         <Text style={[styles.copy, { color: muted }]}>โปรไฟล์ของคุณจะแสดงเครื่องหมายยืนยันใบหน้า เพื่อบอกว่ารูปโปรไฟล์หลักผ่านการเปรียบเทียบกับรูปที่ถ่ายแล้ว</Text>
-      </View> : null}
+      </NativeCard> : null}
       <View style={styles.note}>
         <FeatureIcon name="lock.fill" size={17} color={muted} />
         <View style={styles.instructionBody}><Text style={[styles.noteTitle, { color: ink }]}>รูปที่ถ่ายใช้สำหรับการยืนยัน</Text>

@@ -179,12 +179,14 @@ export function isRetryableNetworkError(error) {
   if (['permission-denied', 'unauthenticated', 'invalid-argument', 'not-found', 'already-exists', 'failed-precondition'].includes(code)) {
     return false;
   }
-  if (['unavailable', 'deadline-exceeded', 'cancelled', 'resource-exhausted', 'aborted', 'network-request-failed'].includes(code)
+  if (['unavailable', 'deadline-exceeded', 'cancelled', 'canceled', 'resource-exhausted', 'aborted', 'network-request-failed'].includes(code)
     || code.includes('deadline-exceeded')
-    || code.includes('timeout')) {
+    || code.includes('timeout')
+    || code.includes('cancel')
+    || code.includes('abort')) {
     return true;
   }
-  return /network|offline|internet|connection|timeout|timed out|failed to fetch|deadline[-_ ]?exceeded/.test(message);
+  return /network|offline|internet|connection|timeout|timed out|failed to fetch|fetch failed|canceled|cancelled|aborted|deadline[-_ ]?exceeded/.test(message);
 }
 
 export const MAX_OFFLINE_ATTEMPTS = 5;

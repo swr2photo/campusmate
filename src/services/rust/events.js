@@ -27,6 +27,10 @@ function emit(topic, id) {
   }
 }
 
+// An acknowledged mutation on this device need not wait for the stream or
+// its outage polling interval. Other devices still use authorized SSE.
+export function notifyBackendChange(topic, id = null) { emit(topic, id); }
+
 function decodeUtf8(bytes) {
   if (typeof TextDecoder !== 'undefined') return new TextDecoder().decode(bytes);
   let out = '';
@@ -121,6 +125,9 @@ async function connect() {
     if (controller === abort) controller = null;
     // The server closes the stream when the access token expires; reconnect.
     if (!abort.signal.aborted) scheduleReconnect();
+    // A reset that arrived while this attempt was still waiting for its token
+    // (at launch: the stored-session restore) was skipped; connect for it now.
+    else if (!controller) void connect();
   }
 }
 

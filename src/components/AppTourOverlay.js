@@ -1,11 +1,13 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Animated, BackHandler, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Animated, BackHandler, Easing, Modal, Platform, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { router, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FeatureIcon from './FeatureIcon';
 import { useAppTour } from '../context/AppTourContext';
 import { useTheme } from '../theme';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 /**
  * Coach-mark overlay for the first-run tour (state lives in AppTourContext).
@@ -14,7 +16,7 @@ import { useTheme } from '../theme';
  * (or are skipped when the step is optional), so the tour never hangs.
  */
 const HOLE_PADDING = 6;
-const MEASURE_ATTEMPTS = 8;
+const MEASURE_ATTEMPTS = 4;
 const TOUR_TABS = [
   { route: '/home', label: 'หาเพื่อน', icon: 'person.2.fill' },
   { route: '/discover', label: 'ถูกใจ', icon: 'heart.fill' },
@@ -22,6 +24,12 @@ const TOUR_TABS = [
   { route: '/meetup', label: 'กิจกรรม', icon: 'calendar' },
   { route: '/me', label: 'โปรไฟล์', icon: 'person.crop.circle.fill' },
 ];
+
+function isSameRoute(currentPath, targetRoute) {
+  if (!currentPath || !targetRoute) return false;
+  const clean = (p) => String(p).replace(/^\/\(tabs\)/, '').replace(/\/$/, '') || '/';
+  return clean(currentPath) === clean(targetRoute);
+}
 
 function measureNode(node) {
   return new Promise((resolve) => {
@@ -77,6 +85,8 @@ function TourOverlay({ tour }) {
   const total = steps.length;
   const isLast = index === total - 1;
   const { colors, isDark } = useTheme();
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
   const pathnameRef = useRef(pathname);
@@ -88,7 +98,7 @@ function TourOverlay({ tour }) {
   sizeRef.current = size;
   const [hole, setHole] = useState(null);
   const [ready, setReady] = useState(false);
-  const [cardHeight, setCardHeight] = useState(0);
+  const [cardHeight, setCardHeight] = useState(240);
   const directionRef = useRef(1);
   const fade = useRef(new Animated.Value(0)).current;
   const cardFade = useRef(new Animated.Value(0)).current;
@@ -101,7 +111,7 @@ function TourOverlay({ tour }) {
   const close = useCallback(() => {
     Animated.timing(fade, { duration: 180, easing: Easing.out(Easing.quad), toValue: 0, useNativeDriver: true }).start(() => {
       finishTour();
-      if (pathnameRef.current !== '/home') router.navigate('/home');
+      if (!isSameRoute(pathnameRef.current, '/home')) router.navigate('/home');
     });
   }, [fade, finishTour]);
 
@@ -140,15 +150,17 @@ function TourOverlay({ tour }) {
     (async () => {
       try {
         let navigated = false;
-        if (step.route && pathnameRef.current !== step.route) {
+        if (step.route && !isSameRoute(pathnameRef.current, step.route)) {
           router.navigate(step.route);
           navigated = true;
         }
         if (navigated) {
-          for (let attempt = 0; attempt < 20 && !cancelled && pathnameRef.current !== step.route; attempt += 1) await wait(100);
+          for (let attempt = 0; attempt < 8 && !cancelled && !isSameRoute(pathnameRef.current, step.route); attempt += 1) {
+            await wait(50);
+          }
         }
         if (cancelled) return;
-        await wait(navigated ? 300 : 90);
+        await wait(navigated ? 120 : 40);
         let measured = null;
         if (step.target) {
           let preparedNode = null;
@@ -157,11 +169,11 @@ function TourOverlay({ tour }) {
             if (entry?.node && entry.node !== preparedNode) {
               preparedNode = entry.node;
               await entry.ensureVisible?.();
-              await wait(380);
+              await wait(200);
             }
             if (cancelled) return;
             measured = await measureTarget(entry, rootRef.current, sizeRef.current);
-            if (!measured) await wait(150);
+            if (!measured) await wait(100);
           }
         }
         if (cancelled) return;
@@ -220,8 +232,6 @@ function TourOverlay({ tour }) {
   }
   const arrowLeft = hole ? Math.min(Math.max(hole.x + hole.w / 2 - cardLeft - 8, 22), cardWidth - 38) : 0;
   const primaryBg = isDark ? colors.primaryDark || colors.primary : colors.primary;
-  const showCard = ready && cardHeight > 0;
-
   const content = (
     <View
       collapsable={false}
@@ -230,7 +240,7 @@ function TourOverlay({ tour }) {
         if (width && height && (width !== size.width || height !== size.height)) setSize({ width, height });
       }}
       ref={rootRef}
-      style={[StyleSheet.absoluteFill, Platform.OS === 'ios' && { width: windowSize.width, height: windowSize.height }]}
+      style={[StyleSheet.absoluteFill, { width: windowSize.width, height: windowSize.height }]}
     >
     <Animated.View style={[StyleSheet.absoluteFill, { opacity: fade }]}>
       <Animated.View style={[styles.dim, { backgroundColor: dim, height: hy, left: 0, right: 0, top: 0 }]} />
@@ -242,7 +252,7 @@ function TourOverlay({ tour }) {
         style={[styles.ring, { borderColor: isDark ? colors.primary : '#FFFFFF', height: hh, left: hx, opacity: ring, top: hy, width: hw }]}
       />
       <Animated.View
-        pointerEvents={showCard ? 'auto' : 'none'}
+        pointerEvents={ready ? 'auto' : 'none'}
         accessibilityLiveRegion="polite"
         accessibilityViewIsModal
         onLayout={(event) => {
@@ -252,10 +262,10 @@ function TourOverlay({ tour }) {
         style={[
           styles.card,
           {
-            backgroundColor: colors.card,
-            borderColor: isDark ? colors.line : 'rgba(16, 32, 58, 0.06)',
+            backgroundColor: glass ? 'transparent' : colors.card,
+            borderColor: glass ? 'transparent' : (isDark ? colors.line : 'rgba(16, 32, 58, 0.06)'),
             left: cardLeft,
-            opacity: showCard ? cardFade : 0,
+            opacity: cardFade,
             top: Math.max(insets.top + 8, Math.min(cardTop, size.height - insets.bottom - 12 - cardHeight)),
             transform: [{ translateY: cardFade.interpolate({ inputRange: [0, 1], outputRange: [arrow === 'down' ? -8 : 8, 0] }) }],
             width: cardWidth,
@@ -263,7 +273,9 @@ function TourOverlay({ tour }) {
           },
         ]}
       >
-        {arrow ? (
+        <GlassBackground style={{ borderRadius: 22 }} tintColor={glassTint} />
+        {/* An opaque arrow cannot join a glass card; the spotlight already marks the target. */}
+        {arrow && !glass ? (
           <View style={[styles.arrow, arrow === 'up' ? styles.arrowUp : styles.arrowDown, { backgroundColor: colors.card, left: arrowLeft }]} />
         ) : null}
         <ScrollView key={step.id} bounces={false} showsVerticalScrollIndicator={false} contentContainerStyle={styles.cardContent}>
@@ -341,14 +353,18 @@ function TourOverlay({ tour }) {
     </View>
   );
 
-  if (Platform.OS === 'ios') {
-    return (
-      <Modal transparent visible animationType="none" presentationStyle="overFullScreen" onRequestClose={close}>
-        <View style={{ flex: 1 }}>{content}</View>
-      </Modal>
-    );
-  }
-  return content;
+  return (
+    <Modal
+      transparent
+      visible
+      animationType="none"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      onRequestClose={close}
+    >
+      <View style={{ flex: 1 }}>{content}</View>
+    </Modal>
+  );
 }
 
 const styles = StyleSheet.create({

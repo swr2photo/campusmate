@@ -1,4 +1,5 @@
-import { Image, Platform } from 'react-native';
+import { Dimensions, Image, Platform } from 'react-native';
+import { chatImageSize } from './chatMediaLayout';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -56,29 +57,8 @@ export async function setStackFlipHintSeen() {
  * @param {number|null} aspectRatio - width / height of the image
  * @returns {{ width: number, height: number, orientation: 'portrait'|'landscape'|'square' }}
  */
-export function getChatImageBubbleSize(aspectRatio) {
-  if (!aspectRatio || typeof aspectRatio !== 'number' || isNaN(aspectRatio) || aspectRatio <= 0) {
-    return { width: 230, height: 180, orientation: 'landscape' };
-  }
-
-  // Portrait (รูปตั้ง - เช่น 9:16, 3:4, 4:5)
-  if (aspectRatio < 0.85) {
-    const width = 208;
-    const clampedRatio = Math.max(aspectRatio, 0.65);
-    const height = Math.min(Math.round(width / clampedRatio), 285);
-    return { width, height, orientation: 'portrait' };
-  }
-
-  // Landscape (แนวนอน - เช่น 16:9, 4:3)
-  if (aspectRatio > 1.15) {
-    const width = 246;
-    const clampedRatio = Math.min(aspectRatio, 1.85);
-    const height = Math.max(Math.round(width / clampedRatio), 140);
-    return { width, height, orientation: 'landscape' };
-  }
-
-  // Square (สี่เหลี่ยมจัตุรัส - 1:1)
-  return { width: 210, height: 210, orientation: 'square' };
+export function getChatImageBubbleSize(aspectRatio, screenWidth = Dimensions.get('window').width, { isPreview = false } = {}) {
+  return chatImageSize(screenWidth, aspectRatio, isPreview);
 }
 
 /**

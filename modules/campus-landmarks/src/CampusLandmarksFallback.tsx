@@ -1,5 +1,7 @@
 import * as React from 'react';
-import { Platform, Pressable, ScrollView, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { Platform, ScrollView, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { Pressable } from '../../../src/components/NativePressable';
+import type { PressableStateCallbackType } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { CampusLandmarksViewProps } from './CampusLandmarks.types';
@@ -33,7 +35,7 @@ export default function CampusLandmarksFallback({
               accessibilityRole="button"
               accessibilityLabel="กลับไปหน้ากิจกรรม"
               onPress={onClose}
-              style={({ pressed }) => [styles.backButton, { borderColor: primary, opacity: pressed ? 0.6 : 1 }]}
+              style={({ pressed }: PressableStateCallbackType) => [styles.backButton, { borderColor: primary, opacity: pressed ? 0.6 : 1 }]}
             >
               <Text style={[styles.backLabel, { color: primary }]}>กลับไปหน้ากิจกรรม</Text>
             </Pressable>

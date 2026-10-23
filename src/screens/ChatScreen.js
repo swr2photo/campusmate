@@ -1,12 +1,19 @@
+import { Pressable } from '../components/NativePressable';
 import Text from '../components/AppText';
 import ConversationInboxStatus from '../components/ConversationInboxStatus';
 import { AppTextInput as TextInput } from '../components/AppText';
 import SearchField from '../components/SearchField';
-import LiquidGlassSegmentedControl from '../components/LiquidGlassSegmentedControl';
+import { useIsTabPreview } from '../context/TabPreviewContext';
+import FilterSegment from '../components/FilterSegment';
+import AvatarStatusRing from '../components/status/AvatarStatusRing';
+import { presenceStatus } from '../utils/userStatus';
 import { compareConversationsByActivity } from '../utils/conversationOrder';
-import { chatPreviewText } from '../utils/chatPreviewText';
+
+import { chatMemberSettings, chatUnreadState, latestChatSnippet, formatInboxTimestamp, chatReadStatus } from '../utils/inboxPresentation';
+import { useChatPresence } from '../context/ChatPresenceContext';
+import { showAlert } from '../utils/appAlert';
 import React, { useCallback, useContext, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Reanimated, {
   Extrapolation,
   interpolate,
@@ -17,7 +24,7 @@ import Reanimated, {
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { project, rubberband } from '../utils/motion';
 import { BlurTargetView } from 'expo-blur';
-import { Stack, useLocalSearchParams, usePathname } from 'expo-router';
+import { router, Stack, useLocalSearchParams, usePathname } from 'expo-router';
 import { openChatRoom } from '../utils/openChatRoom';
 import { useConfirm } from '../context/ConfirmContext';
 import TabsBlurTargetContext from '../context/TabsBlurTargetContext';
@@ -34,110 +41,6 @@ import { prefetchBrowseMusicTracks } from '../services/spotifyService';
 
 const SWIPE_DELETE_WIDTH = 88;
 
-function toDate(timestamp) {
-  if (!timestamp) return null;
-  if (timestamp instanceof Date) return Number.isNaN(timestamp.getTime()) ? null : timestamp;
-  if (typeof timestamp === 'number') {
-    const value = new Date(timestamp < 1e11 ? timestamp * 1000 : timestamp);
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
-  if (typeof timestamp?.toDate === 'function') {
-    try {
-      const value = timestamp.toDate();
-      return Number.isNaN(value.getTime()) ? null : value;
-    } catch {
-      return null;
-    }
-  }
-  if (typeof timestamp?.seconds === 'number') {
-    const value = new Date(timestamp.seconds * 1000 + (timestamp.nanoseconds ? timestamp.nanoseconds / 1e6 : 0));
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
-  if (typeof timestamp?._seconds === 'number') {
-    const value = new Date(timestamp._seconds * 1000 + (timestamp._nanoseconds ? timestamp._nanoseconds / 1e6 : 0));
-    return Number.isNaN(value.getTime()) ? null : value;
-  }
-  if (typeof timestamp === 'string') {
-    const parsed = Date.parse(timestamp);
-    if (!Number.isNaN(parsed)) return new Date(parsed);
-    const match = timestamp.match(/^(\d{1,2}):(\d{2})$/);
-    if (match) {
-      const now = new Date();
-      now.setHours(Number.parseInt(match[1], 10), Number.parseInt(match[2], 10), 0, 0);
-      return now;
-    }
-  }
-  return null;
-}
-
-function formatRelativeLabel(date) {
-  if (!date) return '';
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffSec = Math.max(0, Math.floor(diffMs / 1000));
-  const diffMin = Math.floor(diffSec / 60);
-  const diffHour = Math.floor(diffMin / 60);
-  const diffDay = Math.floor(diffHour / 24);
-  const diffMonth = Math.floor(diffDay / 30);
-  const diffYear = Math.floor(diffDay / 365);
-
-  if (diffSec < 60) return 'สักครู่';
-  if (diffMin < 60) return `${diffMin} นาทีที่แล้ว`;
-  if (diffHour < 24) return `${diffHour} ชม. ที่แล้ว`;
-  if (diffDay === 1) return 'เมื่อวานนี้';
-  if (diffDay < 7) return `${diffDay} วันที่แล้ว`;
-  if (diffDay < 30) return `${Math.ceil(diffDay / 7)} สัปดาห์ที่แล้ว`;
-  if (diffMonth < 12) return `${diffMonth || 1} เดือนที่แล้ว`;
-  return `${diffYear} ปีที่แล้ว`;
-}
-
-function formatListTime(conversation, currentUserId, unreadCount = 0) {
-  const messages = conversation.messages || [];
-  const lastMsg = messages[messages.length - 1];
-  const iSentLast = conversation.lastMessageSenderId === currentUserId
-    || (lastMsg && (lastMsg.senderId === currentUserId || lastMsg.sender === 'me'));
-
-  if (unreadCount > 1) {
-    const date = toDate(conversation.lastMessageAt || lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
-    const label = formatRelativeLabel(date);
-    const timeText = label === 'สักครู่' ? 'เมื่อสักครู่' : label;
-    return `${unreadCount} ข้อความใหม่ · ${timeText || 'เมื่อสักครู่'}`;
-  }
-
-  if (unreadCount === 1 && !iSentLast) {
-    const date = toDate(conversation.lastMessageAt || lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
-    const label = formatRelativeLabel(date);
-    const timeText = label === 'สักครู่' ? 'เมื่อสักครู่' : (label.startsWith('เมื่อ') ? label : `เมื่อ ${label}`);
-    const textSnippet = chatPreviewText(lastMsg, conversation.lastMessage);
-    return textSnippet ? `${textSnippet} · ${timeText}` : timeText;
-  }
-
-  if (!iSentLast) {
-    const date = toDate(conversation.lastMessageAt || lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
-    const label = formatRelativeLabel(date);
-    if (label === 'สักครู่') return 'เมื่อสักครู่';
-    return label ? `เมื่อ ${label}` : '';
-  }
-
-  if (lastMsg?.sendStatus === 'failed') return 'ส่งไม่สำเร็จ';
-  if (lastMsg?.pendingSync) return 'รอส่ง';
-  const otherUserId = (conversation.participants || []).find((id) => id !== currentUserId);
-  const otherUnread = otherUserId ? (conversation.unreadCounts?.[otherUserId] || 0) : 0;
-
-  if (otherUnread === 0 && otherUserId) {
-    const readTimestamp = conversation.readReceipts?.[otherUserId] || conversation.updatedAt;
-    const readDate = toDate(readTimestamp);
-    const label = formatRelativeLabel(readDate);
-    if (label === 'สักครู่') return 'อ่านแล้วเมื่อสักครู่';
-    return label ? `อ่านแล้วเมื่อ ${label}` : 'อ่านแล้ว';
-  }
-
-  const sentDate = toDate(conversation.lastMessageAt || lastMsg?.createdAt || lastMsg?.time || conversation.updatedAt);
-  const label = formatRelativeLabel(sentDate);
-  if (label === 'สักครู่') return 'ส่งเมื่อสักครู่';
-  return label ? `ส่งเมื่อ ${label}` : 'ส่งแล้ว';
-}
-
 export default function ChatScreen() {
   // Background warm-up only: a slow/cold function (deadline-exceeded) must not
   // become an unhandled promise rejection. The search sheet retries on open.
@@ -147,7 +50,7 @@ export default function ChatScreen() {
   const conversationInbox = useAppConversations();
   const { conversations = [] } = conversationInbox;
   const { profile } = useAppProfile();
-  const { removeConversation, retryConversations } = useAppActions();
+  const { markAsRead, removeConversation, retryConversations, updateChatSettingsInChat } = useAppActions();
   const params = useLocalSearchParams();
   const pathname = usePathname();
   const [query, setQuery] = useState('');
@@ -172,17 +75,15 @@ export default function ChatScreen() {
   const visibleConversations = useMemo(() => {
     const normalizedQuery = deferredQuery.trim().toLowerCase();
     return conversations.filter((conversation) => {
-      const unreadCount = conversation.unreadCounts?.[currentUserId] || conversation.unread || 0;
-      if (unreadOnly && unreadCount === 0) return false;
+      if (unreadOnly && !chatUnreadState(conversation, currentUserId).unread) return false;
       if (!normalizedQuery) return true;
       return `${conversation.name || ''} ${conversation.lastMessage || ''}`.toLowerCase().includes(normalizedQuery);
-    }).sort(compareConversationsByActivity);
+    }).sort((a, b) => Number(chatMemberSettings(b, currentUserId).isPinned === true) - Number(chatMemberSettings(a, currentUserId).isPinned === true) || compareConversationsByActivity(a, b));
   }, [conversations, currentUserId, deferredQuery, unreadOnly]);
 
   const unreadConversationsCount = useMemo(() => {
     return conversations.reduce((count, conv) => {
-      const unread = conv.unreadCounts?.[currentUserId] || conv.unread || 0;
-      return unread > 0 ? count + 1 : count;
+      return chatUnreadState(conv, currentUserId).unread ? count + 1 : count;
     }, 0);
   }, [conversations, currentUserId]);
 
@@ -191,7 +92,28 @@ export default function ChatScreen() {
     { id: 'unread', label: 'ยังไม่อ่าน', badgeCount: unreadConversationsCount },
   ], [unreadConversationsCount]);
 
+  const handleInboxSetting = useCallback(async (conversation, settings) => {
+    try { await updateChatSettingsInChat(conversation.id, settings); }
+    catch { showAlert('บันทึกการตั้งค่าแชตไม่สำเร็จ', 'ตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง', { tone: 'danger' }); }
+  }, [updateChatSettingsInChat]);
+
   const handleDeleteConversation = useCallback(async (conversation) => {
+    if (conversation.kind === 'group') {
+      const ok = await confirm({
+        title: 'ออกจากแชตกลุ่ม?',
+        body: `คุณต้องการออกจากแชตกลุ่ม "${conversation.title || 'ตี้'}" หรือไม่`,
+        confirmLabel: 'ออกจากกลุ่ม',
+        icon: 'person.fill.xmark',
+      });
+      if (!ok) return;
+      try {
+        const { leaveParty } = await import('../services/partyService');
+        await leaveParty(conversation.id, currentUserId);
+      } catch (err) {
+        console.error('Failed to leave group chat:', err);
+      }
+      return;
+    }
     const otherUserId = conversation.profileId
       || conversation.participants?.find((participantId) => participantId !== currentUserId);
     const ok = await confirm({
@@ -213,8 +135,16 @@ export default function ChatScreen() {
   }, []);
 
   const handleOpenConversation = useCallback((conversation) => {
-    if (conversation?.id) openChatRoom(conversation.id, { pathname });
-  }, [pathname]);
+    if (!conversation?.id) return;
+    if (conversation.kind === 'group') {
+      router.push({ pathname: '/group-chat', params: { partyId: conversation.id } });
+    } else {
+      if (chatUnreadState(conversation, currentUserId).unread) {
+        void markAsRead(conversation.id);
+      }
+      openChatRoom(conversation.id, { pathname });
+    }
+  }, [currentUserId, markAsRead, pathname]);
 
   const renderConversation = useCallback(({ item }) => (
     <ConversationRow
@@ -223,21 +153,31 @@ export default function ChatScreen() {
       onDelete={handleDeleteConversation}
       onPreview={handlePreviewConversation}
       onPress={handleOpenConversation}
+      onMarkUnread={(conversation) => handleInboxSetting(conversation, { markedUnread: true })}
+      onTogglePin={(conversation) => handleInboxSetting(conversation, { isPinned: chatMemberSettings(conversation, currentUserId).isPinned !== true })}
     />
-  ), [currentUserId, handleDeleteConversation, handleOpenConversation, handlePreviewConversation]);
+  ), [currentUserId, handleDeleteConversation, handleInboxSetting, handleOpenConversation, handlePreviewConversation]);
 
   const handleOpenPreviewChat = () => {
     const chatId = previewConversation?.id;
     setPreviewConversationId(null);
-    if (chatId) openChatRoom(chatId, { pathname });
+    if (chatId) {
+      if (chatUnreadState(previewConversation, currentUserId).unread) {
+        void markAsRead(chatId);
+      }
+      openChatRoom(chatId, { pathname });
+    }
   };
 
   const isAndroid = Platform.OS === 'android';
+  const isTabPreview = useIsTabPreview();
+  const { width: windowWidth } = useWindowDimensions();
+  const isTablet = (Platform.OS === 'ios' && Boolean(Platform.isPad)) || windowWidth >= 700;
   const screenContent = (
     <IosLikeScreen>
       {isAndroid ? <IosLikeHeader title="ข้อความ" /> : null}
       <FlatList
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, isTablet && styles.tabletContent]}
         contentInsetAdjustmentBehavior="automatic"
         initialNumToRender={8}
         maxToRenderPerBatch={5}
@@ -256,7 +196,7 @@ export default function ChatScreen() {
               />
             ) : null}
             <View style={styles.tabsContainer}>
-              <LiquidGlassSegmentedControl
+              <FilterSegment
                 activeTab={unreadOnly ? 'unread' : 'all'}
                 onChangeTab={(tabId) => setUnreadOnly(tabId === 'unread')}
                 tabs={filterTabs}
@@ -265,8 +205,17 @@ export default function ChatScreen() {
           </TourTarget>
         )}
         ListEmptyComponent={<ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} empty filtered={Boolean(query || unreadOnly)} groupLoading={groupInbox.loading} groupError={groupInbox.error} />}
-        renderItem={(props) => props.item.kind === 'group' ? <GroupChatRow group={props.item} /> : renderConversation(props)}
-        ListFooterComponent={<>{groupInbox.items.length + visibleConversations.length > 0 ? <ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} /> : null}<GroupChatInboxStatus inbox={groupInbox} /></>}
+        renderItem={renderConversation}
+        ListFooterComponent={(
+          <>
+            {groupInbox.items.length + visibleConversations.length > 0 ? (
+              <ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} />
+            ) : null}
+            {groupInbox.items.length + visibleConversations.length > 0 || groupInbox.error ? (
+              <GroupChatInboxStatus inbox={groupInbox} />
+            ) : null}
+          </>
+        )}
         showsVerticalScrollIndicator={false}
       />
     </IosLikeScreen>
@@ -274,12 +223,14 @@ export default function ChatScreen() {
 
   return (
     <>
-      {/* iOS: native UISearchController in the navigation bar (system Liquid Glass on iOS 26+). */}
-      {isAndroid ? null : (
+      {/* iOS: native UISearchController in the navigation bar (system Liquid Glass
+          on iOS 26+). Skipped in neighbour-tab previews, where it would attach to
+          the hosting tab's navigation bar. */}
+      {isAndroid || isTabPreview ? null : (
         <Stack.SearchBar
           autoCapitalize="none"
           cancelButtonText="ยกเลิก"
-          hideWhenScrolling={false}
+          hideWhenScrolling
           onCancelButtonPress={() => setQuery('')}
           onChangeText={(event) => setQuery(event.nativeEvent.text)}
           placeholder="ค้นหาชื่อหรือข้อความ"
@@ -300,19 +251,12 @@ export default function ChatScreen() {
         currentUserId={currentUserId}
         onClose={() => setPreviewConversationId(null)}
         onOpenChat={handleOpenPreviewChat}
+        onMarkUnread={(conversation) => handleInboxSetting(conversation, { markedUnread: true })}
+        onTogglePin={(conversation) => handleInboxSetting(conversation, { isPinned: chatMemberSettings(conversation, currentUserId).isPinned !== true })}
+        onDelete={handleDeleteConversation}
         visible={Boolean(previewConversation)}
       />
     </>
-  );
-}
-
-function FilterButton({ active, icon, label, onPress }) {
-  const { colors } = useTheme();
-  return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.filterButton, { backgroundColor: active ? colors.primarySoft : colors.surfaceRaised, borderColor: active ? colors.primary : colors.line }, pressed && styles.pressed]}>
-      <FeatureIcon color={active ? colors.primary : colors.inkMuted} name={icon} size={15} />
-      <Text style={[styles.filterText, { color: active ? colors.primary : colors.inkMuted }]}>{label}</Text>
-    </Pressable>
   );
 }
 
@@ -401,15 +345,29 @@ function SwipeableConversationRow({ children, contentBackgroundColor, onDelete }
   );
 }
 
-const ConversationRow = React.memo(function ConversationRow({ conversation, currentUserId, onDelete, onPreview, onPress }) {
+const ConversationRow = React.memo(function ConversationRow({
+  conversation,
+  currentUserId,
+  onDelete,
+  onPreview,
+  onPress,
+  onMarkUnread,
+  onTogglePin,
+}) {
   const { colors, isDark } = useTheme();
   const [, setTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setTick((value) => value + 1), 30000);
     return () => clearInterval(timer);
   }, []);
-  const unreadCount = conversation.unreadCounts?.[currentUserId] || conversation.unread || 0;
-  const timeLabel = formatListTime(conversation, currentUserId, unreadCount);
+  const isGroup = conversation.kind === 'group';
+  const { count: unreadCount, unread } = chatUnreadState(conversation, currentUserId);
+  const pinned = chatMemberSettings(conversation, currentUserId).isPinned === true;
+  const presence = useChatPresence(conversation.id);
+  const timeLabel = formatInboxTimestamp(conversation.lastMessageAt || conversation.messages?.at(-1)?.createdAt);
+  const snippet = latestChatSnippet(conversation, currentUserId);
+  const readStatus = chatReadStatus(conversation, currentUserId);
+  const displayName = isGroup ? (conversation.title || 'แชตกลุ่มของตี้') : conversation.name;
   const longPressAtRef = useRef(0);
   const handlePress = () => {
     const now = Date.now();
@@ -420,17 +378,23 @@ const ConversationRow = React.memo(function ConversationRow({ conversation, curr
     onPress?.(conversation);
   };
   const handleLongPress = () => {
+    if (isGroup) {
+      handlePress();
+      return;
+    }
     longPressAtRef.current = Date.now();
     onPreview?.(conversation);
   };
   return (
     <SwipeableConversationRow contentBackgroundColor={colors.canvas} onDelete={() => onDelete?.(conversation)}>
       <Pressable
-        accessibilityLabel={`คุยกับ ${conversation.name}`}
+        accessibilityLabel={isGroup ? `แชตกลุ่ม ${displayName}${unreadCount > 0 ? ' มีข้อความที่ยังไม่อ่าน' : ''}` : `คุยกับ ${conversation.name}${readStatus ? `, ${readStatus}` : ''}`}
         accessibilityRole="button"
         delayLongPress={220}
         onLongPress={handleLongPress}
-        onPressIn={() => { void warmChatPreviewMedia(conversation, currentUserId).catch(() => {}); }}
+        onPressIn={() => {
+          if (!isGroup) void warmChatPreviewMedia(conversation, currentUserId).catch(() => {});
+        }}
         onPress={handlePress}
         style={({ pressed }) => [
           styles.conversationRow,
@@ -438,14 +402,34 @@ const ConversationRow = React.memo(function ConversationRow({ conversation, curr
             backgroundColor: pressed
               ? (isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)')
               : colors.canvas,
-            borderBottomColor: colors.line,
           },
         ]}
       >
-        <IosLikeAvatar cacheScope={conversation.profileId} cacheVersion={conversation.participantProfiles?.[conversation.profileId]?.avatarRevision} color={conversation.avatarColor} emoji={conversation.avatar} size={62} uri={conversation.avatarUri} />
+        {/* Ring shows real presence only (mint ripple online, moon when away). */}
+        <AvatarStatusRing status={isGroup ? null : presenceStatus(presence)} size={56}>
+          <IosLikeAvatar
+            cacheScope={isGroup ? `group:${conversation.id}` : conversation.profileId}
+            cacheVersion={isGroup ? undefined : conversation.participantProfiles?.[conversation.profileId]?.avatarRevision}
+            color={isGroup ? colors.primarySoft : conversation.avatarColor}
+            emoji={isGroup ? undefined : conversation.avatar}
+            icon={isGroup ? 'person.3.fill' : undefined}
+            size={56}
+            uri={isGroup ? undefined : conversation.avatarUri}
+          />
+        </AvatarStatusRing>
         <View style={styles.conversationCopy}>
-          <Text numberOfLines={1} style={[styles.conversationName, { color: colors.ink }, unreadCount > 0 && styles.unreadName]}>{conversation.name}</Text>
-          <Text numberOfLines={1} style={[styles.partnerSubtitle, { color: unreadCount > 0 ? colors.ink : colors.inkMuted }, unreadCount > 0 && styles.unreadPreview]}>{timeLabel}</Text>
+          <View style={styles.conversationHeading}>
+            <Text numberOfLines={1} style={[styles.conversationName, { color: colors.ink }, unread && styles.unreadName]}>{displayName}</Text>
+            {pinned ? <FeatureIcon name="pin.fill" size={12} color={colors.accentText} /> : null}
+            <Text style={[styles.conversationTime, { color: colors.inkMuted }]}>{timeLabel}</Text>
+          </View>
+          <View style={styles.conversationPreviewRow}>
+            <Text numberOfLines={1} style={[styles.partnerSubtitle, { color: unread ? colors.ink : colors.inkMuted }, unread && styles.unreadPreview]}>{snippet}</Text>
+            {unread ? <View accessibilityLabel={unreadCount > 0 ? `${unreadCount} ข้อความที่ยังไม่อ่าน` : 'ทำเครื่องหมายว่ายังไม่อ่าน'} style={[styles.unreadBadge, { backgroundColor: colors.primary }]}>
+              {unreadCount > 0 ? <Text style={styles.unreadCount}>{unreadCount > 99 ? '99+' : unreadCount}</Text> : null}
+            </View> : null}
+          </View>
+          {readStatus ? <Text numberOfLines={1} style={[styles.readStatus, { color: colors.inkMuted }]}>{readStatus}</Text> : null}
         </View>
       </Pressable>
     </SwipeableConversationRow>
@@ -457,31 +441,37 @@ function areConversationRowPropsEqual(previous, next) {
     && previous.currentUserId === next.currentUserId
     && previous.onDelete === next.onDelete
     && previous.onPreview === next.onPreview
-    && previous.onPress === next.onPress;
+    && previous.onPress === next.onPress
+    && previous.onMarkUnread === next.onMarkUnread
+    && previous.onTogglePin === next.onTogglePin;
 }
 
 const styles = StyleSheet.create({
   blurTarget: { flex: 1 },
   content: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg },
+  tabletContent: { alignSelf: 'center', maxWidth: 960, width: '100%' },
   listHeader: { gap: spacing.md, paddingBottom: spacing.lg, paddingTop: spacing.sm },
   tabsContainer: { width: '100%', marginTop: 2 },
   searchBox: { alignItems: 'center', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, minHeight: 50, paddingHorizontal: spacing.md },
   searchInput: { flex: 1, fontSize: type.body, paddingVertical: 0 },
   clearButton: { elevation: 0, height: 30, shadowOpacity: 0, width: 30 },
-  filterRow: { flexDirection: 'row', gap: spacing.sm },
-  filterButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 5, justifyContent: 'center', minHeight: 38, paddingHorizontal: spacing.sm },
-  filterText: { fontSize: type.caption, fontWeight: '700' },
-  swipeContainer: { overflow: 'hidden', position: 'relative', width: '100%' },
+  swipeContainer: { borderRadius: 16, marginVertical: 3, overflow: 'hidden', position: 'relative', width: '100%' },
   swipeContent: { width: '100%' },
   swipeDeleteAction: { alignItems: 'stretch', backgroundColor: '#D92D3F', bottom: 0, justifyContent: 'center', position: 'absolute', right: 0, top: 0, width: SWIPE_DELETE_WIDTH },
   swipeDeleteButton: { alignItems: 'center', flex: 1, justifyContent: 'center', width: SWIPE_DELETE_WIDTH },
   swipeDeletePressed: { opacity: 0.75 },
   swipeDeleteText: { color: '#FFFFFF', fontSize: type.caption, fontWeight: '800', marginTop: 3 },
-  conversationRow: { alignItems: 'center', borderBottomWidth: 1, flexDirection: 'row', gap: spacing.md, paddingVertical: spacing.md },
-  conversationCopy: { flex: 1, paddingRight: spacing.xs },
-  conversationName: { fontSize: type.headline, fontWeight: '700' },
+  conversationRow: { alignItems: 'center', borderRadius: 16, flexDirection: 'row', gap: 14, paddingHorizontal: 8, paddingVertical: 10 },
+  conversationCopy: { flex: 1, minWidth: 0, paddingRight: spacing.xs, justifyContent: 'center' },
+  conversationHeading: { flexDirection: 'row', alignItems: 'baseline', gap: 8 },
+  conversationPreviewRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  conversationName: { flex: 1, minWidth: 0, fontSize: type.headline, fontWeight: '700' },
+  conversationTime: { flexShrink: 0, fontSize: 11 },
+  readStatus: { fontSize: 12, marginTop: 3 },
+  unreadBadge: { minWidth: 10, minHeight: 10, borderRadius: 12, paddingHorizontal: 5, justifyContent: 'center', alignItems: 'center' },
+  unreadCount: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
   unreadName: { fontWeight: '800' },
-  partnerSubtitle: { fontSize: type.caption, marginTop: 5 },
+  partnerSubtitle: { flex: 1, minWidth: 0, fontSize: type.caption },
   unreadPreview: { fontWeight: '700' },
   emptyState: { alignItems: 'center', paddingHorizontal: spacing.xl, paddingVertical: spacing.xxxl },
   emptyIcon: { alignItems: 'center', borderRadius: radius.pill, height: 62, justifyContent: 'center', width: 62 },

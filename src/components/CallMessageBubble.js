@@ -1,6 +1,7 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import { formatCallDuration } from '../services/callSignalingService';
 import { useTheme } from '../theme';

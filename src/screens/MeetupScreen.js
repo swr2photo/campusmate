@@ -1,10 +1,11 @@
+import { Pressable, TouchableWithoutFeedback } from '../components/NativePressable';
 import Text from '../components/AppText';
 import { AppTextInput as TextInput } from '../components/AppText';
 import PlacePhoto from '../components/PlacePhoto';
 import PlacePreviewCard from '../components/PlacePreviewCard';
 import PlaceDetailSheet from '../components/PlaceDetailSheet';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Keyboard, Modal, Platform, Pressable, ScrollView, StyleSheet, TouchableWithoutFeedback, useWindowDimensions, View } from 'react-native';
+import { FlatList, Keyboard, Modal, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Image from '../components/CachedImage';
 import Animated, {
   cancelAnimation,
@@ -120,6 +121,8 @@ function matchesSpotQuery(spot, query) {
 
 export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId = null }) {
   const { colors, isDark } = useTheme();
+  const { width: windowWidth } = useWindowDimensions();
+  const isTablet = (Platform.OS === 'ios' && Boolean(Platform.isPad)) || windowWidth >= 700;
   const router = useRouter();
   const { confirm } = useConfirm();
   const { campusSpots = [], selectedMeetup } = useAppFeed();
@@ -317,12 +320,14 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   };
 
   const renderSpot = useCallback(({ item }) => (
-    <PlacePreviewCard
-      onPress={setDetailSpot}
-      selected={selectedMeetup?.id === item.id}
-      spot={item}
-    />
-  ), [selectedMeetup?.id]);
+    <View style={isTablet ? { width: '48.8%' } : { width: '100%' }}>
+      <PlacePreviewCard
+        onPress={setDetailSpot}
+        selected={selectedMeetup?.id === item.id}
+        spot={item}
+      />
+    </View>
+  ), [isTablet, selectedMeetup?.id]);
 
   // Lets the first-run tour scroll the hero / party finder into view.
   const listRef = useRef(null);
@@ -409,6 +414,9 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
         </TourTarget>
       ) : <FlatList
         ref={listRef}
+        key={isTablet ? 'tablet-spots-grid' : 'phone-spots-list'}
+        numColumns={isTablet ? 2 : 1}
+        columnWrapperStyle={isTablet ? { gap: spacing.md, justifyContent: 'flex-start' } : undefined}
         contentContainerStyle={styles.listContent}
         contentInsetAdjustmentBehavior="automatic"
         data={visibleSpots}
@@ -492,12 +500,11 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
 function CampusHero({ onOpenMap, selectedMeetup }) {
   const { colors } = useTheme();
   const { width: windowWidth } = useWindowDimensions();
-  const isIPad = Platform.OS === 'ios' && Platform.isPad && windowWidth > 430;
-  const layoutWidth = isIPad ? 390 : windowWidth;
-  const isTablet = !isIPad && windowWidth >= 700;
-  const maxContentWidth = isTablet ? Math.min(windowWidth - 64, 620) : layoutWidth;
+  const isPad = Platform.OS === 'ios' && Boolean(Platform.isPad);
+  const isTablet = isPad || windowWidth >= 700;
+  const maxContentWidth = isTablet ? Math.min(windowWidth - 48, 760) : windowWidth;
   const heroWidth = maxContentWidth - (spacing.lg * 2);
-  const heroHeight = Math.round(heroWidth * 9 / 16);
+  const heroHeight = Math.min(Math.round(heroWidth * 9 / 16), 420);
 
 
   
@@ -1030,7 +1037,7 @@ function PickerLabel({ icon, label }) {
 }
 
 const styles = StyleSheet.create({
-  listContent: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, width: '100%', maxWidth: 620, alignSelf: 'center' },
+  listContent: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, width: '100%', maxWidth: 920, alignSelf: 'center' },
   hero: { borderRadius: 26, borderCurve: 'continuous', borderWidth: 0, height: 156, marginBottom: spacing.md, overflow: 'hidden', position: 'relative' },
   heroImage: { height: 156 },
   heroGradient: { bottom: 0, height: 130, left: 0, position: 'absolute', right: 0 },
@@ -1041,7 +1048,7 @@ const styles = StyleSheet.create({
   heroMapText: { color: '#FFFFFF', fontSize: type.caption2, fontWeight: '800' },
   heroTitle: { color: '#FFFFFF', fontSize: type.headline, fontWeight: '900' },
   heroSubtitle: { color: 'rgba(255,255,255,0.86)', fontSize: type.caption2, lineHeight: 16, marginTop: 3 },
-  searchSticky: { alignSelf: 'center', borderBottomWidth: StyleSheet.hairlineWidth, paddingBottom: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, width: '100%', maxWidth: 620, zIndex: 2 },
+  searchSticky: { alignSelf: 'center', borderBottomWidth: StyleSheet.hairlineWidth, paddingBottom: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, width: '100%', maxWidth: 920, zIndex: 2 },
   searchBar: { alignItems: 'center', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, minHeight: 50, paddingHorizontal: spacing.md },
   searchInput: { flex: 1, fontSize: type.body, minWidth: 0, paddingVertical: 0 },
   clearButton: { elevation: 0, height: 30, shadowOpacity: 0, width: 30 },

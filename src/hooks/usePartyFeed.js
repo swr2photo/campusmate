@@ -40,10 +40,15 @@ export default function usePartyFeed(userOrId, campusSpots = [], userProfile = n
   const [activationRetry, setActivationRetry] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const feedOwnerRef = useRef(null);
 
   useEffect(() => {
+    const ownerChanged = feedOwnerRef.current !== userId;
+    feedOwnerRef.current = userId;
+    if (ownerChanged) {
     setOwnParties([]); setRequestedParties({}); setRequestByParty({}); setPages({});
     setPlaceResults({}); setPeerProfiles({}); setActivationErrors({}); setError(null);
+    }
     if (!userId) {
       setRawParties([]);
       setLegacyParties([]);
@@ -53,12 +58,14 @@ export default function usePartyFeed(userOrId, campusSpots = [], userProfile = n
       setLoading(false);
       return undefined;
     }
+    if (ownerChanged) {
     setLoading(true);
     setRawParties([]);
     setLegacyParties([]);
     setRequests([]);
     setGroupChats([]);
     setHostRequests({});
+    }
     const offParties = subscribeParties((items, page) => {
       setRawParties(items);
       setPages((old) => ({ ...old, feed: page }));

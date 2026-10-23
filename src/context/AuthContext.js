@@ -133,15 +133,20 @@ export function AuthProvider({ children }) {
           console.warn('[Notifications] Unable to disable this device during logout:', error);
         }
       }
-      await signOutUser();
-      if (activeUserId) {
-        try {
-          await clearOfflineDataForUser(activeUserId);
-        } catch (error) {
-          console.warn('[Offline] Unable to clear user cache during logout:', error);
+      try {
+        await signOutUser();
+      } catch (error) {
+        console.warn('[Auth] Sign out error:', error);
+      } finally {
+        if (activeUserId) {
+          try {
+            await clearOfflineDataForUser(activeUserId);
+          } catch (error) {
+            console.warn('[Offline] Unable to clear user cache during logout:', error);
+          }
         }
+        setUser(null);
       }
-      setUser(null);
     },
   }), [authError, isReady, user]);
 

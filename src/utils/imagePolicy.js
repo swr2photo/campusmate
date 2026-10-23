@@ -48,16 +48,11 @@ export function normalizeImageVersion(version) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-export function getRemoteImageRequestUrl(url, version) {
+export function getRemoteImageRequestUrl(url) {
   if (!isRemoteImageUrl(url)) return null;
-  if (version === null || version === undefined || version === '') return url;
-  // Signed URLs must keep the exact query string used by the signer.
-  if (/[?&](?:x-amz-signature|signature|sig)=/i.test(url)) return url;
-  const [base, fragment] = url.split('#');
-  const clean = base.replace(/([?&])cmv=[^&]*(&|$)/g, (_, prefix, suffix) => suffix ? prefix : '').replace(/[?&]$/, '');
-  const millis = normalizeImageVersion(version);
-  const versioned = millis ? `${clean}${clean.includes('?') ? '&' : '?'}cmv=${encodeURIComponent(String(millis))}` : clean;
-  return fragment === undefined ? versioned : `${versioned}#${fragment}`;
+  // Keep the storage URL exact. Adding a cache key makes some profiles load
+  // and others fail, depending on whether the link already had a query.
+  return url;
 }
 
 // Bound the longest side while preserving aspect ratio and never upscale.

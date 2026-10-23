@@ -5,7 +5,37 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { SymbolView } from 'expo-symbols';
 
 const ANDROID_ICON_MAP = {
+  at: 'at',
+  'basketball.fill': 'basketball',
+  'cloud.fill': 'cloud',
+  'cloud.rain.fill': 'rainy',
+  'cloud.sun.fill': 'partly-sunny',
+  mappin: 'location',
+  scope: 'locate',
+  sparkle: 'sparkles',
+  'umbrella.fill': 'umbrella',
+  zzz: 'moon',
+  'bell.slash.fill': 'notifications-off',
+  'books.vertical.fill': 'library',
+  'camera.viewfinder': 'scan',
+  'checkmark.shield.fill': 'shield-checkmark',
+  'doc.plaintext.fill': 'document-text',
+  'drop.fill': 'water',
+  'hand.thumbsup.fill': 'thumbs-up',
+  'heart.text.square.fill': 'heart-half',
+  iphone: 'phone-portrait-outline',
+  'megaphone.fill': 'megaphone',
+  'moon.fill': 'moon',
+  'moon.stars.fill': 'moon',
+  'music.note.list': 'list',
+  'paintbrush.fill': 'brush',
+  'person.crop.circle': 'person-circle-outline',
+  'play.rectangle.fill': 'play-circle',
+  'questionmark.circle.fill': 'help-circle',
+  waveform: 'pulse',
   'arrow.counterclockwise': 'arrow-undo',
+  crop: 'crop',
+  snowflake: 'snow',
   'arrow.down': 'arrow-down',
   'arrow.down.circle': 'arrow-down-circle-outline',
   'arrow.down.circle.fill': 'arrow-down-circle',
@@ -79,6 +109,10 @@ const ANDROID_ICON_MAP = {
   ellipsis: 'ellipsis-horizontal',
   'ellipsis.circle': 'ellipsis-horizontal-circle',
   'envelope.fill': 'mail',
+  'envelope.badge': 'mail-unread-outline',
+  pin: 'pin',
+  'pin.fill': 'pin',
+  'pin.slash.fill': 'pin-outline',
   'eye.fill': 'eye',
   'eye.slash.fill': 'eye-off',
   'exclamationmark.bubble': 'alert-circle-outline',
@@ -128,6 +162,8 @@ const ANDROID_ICON_MAP = {
   'mappin.slash.circle.fill': 'location-outline',
   'message.fill': 'chatbubble',
   'bubble.left.and.bubble.right': 'chatbubbles',
+  nosign: 'ban',
+  'hand.raised': 'hand-left',
   mic: 'mic-outline',
   'mic.fill': 'mic',
   'mic.slash.fill': 'mic-off',
@@ -315,7 +351,13 @@ function isEmoji(value) {
 }
 
 export function getAndroidIconName(name) {
-  return ANDROID_ICON_MAP[name] || 'help-circle-outline';
+  if (ANDROID_ICON_MAP[name]) return ANDROID_ICON_MAP[name];
+  // A name that is already an Ionicons glyph (e.g. `crop`) renders as itself
+  // instead of the "?" placeholder.
+  if (typeof name === 'string' && Ionicons.glyphMap && Object.prototype.hasOwnProperty.call(Ionicons.glyphMap, name)) {
+    return name;
+  }
+  return 'help-circle-outline';
 }
 
 export default function FeatureIcon({ color, name, size = 22, style }) {

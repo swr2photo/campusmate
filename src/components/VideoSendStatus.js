@@ -1,6 +1,7 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React from 'react';
-import { ActivityIndicator, Pressable, View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useVideoSendJobs, retryVideoSend, dismissVideoSend } from '../services/videoSendQueue';
 

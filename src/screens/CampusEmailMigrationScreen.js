@@ -1,3 +1,4 @@
+import NativeCard from '../components/NativeCard';
 import Text from '../components/AppText';
 import { AppTextInput as TextInput } from '../components/AppText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -165,7 +166,7 @@ export default function CampusEmailMigrationScreen() {
             ใช้อีเมล @psu.ac.th เพื่อยืนยันบัญชี
           </Text>
 
-          <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
+          <NativeCard style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
             <View style={styles.cardHeader}>
               <FeatureIcon color={colors.inkMuted} name="envelope.fill" size={16} />
               <Text style={[styles.cardKicker, { color: colors.inkMuted }]}>อีเมลยืนยัน</Text>
@@ -238,7 +239,7 @@ export default function CampusEmailMigrationScreen() {
                 style={{ marginTop: spacing.sm }}
               />
             ) : null}
-          </View>
+          </NativeCard>
 
           <OutlineButton
             label="ออกจากระบบ"

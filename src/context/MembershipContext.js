@@ -11,6 +11,7 @@ import { liveQuery } from '../services/rust/events';
 import { getCachedPackages, isPurchaseCancelled, loadMembershipPackages, membershipConfigured, purchaseMembership, purchasesConfigured, releasePurchases, restoreMembership, subscribeMembership, syncMembership } from '../services/membershipService';
 import { featuresForPlan, hasFeature, isPlusRecord, PLAN_FREE, PLAN_PLUS, PLUS_ENTITLEMENT_ID } from '../data/plans';
 import { showAlert } from '../utils/appAlert';
+import { membershipManagement } from '../utils/membershipManagement';
 
 const MembershipContext = createContext(null);
 const CACHE_PREFIX = 'campusmate_membership_v1_';
@@ -272,6 +273,7 @@ export function MembershipProvider({ children }) {
 
   const value = useMemo(() => {
     const features = featuresForPlan(plan);
+    const management = membershipManagement(record, clock);
     return {
       status, plan, features,
       loading: status === 'loading',
@@ -280,10 +282,12 @@ export function MembershipProvider({ children }) {
       isAdmin,
       serverConfirmed: isAdmin || (Boolean(uid) && confirmed?.owner === uid && confirmed?.server === true),
       activeUntil: record?.activeUntil || 0,
-      managementUrl: record?.managementUrl || null,
+      managementUrl: management?.url || null,
+      managementStore: management?.store || null,
+      hasStoreSubscription: Boolean(management),
       purchase, restore, refresh,
     };
-  }, [status, plan, isAdmin, configured, busy, error, packages, loadPackages, confirmed, record, uid, purchase, restore, refresh]);
+  }, [status, plan, isAdmin, configured, busy, error, packages, loadPackages, confirmed, record, clock, uid, purchase, restore, refresh]);
   return <MembershipContext.Provider value={value}>{children}</MembershipContext.Provider>;
 }
 export function useMembership() {

@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Dimensions, Linking, Modal, PermissionsAndroid, Platform, Pressable, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
+import { ActivityIndicator, AppState, Dimensions, Linking, Modal, PermissionsAndroid, Platform, ScrollView, StyleSheet, useColorScheme, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   Easing,
@@ -22,6 +24,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import FeatureIcon from './FeatureIcon';
 import { project, rubberband } from '../utils/motion';
 import { showAlert } from '../utils/appAlert';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 const EASE_OUT = Easing.bezier(0.23, 1, 0.32, 1);
 // Keep Android media access usable when Expo PHOTO is missing from the installed APK.
@@ -247,6 +250,8 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
   onSelectLibrary,
   onSelectCamera,
   onSelectVideo,
+  onSelectGif,
+  onSelectMusic,
   onOpenEditor,
   colors,
   inline = true,
@@ -895,6 +900,8 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
   }, [handleClosePreview, resolveAssetToFileUri, onClose, onOpenEditor]);
 
   const cardBg = colors?.card || (isDark ? '#181A20' : '#FFFFFF');
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const line = colors?.line || (isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)');
   const ink = colors?.ink || (isDark ? '#F8FAFC' : '#0F172A');
   const inkSoft = colors?.inkSoft || (isDark ? '#94A3B8' : '#64748B');
@@ -1191,14 +1198,23 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
         style={[
           styles.drawerContainer,
           {
-            backgroundColor: cardBg,
+            backgroundColor: glass ? 'transparent' : cardBg,
             overflow: 'hidden',
             paddingBottom: bottomInset,
-            borderTopColor: line,
+            borderTopColor: glass ? 'transparent' : line,
           },
           sheetStyle,
         ]}
       >
+        <GlassBackground style={styles.drawerGlass} tintColor={glassTint} />
+        {onSelectGif || onSelectMusic ? <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingTop: 8 }}>
+          {[
+            { label: 'GIF', icon: 'gift', action: onSelectGif },
+            { label: 'เพลง', icon: 'music.note', action: onSelectMusic },
+          ].filter(item => item.action).map(item => <Pressable key={item.label} accessibilityRole="button" accessibilityLabel={`ส่ง${item.label}`} onPress={() => { onClose?.(); setTimeout(item.action, 350); }} style={{ flex: 1, minHeight: 44, borderRadius: 16, backgroundColor: glassBg, flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
+            <FeatureIcon color={ink} name={item.icon} size={18} /><Text style={{ color: ink, fontWeight: '600' }}>{item.label}</Text>
+          </Pressable>)}
+        </View> : null}
         {/* Draggable Top Area (both Grabber and Header can be gradually slid up/down) */}
         <GestureDetector gesture={panGesture}>
         <View collapsable={false} style={styles.topDraggableArea}>
@@ -1330,7 +1346,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
             style={styles.dropdownBackdrop}
           />
 
-          <View
+          <NativeCard
             style={[
               styles.dropdownCard,
               {
@@ -1491,7 +1507,7 @@ const ChatMediaPickerSheet = forwardRef(function ChatMediaPickerSheet({
                 );
               })}
             </ScrollView>
-          </View>
+          </NativeCard>
         </>
       )}
 
@@ -2020,6 +2036,10 @@ const styles = StyleSheet.create({
     right: 0,
     top: 0,
     zIndex: 0,
+  },
+  drawerGlass: {
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
   },
   drawerContainer: {
     borderTopLeftRadius: 18,

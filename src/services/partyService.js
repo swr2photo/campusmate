@@ -8,6 +8,7 @@ import { encryptMessageRecord } from './chatEncryptionService';
 import { getCallable } from './callableClient';
 import { RUST_BACKEND } from './rust/backend';
 import * as rustParties from './rust/parties';
+import { notifyBackendChange } from './rust/events';
 
 const REGION = 'asia-southeast1';
 
@@ -38,6 +39,10 @@ function callable(name) {
 
 async function invoke(name, payload) {
   const result = await callable(name)(payload);
+  if (RUST_BACKEND && !['searchCampusPlaces', 'resolveCampusPlace'].includes(name)) {
+    notifyBackendChange('parties');
+    notifyBackendChange('group-messages');
+  }
   return result.data;
 }
 
@@ -47,6 +52,7 @@ export const withdrawPartyRequest = (partyId) => invoke('withdrawPartyRequest', 
 export const rejectPartyRequest = (partyId, requesterId) => invoke('rejectPartyRequest', { partyId, requesterId });
 export const cancelParty = (partyId) => invoke('cancelParty', { partyId });
 export const leaveParty = (partyId) => invoke('leaveParty', { partyId });
+export const updateGroupProfile = (partyId, { title, avatarUri = '' } = {}) => invoke('updateGroupProfile', { partyId, title, avatarUri });
 export const rotatePartyKey = (partyId, grants) => invoke('rotatePartyKey', { partyId, grants });
 export const approvePartyRequest = (partyId, requesterId, grants) => invoke('approvePartyRequest', {
   partyId, requesterId, ...grants,
@@ -96,10 +102,10 @@ function newMessageId() {
   return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('');
 }
 
-async function queueGroupRecord(partyId, userId, epoch, type, encrypted) {
-  const id = RUST_BACKEND ? newMessageId() : doc(collection(requireFirebase().db, 'groupChats', partyId, 'messages')).id;
+async function queueGroupRecord(partyId, userId, epoch, type, encrypted, options = {}) {
+  const id = options.clientMessageId || (RUST_BACKEND ? newMessageId() : doc(collection(requireFirebase().db, 'groupChats', partyId, 'messages')).id);
   const record = { senderId: userId, epoch, type, encrypted: true, nonce: encrypted.nonce, ciphertext: encrypted.ciphertext };
-  const clientSentAt = Date.now();
+  const clientSentAt = options.clientSentAt || Date.now();
   await enqueueOfflineOperation(userId, 'sendGroupMessage', { partyId, id, record, clientSentAt }, { dedupeKey: `group-message:${id}` });
   return { id, ...record, clientSentAt, pendingSync: true, sendStatus: 'queued' };
 }
@@ -112,10 +118,55 @@ export async function sendGroupText(partyId, userId, epoch, text, key) {
   return queueGroupRecord(partyId, userId, epoch, 'text', encrypted);
 }
 
-export async function sendGroupImage(partyId, userId, epoch, mediaUrl, key) {
+export async function sendGroupImage(partyId, userId, epoch, mediaUrl, key, { caption = '', viewMode = 'chat', clientMessageId, clientSentAt, encryptedRecord } = {}) {
   if (!key || key.length !== 32 || !mediaUrl) throw new Error('ไม่พบรูปภาพหรือกุญแจกลุ่ม');
-  const encrypted = encryptMessageRecord({ text: '', mediaType: 'image', mediaUrl }, key);
-  return queueGroupRecord(partyId, userId, epoch, 'image', encrypted);
+  const text = String(caption || '').trim().slice(0, 500);
+  const mode = viewMode === 'once' || viewMode === 'replay' ? viewMode : 'chat';
+  const encrypted = encryptedRecord || encryptMessageRecord({
+    text: text || '[รูปภาพ]',
+    mediaType: 'image',
+    mediaUrl,
+    ...(mode !== 'chat' ? { viewMode: mode } : {}),
+  }, key);
+  return queueGroupRecord(partyId, userId, epoch, 'image', encrypted, { clientMessageId, clientSentAt });
+}
+
+export async function sendGroupGif(partyId, userId, epoch, gif, key) {
+  const mediaUrl = String(gif?.url || '').trim();
+  if (!key || key.length !== 32 || !/^https:\/\//i.test(mediaUrl) || mediaUrl.length > 2000) {
+    throw new Error('ส่ง GIF ไม่สำเร็จ');
+  }
+  const encrypted = encryptMessageRecord({ text: '[GIF]', mediaType: 'image', mediaUrl }, key);
+  return queueGroupRecord(partyId, userId, epoch, 'gif', encrypted);
+}
+
+export async function sendGroupAudio(partyId, userId, epoch, { mediaUrl, audioDuration }, key) {
+  const duration = Math.round(Number(audioDuration) || 0);
+  if (!key || key.length !== 32 || !mediaUrl || duration < 1 || duration > 900) {
+    throw new Error('ส่งข้อความเสียงไม่สำเร็จ');
+  }
+  const encrypted = encryptMessageRecord({
+    text: '[ข้อความเสียง]', mediaType: 'audio', mediaUrl, audioDuration: duration,
+  }, key);
+  return queueGroupRecord(partyId, userId, epoch, 'audio', encrypted);
+}
+
+export async function sendGroupTrack(partyId, userId, epoch, track, key) {
+  if (!key || key.length !== 32 || !track?.id) throw new Error('ส่งเพลงไม่สำเร็จ');
+  const trackName = String(track.name || 'เพลง').slice(0, 200);
+  const encrypted = encryptMessageRecord({
+    text: `🎵 ${trackName}`.slice(0, 1000),
+    mediaType: 'track',
+    trackId: String(track.id).slice(0, 64),
+    trackName,
+    artists: String(track.artists || '').slice(0, 200),
+    albumArt: typeof track.albumArt === 'string' ? track.albumArt.slice(0, 2000) : '',
+    ...(typeof track.previewUrl === 'string' && track.previewUrl ? { previewUrl: track.previewUrl.slice(0, 2000) } : {}),
+    externalUrl: typeof track.externalUrl === 'string' && track.externalUrl
+      ? track.externalUrl.slice(0, 500)
+      : `https://open.spotify.com/track/${String(track.id).slice(0, 64)}`,
+  }, key);
+  return queueGroupRecord(partyId, userId, epoch, 'track', encrypted);
 }
 
 export function subscribeParties(onData, onError) {
@@ -188,7 +239,7 @@ export function subscribeGroupReads(userId, onData, onError, partyIds = []) {
   if (RUST_BACKEND) return rustParties.subscribeGroupReads(userId, onData, onError, partyIds);
   const { db } = requireFirebase();
   const pages = {};
-  onData({});
+  if (!partyIds.length) onData({});
   const off = [];
   for (let offset = 0; offset < partyIds.length; offset += 30) {
     const page = offset / 30;

@@ -123,7 +123,7 @@ const registrationInFlightByUserId = new Map();
 
 export default function NotificationManager() {
   const { user } = useAuth();
-  const { preferences } = usePreferences();
+  const { preferences, ready: preferencesReady } = usePreferences();
   const teamNotificationsEnabled = preferences.notifications.team;
   const { profile } = useAppProfile();
   const { isOnline } = useAppSync();
@@ -146,7 +146,8 @@ export default function NotificationManager() {
     warned: false,
   });
   const hasCurrentProfile = Boolean(user?.id && profile?.id === user.id);
-  const notificationsEnabled = hasCurrentProfile && !profile?.isNewUser ? profile.notificationsEnabled !== false : null;
+  const notificationsEnabled = hasCurrentProfile && !profile?.isNewUser && preferencesReady
+    ? profile.notificationsEnabled !== false && preferences.notifications.push !== false : null;
 
   useEffect(() => {
     // Also runs while entitlement is unknown: a cached legacy like must not reveal an identity.

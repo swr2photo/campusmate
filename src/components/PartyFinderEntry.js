@@ -1,14 +1,19 @@
-import React from 'react';
-import { Pressable, StyleSheet, View, useWindowDimensions } from 'react-native';
-import { Image } from 'expo-image';
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
+import React, { useCallback, useMemo } from 'react';
+import { StyleSheet, View } from 'react-native';
+import Animated, { Extrapolation, interpolate, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import AppText from './AppText';
 import FeatureIcon from './FeatureIcon';
-import { useTheme } from '../theme';
+import { project, rubberband } from '../utils/motion';
+import { radius, useTheme } from '../theme';
 
 // Activity hints shown as glyphs on the banner — a glance at what parties are for.
-const ACTIVITY_HINTS = [
+export const ACTIVITY_HINTS = [
   { icon: 'fork.knife', label: 'กินข้าว' },
   { icon: 'sportscourt.fill', label: 'กีฬา' },
   { icon: 'book.closed.fill', label: 'ติว' },
@@ -19,152 +24,290 @@ export function partyBannerGradient(isDark) {
   return isDark ? ['#24508F', '#142B4F'] : ['#3A7EE0', '#1F56A8'];
 }
 
-// Content-layer hero (HIG: Liquid Glass stays on controls, so this uses a solid
-// gradient surface with capsule buttons instead of glass).
+const BANNER_CARD_ASPECT = 4;
+const BANNER_PHOTO_ASPECT = 4 / 3;
+const BANNER_ACTION_WIDTH = 84;
+const BANNER_SPRING = { duration: 400, dampingRatio: 0.8, overshootClamping: true };
+const BANNER_PHOTO_FRACTION = BANNER_PHOTO_ASPECT / BANNER_CARD_ASPECT;
+
+const CAMPUS_BG = require('../assets/images/campus/DSC_5070.jpg');
+const MASCOT_IMG = require('../../assets/mascot/likes-matched.png');
+
 export default function PartyFinderEntry({ onCreateParty }) {
-  const { isDark } = useTheme();
-  const { width: windowWidth } = useWindowDimensions();
-  const mascotWidth = Math.min(Math.max(Math.round(windowWidth * 0.34), 112), 150);
-  const mascotHeight = Math.round(mascotWidth * (1024 / 1536));
+  const { colors, isDark } = useTheme();
   const openFinder = () => router.push('/party-finder');
 
+  const actionsCount = onCreateParty ? 2 : 1;
+  const actionsWidth = BANNER_ACTION_WIDTH * actionsCount;
+
+  const translateX = useSharedValue(0);
+  const dragStart = useSharedValue(0);
+
+  const settle = useCallback((open) => {
+    translateX.set(withSpring(open ? -actionsWidth : 0, BANNER_SPRING));
+  }, [actionsWidth, translateX]);
+
+  const pan = useMemo(() => Gesture.Pan()
+    .activeOffsetX([-10, 10])
+    .failOffsetY([-8, 8])
+    .onStart(() => {
+      dragStart.set(translateX.get());
+    })
+    .onUpdate((e) => {
+      const next = dragStart.get() + e.translationX;
+      if (next > 0) {
+        translateX.set(rubberband(next, actionsWidth) * 0.35);
+      } else if (next < -actionsWidth) {
+        translateX.set(-actionsWidth + rubberband(next + actionsWidth, actionsWidth));
+      } else {
+        translateX.set(next);
+      }
+    })
+    .onEnd((e, success) => {
+      const projected = success ? translateX.get() + project(e.velocityX) : translateX.get();
+      const shouldOpen = projected < -(actionsWidth * 0.45);
+      translateX.set(withSpring(shouldOpen ? -actionsWidth : 0, {
+        ...BANNER_SPRING,
+        velocity: success ? e.velocityX : 0,
+      }));
+    }), [actionsWidth, dragStart, translateX]);
+
+  const contentStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: translateX.get() }],
+  }));
+
+  const actionsStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(translateX.get(), [-actionsWidth, -16, 0], [1, 0.5, 0], Extrapolation.CLAMP),
+  }));
+
+  const handleCardPress = () => {
+    if (translateX.get() < -(actionsWidth / 2)) {
+      settle(false);
+      return;
+    }
+    openFinder();
+  };
+
+  const handleViewAction = () => {
+    settle(false);
+    openFinder();
+  };
+
+  const handleCreateAction = () => {
+    settle(false);
+    onCreateParty?.();
+  };
+
   return (
-    <Pressable
-      accessibilityHint="เปิดหน้ารวมตี้กิจกรรม"
-      accessibilityLabel="หาตี้ใน ม.อ."
-      accessibilityRole="button"
-      onPress={openFinder}
-      style={({ pressed }) => [styles.container, pressed && styles.pressed]}
-    >
-      <LinearGradient
-        colors={partyBannerGradient(isDark)}
-        end={{ x: 1, y: 1 }}
-        start={{ x: 0, y: 0 }}
-        style={styles.card}
-      >
-        <View pointerEvents="none" style={[styles.orb, styles.orbLarge]} />
-        <View pointerEvents="none" style={[styles.orb, styles.orbSmall]} />
-
-        <View style={styles.topRow}>
-          <View style={styles.copy}>
-            <View style={styles.eyebrowPill}>
-              <View style={styles.liveDot} />
-              <AppText style={styles.eyebrowText}>ตี้กิจกรรมรอบ ม.อ.</AppText>
-            </View>
-            <AppText style={styles.title}>หาตี้ใน ม.อ.</AppText>
-            <AppText style={styles.subtitle}>ชวนเพื่อนไปด้วยกัน หรือเปิดตี้ของคุณเอง</AppText>
-          </View>
-          <Image
-            accessibilityIgnoresInvertColors
-            contentFit="contain"
-            source={require('../../assets/mascot/likes-matched.png')}
-            style={[styles.mascot, { width: mascotWidth, height: mascotHeight }]}
-          />
-        </View>
-
-        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.hintRow}>
-          {ACTIVITY_HINTS.map((hint) => (
-            <View key={hint.label} style={styles.hintChip}>
-              <FeatureIcon color="#FFFFFF" name={hint.icon} size={13} />
-              <AppText style={styles.hintText}>{hint.label}</AppText>
-            </View>
-          ))}
-        </View>
-
-        <View style={styles.actionRow}>
+    <NativeCard style={[styles.card, { borderColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }]}>
+      <View style={styles.swipeContainer}>
+        {/* Hidden action buttons revealed on swipe */}
+        <Animated.View style={[styles.actions, { width: actionsWidth }, actionsStyle]}>
           <Pressable
             accessibilityLabel="ดูตี้ที่เปิดรับ"
             accessibilityRole="button"
-            onPress={openFinder}
-            style={({ pressed }) => [styles.primaryAction, pressed && styles.actionPressed]}
+            onPress={handleViewAction}
+            style={({ pressed }) => [styles.actionButton, { backgroundColor: colors.primary }, pressed && styles.actionPressed]}
           >
-            <AppText style={styles.primaryActionText}>ดูตี้ที่เปิดรับ</AppText>
-            <FeatureIcon color="#1F56A8" name="arrow.right" size={14} />
+            <FeatureIcon color="#FFFFFF" name="arrow.right" size={20} />
+            <AppText numberOfLines={1} style={styles.actionText}>ดูตี้</AppText>
           </Pressable>
           {onCreateParty ? (
             <Pressable
               accessibilityLabel="เปิดตี้ใหม่"
               accessibilityRole="button"
-              onPress={onCreateParty}
-              style={({ pressed }) => [styles.secondaryAction, pressed && styles.actionPressed]}
+              onPress={handleCreateAction}
+              style={({ pressed }) => [styles.actionButton, { backgroundColor: colors.coral }, pressed && styles.actionPressed]}
             >
-              <FeatureIcon color="#FFFFFF" name="plus" size={14} />
-              <AppText style={styles.secondaryActionText}>เปิดตี้</AppText>
+              <FeatureIcon color="#FFFFFF" name="plus" size={20} />
+              <AppText numberOfLines={1} style={styles.actionText}>เปิดตี้</AppText>
             </Pressable>
           ) : null}
-        </View>
-      </LinearGradient>
-    </Pressable>
+        </Animated.View>
+
+        {/* Foreground Content */}
+        <GestureDetector gesture={pan}>
+          <Animated.View style={[styles.content, contentStyle]}>
+            <Pressable
+              accessibilityActions={[
+                { name: 'activate', label: 'ดูตี้ที่เปิดรับ' },
+                ...(onCreateParty ? [{ name: 'create', label: 'เปิดตี้ใหม่' }] : []),
+              ]}
+              accessibilityHint="แตะเพื่อเปิดหน้ารวมตี้ หรือปัดไปทางซ้ายเพื่อดูตัวเลือก"
+              accessibilityLabel="หาตี้ใน ม.อ. กิจกรรม กินข้าว กีฬา ติว คาเฟ่"
+              accessibilityRole="button"
+              onAccessibilityAction={(event) => {
+                if (event.nativeEvent.actionName === 'create') handleCreateAction();
+                else handleViewAction();
+              }}
+              onPress={handleCardPress}
+              style={styles.cardRow}
+            >
+              {/* Full-bleed campus backdrop behind left portion with seamless gradient fade */}
+              <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+                <Image
+                  cachePolicy="memory-disk"
+                  contentFit="cover"
+                  source={CAMPUS_BG}
+                  style={[StyleSheet.absoluteFill, { width: '56%' }]}
+                />
+                <LinearGradient
+                  colors={[
+                    'rgba(20, 22, 28, 0)',
+                    'rgba(20, 22, 28, 0.42)',
+                    'rgba(20, 22, 28, 0.90)',
+                    '#14161C',
+                  ]}
+                  end={{ x: 0.65, y: 0.5 }}
+                  locations={[0.15, 0.35, 0.52, 0.70]}
+                  start={{ x: 0, y: 0.5 }}
+                  style={StyleSheet.absoluteFill}
+                />
+              </View>
+
+              {/* Mascot container on the left */}
+              <View style={styles.photoContainer}>
+                <Image
+                  contentFit="contain"
+                  source={MASCOT_IMG}
+                  style={styles.mascot}
+                />
+              </View>
+
+              {/* Text Area */}
+              <View style={styles.copy}>
+                <View style={styles.titleRow}>
+                  <AppText numberOfLines={1} style={styles.title}>หาตี้ใน ม.อ.</AppText>
+                  <FeatureIcon color="#F59E0B" name="sparkles" size={14} />
+                </View>
+                <AppText numberOfLines={1} style={styles.subtitle}>
+                  กินข้าว · กีฬา · ติว · คาเฟ่
+                </AppText>
+                <View style={styles.statusPill}>
+                  <FeatureIcon color="#6EE7B7" name="person.3.fill" size={12} />
+                  <AppText style={styles.statusText}>เปิดรับเพื่อนร่วมตี้</AppText>
+                </View>
+              </View>
+
+              {/* Swipe chevron hint */}
+              <View style={styles.swipeHint}>
+                <FeatureIcon color="rgba(255,255,255,0.8)" name="chevron.left" size={14} />
+              </View>
+            </Pressable>
+          </Animated.View>
+        </GestureDetector>
+      </View>
+    </NativeCard>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { width: '100%' },
-  pressed: { opacity: 0.94, transform: [{ scale: 0.99 }] },
   card: {
-    borderRadius: 26,
+    borderRadius: 24,
     borderCurve: 'continuous',
-    gap: 14,
+    borderWidth: 1,
     overflow: 'hidden',
-    paddingHorizontal: 18,
-    paddingVertical: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+    elevation: 4,
+    width: '100%',
   },
-  orb: { backgroundColor: 'rgba(255,255,255,0.09)', borderRadius: 999, position: 'absolute' },
-  orbLarge: { height: 190, right: -50, top: -70, width: 190 },
-  orbSmall: { bottom: -40, height: 110, left: -30, width: 110 },
-  topRow: { alignItems: 'center', flexDirection: 'row', gap: 8 },
-  copy: { flex: 1, gap: 6, minWidth: 0 },
-  eyebrowPill: {
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 999,
+  swipeContainer: {
+    aspectRatio: BANNER_CARD_ASPECT,
+    minHeight: 84,
+    overflow: 'hidden',
+    position: 'relative',
+    width: '100%',
+  },
+  actions: {
+    bottom: 0,
     flexDirection: 'row',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    position: 'absolute',
+    right: 0,
+    top: 0,
   },
-  liveDot: { backgroundColor: '#5BE3AE', borderRadius: 4, height: 7, width: 7 },
-  eyebrowText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
-  title: { color: '#FFFFFF', fontSize: 26, fontWeight: '900', letterSpacing: -0.4, lineHeight: 34 },
-  subtitle: { color: 'rgba(255,255,255,0.86)', fontSize: 14, lineHeight: 20 },
-  mascot: { marginRight: -6 },
-  hintRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  hintChip: {
+  actionButton: {
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.14)',
-    borderRadius: 999,
-    flexDirection: 'row',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    gap: 4,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    width: BANNER_ACTION_WIDTH,
   },
-  hintText: { color: '#FFFFFF', fontSize: 12, fontWeight: '600' },
-  actionRow: { flexDirection: 'row', gap: 10 },
-  primaryAction: {
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 999,
+  actionPressed: { opacity: 0.75 },
+  actionText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  content: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: '#14161C',
+  },
+  cardRow: {
+    alignItems: 'stretch',
     flex: 1,
     flexDirection: 'row',
-    gap: 6,
-    justifyContent: 'center',
-    minHeight: 46,
-    paddingHorizontal: 16,
   },
-  primaryActionText: { color: '#1F56A8', fontSize: 15, fontWeight: '800' },
-  secondaryAction: {
+  photoContainer: {
+    aspectRatio: BANNER_PHOTO_ASPECT,
+    height: '100%',
+  },
+  mascot: {
+    ...StyleSheet.absoluteFill,
+    margin: 6,
+  },
+  copy: {
+    flex: 1,
+    justifyContent: 'center',
+    minWidth: 0,
+    paddingLeft: 16,
+    paddingRight: 4,
+    paddingVertical: 8,
+  },
+  titleRow: {
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    borderColor: 'rgba(255,255,255,0.35)',
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
     gap: 6,
-    justifyContent: 'center',
-    minHeight: 46,
-    paddingHorizontal: 18,
   },
-  secondaryActionText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
-  actionPressed: { opacity: 0.8 },
+  title: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '800',
+    textShadowColor: 'rgba(0,0,0,0.35)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  subtitle: {
+    color: '#E2E8F0',
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 2,
+    textShadowColor: 'rgba(0,0,0,0.35)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  statusPill: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderRadius: radius.pill,
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2.5,
+  },
+  statusText: {
+    color: '#6EE7B7',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  swipeHint: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    opacity: 0.6,
+    paddingHorizontal: 10,
+  },
 });

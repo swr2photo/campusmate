@@ -1,6 +1,7 @@
+import { Pressable } from '../components/NativePressable';
 import Text from '../components/AppText';
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { useAppAppointments, useAppBadges, useAppProfile } from '../context/AppContext';
 import { IosLikeAvatar, IosLikeCard, IosLikeScreen, IosLikeSectionTitle } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';

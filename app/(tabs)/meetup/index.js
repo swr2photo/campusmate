@@ -1,5 +1,6 @@
+import { Pressable } from '../../../src/components/NativePressable';
 import React from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import { router, Stack } from 'expo-router';
 import MeetupScreen from '../../../src/screens/MeetupScreen';
 import FeatureIcon from '../../../src/components/FeatureIcon';

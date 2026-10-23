@@ -1,6 +1,7 @@
+import { Pressable } from '../src/components/NativePressable';
 import Text from '../src/components/AppText';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Redirect } from 'expo-router';
 import LoginScreen from '../src/screens/LoginScreen';

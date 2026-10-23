@@ -1,7 +1,9 @@
+import { Pressable } from '../components/NativePressable';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Linking, Platform, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { BottomSheet, Host, RNHostView } from '@expo/ui';
 import { useNavigation } from 'expo-router';
 import { usePreventRemove } from 'expo-router/react-navigation';
@@ -9,12 +11,19 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Text from '../components/AppText';
 import FeatureIcon from '../components/FeatureIcon';
 import FaceVerificationModal from '../components/FaceVerificationModal';
+import ChatImageEditorModal from '../components/ChatImageEditorModal';
 import { useAppActions, useAppProfile } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import { MAX_PROFILE_PHOTOS } from '../data/profilePhotos';
 import { useTheme } from '../theme';
 import { showAlert } from '../utils/appAlert';
 import { compressProfileImage, validateImageSize, MAX_PROFILE_IMAGE_SIZE_MB } from '../utils/compressImage';
+import { getImageRequestUri } from '../utils/useRemoteImage';
+import { prefetchGalleryImage, uploadGalleryImage } from '../services/profileGalleryService';
+import { isCommittedProfilePhoto } from '../utils/profilePhoto';
+
+const PHOTO_ROWS = Array.from({ length: Math.ceil(MAX_PROFILE_PHOTOS / 3) }, (_, row) =>
+  Array.from({ length: 3 }, (_, column) => row * 3 + column).filter(index => index < MAX_PROFILE_PHOTOS));
 
 function photoDraft(profile) {
   return {
@@ -41,37 +50,50 @@ export default function ProfilePhotosScreen({ onClose }) {
   const [savedKey, setSavedKey] = useState(() => photoKey(photoDraft(profile)));
   const [saving, setSaving] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [processingIndex, setProcessingIndex] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [sheet, setSheet] = useState(null);
   const [verificationVisible, setVerificationVisible] = useState(false);
+  const [verificationCandidate, setVerificationCandidate] = useState(null);
   const [mayLeave, setMayLeave] = useState(false);
   const [failedImages, setFailedImages] = useState({});
-  const [gridWidth, setGridWidth] = useState(0);
+  const [imageAttempts, setImageAttempts] = useState({});
+  const [editingPhoto, setEditingPhoto] = useState(null);
+  // Local photos whose upload has started but not finished.
+  const [uploading, setUploading] = useState({});
+  const candidateRef = useRef(null);
+  const editingPhotoRef = useRef(null);
+  const mountedRef = useRef(true);
+  const profileIdRef = useRef(profile?.id);
+  profileIdRef.current = profile?.id;
   const savingRef = useRef(false);
   const processingRef = useRef(false);
   const verificationPassedRef = useRef(false);
   const photoActionTimer = useRef(null);
   const dirty = photoKey(draft) !== savedKey;
-  const busy = saving || processing || verificationVisible;
+  const busy = saving || processing || verificationVisible || Boolean(editingPhoto);
   const background = isDark ? '#15120F' : colors.canvas;
   const sourceKey = photoKey(photoDraft(profile));
 
   // Remote profile updates may refresh a clean editor, but never replace a draft.
   useEffect(() => {
-    if (dirty || savingRef.current || processingRef.current || verificationVisible) return;
+    if (dirty || savingRef.current || processingRef.current || verificationVisible || editingPhotoRef.current) return;
     const next = photoDraft(profile);
     setDraft(next);
     setSavedKey(photoKey(next));
   }, [sourceKey, profile?.id]);
 
-  useEffect(() => () => clearTimeout(photoActionTimer.current), []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; editingPhotoRef.current = null; clearTimeout(photoActionTimer.current); };
+  }, []);
 
   useEffect(() => {
     if (mayLeave) onClose?.();
   }, [mayLeave, onClose]);
 
   usePreventRemove(!mayLeave && (dirty || busy), ({ data }) => {
-    if (savingRef.current || processingRef.current || verificationVisible) {
+    if (savingRef.current || processingRef.current || verificationVisible || editingPhotoRef.current) {
       showToast('กรุณารอให้การจัดการรูปภาพเสร็จสิ้นก่อน', 'info');
       return;
     }
@@ -99,8 +121,8 @@ export default function ProfilePhotosScreen({ onClose }) {
     setSaving(true);
     setErrorMessage('');
     try {
-      // Verification fields are server-owned; a new main photo is re-verified
-      // after it is saved (see verifyMainPhoto).
+        // Main-photo replacement goes through verifyMainPhoto; this persists
+        // gallery edits alongside the already published main photo.
       const committed = await saveProfile({
         avatarUri: nextDraft.avatarUri,
         gallery: nextDraft.gallery.filter(Boolean).slice(0, MAX_PROFILE_PHOTOS - 1),
@@ -120,14 +142,31 @@ export default function ProfilePhotosScreen({ onClose }) {
     }
   };
 
-  // The server compares the selfie with the *saved* main photo and revokes the
-  // badge whenever that photo changes, so save first, then verify.
-  const verifyMainPhoto = async (uri, gallery = draft.gallery) => {
-    const saved = await savePhotos(
-      { avatarUri: uri, gallery: [...gallery] },
-      { message: 'บันทึกรูปหลักแล้ว ยืนยันใบหน้ากับรูปใหม่ต่อได้เลย' },
-    );
-    if (!saved) return;
+  const trackUpload = (uri, upload) => {
+    setUploading((current) => ({ ...current, [uri]: true }));
+    upload
+      .finally(() => { if (mountedRef.current) setUploading(({ [uri]: _settled, ...rest }) => rest); })
+      .catch(() => {});
+    return upload;
+  };
+
+  // A moderated candidate has a unique immutable URL. Keep the published
+  // main photo unchanged until the server commits its verification result.
+  // The new photo shows at once and uploads while the consent screen is read.
+  const verifyMainPhoto = (uri, gallery = draft.gallery) => {
+    if (!uri || savingRef.current || processingRef.current) return;
+    const ownerId = profile?.id;
+    const upload = /^https:\/\//i.test(uri) ? Promise.resolve(uri) : trackUpload(uri, uploadGalleryImage(uri, ownerId));
+    const candidate = { uri, upload, gallery: [...gallery], ownerId };
+    candidateRef.current = candidate;
+    upload.catch((error) => {
+      if (candidateRef.current !== candidate || !mountedRef.current || profileIdRef.current !== ownerId) return;
+      candidateRef.current = null;
+      setVerificationVisible(false);
+      setVerificationCandidate(null);
+      reportSaveError(error);
+    });
+    setVerificationCandidate(candidate);
     verificationPassedRef.current = false;
     setVerificationVisible(true);
   };
@@ -141,12 +180,98 @@ export default function ProfilePhotosScreen({ onClose }) {
     ],
   );
 
+  const openPhotoEditor = async (index, sourceUri, replacement = false) => {
+    if (!sourceUri || savingRef.current || processingRef.current || editingPhotoRef.current || verificationVisible) return;
+    const ownerId = profile?.id;
+    processingRef.current = true;
+    setProcessingIndex(index);
+    setProcessing(true);
+    setErrorMessage('');
+    try {
+      let uri = sourceUri;
+      // The editor's native rotate/crop tools need a local file. Fetch the
+      // owner's current image revision rather than a stale same-URL preview.
+      if (/^https?:\/\//i.test(uri)) {
+        const target = `${FileSystem.cacheDirectory}profile_edit_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+        const response = await FileSystem.downloadAsync(getImageRequestUri(uri, index === 0 ? profile?.avatarRevision : undefined), target);
+        if (response.status < 200 || response.status >= 300) throw new Error('โหลดรูปสำหรับแก้ไขไม่สำเร็จ กรุณาลองอีกครั้ง');
+        uri = response.uri;
+      }
+      const validation = await validateImageSize(uri, null, MAX_PROFILE_IMAGE_SIZE_MB);
+      if (!validation.valid) throw new Error(validation.error);
+      if (!mountedRef.current || profileIdRef.current !== ownerId) return;
+      const session = { index, uri, uris: [uri], sourceUri, replacement, ownerId, gallery: [...draft.gallery] };
+      editingPhotoRef.current = session;
+      setEditingPhoto(session);
+    } catch (error) {
+      if (mountedRef.current && profileIdRef.current === ownerId) {
+        setErrorMessage(error?.message || 'เปิดตัวแก้ไขรูปภาพไม่สำเร็จ');
+        showToast(error?.message || 'เปิดตัวแก้ไขรูปภาพไม่สำเร็จ', 'error');
+      }
+    } finally {
+      processingRef.current = false;
+      if (mountedRef.current) setProcessing(false);
+    }
+  };
+
+  const closePhotoEditor = () => {
+    if (processingRef.current) return;
+    editingPhotoRef.current = null;
+    setEditingPhoto(null);
+  };
+
+  const applyEditedPhoto = async (result) => {
+    const session = editingPhotoRef.current;
+    if (!session || processingRef.current || profileIdRef.current !== session.ownerId) return;
+    const editedUri = Array.isArray(result) ? result[0] : result;
+    if (!editedUri) throw new Error('ไม่พบรูปภาพที่แก้ไข');
+    if (!session.replacement && editedUri === session.uri) { closePhotoEditor(); return; }
+    processingRef.current = true;
+    setProcessingIndex(session.index);
+    setProcessing(true);
+    try {
+      const uri = await compressProfileImage(editedUri);
+      if (!mountedRef.current || editingPhotoRef.current !== session || profileIdRef.current !== session.ownerId) return;
+      if (session.index === 0) {
+        editingPhotoRef.current = null;
+        setEditingPhoto(null);
+        // Dismiss the shared native editor before opening face verification.
+        // Keep the parent busy, but release the lock needed by savePhotos.
+        processingRef.current = false;
+        await new Promise(resolve => setTimeout(resolve, 350));
+        if (mountedRef.current && profileIdRef.current === session.ownerId) await verifyMainPhoto(uri, session.gallery);
+      } else {
+        setDraft(current => {
+          const gallery = [...current.gallery];
+          gallery[session.index - 1] = uri;
+          return { ...current, gallery: gallery.filter(Boolean).slice(0, MAX_PROFILE_PHOTOS - 1) };
+        });
+        editingPhotoRef.current = null;
+        setEditingPhoto(null);
+        // Upload now so saving only waits for what is still in flight.
+        const upload = prefetchGalleryImage(uri, session.ownerId);
+        if (upload) {
+          trackUpload(uri, upload).catch((error) => {
+            if (!error?.isModerationViolation || !mountedRef.current || profileIdRef.current !== session.ownerId) return;
+            // A blocked photo can never be saved: take it out and say why.
+            setDraft((current) => ({ ...current, gallery: current.gallery.filter((item) => item !== uri) }));
+            showImageModeration(error);
+          });
+        }
+      }
+    } finally {
+      processingRef.current = false;
+      if (mountedRef.current) setProcessing(false);
+    }
+  };
+
   const pickPhoto = async (index) => {
     if (savingRef.current || processingRef.current || verificationVisible) return;
     processingRef.current = true;
+    setProcessingIndex(index);
     setProcessing(true);
     setErrorMessage('');
-    let newMainUri = null;
+    let selectedUri = null;
     try {
       if (Platform.OS !== 'web') {
         const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -157,8 +282,7 @@ export default function ProfilePhotosScreen({ onClose }) {
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
-        aspect: [2, 3],
+        allowsEditing: false,
         quality: 0.85,
         base64: false,
       });
@@ -166,16 +290,7 @@ export default function ProfilePhotosScreen({ onClose }) {
       const asset = result.assets[0];
       const validation = await validateImageSize(asset.uri, asset.fileSize, MAX_PROFILE_IMAGE_SIZE_MB);
       if (!validation.valid) throw new Error(validation.error);
-      const uri = await compressProfileImage(asset.uri);
-      if (index === 0) {
-        newMainUri = uri;
-      } else {
-        setDraft((current) => {
-          const gallery = [...current.gallery];
-          gallery[index - 1] = uri;
-          return { ...current, gallery: gallery.filter(Boolean).slice(0, MAX_PROFILE_PHOTOS - 1) };
-        });
-      }
+      selectedUri = asset.uri;
     } catch (error) {
       if (/permission|denied/i.test(String(error?.code || ''))) showPhotoPermission();
       else {
@@ -186,8 +301,7 @@ export default function ProfilePhotosScreen({ onClose }) {
       processingRef.current = false;
       setProcessing(false);
     }
-    // Saving needs the processing lock released first.
-    if (newMainUri) await verifyMainPhoto(newMainUri);
+    if (selectedUri) await openPhotoEditor(index, selectedUri, true);
   };
 
   // Let the native action sheet dismiss before presenting the system photo picker.
@@ -195,6 +309,12 @@ export default function ProfilePhotosScreen({ onClose }) {
     setSheet(null);
     clearTimeout(photoActionTimer.current);
     photoActionTimer.current = setTimeout(() => pickPhoto(index), 350);
+  };
+
+  const editPhoto = (index, uri) => {
+    setSheet(null);
+    clearTimeout(photoActionTimer.current);
+    photoActionTimer.current = setTimeout(() => openPhotoEditor(index, uri), 350);
   };
 
   const makeMainPhoto = (index) => {
@@ -226,11 +346,15 @@ export default function ProfilePhotosScreen({ onClose }) {
     ]);
   };
 
-  const slotWidth = Math.max(1, ((gridWidth || Math.min(width - 40, 560)) - 28) / 3);
   const selectedIndex = typeof sheet === 'number' ? sheet : null;
   const selectedUri = selectedIndex === 0 ? draft.avatarUri : draft.gallery[(selectedIndex ?? 0) - 1];
   const sheetWidth = Math.max(1, Math.min(width - 48, 560));
   const actionStyle = [styles.action, { borderColor: colors.line }];
+  const confirmPhotos = () => {
+    if (!dirty) { setMayLeave(true); return; }
+    if (draft.avatarUri !== profile?.avatarUri) return verifyMainPhoto(draft.avatarUri, draft.gallery);
+    return savePhotos(draft, { close: true });
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: background }]}>
@@ -244,7 +368,7 @@ export default function ProfilePhotosScreen({ onClose }) {
           accessibilityRole="button"
           accessibilityState={{ disabled: busy, busy: saving }}
           disabled={busy}
-          onPress={() => dirty ? savePhotos(draft, { close: true }) : setMayLeave(true)}
+          onPress={confirmPhotos}
           style={({ pressed }) => [styles.doneButton, (pressed || busy) && styles.pressed]}
         >
           {saving ? <ActivityIndicator size="small" color="#111111" /> : <FeatureIcon name="checkmark" size={30} color="#111111" />}
@@ -252,9 +376,12 @@ export default function ProfilePhotosScreen({ onClose }) {
       </View>
       <ScrollView contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom + 28, 48) }]}>
         {errorMessage ? <Text selectable style={[styles.error, { color: colors.danger }]}>{errorMessage}</Text> : null}
-        <View style={styles.grid} onLayout={({ nativeEvent }) => setGridWidth(nativeEvent.layout.width)}>
-          {Array.from({ length: MAX_PROFILE_PHOTOS }, (_, index) => {
-            const uri = index === 0 ? draft.avatarUri : draft.gallery[index - 1];
+        <View style={styles.grid}>
+          {PHOTO_ROWS.map((row, rowIndex) => <View key={rowIndex} style={styles.photoRow}>
+          {row.map(index => {
+            // A new main photo shows while it waits for face verification.
+            const pendingMain = index === 0 && verificationCandidate?.uri ? verificationCandidate.uri : null;
+            const uri = index === 0 ? pendingMain || draft.avatarUri : draft.gallery[index - 1];
             return (
               <Pressable
                 accessibilityLabel={uri ? `จัดการรูป${index === 0 ? 'โปรไฟล์หลัก' : `ที่ ${index + 1}`}` : `เพิ่มรูป${index === 0 ? 'โปรไฟล์หลัก' : `ที่ ${index + 1}`}`}
@@ -263,12 +390,13 @@ export default function ProfilePhotosScreen({ onClose }) {
                 disabled={busy}
                 key={index}
                 onPress={() => uri ? setSheet(index) : pickPhoto(index)}
-                style={({ pressed }) => [styles.photoSlot, { width: slotWidth, height: slotWidth * 1.5 }, pressed && styles.pressed]}
+                style={({ pressed }) => [styles.photoSlot, pressed && styles.pressed]}
               >
                 <View style={[styles.photoFrame, { backgroundColor: isDark ? '#000000' : colors.surfaceRaised }]}>
-                  {uri ? <Image source={{ uri }} contentFit="cover" style={StyleSheet.absoluteFill} onError={() => setFailedImages((current) => ({ ...current, [uri]: true }))} /> : null}
-                  {uri && failedImages[uri] ? <View style={styles.imageError}><FeatureIcon name="photo.badge.exclamationmark" size={26} color={colors.inkMuted} /><Text style={{ color: colors.inkMuted, textAlign: 'center', fontSize: 12 }}>รูปภาพไม่พร้อมใช้งาน</Text></View> : null}
-                  {uri && index === 0 ? <View style={styles.mainBadge}><Text style={styles.mainBadgeText}>รูปหลัก</Text></View> : null}
+                  {uri ? <Image key={`${uri}:${imageAttempts[uri] || 0}`} onLoad={() => setFailedImages(current => ({ ...current, [uri]: false }))} source={{ uri: getImageRequestUri(uri, index === 0 ? profile?.avatarRevision : undefined) }} contentFit="cover" style={StyleSheet.absoluteFill} onError={() => setFailedImages((current) => ({ ...current, [uri]: true }))} /> : null}
+                  {uri && failedImages[uri] ? <View style={styles.imageError}><FeatureIcon name="photo.badge.exclamationmark" size={26} color={colors.inkMuted} /><Text style={{ color: colors.inkMuted, textAlign: 'center', fontSize: 12 }}>โหลดรูปไม่สำเร็จ</Text><Pressable accessibilityRole="button" accessibilityLabel={`ลองโหลดรูปที่ ${index + 1} อีกครั้ง`} onPress={event => { event.stopPropagation(); setFailedImages(current => ({ ...current, [uri]: false })); setImageAttempts(current => ({ ...current, [uri]: (current[uri] || 0) + 1 })); }} style={{ minHeight: 48, paddingHorizontal: 6, justifyContent: 'center' }}><Text style={{ color: colors.accentText, fontWeight: '700', textAlign: 'center' }}>ลองโหลดใหม่</Text></Pressable></View> : null}
+                  {(uri && uploading[uri]) || (processing && processingIndex === index) ? <View style={styles.uploadStatus} accessibilityLiveRegion="polite"><ActivityIndicator size="small" color="#FFFFFF" /><Text style={styles.uploadStatusText}>{uploading[uri] ? 'กำลังอัปโหลด…' : 'กำลังเตรียมรูป…'}</Text></View> : null}
+                  {uri && index === 0 ? <View style={styles.mainBadge}><Text style={styles.mainBadgeText}>{pendingMain ? 'รอยืนยันใบหน้า' : 'รูปหลัก'}</Text></View> : null}
                 </View>
                 <View pointerEvents="none" style={[styles.slotAction, { backgroundColor: uri ? '#2A2724' : '#FFFFFF' }]}>
                   <FeatureIcon name={uri ? 'pencil' : 'plus'} size={uri ? 18 : 27} color={uri ? '#FFFFFF' : '#111111'} />
@@ -276,11 +404,12 @@ export default function ProfilePhotosScreen({ onClose }) {
               </Pressable>
             );
           })}
+          </View>)}
         </View>
         <Pressable accessibilityRole="button" onPress={() => setSheet('tips')} style={styles.tipsLink}>
           <Text style={{ color: isDark ? '#62A8FF' : colors.primary, fontSize: 16, textDecorationLine: 'underline' }}>โดดเด่นด้วยเคล็ดลับเลือกรูป</Text>
         </Pressable>
-        {processing ? <View style={styles.processing}><ActivityIndicator color={colors.ink} /><Text style={{ color: colors.inkMuted }}>กำลังประมวลผลรูปภาพ...</Text></View> : null}
+
       </ScrollView>
       <Host colorScheme={isDark ? 'dark' : 'light'} style={styles.sheetHost}>
         <BottomSheet isPresented={sheet !== null} onDismiss={() => setSheet(null)} containerColor={background} contentPadding={16}>
@@ -297,6 +426,7 @@ export default function ProfilePhotosScreen({ onClose }) {
               ) : selectedIndex !== null && selectedUri ? (
                 <>
                   <Text accessibilityRole="header" style={[styles.sheetTitle, { color: colors.ink }]}>{selectedIndex === 0 ? 'รูปโปรไฟล์หลัก' : `รูปที่ ${selectedIndex + 1}`}</Text>
+                  <Pressable accessibilityRole="button" onPress={() => editPhoto(selectedIndex, selectedUri)} style={actionStyle}><FeatureIcon name="slider.horizontal.3" color={colors.ink} size={22} /><Text style={[styles.actionText, { color: colors.ink }]}>แก้ไขรูปภาพ</Text></Pressable>
                   <Pressable accessibilityRole="button" onPress={() => replacePhoto(selectedIndex)} style={actionStyle}><FeatureIcon name="pencil" color={colors.ink} size={22} /><Text style={[styles.actionText, { color: colors.ink }]}>เปลี่ยนรูปภาพ</Text></Pressable>
                   {selectedIndex > 0 ? <Pressable accessibilityRole="button" onPress={() => makeMainPhoto(selectedIndex)} style={actionStyle}><FeatureIcon name="person.crop.square.fill" color={colors.ink} size={22} /><Text style={[styles.actionText, { color: colors.ink }]}>ตั้งเป็นรูปหลัก</Text></Pressable> : null}
                   <Pressable accessibilityRole="button" onPress={() => deletePhoto(selectedIndex)} style={actionStyle}><FeatureIcon name="trash" color={colors.danger} size={22} /><Text style={[styles.actionText, { color: colors.danger }]}>ลบรูปภาพ</Text></Pressable>
@@ -307,17 +437,32 @@ export default function ProfilePhotosScreen({ onClose }) {
           </RNHostView>
         </BottomSheet>
       </Host>
+      {editingPhoto ? <ChatImageEditorModal
+        visible imageUri={editingPhoto.uri} imageUris={editingPhoto.uris}
+        confirmLabel="ใช้รูปนี้" showCaption={false}
+        onSend={applyEditedPhoto} onClose={closePhotoEditor}
+      /> : null}
       <FaceVerificationModal
-        avatarUri={draft.avatarUri}
+        avatarUri={verificationCandidate?.uri || draft.avatarUri}
+        candidateAvatarUri={verificationCandidate?.uri}
         visible={verificationVisible}
         onClose={() => {
+          candidateRef.current = null;
           setVerificationVisible(false);
-          if (!verificationPassedRef.current) showToast('บันทึกรูปหลักแล้ว โปรไฟล์จะแสดงในหน้าค้นหาหลังยืนยันใบหน้ากับรูปนี้', 'info');
+          setVerificationCandidate(null);
+          if (!verificationPassedRef.current) showToast('ยังไม่ได้เปลี่ยนรูปหลัก ต้องยืนยันรูปใหม่ให้ผ่านก่อน', 'info');
         }}
-        onSuccess={() => {
-          // The server already recorded the result; only mirror it locally.
+        onSuccess={async () => {
+          const candidate = verificationCandidate;
+          if (!candidate || profileIdRef.current !== candidate.ownerId) return;
+          // Verification started from the uploaded copy, so this has settled.
+          const uploadedUri = await candidate.upload;
+          const committed = await markFaceVerified?.(uploadedUri);
+          if (!mountedRef.current || profileIdRef.current !== candidate.ownerId) return;
+          if (!isCommittedProfilePhoto(committed, uploadedUri)) throw new Error('ยังบันทึกรูปใหม่ไม่สำเร็จ กรุณาลองอีกครั้ง');
           verificationPassedRef.current = true;
-          markFaceVerified?.();
+          setDraft({ avatarUri: committed.avatarUri, gallery: candidate.gallery });
+          setSavedKey(photoKey(photoDraft(committed)));
           showToast('ยืนยันใบหน้าเรียบร้อยแล้ว', 'success');
         }}
       />
@@ -332,15 +477,19 @@ const styles = StyleSheet.create({
   title: { flex: 1, fontSize: 23, fontWeight: '500', textAlign: 'center' },
   doneButton: { width: 46, height: 46, borderRadius: 23, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center' },
   content: { width: '100%', maxWidth: 600, alignSelf: 'center', paddingHorizontal: 20, paddingTop: 14 },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 14, rowGap: 16, paddingTop: 10 },
-  photoSlot: { position: 'relative' },
+  grid: { rowGap: 16, paddingTop: 10 },
+  photoRow: { flexDirection: 'row', columnGap: 14 },
+  photoSlot: { position: 'relative', flex: 1, minWidth: 0, aspectRatio: 2 / 3 },
   photoFrame: { width: '100%', height: '100%', borderRadius: 24, borderCurve: 'continuous', overflow: 'hidden' },
   slotAction: { position: 'absolute', top: -8, right: -7, width: 34, height: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center' },
   mainBadge: { position: 'absolute', left: 7, bottom: 7, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 12, paddingHorizontal: 8, paddingVertical: 2 },
   mainBadgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '600' },
+  uploadBadge: { position: 'absolute', left: 7, top: 7, width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
   imageError: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 8, gap: 6 },
   tipsLink: { alignSelf: 'flex-start', paddingVertical: 18, minHeight: 44 },
   error: { fontSize: 14, paddingBottom: 16 },
+  uploadStatus: { position: 'absolute', left: 5, right: 5, top: 6, backgroundColor: 'rgba(0,0,0,0.7)', borderRadius: 12, paddingVertical: 8, paddingHorizontal: 4, alignItems: 'center', gap: 4 },
+  uploadStatusText: { fontSize: 11, color: '#FFF', textAlign: 'center' },
   processing: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   sheetHost: { position: 'absolute' },
   sheetTitle: { fontSize: 22, fontWeight: '600', paddingBottom: 16 },

@@ -1,11 +1,15 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import React from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { Host, Switch } from '@expo/ui';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import Text from './AppText';
 import FeatureIcon from './FeatureIcon';
 import { useTheme } from '../theme';
+import { GlassBackground, GlassIconButton, useLiquidGlass, withAlpha } from './LiquidGlassSurface';
+import ScrollFadeEdges from './ScrollFadeEdges';
 
 export const SETTINGS_RED = '#FF453A';
 
@@ -26,34 +30,48 @@ export function useSettingsPalette() {
 export function SettingsFrame({ title, children, detail = false, busy = false, error, onClose, footer, scrollRef }) {
   const palette = useSettingsPalette();
   const insets = useSafeAreaInsets();
+  const glass = useLiquidGlass();
   const close = onClose || (() => router.canGoBack() ? router.back() : router.replace('/me'));
   return (
     <View style={[styles.frame, { backgroundColor: palette.canvas }]}>
       <View style={[styles.header, { backgroundColor: palette.header, paddingTop: insets.top + 12, borderBottomColor: palette.line }]}>
         {detail ? (
-          <Pressable accessibilityLabel="กลับ" accessibilityRole="button" disabled={busy} hitSlop={8} onPress={close} style={({ pressed }) => [styles.headerButton, { backgroundColor: palette.button }, pressed && styles.pressed]}>
-            <FeatureIcon name="chevron.left" size={23} color={palette.text} />
-          </Pressable>
+          <GlassIconButton
+            accessibilityLabel="กลับ"
+            disabled={busy}
+            fallbackBackgroundColor={palette.button}
+            hitSlop={8}
+            icon="chevron.left"
+            iconColor={palette.text}
+            iconSize={23}
+            onPress={close}
+            size={45}
+          />
         ) : <View style={styles.headerButton} />}
         <Text accessibilityRole="header" numberOfLines={2} style={[styles.title, { color: palette.text }]}>{title}</Text>
         {detail ? <View style={styles.headerButton} /> : (
-          <Pressable accessibilityLabel="เสร็จสิ้นการตั้งค่า" accessibilityRole="button" disabled={busy} hitSlop={8} onPress={close} style={({ pressed }) => [styles.headerButton, { backgroundColor: palette.text }, pressed && styles.pressed]}>
+          <Pressable accessibilityLabel="เสร็จสิ้นการตั้งค่า" accessibilityRole="button" disabled={busy} hitSlop={8} onPress={close} style={({ pressed }) => [styles.headerButton, { backgroundColor: glass ? 'transparent' : palette.text }, pressed && styles.pressed]}>
+            {/* iOS 26 prominent bar button: glass tinted with the button's own fill. */}
+            <GlassBackground style={{ borderRadius: 24 }} tintColor={palette.text} />
             {busy ? <ActivityIndicator color={palette.canvas} /> : <FeatureIcon name="checkmark" size={29} weight="bold" color={palette.canvas} />}
           </Pressable>
         )}
       </View>
-      <ScrollView
-        ref={scrollRef}
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 36 }]}
-        contentInsetAdjustmentBehavior="never"
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-        showsVerticalScrollIndicator={false}
-      >
-        {error ? <Text accessibilityRole="alert" selectable style={styles.error}>{error}</Text> : null}
-        {children}
-        {footer}
-      </ScrollView>
+      <View style={styles.body}>
+        <ScrollView
+          ref={scrollRef}
+          contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 36 }]}
+          contentInsetAdjustmentBehavior="never"
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
+          {error ? <Text accessibilityRole="alert" selectable style={styles.error}>{error}</Text> : null}
+          {children}
+          {footer}
+        </ScrollView>
+        <ScrollFadeEdges color={palette.canvas} bottomSize={Math.max(24, insets.bottom)} />
+      </View>
     </View>
   );
 }
@@ -74,7 +92,7 @@ export function SettingsBadge({ children }) {
 
 export function SettingsGroup({ children, style }) {
   const palette = useSettingsPalette();
-  return <View style={[styles.group, { backgroundColor: palette.card }, style]}>{children}</View>;
+  return <NativeCard style={[styles.group, { backgroundColor: palette.card }, style]}>{children}</NativeCard>;
 }
 
 export function SettingsDescription({ children, style }) {
@@ -82,11 +100,20 @@ export function SettingsDescription({ children, style }) {
   return <Text style={[styles.description, { color: palette.muted }, style]}>{children}</Text>;
 }
 
-export function SettingsRow({ label, description, value, onPress, last = false, selected, badge, disabled = false, busy = false, danger = false, centered = false, children }) {
+// Leading icon: iOS Settings-style filled tile, Material 3 tonal circle on Android.
+function SettingsIcon({ name, color }) {
+  if (Platform.OS === 'ios') {
+    return <View style={[styles.iconTile, { backgroundColor: color }]}><FeatureIcon name={name} size={17} color="#FFFFFF" /></View>;
+  }
+  return <View style={[styles.iconCircle, { backgroundColor: withAlpha(color, 0.16) }]}><FeatureIcon name={name} size={20} color={color} /></View>;
+}
+
+export function SettingsRow({ label, description, value, onPress, last = false, selected, badge, disabled = false, busy = false, danger = false, centered = false, icon, iconColor = '#2869C7', children }) {
   const palette = useSettingsPalette();
   const selection = typeof selected === 'boolean';
   const inner = (
     <>
+      {icon ? <SettingsIcon name={icon} color={danger ? SETTINGS_RED : iconColor} /> : null}
       <View style={[styles.rowCopy, centered && { alignItems: 'center' }]}>
         <View style={styles.labelLine}>
           <Text style={[styles.label, { color: danger ? SETTINGS_RED : palette.text }]}>{label}</Text>
@@ -98,7 +125,7 @@ export function SettingsRow({ label, description, value, onPress, last = false, 
       {children}
       {busy ? <ActivityIndicator color={SETTINGS_RED} /> : selection ? (
         <View style={styles.checkSpace}>{selected ? <FeatureIcon name="checkmark" color={SETTINGS_RED} size={27} weight="bold" /> : null}</View>
-      ) : onPress && !centered ? <FeatureIcon name="chevron.right" color={palette.text} size={21} /> : null}
+      ) : onPress && !centered ? <FeatureIcon name="chevron.right" color={palette.muted} size={16} /> : null}
     </>
   );
   const rowStyle = [styles.row, !last && { borderBottomColor: palette.line, borderBottomWidth: StyleSheet.hairlineWidth }, (disabled || busy) && { opacity: 0.55 }];
@@ -120,22 +147,26 @@ export function SettingsToggle({ label, value, onValueChange, disabled = false, 
 
 const styles = StyleSheet.create({
   frame: { flex: 1 },
+  body: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingBottom: 15, borderBottomWidth: StyleSheet.hairlineWidth },
   headerButton: { width: 45, height: 45, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
   title: { flex: 1, textAlign: 'center', fontSize: 21, fontWeight: '500' },
-  content: { width: '100%', maxWidth: 640, alignSelf: 'center', paddingHorizontal: 16, paddingTop: 20, gap: 28 },
-  section: { gap: 12 },
-  sectionHeading: { flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap', paddingHorizontal: 20 },
-  sectionTitle: { fontSize: 19, fontWeight: '500' },
-  group: { borderRadius: 29, borderCurve: 'continuous', paddingHorizontal: 20, overflow: 'hidden' },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 64, paddingVertical: 17 },
+  // 20 between grouped cards keeps sections distinct without a cluttered feel.
+  content: { width: '100%', maxWidth: 640, alignSelf: 'center', paddingHorizontal: 16, paddingTop: 20, gap: 20 },
+  section: { gap: 8 },
+  sectionHeading: { flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap', paddingHorizontal: 16 },
+  sectionTitle: { fontSize: 15, fontWeight: '600', opacity: 0.85 },
+  group: { borderRadius: 24, borderCurve: 'continuous', paddingHorizontal: 16, overflow: 'hidden' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 56, paddingVertical: 12 },
   rowCopy: { flex: 1, minWidth: 0 },
   labelLine: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 9 },
-  label: { fontSize: 19, fontWeight: '400' },
-  rowDescription: { fontSize: 16, lineHeight: 25, marginTop: 3 },
-  value: { fontSize: 16, maxWidth: '49%', textAlign: 'right' },
+  label: { fontSize: 17, lineHeight: 24, fontWeight: '400' },
+  rowDescription: { fontSize: 14, lineHeight: 20, marginTop: 2 },
+  value: { fontSize: 15, maxWidth: '45%', textAlign: 'right' },
+  iconTile: { width: 30, height: 30, borderRadius: 8, borderCurve: 'continuous', alignItems: 'center', justifyContent: 'center' },
+  iconCircle: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   checkSpace: { width: 29, alignItems: 'center' },
-  description: { fontSize: 15, lineHeight: 25, paddingHorizontal: 20 },
+  description: { fontSize: 13, lineHeight: 19, paddingHorizontal: 16 },
   switchHost: { width: 60, minHeight: 34, flexShrink: 0 },
   badge: { backgroundColor: SETTINGS_RED, borderRadius: 14, paddingHorizontal: 9, paddingVertical: 4 },
   badgeText: { color: '#130F0C', fontSize: 11, fontWeight: '600' },

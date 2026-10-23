@@ -1,7 +1,8 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 let MapView = null;

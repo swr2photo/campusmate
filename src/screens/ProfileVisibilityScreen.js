@@ -1,3 +1,4 @@
+import NativeCard from '../components/NativeCard';
 import Text from '../components/AppText';
 import React, { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Switch, View } from 'react-native';
@@ -73,20 +74,19 @@ export default function ProfileVisibilityScreen() {
         เพียงซ่อนคุณจากการค้นหาเพื่อน พิกัด GPS จริงไม่ถูกใส่ในโปรไฟล์สาธารณะ ระยะห่างที่แสดงใกล้สุดคือ 700 เมตร
       </Text>
         <IncognitoVisibility />
-        <View style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
+        <NativeCard style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
           <VisibilityRow colors={colors} label="แสดงโปรไฟล์ในการค้นหา" value={discoverable} onChange={updateDiscoverability} icon="eye.fill" />
           <VisibilityRow colors={colors} label="เปิดตำแหน่งขณะใช้แอป" value={locationEnabled} onChange={updateLocationEnabled} icon="location.fill" last />
-        </View>
+        </NativeCard>
         <Text style={[styles.helper, { color: colors.inkMuted }]}>
           อัปเดตตำแหน่งเฉพาะตอนเปิดแอป ไม่ติดตามตอนปิดแอป ผู้อื่นเห็นระยะห่างจริงเป็นเมตรหรือกิโลเมตร แต่จะไม่เห็นตำแหน่งของคุณ
         </Text>
-        <View style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
+        <NativeCard style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
           <VisibilityRow colors={colors} label="แสดงอายุ" value={privacy.showAge ?? true} onChange={(value) => updateSetting('showAge', value)} icon="calendar" />
           <VisibilityRow colors={colors} label="แสดงเพศ" value={privacy.showGender ?? true} onChange={(value) => updateSetting('showGender', value)} icon="person.2.fill" />
           <VisibilityRow colors={colors} label="แสดงคณะและชั้นปี" value={privacy.showFaculty ?? true} onChange={(value) => updateSetting('showFaculty', value)} icon="graduationcap.fill" />
-          <VisibilityRow colors={colors} label="แสดงกิจกรรม" value={privacy.showActivity ?? true} onChange={(value) => updateSetting('showActivity', value)} icon="figure.run" />
-          <VisibilityRow colors={colors} label="แสดงเวลาที่สะดวก" value={privacy.showAvailability ?? true} onChange={(value) => updateSetting('showAvailability', value)} icon="clock.fill" last />
-        </View>
+          <VisibilityRow colors={colors} label="แสดงกิจกรรม" value={privacy.showActivity ?? true} onChange={(value) => updateSetting('showActivity', value)} icon="figure.run" last />
+        </NativeCard>
         {saving ? <Text style={[styles.saving, { color: colors.inkMuted }]}>กำลังบันทึก...</Text> : null}
     </ScrollView>
   );

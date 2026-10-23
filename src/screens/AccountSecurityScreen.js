@@ -1,16 +1,7 @@
+import { Pressable } from '../components/NativePressable';
+import NativeCard from '../components/NativeCard';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import Text from '../components/AppText';
 import FeatureIcon from '../components/FeatureIcon';
@@ -25,9 +16,12 @@ import {
   verifyUserPassword,
 } from '../services/accountSecurityService';
 import { getStudentIdFromEmail } from '../utils/studentId';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from '../components/LiquidGlassSurface';
 
 export default function AccountSecurityScreen() {
   const { colors } = useTheme();
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const { user } = useAuth();
   const { profile } = useAppProfile();
   const { deleteAccount } = useAppActions();
@@ -130,7 +124,7 @@ export default function AccountSecurityScreen() {
       >
         {/* Section 1: ข้อมูลบัญชี */}
         <Text style={[styles.sectionLabel, { color: colors.inkMuted }]}>ข้อมูลบัญชี</Text>
-        <View style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
+        <NativeCard style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
           <View style={styles.row}>
             <View style={styles.iconWrap}>
               <FeatureIcon color={colors.primary} name="envelope.fill" size={20} />
@@ -166,11 +160,11 @@ export default function AccountSecurityScreen() {
             </View>
             <Text style={[styles.value, { color: colors.inkMuted }]}>{studentId}</Text>
           </View>
-        </View>
+        </NativeCard>
 
         {/* Section 2: ความปลอดภัย */}
         <Text style={[styles.sectionLabel, { color: colors.inkMuted }]}>ความปลอดภัยและรหัสผ่าน</Text>
-        <View style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
+        <NativeCard style={[styles.list, { backgroundColor: colors.card, borderColor: colors.line }]}>
           <View style={styles.row}>
             <View style={styles.iconWrap}>
               <FeatureIcon color={colors.primary} name="lock.fill" size={20} />
@@ -192,13 +186,13 @@ export default function AccountSecurityScreen() {
               <Text style={[styles.badgePillText, { color: colors.primary }]}>เปิดใช้งาน</Text>
             </View>
           </View>
-        </View>
+        </NativeCard>
 
         {/* Section 3: การจัดการบัญชีส่วนลึก (Danger Zone) */}
         <Text style={[styles.sectionLabel, { color: colors.danger, marginTop: spacing.xl }]}>
           การจัดการบัญชีส่วนลึก
         </Text>
-        <View style={[styles.dangerCard, { backgroundColor: colors.card, borderColor: colors.dangerSoft }]}>
+        <NativeCard style={[styles.dangerCard, { backgroundColor: colors.card, borderColor: colors.dangerSoft }]}>
           <View style={styles.dangerHeader}>
             <FeatureIcon color={colors.danger} name="exclamationmark.triangle.fill" size={22} />
             <Text style={[styles.dangerTitle, { color: colors.danger }]}>การลบบัญชีผู้ใช้ถาวร</Text>
@@ -222,7 +216,7 @@ export default function AccountSecurityScreen() {
               ขอลบบัญชีผู้ใช้ถาวร...
             </Text>
           </Pressable>
-        </View>
+        </NativeCard>
       </ScrollView>
 
       {/* 2-Factor Account Deletion Modal */}
@@ -236,7 +230,10 @@ export default function AccountSecurityScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalBackdrop}
         >
-          <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.line }]}>
+          <NativeCard style={[styles.modalCard, glass
+            ? { backgroundColor: 'transparent', borderColor: 'transparent' }
+            : { backgroundColor: colors.card, borderColor: colors.line }]}>
+            <GlassBackground style={{ borderRadius: radius.xl || 20 }} tintColor={glassTint} />
             {/* Modal Header */}
             <View style={styles.modalHeader}>
               <View style={[styles.warningIconBadge, { backgroundColor: colors.dangerSoft }]}>
@@ -381,7 +378,7 @@ export default function AccountSecurityScreen() {
                 <Text style={[styles.cancelBtnText, { color: colors.inkMuted }]}>ยกเลิก</Text>
               </Pressable>
             </View>
-          </View>
+          </NativeCard>
         </KeyboardAvoidingView>
       </Modal>
     </View>

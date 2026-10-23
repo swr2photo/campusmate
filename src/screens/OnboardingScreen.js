@@ -1,6 +1,7 @@
+import { Pressable } from '../components/NativePressable';
 import Text from '../components/AppText';
 import React, { useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Asset } from 'expo-asset';
 import Image from '../components/CachedImage';
 import { SafeAreaView } from 'react-native-safe-area-context';

@@ -1,11 +1,15 @@
+import { Pressable } from '../components/NativePressable';
 import { Button, Text } from '../components/NativeTypography';
 import { font } from '../components/brandFont';
 import { useNativePalette } from '../theme';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { getImageRequestUri, useProfileImagePrefetch } from '../utils/useRemoteImage';
+import { showInAppNotification } from '../components/InAppNotificationBanner';
+import { useProfileImagePrefetch } from '../utils/useRemoteImage';
 import ExpoImage from '../components/CachedImage';
 import { formatDistance, formatReadableDate, getActivityLabel } from '../utils/formatters';
 import { dailyPick, getDailySeed, pickDailyProfile } from '../utils/dailyPick';
+import { noteProfileOpened, rewindEligibleProfileId, subscribeRewindEligibility } from '../utils/rewindEligibility';
+import { useToast } from '../context/ToastContext';
 import { FACULTIES } from '../data/faculties';
 import {
   MATCHING_ACTIVITY_OPTIONS,
@@ -39,17 +43,23 @@ import {
 import { router, useFocusEffect } from 'expo-router';
 import { useEntitlement } from '../context/MembershipContext';
 import NativeTourTarget from '../components/NativeTourTarget.ios';
+import { useNotificationInbox } from '../context/NotificationInboxContext';
+import { StatusBarScrim } from '../components/TabPageHeader';
 import { useDiscoveryDeckState } from '../hooks/useDiscoveryDeckState';
-import { FEATURE_ADVANCED_FILTERS, FEATURE_UNLIMITED_REWIND, stripPaidMatchingPreferences } from '../data/plans';
+import ProfilePhotoCarousel from '../components/ProfilePhotoCarousel';
+import RNText from '../components/AppText';
+import FeatureIcon from '../components/FeatureIcon';
+import { FEATURE_ADVANCED_FILTERS, stripPaidMatchingPreferences } from '../data/plans';
 import { ContentUnavailableView, Host, HStack, Image, BottomSheet, Form, Section, Slider, Picker, Menu, Toggle, ScrollView, Spacer, VStack, ZStack, RNHostView, useNativeState } from '@expo/ui/swift-ui';
-import { accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, multilineTextAlignment, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollIndicators, scrollPosition, scrollTargetLayout, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
+import { accessibilityAddTraits, accessibilityHidden, accessibilityHint, accessibilityLabel, aspectRatio, background, buttonBorderShape, buttonStyle, clipShape, clipped, contentShape, controlSize, disabled, foregroundStyle, frame, labelStyle, lineLimit, multilineTextAlignment, onTapGesture, padding, presentationDetents, presentationDragIndicator, pickerStyle, resizable, scrollClipDisabled, scrollIndicators, scrollPosition, scrollTargetLayout, shadow, shapes, tag, tint } from '@expo/ui/swift-ui/modifiers';
 import { useAppActions, useAppBadges, useAppFeed, useAppProfile } from '../context/AppContext';
-import { BlurView } from 'expo-blur';
-import MaskedView from '@react-native-masked-view/masked-view';
-import { LinearGradient } from 'expo-linear-gradient';
-import { View, useColorScheme } from 'react-native';
-
-const RESET_INTERVAL_MS = 24 * 60 * 60 * 1000;
+import { StyleSheet, View, useColorScheme, Platform, useWindowDimensions } from 'react-native';
+import CampusVibeBanner from '../components/discovery/CampusVibeBanner';
+import SpotifyMiniPlayer from '../components/discovery/SpotifyMiniPlayer';
+import AnimatedStatusBadge from '../components/status/AnimatedStatusBadge';
+import { useResponsiveSize } from '../hooks/useResponsiveSize';
+import { getDiscoverySummary } from '../utils/discoveryPresentation';
+import { statusBadgeFor } from '../utils/userStatus';
 
 const usePalette = useNativePalette;
 
@@ -62,28 +72,32 @@ const panelShape = shapes.roundedRectangle({
   roundedCornerStyle: 'continuous',
 });
 
-function getRemainingTimeUntilMidnight() {
-  const now = new Date();
-  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
-  const diff = Math.max(0, tomorrow.getTime() - now.getTime());
-  const hours = Math.floor(diff / (1000 * 60 * 60)).toString().padStart(2, '0');
-  const minutes = Math.floor((diff / (1000 * 60)) % 60).toString().padStart(2, '0');
-  const seconds = Math.floor((diff / 1000) % 60).toString().padStart(2, '0');
-  return `${hours}:${minutes}:${seconds}`;
-}
+const QUICK_ACTIVITIES = [
+  { id: 'all', label: 'ทั้งหมด', systemImage: 'sparkles' },
+  { id: 'study', label: 'ติวสอบ', systemImage: 'book.closed.fill' },
+  { id: 'food', label: 'ทานอาหาร', systemImage: 'fork.knife' },
+  { id: 'gym', label: 'ฟิตเนส', systemImage: 'dumbbell.fill' },
+  { id: 'chill', label: 'คาเฟ่ & ชิล', systemImage: 'cup.and.saucer.fill' },
+  { id: 'gaming', label: 'บอร์ดเกม', systemImage: 'gamecontroller.fill' },
+  { id: 'running', label: 'วิ่ง', systemImage: 'figure.run' },
+  { id: 'sports', label: 'กีฬา', systemImage: 'sportscourt.fill' },
+];
 
-function formatRemainingTime(milliseconds) {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-  const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
-  const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
-  const seconds = (totalSeconds % 60).toString().padStart(2, '0');
-  return `${hours}:${minutes}:${seconds}`;
+function useRewindEligibleId() {
+  const [id, setId] = useState(rewindEligibleProfileId);
+  useEffect(() => subscribeRewindEligibility(setId), []);
+  return id;
 }
-
 
 export default function HomeScreen() {
   const palette = usePalette();
   const colorScheme = useColorScheme();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const isTablet = (Platform.OS === 'ios' && Boolean(Platform.isPad)) || windowWidth >= 700;
+  const contentHorizPadding = isTablet ? 32 : 20;
+  const { bannerHeight } = useResponsiveSize();
+  const bannerWidth = Math.max(0, Math.min(windowWidth, 980) - contentHorizPadding * 2);
+  const deckHorizPadding = isTablet ? Math.max(0, Math.round((windowWidth - 620) / 2) - contentHorizPadding) : 0;
   const {
     availableProfiles,
     hasMoreProfiles = false,
@@ -92,13 +106,15 @@ export default function HomeScreen() {
     isDiscoveryReady = false,
     discoveryError = null,
     selectedMeetup,
+    canRewindSkippedProfiles,
   } = useAppFeed();
   const { conversationCount = 0, matchedCount: matchedProfileCount = 0 } = useAppBadges();
   const { getMeetupStats, loadMoreProfiles, recycleSkippedProfiles, retryDiscovery, saveMatchingPreferences } = useAppActions();
   const { profile } = useAppProfile();
   // CampusMate Plus gates (src/data/plans.js).
   const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
-  const rewind = useEntitlement(FEATURE_UNLIMITED_REWIND);
+  const { showToast } = useToast();
+  const rewindingRef = useRef(false);
   const tourScrollPosition = useNativeState(null);
   const myMeetupStats = useMemo(() => (profile ? getMeetupStats(profile) : null), [profile, getMeetupStats]);
   const matchedCount = Math.max(matchedProfileCount, conversationCount);
@@ -119,7 +135,7 @@ export default function HomeScreen() {
   const [requireAvailability, setRequireAvailability] = useState(false);
   const [availabilityFilterActive, setAvailabilityFilterActive] = useState(false);
   const [sameFacultyOnly, setSameFacultyOnly] = useState(false);
-  const [refreshTick, setRefreshTick] = useState(0);
+  const [photoMountEpoch, setPhotoMountEpoch] = useState(0);
   const [faculty, setFaculty] = useState('all');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const pinnedDailyRef = useRef({ day: getDailySeed(), id: null });
@@ -210,15 +226,15 @@ export default function HomeScreen() {
       activityDetails: pruneActivityDetailFilters(detailFilters, selectedActivities),
       ageMin: normalizedAgeMin,
       ageMax: normalizedAgeMax,
-      availabilityPeriods: selectedAvailabilityPeriods,
+      availabilityPeriods: [],
+      weekdays: [],
+      requireAvailability: false,
       faculty: sameFacultyOnly ? 'all' : faculty,
       genders: selectedGenders,
       maxDistance: Math.round(distance),
       paces: selectedPaces,
-      requireAvailability,
       requirePhoto,
       sameFacultyOnly,
-      weekdays: selectedWeekdays,
       years: selectedYears,
     });
     setAgeMin(normalizedAgeMin);
@@ -255,22 +271,7 @@ export default function HomeScreen() {
       if (!matchesActivityDetailFilters(candidate, savedDetailFilters)) return false;
       if (activeFacultyFilter !== 'all' && candidate.faculty !== activeFacultyFilter) return false;
       if (sameFacultyOnly && candidate.faculty !== profile?.faculty) return false;
-      if (availabilityFilterActive) {
-        const selectedAvailabilityPeriods = getSelectedMatchingValues(
-          MATCHING_AVAILABILITY_OPTIONS,
-          availabilityPeriods
-        );
-        if (
-          selectedAvailabilityPeriods.length > 0
-          && !matchesAvailabilityPeriods(candidate, selectedAvailabilityPeriods)
-        ) {
-          return false;
-        }
-      }
-      const selectedWeekdays = getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays);
-      if (selectedWeekdays.length && !matchesAvailabilityWeekdays(candidate, selectedWeekdays)) return false;
       if (requirePhoto && !profileHasPhoto(candidate)) return false;
-      if (requireAvailability && !profileHasAvailability(candidate)) return false;
       return true;
     });
     const today = getDailySeed();
@@ -286,7 +287,6 @@ export default function HomeScreen() {
   }, [activeFacultyFilter, availabilityFilterActive, availabilityPeriods, availableProfiles, profile?.faculty, profile?.id, requireAvailability, requirePhoto, sameFacultyOnly, savedDetailFilters, selectedCategory, weekdays]);
 
   const currentProfile = filteredProfiles[0] || null;
-  const imageUri = getImageRequestUri(currentProfile?.avatarUri, currentProfile?.avatarRevision);
   useProfileImagePrefetch(filteredProfiles.slice(1, 4));
 
   const deck = useDiscoveryDeckState({
@@ -298,12 +298,22 @@ export default function HomeScreen() {
     retryDiscovery,
   });
   const isWaitingForProfiles = deck.state === 'loading';
-  const deckFailed = deck.state === 'error';
   const hasRequestedMoreForThisEmptyState = useRef(false);
 
+  useEffect(() => {
+    if (!discoveryError) return;
+    const rawMsg = discoveryError?.message || 'โหลดโปรไฟล์ไม่สำเร็จ';
+    const cleanMsg = typeof rawMsg === 'string' ? rawMsg.replace(/\s*\[\d{3}\]/g, '').trim() : rawMsg;
+    showInAppNotification({
+      title: 'ค้นหาเพื่อน',
+      message: cleanMsg,
+      tone: 'warning',
+      icon: 'exclamationmark.triangle.fill',
+    });
+  }, [discoveryError]);
+
   // When the deck runs dry, pull the next discovery page so new profiles show
-  // up on their own. Skipped profiles stay skipped until the user explicitly
-  // taps "เริ่มใหม่".
+  // up on their own.
   useEffect(() => {
     if (filteredProfiles.length > 0 || isLoadingMoreProfiles || isResolvingDistances) {
       hasRequestedMoreForThisEmptyState.current = false;
@@ -319,7 +329,10 @@ export default function HomeScreen() {
   useFocusEffect(
     React.useCallback(() => {
       hasRequestedMoreForThisEmptyState.current = false;
-      setRefreshTick((t) => t + 1);
+      // Navigation can detach the hosted RN image while this screen stays
+      // mounted. Recreate only that native subtree when the screen returns;
+      // keep the profile/deck and the persistent image cache intact.
+      setPhotoMountEpoch((epoch) => epoch + 1);
     }, [])
   );
 
@@ -399,28 +412,25 @@ export default function HomeScreen() {
     );
   };
 
-  // "เริ่มใหม่" brings skipped profiles back and refreshes the deck while
-  // keeping every saved filter untouched.
-  const handleReset = async () => {
-    // "เริ่มใหม่" brings skipped people back: CampusMate Plus (unlimited rewind).
-    if (!rewind.guard()) return;
-    pinnedDailyRef.current.id = null;
-    setSelectedCategory('all');
+  const rewindEligibleId = useRewindEligibleId();
+  const handleRewind = async () => {
+    if (rewindingRef.current) return;
+    rewindingRef.current = true;
     try {
-      await recycleSkippedProfiles();
+      const result = await recycleSkippedProfiles();
+      if (result?.profile?.id) pinnedDailyRef.current.id = result.profile.id;
+      if (!result?.profile && !result?.busy && !result?.plusRequired) {
+        showToast('ไม่มีรายการที่ย้อนกลับได้ในขณะนี้', 'info');
+      } else if (result?.profile) {
+        showToast(`ย้อนกลับไปยังโปรไฟล์ของ ${result.profile.name || 'เพื่อน'} แล้ว`, 'success');
+      }
     } catch (error) {
-      console.warn('[HomeScreen.ios] handleReset recycle error:', error?.message || error);
-    }
-    if (hasMoreProfiles && !isLoadingMoreProfiles) {
-      void loadMoreProfiles()?.catch?.((error) => {
-        console.warn('[HomeScreen.ios] handleReset loadMore error:', error?.message || error);
-      });
-    } else {
-      retryDiscovery?.();
+      if (error?.details?.reason === 'PLUS_REQUIRED') router.push('/membership');
+      else showToast(error?.message || 'ย้อนกลับไม่สำเร็จ กรุณาลองอีกครั้ง', 'error');
+    } finally {
+      rewindingRef.current = false;
     }
   };
-
-
 
   const blurIntensity = colorScheme === 'dark' ? 30 : 40;
   const meetupAccent = colorScheme === 'dark' ? '#7966FF' : '#4546B8';
@@ -428,6 +438,7 @@ export default function HomeScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
+      <StatusBarScrim />
       <Host
         colorScheme={colorScheme}
         seedColor={palette.purple}
@@ -442,46 +453,66 @@ export default function HomeScreen() {
             spacing={22}
             modifiers={[
               scrollTargetLayout(),
-              padding({ top: 12, bottom: 36, horizontal: 20 }),
+              padding({ top: 12, bottom: 36, horizontal: contentHorizPadding }),
               frame({ maxWidth: Infinity, alignment: 'topLeading' }),
             ]}
           >
+            <HomeTitleBar />
+
+            {/* Live campus vibe (React Native view hosted in SwiftUI at a fixed size). */}
+            <RNHostView matchContents modifiers={[frame({ width: bannerWidth, height: bannerHeight })]} style={{ width: bannerWidth, height: bannerHeight }}>
+              <View collapsable={false} style={{ width: bannerWidth, height: bannerHeight }}>
+                <CampusVibeBanner count={availableProfiles?.length || 0} hasMore={hasMoreProfiles} style={{ height: bannerHeight }} />
+              </View>
+            </RNHostView>
+
             <NativeTourTarget id="home.activities" ensureVisible={() => tourScrollPosition.set('home.activities')}>
-              <FilterChips onAll={handleReset} />
+              <FilterChips
+                onOpenLikes={() => router.push('/likes')}
+                onSelectCategory={setSelectedCategory}
+                selectedCategory={selectedCategory}
+              />
             </NativeTourTarget>
 
             {showFilters && (
               <SmartFilters
-                eveningOnly={availabilityFilterActive && availabilityPeriods.evening}
-                onEvening={toggleEveningFilter}
                 onSameFaculty={() => persistFacultyMatching('all', !sameFacultyOnly)}
                 sameFacultyOnly={sameFacultyOnly}
               />
             )}
 
             {currentProfile ? (
-              <>
+              <VStack
+                alignment="center"
+                spacing={22}
+                modifiers={[
+                  padding({ horizontal: deckHorizPadding }),
+                  frame({ maxWidth: Infinity, alignment: 'center' }),
+                ]}
+              >
                 <NativeTourTarget id="home.deck" ensureVisible={() => tourScrollPosition.set('home.deck')}>
                 <ProfileCard
                   candidate={currentProfile}
-                  imageUri={imageUri}
-                  onPress={() => router.push({
-                    pathname: '/discover-profile',
-                    params: { profileId: currentProfile.id },
-                  })}
+                  photoMountEpoch={photoMountEpoch}
+                  onPress={() => {
+                    noteProfileOpened(currentProfile.id);
+                    router.push({
+                      pathname: '/discover-profile',
+                      params: { profileId: currentProfile.id },
+                    });
+                  }}
+                  onRewind={canRewindSkippedProfiles ? handleRewind : null}
                 />
                 </NativeTourTarget>
-                <DiscoveryShortcuts
-                  matchedCount={matchedCount}
-                  resetKey={currentProfile.id}
-                />
-              </>
+                <DiscoveryShortcuts matchedCount={matchedCount} />
+              </VStack>
             ) : (
               <VStack
                   alignment="center"
-                  spacing={12}
+                  spacing={14}
                   modifiers={[
-                    padding({ vertical: 36, horizontal: 22 }),
+                    padding({ vertical: isTablet ? 48 : 36, horizontal: isTablet ? 32 : 22 }),
+                    padding({ horizontal: deckHorizPadding }),
                     frame({ maxWidth: Infinity }),
                     background(palette.card, cardShape),
                   ]}
@@ -489,9 +520,7 @@ export default function HomeScreen() {
                   <Image
                     color={palette.secondary}
                     size={48}
-                    systemName={deckFailed
-                      ? (deck.offline ? 'wifi.slash' : 'exclamationmark.triangle')
-                      : isWaitingForProfiles ? 'arrow.triangle.2.circlepath' : 'person.2.slash'}
+                    systemName={isWaitingForProfiles ? 'arrow.triangle.2.circlepath' : 'person.2.slash'}
                   />
                   <Text
                     modifiers={[
@@ -500,9 +529,7 @@ export default function HomeScreen() {
                       multilineTextAlignment('center'),
                     ]}
                   >
-                    {deckFailed
-                      ? (deck.offline ? 'ไม่ได้เชื่อมต่ออินเทอร์เน็ต' : deck.stalled ? 'โหลดโปรไฟล์นานกว่าปกติ' : 'โหลดโปรไฟล์ไม่สำเร็จ')
-                      : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
+                    {deck.state === 'error' ? 'โหลดโปรไฟล์ไม่สำเร็จ' : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
                   </Text>
                   <Text
                     modifiers={[
@@ -511,84 +538,60 @@ export default function HomeScreen() {
                       multilineTextAlignment('center'),
                     ]}
                   >
-                    {deckFailed
-                      ? (deck.offline
-                        ? 'ตรวจสอบอินเทอร์เน็ตแล้วลองอีกครั้ง โปรไฟล์จะโหลดเองเมื่อกลับมาออนไลน์'
-                        : 'อาจเป็นเพราะสัญญาณไม่เสถียร ลองอีกครั้งหรือปรับตัวกรองการจับคู่')
-                      : isWaitingForProfiles
-                        ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
-                        : 'ตัวกรองของคุณยังคงอยู่ กด "เริ่มใหม่" เพื่อดูคนที่เคยข้ามอีกครั้ง หรือปรับตัวกรองจากมุมขวาบน'}
+                    {deck.state === 'error' ? 'ตรวจสอบการเชื่อมต่อ แล้วลองโหลดโปรไฟล์อีกครั้ง' : isWaitingForProfiles
+                      ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
+                      : 'ไม่พบโปรไฟล์ที่ตรงกับตัวกรองในขณะนี้ สามารถปรับตัวกรองการค้นหาได้จากปุ่มด้านล่างหรือมุมขวาบน'}
                   </Text>
-                {deckFailed ? (
-                  <Button
-                    onPress={deck.retry}
-                    modifiers={[
-                      buttonStyle('glassProminent'),
-                      buttonBorderShape('capsule'),
-                      controlSize('large'),
-                      tint(palette.purple),
-                      frame({ maxWidth: Infinity }),
-                    ]}
-                  >
-                    <HStack spacing={8} alignment="center">
-                      <Image systemName="arrow.clockwise" size={16} color={palette.white} />
-                      <Text
-                        modifiers={[
-                          font({ size: 16, weight: 'semibold' }),
-                          foregroundStyle(palette.white),
-                        ]}
-                      >
-                        ลองอีกครั้ง
-                      </Text>
-                    </HStack>
-                  </Button>
-                ) : null}
-                {!isWaitingForProfiles && !deckFailed ? (
-                  <Button
-                    onPress={handleReset}
-                    modifiers={[
-                      buttonStyle('glassProminent'),
-                      buttonBorderShape('capsule'),
-                      controlSize('large'),
-                      tint(palette.purple),
-                      frame({ maxWidth: Infinity }),
-                    ]}
-                  >
-                    <HStack spacing={8} alignment="center">
-                      <Image systemName="arrow.triangle.2.circlepath" size={16} color={palette.white} />
-                      <Text
-                        modifiers={[
-                          font({ size: 16, weight: 'semibold' }),
-                          foregroundStyle(palette.white),
-                        ]}
-                      >
-                        เริ่มใหม่
-                      </Text>
-                    </HStack>
-                  </Button>
-                ) : null}
                 {!isWaitingForProfiles ? (
-                  <Button
-                    onPress={() => router.push('/matching-filters')}
-                    modifiers={[
-                      buttonStyle('glass'),
-                      buttonBorderShape('capsule'),
-                      controlSize('large'),
-                      frame({ maxWidth: Infinity }),
-                    ]}
-                  >
-                    <HStack spacing={8} alignment="center">
-                      <Image systemName="slider.horizontal.3" size={16} color={palette.text} />
-                      <Text
+                  <HStack spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
+                    {deck.state === 'error' ? <Button label="ลองอีกครั้ง" onPress={deck.retry} modifiers={[buttonStyle('glassProminent'), tint(palette.purple)]} /> : null}
+                    {canRewindSkippedProfiles ? (
+                      <Button
+                        onPress={handleRewind}
                         modifiers={[
-                          font({ size: 16, weight: 'semibold' }),
-                          foregroundStyle(palette.text),
+                          buttonStyle('glass'),
+                          buttonBorderShape('capsule'),
+                          controlSize('large'),
+                          tint(palette.purple),
+                          frame({ maxWidth: Infinity }),
                         ]}
                       >
-                        ปรับตัวกรอง
-                      </Text>
-                    </HStack>
-                  </Button>
+                        <HStack spacing={8} alignment="center">
+                          <Image systemName="arrow.counterclockwise" size={16} color={palette.purple} />
+                          <Text
+                            modifiers={[
+                              font({ size: 16, weight: 'semibold' }),
+                              foregroundStyle(palette.accentText),
+                            ]}
+                          >
+                            ย้อนกลับ
+                          </Text>
+                        </HStack>
+                      </Button>
+                    ) : null}
+                    <Button
+                      onPress={() => router.push('/matching-filters')}
+                      modifiers={[
+                        buttonStyle('glassProminent'),
+                        buttonBorderShape('capsule'),
+                        controlSize('large'),
+                        tint(palette.purple),
+                        frame({ maxWidth: Infinity }),
+                      ]}
+                    >
+                      <HStack spacing={8} alignment="center">
+                        <Image systemName="slider.horizontal.3" size={16} color={palette.white} />
+                        <Text
+                          modifiers={[
+                            font({ size: 16, weight: 'semibold' }),
+                            foregroundStyle(palette.white),
+                          ]}
+                        >
+                          ปรับตัวกรอง
+                        </Text>
+                      </HStack>
+                    </Button>
+                  </HStack>
                 ) : null}
               </VStack>
             )}
@@ -739,27 +742,6 @@ export default function HomeScreen() {
                   />
                 ))}
               </Section>
-              <Section header={<Text>วันที่สะดวก</Text>}>
-                {MATCHING_WEEKDAY_OPTIONS.map(({ longLabel, value }) => (
-                  <Toggle
-                    isOn={!!weekdays[value]}
-                    key={value}
-                    label={longLabel}
-                    onIsOnChange={() => advancedFilters.guard() && setWeekdays((current) => toggleMatchingOption(MATCHING_WEEKDAY_OPTIONS, current, value))}
-                  />
-                ))}
-              </Section>
-              <Section footer={<Text>จับคู่จากช่วงเวลาในโปรไฟล์</Text>} header={<Text>ช่วงเวลา</Text>}>
-                {MATCHING_AVAILABILITY_OPTIONS.map(({ icon, label, value }) => (
-                  <Toggle
-                    isOn={!!availabilityPeriods[value]}
-                    key={value}
-                    label={label}
-                    onIsOnChange={() => toggleAvailabilityPeriod(value)}
-                    systemImage={icon}
-                  />
-                ))}
-              </Section>
               <Section header={<Text>เพศ</Text>}>
                 {MATCHING_PRIMARY_GENDER_OPTIONS.map(({ icon, label, value }) => (
                   <Toggle
@@ -784,7 +766,6 @@ export default function HomeScreen() {
               </Section>
               <Section header={<Text>เงื่อนไขเพิ่มเติม</Text>}>
                 <Toggle isOn={requirePhoto} label="ต้องมีรูปโปรไฟล์" onIsOnChange={setRequirePhoto} systemImage="person.crop.circle" />
-                <Toggle isOn={requireAvailability} label="ต้องระบุเวลาว่าง" onIsOnChange={(value) => { if (advancedFilters.guard()) setRequireAvailability(value); }} systemImage="clock.fill" />
               </Section>
             </Form>
             <Button
@@ -808,22 +789,93 @@ export default function HomeScreen() {
   );
 }
 
-function FilterChips({ onAll }) {
+// Replaces the native navigation bar so the title and its buttons scroll with
+// the page and move with it during the tab swipe.
+function HomeTitleBar() {
+  const palette = usePalette();
+  const { count = 0 } = useNotificationInbox();
+  const circleButton = [
+    buttonStyle('glass'),
+    buttonBorderShape('circle'),
+    controlSize('large'),
+    labelStyle('iconOnly'),
+    tint(palette.text),
+  ];
+  return (
+    <HStack alignment="center" spacing={8} modifiers={[frame({ maxWidth: Infinity, minHeight: 52 })]}>
+      <Text
+        modifiers={[
+          font({ size: 28, weight: 'bold' }),
+          foregroundStyle(palette.text),
+          lineLimit(1),
+          accessibilityAddTraits(['isHeader']),
+        ]}
+      >
+        หาเพื่อน
+      </Text>
+      <Spacer />
+      <ZStack alignment="topTrailing">
+        <Button
+          label="แจ้งเตือน"
+          onPress={() => router.push('/notifications')}
+          systemImage="bell"
+          modifiers={[
+            ...circleButton,
+            accessibilityLabel(`แจ้งเตือน${count ? ` ยังไม่อ่าน ${count} รายการ` : ''}`),
+          ]}
+        />
+        {count > 0 ? (
+          <Text
+            modifiers={[
+              font({ size: 10, weight: 'bold' }),
+              foregroundStyle('#FFFFFF'),
+              padding({ horizontal: 5, vertical: 1 }),
+              background(palette.accent, shapes.capsule()),
+              accessibilityHidden(true),
+            ]}
+          >
+            {count > 99 ? '99+' : String(count)}
+          </Text>
+        ) : null}
+      </ZStack>
+      <NativeTourTarget id="home.filters">
+        <Button
+          label="ตั้งค่าการจับคู่"
+          onPress={() => router.push('/matching-filters')}
+          systemImage="slider.horizontal.3"
+          modifiers={circleButton}
+        />
+      </NativeTourTarget>
+    </HStack>
+  );
+}
+
+function FilterChips({ onOpenLikes, onSelectCategory, selectedCategory = 'all' }) {
   return (
     <ScrollView
       axes="horizontal"
       showsIndicators={false}
-      modifiers={[scrollIndicators('never', 'horizontal')]}
+      // Let chips scroll out to the screen edge instead of being cut at the
+      // page's content padding (iOS 17+; older iOS keeps the clipped look).
+      modifiers={[scrollIndicators('never', 'horizontal'), scrollClipDisabled()]}
     >
       <HStack spacing={8}>
-        <FilterChip label="ถูกใจ" onPress={() => router.push('/likes')} />
-        <FilterChip label="เริ่มใหม่" onPress={onAll} />
+        <FilterChip label="ถูกใจ" onPress={onOpenLikes} systemImage="heart.fill" />
+        {QUICK_ACTIVITIES.map((cat) => (
+          <FilterChip
+            active={selectedCategory === cat.id}
+            key={cat.id}
+            label={cat.label}
+            onPress={() => onSelectCategory?.(cat.id)}
+            systemImage={cat.systemImage}
+          />
+        ))}
       </HStack>
     </ScrollView>
   );
 }
 
-function FilterChip({ dot = false, label, onPress }) {
+function FilterChip({ active = false, label, onPress, systemImage }) {
   const palette = usePalette();
   return (
     <Button
@@ -838,24 +890,30 @@ function FilterChip({ dot = false, label, onPress }) {
         spacing={5}
         modifiers={[
           padding({ horizontal: 12, vertical: 7 }),
-          background(palette.chip, shapes.capsule()),
+          background(active ? palette.purple : palette.chip, shapes.capsule()),
         ]}
       >
+        {systemImage && (
+          <Image
+            color={active ? palette.white : (palette.accentText || palette.purple)}
+            size={12}
+            systemName={systemImage}
+          />
+        )}
         <Text
           modifiers={[
             font({ size: 14, weight: 'semibold' }),
-            foregroundStyle(palette.text),
+            foregroundStyle(active ? palette.white : palette.text),
           ]}
         >
           {label}
         </Text>
-        {dot && <Image color={palette.purple} size={6} systemName="circle.fill" />}
       </HStack>
     </Button>
   );
 }
 
-function SmartFilters({ eveningOnly, onEvening, onSameFaculty, sameFacultyOnly }) {
+function SmartFilters({ onSameFaculty, sameFacultyOnly }) {
   const palette = usePalette();
   return (
     <HStack
@@ -871,12 +929,6 @@ function SmartFilters({ eveningOnly, onEvening, onSameFaculty, sameFacultyOnly }
         label="คณะเดียวกัน"
         onPress={onSameFaculty}
         systemImage="building.columns.fill"
-      />
-      <CompactFilter
-        active={eveningOnly}
-        label="ว่างช่วงเย็น"
-        onPress={onEvening}
-        systemImage="sunset.fill"
       />
     </HStack>
   );
@@ -900,162 +952,119 @@ function CompactFilter({ active, label, onPress, systemImage }) {
   );
 }
 
-function ProfileCard({ candidate, imageUri, onPress }) {
+function ProfileCard({ candidate, photoMountEpoch, onPress, onRewind }) {
   const palette = usePalette();
-  const colorScheme = useColorScheme();
-  const glassGradient = colorScheme === 'dark'
-    ? ['rgba(20,23,27,0)', 'rgba(20,23,27,0.42)', 'rgba(20,23,27,0.9)']
-    : ['rgba(16,32,58,0)', 'rgba(16,32,58,0.28)', 'rgba(16,32,58,0.82)'];
+  const { width: windowWidth } = useWindowDimensions();
+  const cardWidth = Math.min(windowWidth - 40, 620);
+  const cardHeight = Math.round(cardWidth * 4 / 3);
+  const footerHeight = Math.min(300, Math.max(200, Math.round(cardHeight * 0.5)));
+  const status = statusBadgeFor(candidate);
+  const summary = getDiscoverySummary(candidate);
+  const track = candidate.favoriteTracks?.[0];
 
   return (
     <ZStack
       alignment="topLeading"
       modifiers={[
-        frame({ maxWidth: Infinity }),
+        // ScrollView proposes an unbounded height. This card must own its
+        // size rather than asking a fill-mode RNHostView to determine it.
+        frame({ width: cardWidth, height: cardHeight }),
         background(palette.card, cardShape),
         clipShape('roundedRectangle', 24),
         shadow({ radius: 22, y: 10, color: 'rgba(0,0,0,0.28)' }),
-        contentShape(shapes.rectangle()),
-        onTapGesture(onPress),
-        accessibilityLabel(`${candidate.name}${candidate.age ? `, ${candidate.age}` : ''}`),
-        accessibilityHint('แตะเพื่อดูรายละเอียดโปรไฟล์'),
       ]}
     >
-      <VStack spacing={0} modifiers={[frame({ maxWidth: Infinity })]}>
-        <ZStack modifiers={[frame({ height: 340 }), frame({ maxWidth: Infinity })]}>
-          {imageUri ? (
-            <RNHostView matchContents={false} modifiers={[frame({ height: 340 }), frame({ maxWidth: Infinity })]}>
-              <ExpoImage source={{ uri: imageUri }} contentFit="cover" priority="high" style={{ width: '100%', height: 340 }} />
-            </RNHostView>
-          ) : (
-            <Image
-              color={palette.secondary}
-              size={84}
-              systemName="person.crop.square.fill"
-              modifiers={[
-                frame({ height: 340 }),
-                frame({ maxWidth: Infinity }),
-                background(candidate.avatarColor || palette.chip),
-              ]}
-            />
-          )}
-
-          <RNHostView matchContents={false}>
-            <View style={{ height: 340, width: '100%' }} pointerEvents="none">
-              <MaskedView
-                style={{ bottom: 0, height: 158, left: 0, position: 'absolute', right: 0 }}
-                maskElement={
-                  <LinearGradient
-                    colors={['transparent', '#FFFFFF', '#FFFFFF']}
-                    locations={[0, 0.48, 1]}
-                    style={{ flex: 1 }}
-                  />
-                }
-              >
-                <BlurView intensity={colorScheme === 'dark' ? 38 : 48} tint={colorScheme} style={{ flex: 1 }} />
-                <LinearGradient colors={glassGradient} locations={[0, 0.45, 1]} style={{ bottom: 0, left: 0, position: 'absolute', right: 0, top: 0 }} />
-              </MaskedView>
-            </View>
-          </RNHostView>
-
-          <VStack
-            alignment="leading"
-            spacing={6}
-            modifiers={[
-              padding({ top: 44, bottom: 22, horizontal: 18 }),
-              frame({ height: 340 }),
-              frame({ maxWidth: Infinity, alignment: 'bottomLeading' }),
-            ]}
+      <RNHostView
+        key={`${candidate.id}:${photoMountEpoch}`}
+        matchContents
+        modifiers={[frame({ width: cardWidth, height: cardHeight })]}
+        style={{ width: cardWidth, height: cardHeight }}
+      >
+        <View collapsable={false} style={{ width: cardWidth, height: cardHeight }}>
+          <ProfilePhotoCarousel
+            profile={candidate}
+            width={cardWidth}
+            height={cardHeight}
+            footerBlurHeight={footerHeight}
+            interactive
+            onPress={onPress}
+            swipePhotos
+            tapToChangePhotos={false}
           >
-            <Spacer />
-            {candidate.isMatched && (
-              <HStack
-                alignment="center"
-                spacing={4}
-                modifiers={[
-                  padding({ horizontal: 8, vertical: 4 }),
-                  background('rgba(255,255,255,0.2)', shapes.capsule()),
-                ]}
+            <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+              {/* Top: what they're up to and the server's match score, when known. */}
+              <View pointerEvents="none" style={{ position: 'absolute', left: 14, right: onRewind ? 72 : 14, top: 14, gap: 6, alignItems: 'flex-start' }}>
+                {status ? <AnimatedStatusBadge kind={status.kind} text={status.text} /> : null}
+                {summary.score !== null ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4, backgroundColor: 'rgba(12,16,28,0.55)' }}>
+                    <FeatureIcon name="sparkles" size={11} color="#FFC23D" />
+                    <RNText style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>เข้ากัน {summary.score}%</RNText>
+                  </View>
+                ) : null}
+              </View>
+              {track?.name ? (
+                <View pointerEvents="box-none" style={{ position: 'absolute', left: 14, right: 82, bottom: 18 }}>
+                  <SpotifyMiniPlayer track={track} />
+                </View>
+              ) : null}
+              <View pointerEvents="none" style={{ position: 'absolute', left: 18, right: 82, bottom: track?.name ? 86 : 24, gap: 6 }}>
+                {candidate.isMatched ? (
+                  <View style={{ alignSelf: 'flex-start', borderRadius: 14, paddingHorizontal: 9, paddingVertical: 5, backgroundColor: 'rgba(255,255,255,0.18)', flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                    <FeatureIcon name="person.2.fill" size={12} color="#FFFFFF" />
+                    <RNText style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>เพื่อนที่คุณแมตช์แล้ว</RNText>
+                  </View>
+                ) : null}
+                <RNText numberOfLines={2} style={{ color: '#FFFFFF', fontSize: 28, fontWeight: '800' }}>
+                  {candidate.name}{candidate.age ? ` ${candidate.age}` : ''}
+                </RNText>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {candidate.faculty ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 3, backgroundColor: 'rgba(91,141,239,0.9)' }}>
+                      <FeatureIcon name="building.columns.fill" size={10} color="#FFFFFF" />
+                      <RNText numberOfLines={1} style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>คณะ{candidate.faculty.replace(/^คณะ/, '')}</RNText>
+                    </View>
+                  ) : null}
+                  {candidate.year ? (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 3, backgroundColor: 'rgba(232,115,74,0.9)' }}>
+                      <FeatureIcon name="graduationcap.fill" size={10} color="#FFFFFF" />
+                      <RNText numberOfLines={1} style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '700' }}>{candidate.year}</RNText>
+                    </View>
+                  ) : null}
+                </View>
+                <RNText numberOfLines={1} style={{ color: 'rgba(255,255,255,0.9)', fontSize: 13, fontWeight: '500' }}>
+                  {[getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities), formatDistance(candidate.distance)].filter(Boolean).join(' · ') || 'แตะเพื่อดูโปรไฟล์'}
+                </RNText>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`ดูรายละเอียดโปรไฟล์เต็มของ ${candidate.name}`}
+                onPress={onPress}
+                style={({ pressed }) => ({ position: 'absolute', right: 18, bottom: 24, width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', backgroundColor: pressed ? 'rgba(255,255,255,0.32)' : 'rgba(255,255,255,0.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)' })}
               >
-                <Image color={palette.white} size={11} systemName="person.2.fill" />
-                <Text modifiers={[font({ size: 11, weight: 'bold' }), foregroundStyle(palette.white)]}>
-                  เพื่อนที่คุณแมตช์แล้ว 💬
-                </Text>
-              </HStack>
-            )}
-            <Text
-              modifiers={[
-                font({ textStyle: 'title', weight: 'bold', design: 'rounded' }),
-                foregroundStyle(palette.white),
-                lineLimit(1),
-              ]}
-            >
-              {candidate.name}{candidate.age ? `, ${candidate.age}` : ''}
-            </Text>
-            <Text
-              modifiers={[
-                font({ textStyle: 'subheadline', weight: 'medium' }),
-                foregroundStyle('rgba(255,255,255,0.88)'),
-                lineLimit(1),
-              ]}
-            >
-              {[getActivityLabel(candidate.activity, candidate.activityLabel, candidate.activities), candidate.faculty, formatDistance(candidate.distance)].filter(Boolean).join(' · ') || 'แตะเพื่อดูโปรไฟล์'}
-            </Text>
-          </VStack>
-        </ZStack>
-      </VStack>
-
+                <FeatureIcon color="#FFFFFF" name="arrow.up" size={23} />
+              </Pressable>
+              {onRewind ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="ย้อนกลับไปยังคนที่กดไม่เลือกไว้"
+                  onPress={(event) => { event?.stopPropagation?.(); onRewind(); }}
+                  style={({ pressed }) => ({ position: 'absolute', right: 14, top: 14, width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', backgroundColor: pressed ? 'rgba(10,18,32,0.86)' : 'rgba(10,18,32,0.62)' })}
+                >
+                  <FeatureIcon color="#FFFFFF" name="arrow.counterclockwise" size={22} />
+                </Pressable>
+              ) : null}
+            </View>
+          </ProfilePhotoCarousel>
+          </View>
+      </RNHostView>
     </ZStack>
   );
 }
 
-function DiscoveryShortcuts({ matchedCount = 0, resetKey }) {
-  const palette = usePalette();
-  const [timeLeft, setTimeLeft] = useState(getRemainingTimeUntilMidnight());
-  const resetDeadlineRef = useRef(Date.now() + RESET_INTERVAL_MS);
 
-  useEffect(() => {
-    resetDeadlineRef.current = Date.now() + RESET_INTERVAL_MS;
-    setTimeLeft(formatRemainingTime(RESET_INTERVAL_MS));
-  }, [resetKey]);
-
-  useEffect(() => {
-    const updateCountdown = () => {
-      const remaining = resetDeadlineRef.current - Date.now();
-      if (remaining <= 0) {
-        resetDeadlineRef.current = Date.now() + RESET_INTERVAL_MS;
-        setTimeLeft(formatRemainingTime(RESET_INTERVAL_MS));
-        return;
-      }
-      setTimeLeft(formatRemainingTime(remaining));
-    };
-    updateCountdown();
-    const timer = setInterval(updateCountdown, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
+function DiscoveryShortcuts({ matchedCount = 0 }) {
   return (
     <HStack spacing={10} alignment="center" modifiers={[frame({ maxWidth: Infinity, alignment: 'leading' })]}>
-      <HStack
-        spacing={6}
-        alignment="center"
-        modifiers={[
-          padding({ horizontal: 11, vertical: 7 }),
-          background(palette.surfaceRaised, shapes.capsule()),
-          shadow({ color: 'black', opacity: 0.03, radius: 4, x: 0, y: 1 }),
-        ]}
-      >
-        <Image color={palette.purple} size={12} systemName="clock.arrow.2.circlepath" />
-        <Text
-          modifiers={[
-            font({ textStyle: 'caption2', weight: 'bold' }),
-            foregroundStyle(palette.text),
-          ]}
-        >
-          รีเซ็ตใน {timeLeft}
-        </Text>
-      </HStack>
-
       <ShortcutCircle
         label="สถิติแมตช์"
         onPress={() => router.navigate('/home')}
@@ -1066,7 +1075,7 @@ function DiscoveryShortcuts({ matchedCount = 0, resetKey }) {
   );
 }
 
-function ShortcutCircle({ label, onPress, systemImage, value = '' }) {
+function ShortcutCircle({ iconColor, label, onPress, systemImage, value = '' }) {
   const palette = usePalette();
   return (
     <Button
@@ -1084,7 +1093,7 @@ function ShortcutCircle({ label, onPress, systemImage, value = '' }) {
           background(palette.circle, shapes.capsule()),
         ]}
       >
-        <Image color={palette.coral} size={12} systemName={systemImage} />
+        <Image color={iconColor || palette.coral} size={12} systemName={systemImage} />
         <Text
           modifiers={[
             font({ textStyle: 'caption2', weight: 'semibold' }),

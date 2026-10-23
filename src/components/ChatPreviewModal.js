@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import { useChatPresence } from '../context/ChatPresenceContext';
 import Text from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Modal, Platform, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Animated, {
   Easing,
   cancelAnimation,
@@ -10,8 +12,10 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
+import { isGifMessage } from '../utils/chatMediaLayout';
 import { collection, getDocs, limit, orderBy, query } from 'firebase/firestore';
 import FeatureIcon from './FeatureIcon';
 import { IosLikeAvatar } from './iosLike';
@@ -19,6 +23,8 @@ import DecryptedChatImage from './DecryptedChatImage';
 import VoiceMessageBubble from './VoiceMessageBubble';
 import { ChatVideoCover } from './ChatVideoBubble';
 import ChatProtectedImageBubble from './ChatProtectedImageBubble';
+import TrackShareCard from './TrackShareCard';
+import TrackPreviewButton from './TrackPreviewButton';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 import { getOrFetchConversationKey, peekCachedConversationKey } from '../services/chatEncryptionService';
 import { decryptConversationMessageList } from '../services/firestoreService';
@@ -26,6 +32,9 @@ import { requireFirebase } from '../services/dbService';
 import { RUST_BACKEND } from '../services/rust/backend';
 import { fetchRustConversationMessages } from '../services/firestoreService';
 import { warmChatPreviewMedia } from '../services/chatPreviewMedia';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
+import ScrollFadeEdges from './ScrollFadeEdges';
+import { chatMemberSettings } from '../utils/inboxPresentation';
 
 function toDate(timestamp) {
   if (!timestamp) return null;
@@ -67,47 +76,61 @@ function formatMessageTime(message) {
   return `${hours}:${minutes}`;
 }
 
-const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors, conversation, conversationKey, currentUserId, item }) {
+const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors, conversation, conversationKey, currentUserId, item, isPreview = false }) {
+  if (!item || item.deleted) return null;
   const mine = item?.senderId === currentUserId || item?.sender === 'me';
-  const text = typeof item?.text === 'string' && item.text.trim()
-    ? item.text
-    : 'ไม่สามารถแสดงข้อความนี้ได้';
+  const textVal = typeof item?.text === 'string' ? item.text.trim() : '';
+  const text = textVal;
   const time = formatMessageTime(item);
   const bubbleTextColor = mine ? '#FFFFFF' : colors.ink;
   const replyColor = mine ? 'rgba(255,255,255,0.76)' : colors.inkSoft;
   const imageMediaUrl = item?.mediaUrl || (Array.isArray(item?.mediaUrls) ? item.mediaUrls[0] : null);
 
+  const isTrack = item?.mediaType === 'track' || Boolean(item?.trackName);
   const isImage = Boolean(
-    (imageMediaUrl && (item?.mediaType === 'image' || item?.mediaType === 'gif' || !item?.mediaType) && !item?.audioUrl)
-    || item?.mediaType === 'image'
-    || item?.mediaType === 'gif'
-    || item?.text === '[GIF]'
-    || item?.text?.toUpperCase() === '[GIF]'
-    || (typeof item?.mediaUrl === 'string' && (item.mediaUrl.includes('giphy.com') || item.mediaUrl.includes('.gif')))
+    !isTrack && (
+      (imageMediaUrl && (item?.mediaType === 'image' || item?.mediaType === 'gif' || !item?.mediaType) && !item?.audioUrl)
+      || item?.mediaType === 'image'
+      || item?.mediaType === 'gif'
+      || item?.text === '[GIF]'
+      || item?.text?.toUpperCase() === '[GIF]'
+      || (typeof item?.mediaUrl === 'string' && (item.mediaUrl.includes('giphy.com') || item.mediaUrl.includes('.gif')))
+    )
   );
   const isAudio = Boolean(
-    item?.mediaType === 'audio' || item?.audioUrl || (item?.mediaUrl && item?.mediaType === 'audio')
+    !isTrack && (item?.mediaType === 'audio' || item?.audioUrl || (item?.mediaUrl && item?.mediaType === 'audio'))
   );
-  const textVal = item?.text?.trim?.() || '';
+
+  // If item has no text, no image, no audio, no video, and no track, do not render empty bubble
+  if (!textVal && !isImage && !isAudio && item?.mediaType !== 'video' && !isTrack) {
+    return null;
+  }
+
   const hasCaptionText = Boolean(
+    !isTrack &&
     textVal &&
     textVal !== '[รูปภาพ]' &&
     !textVal.startsWith('[รูปภาพ ') &&
     textVal !== '[ข้อความเสียง]' &&
     textVal !== '[วิดีโอ]' &&
     textVal !== '[GIF]' &&
-    textVal.toUpperCase() !== '[GIF]'
+    textVal.toUpperCase() !== '[GIF]' &&
+    !textVal.startsWith('🎵 ')
   );
 
   const replyDisplayText = item?.replyTo ? (
     item.replyTo.mediaType === 'audio' || item.replyTo.audioUrl || item.replyTo.text === '[ข้อความเสียง]'
       ? '🎤 ข้อความเสียง'
-      : item.replyTo.text === '[GIF]' || item.replyTo.text?.toUpperCase() === '[GIF]'
-        ? '👾 GIF'
-        : item.replyTo.mediaUrl || item.replyTo.mediaType === 'image' || item.replyTo.mediaType === 'gif' || item.replyTo.text === '[รูปภาพ]'
-          ? (item.replyTo.text && item.replyTo.text !== '[รูปภาพ]' && item.replyTo.text !== '[GIF]' ? `📷 ${item.replyTo.text}` : '📷 รูปภาพ')
-          : item.replyTo.text
+      : item.replyTo.mediaType === 'track'
+        ? `🎵 ${item.replyTo.trackName || item.replyTo.text || 'เพลง'}`
+        : item.replyTo.text === '[GIF]' || item.replyTo.text?.toUpperCase() === '[GIF]'
+          ? '👾 GIF'
+          : item.replyTo.mediaUrl || item.replyTo.mediaType === 'image' || item.replyTo.mediaType === 'gif' || item.replyTo.text === '[รูปภาพ]'
+            ? (item.replyTo.text && item.replyTo.text !== '[รูปภาพ]' && item.replyTo.text !== '[GIF]' ? `📷 ${item.replyTo.text}` : '📷 รูปภาพ')
+            : item.replyTo.text
   ) : null;
+
+  const isMediaCardOnly = (isImage && !hasCaptionText) || isTrack;
 
   return (
     <View style={[styles.messageRow, mine && styles.messageRowMine]}>
@@ -128,7 +151,8 @@ const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors,
             mine && styles.messageBubbleMine,
             !mine && [styles.messageBubbleOther, { backgroundColor: colors.card }],
             mine && { backgroundColor: accentColor },
-            isImage && !hasCaptionText && styles.imageOnlyBubble,
+            isMediaCardOnly && styles.imageOnlyBubble,
+            isTrack && { overflow: 'visible' },
           ]}
         >
           {item?.forwarded ? <Text style={[styles.messageMeta, { color: replyColor }]}>ส่งต่อ</Text> : null}
@@ -140,11 +164,38 @@ const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors,
             </View>
           ) : null}
 
+          {isTrack ? (
+            <TrackShareCard
+              isPreview={isPreview}
+              albumArt={item.albumArt}
+              artists={item.artists}
+              name={item.trackName || (item.text?.startsWith?.('🎵 ') ? item.text.slice(2).trim() : item.text)}
+            >
+              {(item.previewUrl || item.youtubeVideoId || item.trackName) ? (
+                <TrackPreviewButton
+                  backgroundColor="transparent"
+                  color="#FFFFFF"
+                  fill
+                  previewEndMs={item.previewEndMs}
+                  previewStartMs={item.previewStartMs}
+                  previewUrl={item.previewUrl}
+                  size={36}
+                  track={item}
+                  trackArtists={item.artists}
+                  trackName={item.trackName || item.text}
+                  youtubeVideoId={item.youtubeVideoId}
+                />
+              ) : null}
+            </TrackShareCard>
+          ) : null}
+
           {isImage && (item.viewMode === 'once' || item.viewMode === 'replay') ? (
-            <ChatProtectedImageBubble item={item} conversationId={conversation?.id} currentUserId={currentUserId} mine={mine} previewOnly />
+            <ChatProtectedImageBubble item={item} conversationId={conversation?.id} currentUserId={currentUserId} mine={mine} previewOnly isPreview={isPreview} />
           ) : isImage ? (
             <View style={styles.previewImageContainer}>
               <DecryptedChatImage
+                isPreview={isPreview}
+                isGif={isGifMessage(item)}
                 conversationId={conversation?.id}
                 conversationKey={conversationKey}
                 currentUserId={currentUserId}
@@ -175,7 +226,7 @@ const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors,
             <Text style={[styles.messageText, { color: bubbleTextColor }, isImage && styles.captionText]}>
               {item.text}
             </Text>
-          ) : (!isImage && !isAudio && item.mediaType !== 'video' ? (
+          ) : (!isImage && !isAudio && item.mediaType !== 'video' && !isTrack ? (
             <Text style={[styles.messageText, { color: bubbleTextColor }]}>{text}</Text>
           ) : null)}
         </View>
@@ -185,10 +236,19 @@ const PreviewMessage = React.memo(function PreviewMessage({ accentColor, colors,
   );
 });
 
-export default function ChatPreviewModal({ accentColor, blurTarget, conversation, currentUserId, onClose, onOpenChat, visible }) {
+export default function ChatPreviewModal({ accentColor, blurTarget, conversation, currentUserId, onClose, onOpenChat, onMarkUnread, onTogglePin, onDelete, visible }) {
   const { colors, isDark } = useTheme();
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
+  const { height, fontScale } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const [actionsHeight, setActionsHeight] = useState(Platform.OS === 'ios' ? 196 : 210);
+  const reservedActions = Math.max(actionsHeight, fontScale * 100 + 30);
+  // The card never takes more than 55% of the screen, so the action list always fits below it.
+  const cardHeight = Math.min(height * 0.55, Math.max(120, height - insets.top - insets.bottom - reservedActions - 50));
+  const cardColor = Platform.OS === 'ios' ? colors.card : (colors.surfaceContainerHigh || colors.surfaceRaised);
   const chatAccent = accentColor || colors.primary;
-  const blurIntensity = isDark ? 8 : 10;
+  const blurIntensity = Platform.OS === 'ios' ? 36 : (isDark ? 8 : 10);
   const androidBlurMethod = Platform.OS === 'android' && blurTarget
     ? 'dimezisBlurViewSdk31Plus'
     : undefined;
@@ -203,6 +263,7 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
   const popupScale = useSharedValue(visible ? 1 : 0.86);
   const popupTranslateY = useSharedValue(visible ? 0 : 14);
   const activeConversation = conversation || presentedConversation;
+  const presence = useChatPresence(activeConversation?.id);
 
   const [fetchedMessages, setFetchedMessages] = useState(null);
   const [previewKey, setPreviewKey] = useState(null);
@@ -328,13 +389,22 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
     ],
   }));
 
-  // Keep the preview compact enough to show complete bubbles instead of
-  // clipping the oldest bubble at the top when the square card scrolls.
+  // Keep a short history anchored at the latest messages.
   const messages = useMemo(() => {
     const list = fetchedMessages?.identity === previewIdentity
       ? fetchedMessages.messages
       : (Array.isArray(activeConversation?.messages) ? activeConversation.messages : []);
-    return list.slice(-8);
+    return list
+      .filter((item) => {
+        if (!item || item.deleted) return false;
+        const textVal = typeof item.text === 'string' ? item.text.trim() : '';
+        const hasText = textVal.length > 0;
+        const hasMedia = Boolean(item.mediaUrl || (Array.isArray(item.mediaUrls) && item.mediaUrls.length > 0) || item.audioUrl);
+        const isTrack = item.mediaType === 'track' || Boolean(item.trackName);
+        const isSpecial = item.mediaType === 'video' || item.mediaType === 'audio' || isTrack;
+        return hasText || hasMedia || isSpecial;
+      })
+      .slice(-8);
   }, [activeConversation?.messages, fetchedMessages, previewIdentity]);
 
   useEffect(() => {
@@ -359,6 +429,7 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
       conversationKey={conversationKey}
       currentUserId={currentUserId}
       item={item}
+      isPreview
     />
   ), [activeConversation, chatAccent, colors, conversationKey, currentUserId]);
 
@@ -366,6 +437,13 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
   if (!shouldRender) return null;
 
   const modalVisible = visible || isRendered;
+  const pinned = chatMemberSettings(activeConversation, currentUserId).isPinned === true;
+  const act = (action) => {
+    renderedRef.current = false;
+    setIsRendered(false);
+    onClose?.();
+    requestAnimationFrame(() => action?.(activeConversation));
+  };
 
   return (
     <Modal
@@ -373,10 +451,11 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
       onRequestClose={onClose}
       presentationStyle="overFullScreen"
       statusBarTranslucent
+      navigationBarTranslucent
       transparent
       visible={modalVisible}
     >
-      <View style={styles.overlay}>
+      <View style={styles.overlay} onAccessibilityEscape={onClose}>
         <Animated.View
           pointerEvents="none"
           style={[StyleSheet.absoluteFill, backdropStyle]}
@@ -394,35 +473,89 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
         </Animated.View>
         <Pressable
           accessibilityLabel="แตะด้านนอกเพื่อปิดตัวอย่างแชต"
+          accessibilityRole="button"
           onPress={onClose}
           style={StyleSheet.absoluteFill}
         />
         <Animated.View style={[styles.popupContainer, popupStyle]}>
-          <Pressable accessible={false} onPress={onOpenChat} style={styles.popupCard}>
-            <SafeAreaView edges={[]} style={[styles.sheet, { backgroundColor: colors.canvas, borderColor: colors.line }]}>
-              {Platform.OS === 'ios' ? <View style={[styles.grabber, { backgroundColor: colors.inkSoft }]} /> : null}
-              <FlatList
-                contentContainerStyle={[styles.messageList, !messages.length && styles.emptyMessageList]}
-                data={messages}
-                keyExtractor={(item, index) => String(item?.id || `preview-message-${index}`)}
-                ListEmptyComponent={(
-                  <View style={styles.emptyState}>
-                    <FeatureIcon color={chatAccent} name={activeConversation.encryptionPending ? 'lock.fill' : 'message.fill'} size={28} />
-                    <Text style={[styles.emptyTitle, { color: colors.ink }]}>
-                      {activeConversation.encryptionPending ? 'กำลังรอคีย์เพื่อแสดงข้อความ' : 'ยังไม่มีข้อความในบทสนทนา'}
-                    </Text>
+            <SafeAreaView testID="PreviewCardContainer" edges={[]} style={[styles.sheet, { height: cardHeight, backgroundColor: Platform.OS === 'ios' && glass ? 'transparent' : cardColor, borderColor: colors.line }]}>
+              {Platform.OS === 'ios' && glass ? <GlassBackground style={{ borderRadius: 24 }} tintColor={glassTint} /> : null}
+              <Pressable
+                testID="PreviewHeader"
+                accessibilityLabel={`เปิดห้องแชต ${activeConversation.name || 'เพื่อนใหม่'}`}
+                accessibilityRole="button"
+                onPress={() => act(onOpenChat)}
+                style={[styles.previewHeader, { borderBottomColor: colors.line }]}
+              >
+                <View style={styles.headerIdentity}>
+                  <IosLikeAvatar cacheScope={activeConversation.profileId} color={activeConversation.avatarColor} emoji={activeConversation.avatar} size={40} uri={activeConversation.avatarUri} />
+                  <View style={styles.headerCopy}>
+                    <Text numberOfLines={1} style={[styles.headerName, { color: colors.ink }]}>{activeConversation.name || 'เพื่อนใหม่'}</Text>
+                    {presence.label ? <Text numberOfLines={1} style={{ color: colors.inkMuted, fontSize: 12 }}>{presence.label}</Text> : null}
                   </View>
-                )}
-                initialNumToRender={10}
-                ref={listRef}
-                renderItem={renderPreviewMessage}
-                showsVerticalScrollIndicator={false}
-                style={styles.messageListViewport}
-                windowSize={5}
-              />
-
+                </View>
+              </Pressable>
+              <View style={styles.previewViewport}>
+                <FlatList
+                  contentContainerStyle={[styles.messageList, !messages.length && styles.emptyMessageList]}
+                  data={messages}
+                  keyExtractor={(item, index) => String(item?.id || `preview-message-${index}`)}
+                  ListEmptyComponent={(
+                    <View style={styles.emptyState}>
+                      <FeatureIcon color={chatAccent} name={activeConversation.encryptionPending ? 'lock.fill' : 'message.fill'} size={28} />
+                      <Text style={[styles.emptyTitle, { color: colors.ink }]}>
+                        {activeConversation.encryptionPending ? 'กำลังรอคีย์เพื่อแสดงข้อความ' : 'ยังไม่มีข้อความในบทสนทนา'}
+                      </Text>
+                    </View>
+                  )}
+                  initialNumToRender={10}
+                  removeClippedSubviews={false}
+                  ref={listRef}
+                  onContentSizeChange={() => { if (visible) listRef.current?.scrollToEnd({ animated: false }); }}
+                  renderItem={renderPreviewMessage}
+                  showsVerticalScrollIndicator={false}
+                  style={styles.messageListViewport}
+                  windowSize={5}
+                />
+                {/* Older messages fade under the header instead of being cut in half. */}
+                {!(Platform.OS === 'ios' && glass) ? <ScrollFadeEdges color={cardColor} showBottom={false} topSize={22} /> : null}
+              </View>
             </SafeAreaView>
-          </Pressable>
+
+            <View
+              testID="ContextMenuActions"
+              onLayout={(event) => setActionsHeight(event.nativeEvent.layout.height)}
+              style={[styles.contextActions, Platform.OS === 'ios'
+                ? { backgroundColor: glass ? 'transparent' : 'rgba(20,20,25,0.82)', borderColor: glass ? 'transparent' : 'rgba(255,255,255,0.12)' }
+                : { backgroundColor: colors.surfaceContainerHigh || colors.surfaceRaised || colors.card, borderColor: colors.line }]}
+            >
+              {Platform.OS === 'ios' && glass ? <GlassBackground style={{ borderRadius: 20 }} tintColor={glassTint} /> : null}
+              {/* One menu only: open, mark unread, pin, a thin divider, then delete. */}
+              {[
+                { id: 'open', label: 'เปิดห้องแชต', icon: 'bubble.left.and.bubble.right.fill', action: onOpenChat, danger: false },
+                { id: 'unread', label: 'ทำเครื่องหมายว่ายังไม่อ่าน', icon: 'envelope.badge', action: onMarkUnread, danger: false },
+                { id: 'pin', label: pinned ? 'เลิกปักหมุดแชต' : 'ปักหมุดแชต', icon: pinned ? 'pin.slash.fill' : 'pin.fill', action: onTogglePin, danger: false },
+                { id: 'delete', label: 'ลบแชต', icon: 'trash', action: onDelete, danger: true },
+              ].filter((item) => item.action).map((item) => {
+                const onDarkFallback = Platform.OS === 'ios' && !glass;
+                const tint = item.danger ? '#EF4444' : onDarkFallback ? '#FFFFFF' : colors.ink;
+                return (
+                  <View key={item.id} style={styles.actionItemWrapper}>
+                    {item.danger ? <View style={[styles.actionDivider, { backgroundColor: onDarkFallback ? 'rgba(255,255,255,0.14)' : colors.line }]} /> : null}
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={item.label}
+                      onPress={() => act(item.action)}
+                      android_ripple={{ color: colors.primarySoft }}
+                      style={({ pressed }) => [styles.actionRow, pressed && { backgroundColor: onDarkFallback ? 'rgba(255,255,255,0.10)' : colors.primarySoft }]}
+                    >
+                      <FeatureIcon color={tint} name={item.icon} size={19} />
+                      <Text numberOfLines={1} style={[styles.actionLabel, { color: tint }]}>{item.label}</Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </View>
         </Animated.View>
       </View>
     </Modal>
@@ -430,14 +563,80 @@ export default function ChatPreviewModal({ accentColor, blurTarget, conversation
 }
 
 const styles = StyleSheet.create({
-  overlay: { backgroundColor: 'rgba(0,0,0,0.16)', flex: 1, justifyContent: 'center', paddingHorizontal: spacing.lg, paddingVertical: spacing.xl },
+  overlay: { backgroundColor: 'rgba(0,0,0,0.16)', flex: 1, justifyContent: 'center', paddingVertical: spacing.xl },
   overlayShade: { backgroundColor: 'rgba(7,9,12,0.10)' },
-  popupContainer: { alignSelf: 'center', aspectRatio: 1, maxWidth: 380, width: '100%' },
+  popupContainer: {
+    alignSelf: 'center',
+    width: '90%',
+    gap: 12,
+  },
   popupCard: { flex: 1, width: '100%' },
-  sheet: { borderRadius: 22, borderWidth: StyleSheet.hairlineWidth, flex: 1, minHeight: 0, overflow: 'hidden', paddingHorizontal: spacing.md, paddingVertical: spacing.md, ...shadow.card },
-  grabber: { alignSelf: 'center', backgroundColor: 'rgba(255,255,255,0.42)', borderRadius: radius.pill, height: 4, marginBottom: spacing.sm, width: 42 },
+  sheet: {
+    borderRadius: 24,
+    borderWidth: 1,
+    minHeight: 0,
+    overflow: 'hidden',
+    paddingHorizontal: 0,
+    paddingBottom: spacing.sm,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.28,
+    shadowRadius: 30,
+    elevation: 14,
+  },
+  previewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  previewViewport: { flex: 1, minHeight: 0, position: 'relative' },
+  headerIdentity: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  headerCopy: { flex: 1, minWidth: 0 },
+  headerName: { fontSize: 16, fontWeight: '700' },
+  contextActions: {
+    width: '90%',
+    maxWidth: 360,
+    borderRadius: 20,
+    borderCurve: 'continuous',
+    alignSelf: 'center',
+    borderWidth: 1,
+    overflow: 'hidden',
+    paddingVertical: 4,
+    elevation: 4,
+  },
+  actionItemWrapper: {
+    width: '100%',
+  },
+  actionRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 12,
+    height: 48,
+    minHeight: 48,
+    paddingHorizontal: 16,
+  },
+  actionDivider: {
+    height: 1,
+    marginVertical: 4,
+    width: '100%',
+  },
+  actionLabel: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500',
+    includeFontPadding: false,
+  },
   messageListViewport: { flex: 1, minHeight: 0, width: '100%' },
-  messageList: { paddingBottom: spacing.sm, paddingTop: spacing.xs, width: '100%' },
+  messageList: {
+    flexGrow: 1,
+    justifyContent: 'flex-end',
+    paddingBottom: 16,
+    paddingHorizontal: 14,
+    paddingTop: 16,
+    width: '100%',
+  },
   emptyMessageList: { flexGrow: 1, justifyContent: 'center', minHeight: 100 },
   messageRow: { alignItems: 'flex-end', flexDirection: 'row', gap: 7, marginBottom: 10, width: '100%' },
   messageRowMine: { justifyContent: 'flex-end' },
@@ -461,11 +660,11 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     height: 140,
     overflow: 'hidden',
-    width: 200,
+    width: 140,
   },
   previewImage: {
-    height: '100%',
-    width: '100%',
+    height: 140,
+    width: 140,
   },
   previewAudioContainer: {
     maxWidth: 220,
@@ -484,6 +683,6 @@ const styles = StyleSheet.create({
   messageTime: { fontSize: 10.5, includeFontPadding: false, paddingHorizontal: spacing.xs },
   messageTimeMine: { textAlign: 'right' },
   emptyState: { alignItems: 'center', gap: spacing.sm, padding: spacing.xl },
-  emptyTitle: { color: '#FFFFFF', fontSize: type.body, fontWeight: '700', textAlign: 'center' },
+  emptyTitle: { fontSize: type.body, fontWeight: '700', textAlign: 'center' },
   pressed: { opacity: 0.76, transform: [{ scale: 0.985 }] },
 });

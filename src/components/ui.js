@@ -1,8 +1,16 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
+import { LIQUID_GLASS_AVAILABLE } from './LiquidGlassSurface';
+
+// iOS 26 draws in-content buttons as capsules (they stay opaque: Liquid Glass
+// is for the floating layer). Older iOS and Android keep rounded rectangles.
+const BUTTON_RADIUS = LIQUID_GLASS_AVAILABLE ? radius.pill : radius.md;
+const COMPACT_BUTTON_RADIUS = LIQUID_GLASS_AVAILABLE ? radius.pill : 12;
 
 export function Avatar({ emoji = '🙂', color, size = 52, online = false }) {
   const { colors } = useTheme();
@@ -19,7 +27,7 @@ export function Avatar({ emoji = '🙂', color, size = 52, online = false }) {
 export function Card({ children, style }) {
   const { colors } = useTheme();
   const styles = getStyles(colors);
-  return <View style={[styles.card, style]}>{children}</View>;
+  return <NativeCard style={[styles.card, style]}>{children}</NativeCard>;
 }
 
 export function Chip({ label, icon, iconName, active = false, color, onPress, style }) {
@@ -77,6 +85,30 @@ export function PrimaryButton({ label, icon, iconName, onPress, style, disabled 
           </Text>
         </View>
       )}
+    </Pressable>
+  );
+}
+
+// Material 3 tonal (secondary container) button: for secondary actions that
+// sit near a filled primary button without competing with it.
+export function TonalButton({ label, icon, iconName, onPress, style, disabled = false, compact = false, numberOfLines = 1 }) {
+  const { colors } = useTheme();
+  const styles = getStyles(colors);
+  const resolvedIcon = iconName || icon;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      android_ripple={{ color: colors.primarySoft }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [styles.tonalButton, compact && styles.compactPrimaryButton, style, { minHeight: compact ? 44 : 48, minWidth: 44 }, pressed && styles.pressed, disabled && styles.disabled]}
+    >
+      <View style={styles.buttonContent}>
+        {resolvedIcon ? <FeatureIcon color={colors.accentText} name={resolvedIcon} size={18} style={styles.buttonIcon} /> : null}
+        <Text numberOfLines={numberOfLines} style={[styles.tonalButtonText, compact && styles.compactButtonText]}>{label}</Text>
+      </View>
     </Pressable>
   );
 }
@@ -164,14 +196,14 @@ const createStyles = (colors) => StyleSheet.create({
   primaryButton: {
     alignItems: 'center',
     backgroundColor: colors.primary,
-    borderRadius: radius.md,
+    borderRadius: BUTTON_RADIUS,
     borderCurve: 'continuous',
     justifyContent: 'center',
     minHeight: 48,
     paddingVertical: 12,
     paddingHorizontal: spacing.xl,
   },
-  compactPrimaryButton: { borderRadius: 12, minHeight: 44, paddingHorizontal: 8 },
+  compactPrimaryButton: { borderRadius: COMPACT_BUTTON_RADIUS, minHeight: 44, paddingHorizontal: 8 },
   buttonContent: { alignItems: 'center', flexDirection: 'row', gap: 7, justifyContent: 'center', maxWidth: '100%' },
   buttonIcon: { flexShrink: 0 },
   primaryButtonText: { color: colors.onPrimary, fontSize: type.body, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
@@ -179,7 +211,7 @@ const createStyles = (colors) => StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.card,
     borderColor: colors.line,
-    borderRadius: radius.md,
+    borderRadius: BUTTON_RADIUS,
     borderCurve: 'continuous',
     borderWidth: 1,
     justifyContent: 'center',
@@ -187,8 +219,19 @@ const createStyles = (colors) => StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: spacing.xl,
   },
-  compactOutlineButton: { borderRadius: 12, minHeight: 44, paddingHorizontal: 8 },
+  compactOutlineButton: { borderRadius: COMPACT_BUTTON_RADIUS, minHeight: 44, paddingHorizontal: 8 },
   outlineButtonText: { color: colors.ink, flexShrink: 1, fontSize: type.body, fontWeight: '600' },
+  tonalButton: {
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    borderRadius: radius.pill,
+    borderCurve: 'continuous',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    paddingVertical: 12,
+    paddingHorizontal: spacing.xl,
+  },
+  tonalButtonText: { color: colors.accentText, flexShrink: 1, fontSize: type.subheadline, fontWeight: '700', textAlign: 'center' },
   compactButtonText: { fontSize: type.caption, lineHeight: 16 },
   outlineDanger: { backgroundColor: colors.dangerSoft, borderColor: colors.danger },
   outlineDangerText: { color: colors.danger },

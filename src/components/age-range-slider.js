@@ -110,7 +110,6 @@ export default function AgeRangeSlider({ minValue, maxValue, onChangeMin, onChan
       if (current.active === 1) scheduleOnRN(reportMin, current.value, current.token);
       else scheduleOnRN(reportMax, current.value, current.token);
     },
-    [reportMin, reportMax],
   );
 
   const pan = useMemo(() => Gesture.Pan()

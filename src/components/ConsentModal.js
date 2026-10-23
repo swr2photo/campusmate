@@ -1,12 +1,15 @@
+import { Pressable, TouchableOpacity } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React, { useState } from 'react';
-import { Modal, Platform, Pressable, TouchableOpacity, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Modal, Platform, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, spacing, radius } from '../theme';
 import FeatureIcon from './FeatureIcon';
 import { useOverlayGate } from '../utils/overlayGate';
 import LegalDocumentView from './LegalDocumentView';
 import { PRIVACY_INTRO, PRIVACY_SECTIONS, TERMS_INTRO, TERMS_SECTIONS } from '../content/legalDocuments';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 const DATA_POINTS = [
   { icon: 'person.fill', label: 'ชื่อ อายุ เพศ คณะ' },
@@ -25,8 +28,10 @@ export default function ConsentModal({ visible, onAccept }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
-  const isTablet = windowWidth >= 768;
+  const isTablet = (Platform.OS === 'ios' && Boolean(Platform.isPad)) || windowWidth >= 700;
   const styles = getStyles(colors, insets, isTablet);
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const [documentKey, setDocumentKey] = useState(null);
   // The first-run tour and the Plus upsell wait until consent is done.
   useOverlayGate('consent', visible);
@@ -37,7 +42,16 @@ export default function ConsentModal({ visible, onAccept }) {
 
   const content = (
     <View style={styles.overlay}>
-      <View style={styles.card}>
+      <NativeCard style={[styles.card, glass && { backgroundColor: 'transparent' }]}>
+        <GlassBackground
+          style={{
+            borderTopLeftRadius: 28,
+            borderTopRightRadius: 28,
+            borderBottomLeftRadius: isTablet ? 28 : 0,
+            borderBottomRightRadius: isTablet ? 28 : 0,
+          }}
+          tintColor={glassTint}
+        />
         {documentKey ? (
           <>
             <Pressable
@@ -129,7 +143,7 @@ export default function ConsentModal({ visible, onAccept }) {
             </View>
           </>
         )}
-      </View>
+      </NativeCard>
     </View>
   );
 

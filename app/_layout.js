@@ -1,6 +1,7 @@
 import { NotificationInboxProvider } from '../src/context/NotificationInboxContext';
+import { WeatherReactiveProvider } from '../src/context/WeatherContext';
 import React from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
+import { AppState, Platform, StyleSheet, View } from 'react-native';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -9,6 +10,8 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AppProvider } from '../src/context/AppContext';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import { PreferencesProvider } from '../src/context/PreferencesContext';
+import { ChatPresenceProvider } from '../src/context/ChatPresenceContext';
+import { ChatImageOutboxProvider } from '../src/context/ChatImageOutboxContext';
 import { MembershipProvider } from '../src/context/MembershipContext';
 import { ConfirmProvider } from '../src/context/ConfirmContext';
 import { ToastProvider } from '../src/context/ToastContext';
@@ -26,6 +29,8 @@ import AppTourOverlay from '../src/components/AppTourOverlay';
 import AppText from '../src/components/AppText';
 import PlusUpsellHost from '../src/components/PlusUpsellSheet';
 import { AppTourProvider } from '../src/context/AppTourContext';
+import { enforcePhonePortraitLock } from '../src/utils/screenOrientation';
+import { requireOptionalNativeModule } from 'expo';
 
 function ColdBootGuard({ children }) {
   const { isReady } = useAuth();
@@ -38,6 +43,22 @@ function ColdBootGuard({ children }) {
 }
 
 export default function RootLayout() {
+  React.useEffect(() => {
+    const applyPreferences = () => {
+      void enforcePhonePortraitLock();
+      // Keep debug tools accessible through the standard gesture/Metro menu,
+      // without a floating control covering consent text, photos or the camera.
+      if (__DEV__) {
+        try { requireOptionalNativeModule('ExpoDevMenu')?.setToolsButtonVisible?.(false); } catch { /* Older host app. */ }
+      }
+    };
+    applyPreferences();
+    const listener = AppState.addEventListener('change', (state) => {
+      if (state === 'active') applyPreferences();
+    });
+    return () => listener.remove();
+  }, []);
+
   return (
     <AuthProvider>
       <UserPreferences>
@@ -61,7 +82,10 @@ function RootNavigator() {
       <KeyboardProvider>
       <MembershipProvider>
       <AppProvider>
+      <ChatImageOutboxProvider>
+      <ChatPresenceProvider>
       <NotificationInboxProvider>
+      <WeatherReactiveProvider>
         <CallProvider>
           <ToastProvider>
             <ConfirmProvider>
@@ -71,7 +95,7 @@ function RootNavigator() {
               <StatusBar style={isDark ? 'light' : 'dark'} />
               <ColdBootGuard>
                 <AppErrorBoundary>
-                  <View style={{ flex: 1, width: '100%', maxWidth: 760, alignSelf: 'center' }}>
+                  <View style={[{ flex: 1, width: '100%' }, Platform.OS === 'web' && { maxWidth: 760, alignSelf: 'center' }]}>
                   <Stack
                     screenOptions={{
                       headerShown: false,
@@ -167,7 +191,10 @@ function RootNavigator() {
             </ConfirmProvider>
           </ToastProvider>
         </CallProvider>
+      </WeatherReactiveProvider>
       </NotificationInboxProvider>
+      </ChatPresenceProvider>
+      </ChatImageOutboxProvider>
       </AppProvider>
       </MembershipProvider>
       </KeyboardProvider>

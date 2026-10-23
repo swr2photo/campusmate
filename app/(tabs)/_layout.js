@@ -8,6 +8,7 @@ import { useAppBadges, useAppProfile } from '../../src/context/AppContext';
 import { useAuth } from '../../src/context/AuthContext';
 import FeatureIcon from '../../src/components/FeatureIcon';
 import ProfileTabIcon from '../../src/components/ProfileTabIcon';
+import AnimatedTabIcon from '../../src/components/AnimatedTabIcon';
 import AppSplashScreen from '../../src/components/AppSplashScreen';
 import TabsBlurTargetContext from '../../src/context/TabsBlurTargetContext';
 import { spacing, type, useTheme } from '../../src/theme';
@@ -31,16 +32,26 @@ const SYMBOLS = {
 };
 
 const TAB_ICONS = {
+  home: ({ color, focused }) => <FeatureIcon color={color} name={focused ? SYMBOLS.home : { ios: 'person.2', android: 'group', web: 'group' }} size={24} />,
   discover: ({ color }) => <FeatureIcon color={color} name={SYMBOLS.discover} size={22} />,
   chat: ({ color }) => <FeatureIcon color={color} name={SYMBOLS.chat} size={22} />,
   meetup: ({ color }) => <FeatureIcon color={color} name={SYMBOLS.meetup} size={22} />,
 };
 
-const MEETUP_OPTIONS = { title: LABELS.meetup, tabBarIcon: TAB_ICONS.meetup };
-const ME_OPTIONS = { title: LABELS.me, tabBarIcon: ProfileTabIcon };
+function Material3TabIcon({ color, focused, iconName, size = 22, colors, gesture }) {
+  return <AnimatedTabIcon color={color} focused={focused} gesture={gesture} iconName={iconName} indicatorColor={colors.primarySoft} size={size} />;
+}
+
+function Material3ProfileIcon({ color, focused, colors }) {
+  return (
+    <AnimatedTabIcon focused={focused} gesture="bounce" indicatorColor={colors.primarySoft}>
+      <ProfileTabIcon color={color} focused={focused} />
+    </AnimatedTabIcon>
+  );
+}
 
 function SilentTabBarButton(props) {
-  return <PlatformPressable {...props} android_ripple={{ borderless: true, color: 'transparent' }} />;
+  return <PlatformPressable {...props} android_ripple={{ borderless: true, color: 'rgba(98,168,255,0.16)' }} />;
 }
 
 export default function FallbackTabLayout() {
@@ -63,15 +74,25 @@ export default function FallbackTabLayout() {
   const screenOptions = useMemo(() => ({
     headerShown: false,
     sceneStyle: { backgroundColor: colors.canvas },
-    tabBarActiveTintColor: colors.primary,
+    tabBarActiveTintColor: colors.accentText,
     tabBarInactiveTintColor: colors.inkSoft,
     tabBarHideOnKeyboard: true,
     tabBarButton: SilentTabBarButton,
-    tabBarLabelStyle: { color: colors.inkSoft, fontSize: type.micro, fontWeight: 'normal', fontFamily: 'NotoSansThai_600SemiBold' },
-    tabBarItemStyle: { paddingVertical: 2 },
+    tabBarLabelStyle: {
+      fontSize: type.micro,
+      fontWeight: 'normal',
+      fontFamily: 'NotoSansThai_600SemiBold',
+      marginTop: 2,
+    },
+    tabBarItemStyle: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 2,
+    },
     tabBarBadgeStyle: {
       backgroundColor: colors.coral,
       color: colors.onPrimary,
+      top: 2,
     },
     tabBarStyle: {
       backgroundColor: colors.card,
@@ -85,19 +106,85 @@ export default function FallbackTabLayout() {
   }), [colors, tabBarBottomInset]);
 
   const discoverOptions = useMemo(
-    () => ({ title: LABELS.discover, tabBarBadge: pendingLikeCount || undefined, tabBarIcon: TAB_ICONS.discover }),
-    [pendingLikeCount],
+    () => ({
+      title: LABELS.discover,
+      tabBarBadge: pendingLikeCount || undefined,
+      tabBarIcon: ({ color, focused }) => (
+        <Material3TabIcon
+          color={color}
+          colors={colors}
+          focused={focused}
+          gesture="beat"
+          iconName={SYMBOLS.discover}
+          size={22}
+        />
+      ),
+    }),
+    [colors, pendingLikeCount],
   );
 
   const chatOptions = useMemo(
-    () => ({ title: LABELS.chat, tabBarBadge: unreadCount || undefined, tabBarIcon: TAB_ICONS.chat }),
-    [unreadCount],
+    () => ({
+      title: LABELS.chat,
+      tabBarBadge: unreadCount || undefined,
+      tabBarIcon: ({ color, focused }) => (
+        <Material3TabIcon
+          color={color}
+          colors={colors}
+          focused={focused}
+          gesture="wiggle"
+          iconName={SYMBOLS.chat}
+          size={22}
+        />
+      ),
+    }),
+    [colors, unreadCount],
+  );
+
+  const meetupOptions = useMemo(
+    () => ({
+      title: LABELS.meetup,
+      tabBarIcon: ({ color, focused }) => (
+        <Material3TabIcon
+          color={color}
+          colors={colors}
+          focused={focused}
+          gesture="flip"
+          iconName={SYMBOLS.meetup}
+          size={22}
+        />
+      ),
+    }),
+    [colors],
+  );
+
+  const meOptions = useMemo(
+    () => ({
+      title: LABELS.me,
+      tabBarIcon: ({ color, focused }) => (
+        <Material3ProfileIcon
+          color={color}
+          colors={colors}
+          focused={focused}
+        />
+      ),
+    }),
+    [colors],
   );
 
   const homeOptions = useMemo(
     () => ({
       title: LABELS.home,
-      tabBarIcon: () => <CenterFindFriendsIcon colors={colors} />,
+      tabBarIcon: ({ color, focused }) => (
+        <Material3TabIcon
+          color={color}
+          colors={colors}
+          focused={focused}
+          gesture="bounce"
+          iconName={focused ? SYMBOLS.home : { ios: 'person.2', android: 'group', web: 'group' }}
+          size={24}
+        />
+      ),
     }),
     [colors],
   );
@@ -112,35 +199,26 @@ export default function FallbackTabLayout() {
     <TabsBlurTargetContext.Provider value={tabsBlurTargetRef}>
       <BlurTargetView ref={tabsBlurTargetRef} style={styles.tabsBlurTarget}>
         <Tabs initialRouteName="home" screenOptions={screenOptions}>
+          <Tabs.Screen name="home" options={homeOptions} />
           <Tabs.Screen name="discover" options={discoverOptions} />
           <Tabs.Screen name="chat" options={chatOptions} />
-          <Tabs.Screen name="home" options={homeOptions} />
-          <Tabs.Screen name="meetup" options={MEETUP_OPTIONS} />
-          <Tabs.Screen name="me" options={ME_OPTIONS} />
+          <Tabs.Screen name="meetup" options={meetupOptions} />
+          <Tabs.Screen name="me" options={meOptions} />
         </Tabs>
       </BlurTargetView>
     </TabsBlurTargetContext.Provider>
   );
 }
 
-function CenterFindFriendsIcon({ colors }) {
-  return (
-    <View
-      style={[
-        styles.centerAction,
-        {
-          backgroundColor: colors.primary,
-          borderColor: colors.card,
-        },
-      ]}
-    >
-      <FeatureIcon color={colors.onPrimary} name={SYMBOLS.home} size={24} />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   tabsBlurTarget: { flex: 1 },
+  tabCapsule: {
+    alignItems: 'center',
+    borderRadius: 16,
+    height: 32,
+    justifyContent: 'center',
+    width: 60,
+  },
   centerAction: {
     alignItems: 'center',
     borderRadius: 28,

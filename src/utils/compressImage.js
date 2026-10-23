@@ -5,6 +5,7 @@ import { imageResizeActions } from './imagePolicy';
 
 export const MAX_PROFILE_IMAGE_SIZE_MB = 30;
 export const MAX_PROFILE_IMAGE_SIZE_BYTES = MAX_PROFILE_IMAGE_SIZE_MB * 1024 * 1024;
+const preparedImages = new Map();
 
 /**
  * Validates that an image does not exceed the maximum allowed size (default 30 MB).
@@ -71,15 +72,17 @@ export async function compressProfileImage(uri) {
     throw new Error(validation.error);
   }
 
-  const result = await compressUploadImage(uri, { maxDimension: 1024, quality: 0.7, targetBytes: 350 * 1024 });
+  const result = await compressUploadImage(uri, { maxDimension: 960, quality: 0.70, targetBytes: 400 * 1024 });
   return result.uri;
 }
 
 export async function compressUploadImage(uri, {
-  width, height, maxDimension = 1440, quality = 0.72, targetBytes = 600 * 1024,
+  width, height, maxDimension = 1200, quality = 0.70, targetBytes = 450 * 1024,
 } = {}) {
   const validation = await validateImageSize(uri);
   if (!validation.valid) throw new Error(validation.error);
+  const prepared = preparedImages.get(uri);
+  if (prepared && Math.max(prepared.width, prepared.height) <= maxDimension && validation.sizeBytes > 0 && validation.sizeBytes <= targetBytes) return prepared;
   if (!width || !height) {
     const dimensions = await new Promise((resolve, reject) => Image.getSize(uri, (w, h) => resolve({ width: w, height: h }), reject));
     width = dimensions.width;
@@ -91,6 +94,8 @@ export async function compressUploadImage(uri, {
   if (info?.size > targetBytes) {
     result = await manipulateAsync(result.uri, [], { compress: 0.55, format: SaveFormat.JPEG });
   }
+  preparedImages.set(result.uri, result);
+  if (preparedImages.size > 64) preparedImages.delete(preparedImages.keys().next().value);
   return result;
 }
 

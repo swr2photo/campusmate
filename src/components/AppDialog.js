@@ -1,7 +1,9 @@
+import { Pressable } from './NativePressable';
+import NativeInteractionContext from './NativeInteractionContext';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Easing, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Animated, Easing, Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { FullWindowOverlay } from 'react-native-screens';
 import { BlurView } from 'expo-blur';
@@ -125,6 +127,7 @@ function DialogButton({ button, colors, isDark, primary, stacked }) {
   const disabled = Boolean(button.disabled || button.loading);
   return (
     <Pressable
+      nativeGestureSurface
       accessibilityLabel={button.text}
       accessibilityRole="button"
       accessibilityState={{ busy: Boolean(button.loading), disabled }}
@@ -238,33 +241,35 @@ export default function AppDialog({
   const isLongMessage = typeof content.message === 'string' && content.message.length > 220;
 
   const card = (
-    <View style={styles.root}>
-      <Animated.View
-        pointerEvents="none"
-        style={[
-          StyleSheet.absoluteFill,
-          { opacity: progress },
-        ]}
-      >
-        <BlurView
-          intensity={isDark ? 36 : 24}
-          style={StyleSheet.absoluteFill}
-          tint={isDark ? 'dark' : 'systemMaterial'}
-        />
-        <View
+    <NativeInteractionContext.Provider value={true}>
+      <View style={styles.root}>
+        <Animated.View
+          pointerEvents="none"
           style={[
             StyleSheet.absoluteFill,
-            { backgroundColor: isDark ? 'rgba(0, 0, 0, 0.42)' : 'rgba(15, 23, 42, 0.24)' },
+            { opacity: progress },
           ]}
+        >
+          <BlurView
+            intensity={isDark ? 36 : 24}
+            style={StyleSheet.absoluteFill}
+            tint={isDark ? 'dark' : 'systemMaterial'}
+          />
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              { backgroundColor: isDark ? 'rgba(0, 0, 0, 0.42)' : 'rgba(15, 23, 42, 0.24)' },
+            ]}
+          />
+        </Animated.View>
+        <Pressable
+          nativeGestureSurface
+          accessibilityElementsHidden
+          disabled={!onBackdropPress || !visible}
+          importantForAccessibility="no"
+          onPress={onBackdropPress}
+          style={StyleSheet.absoluteFill}
         />
-      </Animated.View>
-      <Pressable
-        accessibilityElementsHidden
-        disabled={!onBackdropPress || !visible}
-        importantForAccessibility="no"
-        onPress={onBackdropPress}
-        style={StyleSheet.absoluteFill}
-      />
       <Animated.View
         accessibilityViewIsModal
         accessibilityRole="alert"
@@ -349,6 +354,7 @@ export default function AppDialog({
         </LiquidGlassView>
       </Animated.View>
     </View>
+    </NativeInteractionContext.Provider>
   );
 
   if (Platform.OS === 'ios') {

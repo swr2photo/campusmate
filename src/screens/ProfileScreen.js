@@ -1,11 +1,15 @@
+import { Pressable, TouchableOpacity } from '../components/NativePressable';
 import Text from '../components/AppText';
 import { MAX_PROFILE_PHOTOS } from '../data/profilePhotos';
 import { AppTextInput as TextInput } from '../components/AppText';
 import { useToast } from '../context/ToastContext';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, BackHandler, Image, Keyboard, KeyboardAvoidingView, Modal, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Switch, TouchableOpacity, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Animated, BackHandler, Image, Keyboard, KeyboardAvoidingView, Linking, Modal, PanResponder, Platform, ScrollView, StyleSheet, Switch, useWindowDimensions, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { router } from 'expo-router';
+import * as FileSystem from 'expo-file-system';
+import ChatImageEditorModal from '../components/ChatImageEditorModal';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ACTIVITY_CATEGORIES,
@@ -15,22 +19,27 @@ import {
   sanitizeActivityDetails,
 } from '../data/activityCategories';
 import SpotifyTrackSearchSheet, { MAX_FAVORITE_TRACKS } from '../components/SpotifyTrackSearchSheet';
-import TrackPreviewButton from '../components/TrackPreviewButton';
+import ProfileActivityChip from '../components/ProfileActivityChip';
+import ProfileFavoriteTrackRow from '../components/ProfileFavoriteTrackRow';
 import SpotifyConnectCard from '../components/SpotifyConnectCard';
 import { prefetchBrowseMusicTracks } from '../services/spotifyService';
 import { isSpotifyFeatureAllowed } from '../utils/featureFlags';
 import { useAuth } from '../context/AuthContext';
 import { getStyles as getDiscoverStyles, ProfileCardView } from './DiscoverProfileScreen.js';
 import { useAppProfile, useAppActions } from '../context/AppContext';
-import { Card, Chip, PrimaryButton } from '../components/ui';
+import { Card, Chip, PrimaryButton, TonalButton } from '../components/ui';
 import * as ImageManipulator from 'expo-image-manipulator';
 import FeatureIcon from '../components/FeatureIcon';
 import AvailabilityModal from '../components/AvailabilityModal';
 import FaceVerificationModal from '../components/FaceVerificationModal';
+import { uploadGalleryImage } from '../services/profileGalleryService';
 import LiquidGlassSegmentedControl from '../components/LiquidGlassSegmentedControl';
 import LiquidGlassView from '../components/LiquidGlassView';
 import ProfileSettingsScreen from './ProfileSettingsScreen';
 import { compressProfileImage, validateImageSize, MAX_PROFILE_IMAGE_SIZE_MB } from '../utils/compressImage';
+import { isCommittedProfilePhoto } from '../utils/profilePhoto';
+import BentoPhotoGrid from '../components/BentoPhotoGrid';
+import { ScreenChrome, ScreenScrollView } from '../components/ScreenChrome';
 import { radius, spacing, type, useTheme } from '../theme';
 
 import { FACULTIES } from '../data/faculties';
@@ -44,6 +53,7 @@ import {
   STUDENT_YEAR_UNAVAILABLE_MESSAGE,
 } from '../utils/studentId';
 import { showAlert } from '../utils/appAlert';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from '../components/LiquidGlassSurface';
 const FACULTY_OPTIONS = FACULTIES.map((faculty) => ({ label: faculty, value: faculty }));
 const YEAR_OPTIONS = ACADEMIC_YEARS.map((year) => ({ label: year, value: year }));
 export const AGES = Array.from({ length: 17 }, (_, i) => ({
@@ -99,7 +109,6 @@ export function getProfileValidationError({ age, avatarUri, bio, faculty, gender
   if (interests.includes('running') && !pace) {
     return 'กรุณาเลือกเพซวิ่งเมื่อเลือกวิ่งออกกำลังกาย';
   }
-  if (!availabilitySlots.length && !availability?.trim()) return 'กรุณาเลือกช่วงเวลาที่สะดวกอย่างน้อย 1 ช่วง';
   if (!bio.trim()) return 'กรุณาเขียนแนะนำตัวสั้น ๆ';
   return null;
 }
@@ -161,10 +170,9 @@ function ProfilePreview({
   return (
     <View style={{ flex: 1, backgroundColor: colors.canvas }}>
       <View style={{ paddingHorizontal: 14, paddingTop: 6, paddingBottom: 6 }}>
-        <LiquidGlassView
-          borderRadius={18}
-          borderWidth={StyleSheet.hairlineWidth}
-          contentStyle={{
+        <ScreenChrome elevated
+          style={{
+            borderRadius: 18,
             width: '100%',
             flexDirection: 'row',
             alignItems: 'center',
@@ -172,12 +180,10 @@ function ProfilePreview({
             paddingHorizontal: 14,
             paddingVertical: 10,
           }}
-          glassEffectStyle="clear"
-          specular
         >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, paddingRight: 12 }}>
             <FeatureIcon color={colors.primary} name="eye.fill" size={17} />
-            <Text style={{ fontSize: 13, fontWeight: '700', color: colors.ink }}>
+            <Text style={{ fontSize: 13, lineHeight: 20, flexShrink: 1, fontWeight: '700', color: colors.ink }}>
               ตัวอย่างโปรไฟล์ของคุณ
             </Text>
           </View>
@@ -185,22 +191,35 @@ function ProfilePreview({
             <Pressable
               hitSlop={6}
               onPress={onNavigateToEdit}
+              accessibilityRole="button"
+              accessibilityLabel="แก้ไขข้อมูลโปรไฟล์"
               style={({ pressed }) => [
                 {
-                  backgroundColor: colors.primarySoft,
-                  paddingHorizontal: 10,
-                  paddingVertical: 4,
-                  borderRadius: 12,
+                  backgroundColor: '#3B82F6',
+                  paddingHorizontal: 16,
+                  paddingVertical: 10,
+                  minHeight: 44,
+                  flexShrink: 0,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  borderRadius: 22,
+                  shadowColor: '#3B82F6',
+                  shadowOpacity: 0.35,
+                  shadowRadius: 8,
+                  shadowOffset: { width: 0, height: 3 },
+                  elevation: 3,
                 },
-                pressed && { opacity: 0.7 },
+                pressed && { opacity: 0.8 },
               ]}
             >
-              <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>
+              <FeatureIcon color="#FFFFFF" name="pencil" size={14} />
+              <Text style={{ fontSize: 14, lineHeight: 20, fontWeight: '800', color: '#FFFFFF' }}>
                 แก้ไขข้อมูล
               </Text>
             </Pressable>
           ) : null}
-        </LiquidGlassView>
+        </ScreenChrome>
       </View>
       <ProfileCardView
         candidate={candidate}
@@ -231,9 +250,10 @@ export default function ProfileScreen({
   const { showImageModeration } = useToast();
   const { colors, isDark } = useTheme();
   const styles = getStyles(colors, isDark);
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
-  const [photoGridWidth, setPhotoGridWidth] = useState(0);
   const isFirstSetup = Boolean(overrideSave);
 
   const isControlled = controlledActiveTab !== undefined;
@@ -293,7 +313,177 @@ export default function ProfileScreen({
   const [showSpotifySearch, setShowSpotifySearch] = useState(false);
   const [favoriteTracks, setFavoriteTracks] = useState(() => Array.isArray(safeProfile.favoriteTracks) ? safeProfile.favoriteTracks.slice(0, MAX_FAVORITE_TRACKS) : []);
   const [isProcessingImage, setIsProcessingImage] = useState(false);
+  const [processingPhotoIndex, setProcessingPhotoIndex] = useState(null);
+  const [localPhotoPreview, setLocalPhotoPreview] = useState(null);
+  const [uploadingGallery, setUploadingGallery] = useState({});
   const [showFaceVerificationModal, setShowFaceVerificationModal] = useState(false);
+  const [verificationCandidate, setVerificationCandidate] = useState(null);
+  const [editingPhoto, setEditingPhoto] = useState(null);
+  const [selectedPhotoIndex, setSelectedPhotoIndex] = useState(null);
+
+  const photoActionTimer = useRef(null);
+  useEffect(() => () => clearTimeout(photoActionTimer.current), []);
+
+  const requestPhotoPermission = async () => {
+    if (Platform.OS !== 'web') {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        showAlert(
+          'อนุญาตการเข้าถึงรูปภาพ',
+          'เปิดสิทธิ์การเข้าถึงรูปภาพในการตั้งค่าแอป เพื่อเลือกรูปภาพในโปรไฟล์',
+          [
+            { text: 'ยกเลิก', style: 'cancel' },
+            {
+              text: 'เปิดการตั้งค่า',
+              onPress: () => {
+                Linking.openSettings().catch(() => {
+                  onToast?.('เปิดการตั้งค่าไม่ได้ กรุณาเปิดจากการตั้งค่าของอุปกรณ์', 'info');
+                });
+              },
+            },
+          ]
+        );
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const pickGalleryPhoto = async (galleryIndex) => {
+    const ownerId = currentOwnerId;
+    try {
+      const hasPermission = await requestPhotoPermission();
+      if (!hasPermission) return;
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [2, 3],
+        quality: 0.8,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      if (photoOwnerRef.current !== ownerId) return;
+      setIsProcessingImage(true);
+      setProcessingPhotoIndex(galleryIndex + 1);
+      const asset = result.assets[0];
+      setLocalPhotoPreview(asset.uri);
+      const sizeValidation = await validateImageSize(asset.uri, asset.fileSize, MAX_PROFILE_IMAGE_SIZE_MB);
+      if (!sizeValidation.valid) throw new Error(sizeValidation.error);
+      const manipulated = await ImageManipulator.manipulateAsync(
+        asset.uri,
+        [{ resize: { width: 800 } }],
+        { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      const localUri = manipulated.uri;
+      setGallery((current) => {
+        const next = [...current];
+        next[galleryIndex] = localUri;
+        return next.filter(Boolean);
+      });
+      if (currentOwnerId) {
+        const uploadOwner = currentOwnerId;
+        setUploadingGallery(current => ({ ...current, [localUri]: true }));
+        uploadGalleryImage(localUri, uploadOwner)
+          .then((remoteUrl) => {
+            if (photoOwnerRef.current !== uploadOwner) return;
+            setGallery((current) => {
+              const next = [...current];
+              const idx = next.indexOf(localUri);
+              if (idx !== -1) {
+                next[idx] = remoteUrl;
+                return [...next];
+              }
+              return current;
+            });
+          })
+          .catch((err) => {
+            if (photoOwnerRef.current !== uploadOwner) return;
+            if (err?.isModerationViolation || err?.isModerationUnavailable) showImageModeration?.(err);
+            else showAlert('อัปโหลดรูปไม่สำเร็จ', 'รูปยังอยู่ในฉบับร่าง กดบันทึกเพื่อลองอัปโหลดอีกครั้ง', { tone: 'danger' });
+          }).finally(() => { if (photoOwnerRef.current === uploadOwner) setUploadingGallery(({ [localUri]: _done, ...rest }) => rest); });
+      }
+    } catch (error) {
+      console.warn('[ProfileScreen] pickGalleryPhoto error:', error);
+      onToast?.(error?.message || 'เพิ่มรูปภาพไม่สำเร็จ', 'info');
+    } finally {
+      setIsProcessingImage(false);
+      setProcessingPhotoIndex(null);
+      setLocalPhotoPreview(null);
+    }
+  };
+
+  const handleEditPhoto = async (index) => {
+    const targetUri = index === 0 ? avatarUri : gallery[index - 1];
+    if (!targetUri) return;
+    try {
+      setIsProcessingImage(true);
+      setProcessingPhotoIndex(index);
+      let uri = targetUri;
+      if (/^https?:\/\//i.test(uri)) {
+        const target = `${FileSystem.cacheDirectory}profile_edit_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`;
+        const response = await FileSystem.downloadAsync(uri, target);
+        if (response.status >= 200 && response.status < 300) {
+          uri = response.uri;
+        }
+      }
+      setEditingPhoto({ index, uri, uris: [uri] });
+    } catch (err) {
+      console.warn('[ProfileScreen] handleEditPhoto error:', err);
+      setEditingPhoto({ index, uri: targetUri, uris: [targetUri] });
+    } finally {
+      setIsProcessingImage(false);
+      setProcessingPhotoIndex(null);
+      setLocalPhotoPreview(null);
+    }
+  };
+
+  const handleReplacePhoto = async (index) => {
+    if (index === 0) {
+      await pickImage();
+    } else {
+      await pickGalleryPhoto(index - 1);
+    }
+  };
+
+  const triggerReplacePhoto = (index) => {
+    setSelectedPhotoIndex(null);
+    clearTimeout(photoActionTimer.current);
+    photoActionTimer.current = setTimeout(() => {
+      handleReplacePhoto(index);
+    }, 350);
+  };
+
+  const triggerEditPhoto = (index) => {
+    setSelectedPhotoIndex(null);
+    clearTimeout(photoActionTimer.current);
+    photoActionTimer.current = setTimeout(() => {
+      handleEditPhoto(index);
+    }, 350);
+  };
+
+  const handleMakeMainPhoto = (gallerySlotIndex) => {
+    if (gallerySlotIndex === 0) return;
+    const selectedUri = gallery[gallerySlotIndex - 1];
+    if (!selectedUri) return;
+    const remainingGallery = gallery.filter((_, i) => i !== gallerySlotIndex - 1);
+    const newGallery = avatarUri ? [avatarUri, ...remainingGallery] : remainingGallery;
+    setAvatarUri(selectedUri);
+    setGallery(newGallery);
+    onToast?.('ตั้งเป็นรูปโปรไฟล์หลักแล้ว', 'success');
+  };
+
+  const handleDeletePhoto = (index) => {
+    if (index === 0) {
+      onToast?.('เลือกรูปหลักใหม่และยืนยันใบหน้าก่อนเปลี่ยนรูปเดิม', 'info');
+    } else {
+      setGallery((current) => current.filter((_, i) => i !== index - 1));
+      onToast?.('นำรูปภาพออกจากโปรไฟล์แล้ว', 'info');
+    }
+  };
+  const currentOwnerId = profile?.id || user?.uid || user?.id;
+  const photoOwnerRef = useRef(currentOwnerId);
+  photoOwnerRef.current = currentOwnerId;
+  useEffect(() => () => { photoOwnerRef.current = null; }, []);
   const isFaceVerified = Boolean(safeProfile?.isFaceVerified);
   const [discoverable, setDiscoverable] = useState(safeProfile.isDiscoverable ?? true);
   const [notifications, setNotifications] = useState(safeProfile.notificationsEnabled ?? true);
@@ -409,8 +599,12 @@ export default function ProfileScreen({
 
   const pickImage = async () => {
     if (isProcessingImage) return;
+    const ownerId = profile?.id || user?.uid || user?.id;
     let compressedUri = null;
     try {
+      const hasPermission = await requestPhotoPermission();
+      if (!hasPermission) return;
+
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: true,
@@ -425,6 +619,8 @@ export default function ProfileScreen({
 
       const asset = result.assets[0];
       setIsProcessingImage(true);
+      setProcessingPhotoIndex(0);
+      setLocalPhotoPreview(asset.uri);
 
       // Validate image size (must not exceed 30 MB)
       const sizeValidation = await validateImageSize(asset.uri, asset.fileSize, MAX_PROFILE_IMAGE_SIZE_MB);
@@ -436,40 +632,50 @@ export default function ProfileScreen({
 
       try {
         compressedUri = await compressProfileImage(asset.uri);
+        const uri = await uploadGalleryImage(compressedUri, ownerId);
+        if (photoOwnerRef.current !== ownerId) return;
+        setVerificationCandidate({ uri, ownerId });
+        verificationPassedRef.current = false;
+        setShowFaceVerificationModal(true);
       } catch (compressionError) {
         console.warn('[Profile] Image compression failed:', compressionError);
-        showAlert(
-          'ไม่สามารถประมวลผลรูปภาพได้',
-          compressionError.message || 'เกิดข้อผิดพลาดในการปรับขนาดรูปภาพ กรุณาลองเลือกรูปภาพใหม่อีกครั้ง',
-          { tone: 'danger' }
-        );
-        onToast?.(compressionError.message || 'ไม่สามารถประมวลผลรูปภาพได้', 'error');
+        if (compressionError?.isModerationViolation || compressionError?.isModerationUnavailable) {
+          showImageModeration?.(compressionError);
+        } else {
+          showAlert(
+            'ไม่สามารถประมวลผลรูปภาพได้',
+            compressionError.message || 'เกิดข้อผิดพลาดในการปรับขนาดรูปภาพ กรุณาลองเลือกรูปภาพใหม่อีกครั้ง',
+            { tone: 'danger' }
+          );
+          onToast?.(compressionError.message || 'ไม่สามารถประมวลผลรูปภาพได้', 'error');
+        }
       }
     } catch (error) {
       console.error('[Profile] Image picking error:', error);
       showAlert('เกิดข้อผิดพลาด', 'ไม่สามารถเปิดเลือกรูปภาพได้ กรุณาลองใหม่อีกครั้ง', { tone: 'danger' });
     } finally {
       setIsProcessingImage(false);
+      setProcessingPhotoIndex(null);
+      setLocalPhotoPreview(null);
     }
-    if (!compressedUri) return;
+  };
 
-    // The server compares the selfie with the *saved* main photo and revokes
-    // the badge whenever that photo changes, so save first, then verify.
-    const saved = await handleSave({
-      avatarUri: compressedUri,
-      keepOpen: true,
-      successMessage: 'บันทึกรูปหลักแล้ว ยืนยันใบหน้ากับรูปใหม่ต่อได้เลย',
-    });
-    if (saved) {
-      verificationPassedRef.current = false;
-      setShowFaceVerificationModal(true);
+  const handleFaceVerified = async () => {
+    const candidate = verificationCandidate;
+    if (!candidate || photoOwnerRef.current !== candidate.ownerId) return;
+    const committed = await markFaceVerified?.(candidate.uri);
+    if (photoOwnerRef.current !== candidate.ownerId) return;
+    if (!isCommittedProfilePhoto(committed, candidate.uri)) {
+      throw new Error('ยังบันทึกรูปใหม่ไม่สำเร็จ กรุณาลองอีกครั้ง');
     }
+    setAvatarUri(committed.avatarUri);
+    verificationPassedRef.current = true;
+    onToast?.('ยืนยันใบหน้าเรียบร้อยแล้ว', 'success');
   };
 
   const handleSave = async (customOverrides = {}) => {
     if (saving) return false;
     if (isProcessingImage) {
-      onToast?.('กำลังประมวลผลรูปภาพ กรุณารอสักครู่...', 'info');
       return false;
     }
     setSaving(true);
@@ -498,8 +704,8 @@ export default function ProfileScreen({
         activityDetails: cleanActivityDetails,
         pace: getRunningPace(cleanActivityDetails),
         skill,
-        availability,
-        availabilitySlots,
+        availability: null,
+        availabilitySlots: null,
         bio,
         interests: activities,
         favoriteTracks,
@@ -584,169 +790,62 @@ export default function ProfileScreen({
           />
         </View>
       ) : (
-        <ScrollView
+        <ScreenScrollView
           ref={editorScrollRef}
           contentContainerStyle={[styles.content, styles.contentWithStickySave]}
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {/* --- Photo Section Header & Details --- */}
-          <View style={{ marginBottom: 12, marginTop: 4 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Text style={{ fontSize: 18, fontWeight: '800', color: colors.ink }}>รูปภาพ</Text>
-                <FeatureIcon name="lightbulb.fill" size={16} color={colors.amber || '#D8901B'} />
-                {((avatarUri ? 1 : 0) + gallery.filter(Boolean).length) < 3 && (
-                  <FeatureIcon name="exclamationmark.circle.fill" size={15} color={colors.coral || '#F47C6B'} />
-                )}
-              </View>
-              <View style={{ backgroundColor: colors.surfaceRaised, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 1, borderColor: colors.line }}>
+          {/* --- Photo section header: one row, title + count on the left, link on the right --- */}
+          <View style={{ marginBottom: 12, marginTop: 4, gap: 4 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', minHeight: 44, gap: 8 }}>
+              <Text style={{ fontSize: 18, lineHeight: 26, fontWeight: '800', color: colors.ink }}>รูปภาพ</Text>
+              <View style={{ backgroundColor: colors.surfaceRaised, borderRadius: 12, paddingHorizontal: 8, height: 24, justifyContent: 'center' }}>
                 <Text style={{ fontSize: 12, fontWeight: '700', color: colors.inkMuted }}>
-                  {(avatarUri ? 1 : 0) + gallery.filter(Boolean).length}/{MAX_PROFILE_PHOTOS} รูป
+                  {(avatarUri ? 1 : 0) + gallery.filter(Boolean).length}/{MAX_PROFILE_PHOTOS}
                 </Text>
               </View>
+              <View style={{ flex: 1 }} />
+              <Pressable accessibilityLabel="เปิดหน้ารูปภาพของฉัน" accessibilityRole="button" hitSlop={6} onPress={() => router.push('/profile-photos')}
+                style={({ pressed }) => ({ minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 4, paddingLeft: 8, opacity: pressed ? 0.7 : 1 })}>
+                <Text style={{ fontSize: 14, fontWeight: '700', color: colors.accentText }}>จัดเรียงรูป</Text>
+                <FeatureIcon name="chevron.right" size={13} color={colors.accentText} />
+              </Pressable>
             </View>
             <Text style={{ fontSize: 13, color: colors.inkMuted, lineHeight: 18 }}>
-              โปรไฟล์ที่มีรูปภาพตั้งแต่ 3 รูปขึ้นไปจะแสดงแก่ผู้คนจำนวนมากขึ้น (รูปแรกคือรูปหลัก)
+              รูปหลักควรเห็นหน้าชัด ส่วนรูปอื่นเล่าเรื่องกิจกรรมที่คุณชอบได้เลย
             </Text>
           </View>
 
-          {/* --- Photo Grid --- */}
-          <View
-            onLayout={({ nativeEvent }) => {
-              const width = nativeEvent.layout.width;
-              setPhotoGridWidth((current) => Math.abs(current - width) > 0.5 ? width : current);
-            }}
-            style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: ((avatarUri ? 1 : 0) + gallery.filter(Boolean).length) < 3 ? 10 : 16 }}
-          >
-            {Array.from({ length: MAX_PROFILE_PHOTOS }, (_, index) => {
-              const availableWidth = photoGridWidth || Math.max(0, Math.min(windowWidth, 760) - spacing.md * 2);
-              const slotWidth = Math.max(1, Math.floor((availableWidth - 20) / 3));
-              const slotHeight = slotWidth * 1.5;
-
-              const isHero = index === 0;
-              const uri = index === 0 ? avatarUri : gallery[index - 1];
-
-              return (
-                <Pressable
-                  accessibilityLabel={isHero
-                    ? (uri ? 'เปลี่ยนรูปโปรไฟล์หลัก' : 'เพิ่มรูปโปรไฟล์หลัก')
-                    : (uri ? `เปลี่ยนรูปที่ ${index + 1}` : `เพิ่มรูปที่ ${index + 1}`)}
-                  accessibilityRole="button"
-                  key={index}
-                  disabled={isProcessingImage}
-                  onPress={async () => {
-                    if (isProcessingImage) return;
-                    if (isHero) {
-                      await pickImage();
-                      return;
-                    }
-                    try {
-                      const result = await ImagePicker.launchImageLibraryAsync({
-                        mediaTypes: ['images'],
-                        allowsEditing: true,
-                        aspect: [2, 3],
-                        quality: 0.8,
-                      });
-                      if (result.canceled || !result.assets?.[0]) return;
-                      setIsProcessingImage(true);
-                      const asset = result.assets[0];
-                      const sizeValidation = await validateImageSize(asset.uri, asset.fileSize, MAX_PROFILE_IMAGE_SIZE_MB);
-                      if (!sizeValidation.valid) throw new Error(sizeValidation.error);
-                      const manipulated = await ImageManipulator.manipulateAsync(
-                        asset.uri,
-                        [{ resize: { width: 800 } }],
-                        { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
-                      );
-                      setGallery((current) => {
-                        const next = [...current];
-                        next[index - 1] = manipulated.uri;
-                        return next.filter(Boolean);
-                      });
-                    } catch (error) {
-                      onToast?.(error?.message || 'เพิ่มรูปภาพไม่สำเร็จ', 'info');
-                    } finally {
-                      setIsProcessingImage(false);
-                    }
-                  }}
-                  style={{
-                    width: slotWidth,
-                    height: slotHeight,
-                    backgroundColor: colors.surfaceRaised,
-                    borderRadius: 16,
-                    overflow: 'hidden',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    borderWidth: uri ? 0 : 2,
-                    borderColor: colors.line,
-                    borderStyle: uri ? 'solid' : 'dashed',
-                  }}
-                >
-                  {uri ? (
-                    <>
-                      <Image source={{ uri }} style={{ width: '100%', height: '100%' }} />
-                      {isHero && (
-                        <View style={{ position: 'absolute', top: 6, left: 6, backgroundColor: colors.primary, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 }}>
-                          <Text style={{ color: '#FFF', fontSize: 10, fontWeight: '800' }}>รูปหลัก</Text>
-                        </View>
-                      )}
-                      <Pressable
-                        accessibilityLabel={`ลบรูป${isHero ? 'หลัก' : `ที่ ${index + 1}`}`}
-                        accessibilityRole="button"
-                        hitSlop={8}
-                        onPress={(e) => {
-                          e.stopPropagation();
-                          if (isHero) {
-                            setAvatarUri(null);
-                          } else {
-                            setGallery((current) => current.filter((_, i) => i !== index - 1));
-                          }
-                        }}
-                        style={{
-                          position: 'absolute',
-                          top: 2,
-                          right: 2,
-                          width: 44,
-                          height: 44,
-                          borderRadius: 22,
-                          backgroundColor: 'rgba(0,0,0,0.6)',
-                          justifyContent: 'center',
-                          alignItems: 'center',
-                        }}
-                      >
-                        <FeatureIcon name="xmark" size={16} color="#FFF" />
-                      </Pressable>
-                      <View style={{ position: 'absolute', bottom: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 10, padding: 4 }}>
-                        <FeatureIcon name="pencil" size={11} color="#FFF" />
-                      </View>
-                    </>
-                  ) : (
-                    <>
-                      <FeatureIcon name="plus" size={24} color={colors.inkMuted} />
-                      <Text style={{ color: colors.inkMuted, fontSize: 11, marginTop: 4, fontWeight: '700', textAlign: 'center' }}>
-                        {isHero ? 'รูปหลัก' : `รูปที่ ${index + 1}`}
-                      </Text>
-                    </>
-                  )}
-                </Pressable>
-              );
-            })}
+          {/* --- Bento photo grid: main photo 2 x 2, the rest around it --- */}
+          <View style={{ marginBottom: 14 }}>
+            <BentoPhotoGrid
+              photos={Array.from({ length: MAX_PROFILE_PHOTOS }, (_, index) => index === processingPhotoIndex && localPhotoPreview ? localPhotoPreview : index === 0 ? avatarUri : gallery[index - 1])}
+              busyIndex={isProcessingImage ? processingPhotoIndex : null}
+              busyUris={Object.keys(uploadingGallery)}
+              slots={MAX_PROFILE_PHOTOS}
+              disabled={isProcessingImage}
+              identityPrefix={`profile-editor:${safeProfile.id || 'me'}`}
+              avatarRevision={safeProfile.avatarRevision}
+              onPressSlot={(index, uri) => {
+                if (isProcessingImage) return;
+                if (uri) setSelectedPhotoIndex(index);
+                else if (index === 0) pickImage();
+                else pickGalleryPhoto(index - 1);
+              }}
+              onRemove={handleDeletePhoto}
+            />
           </View>
           {((avatarUri ? 1 : 0) + gallery.filter(Boolean).length) < 3 && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.coralSoft || '#FFF0ED', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, marginBottom: 16 }}>
-              <FeatureIcon name="info.circle.fill" size={15} color={colors.coral || '#F47C6B'} />
-              <Text style={{ fontSize: 12, color: colors.coral || '#F47C6B', flex: 1, fontWeight: '600' }}>
-                เพิ่มอีกอย่างน้อย {3 - ((avatarUri ? 1 : 0) + gallery.filter(Boolean).length)} รูป เพื่อให้โปรไฟล์โดดเด่นและมีโอกาสแมตช์มากขึ้น
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.amberSoft, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 14, borderCurve: 'continuous', marginBottom: 16 }}>
+              <FeatureIcon name="sparkles" size={15} color={colors.amber} />
+              <Text style={{ fontSize: 12, lineHeight: 18, color: colors.ink, flex: 1, fontWeight: '600' }}>
+                เพิ่มอีก {3 - ((avatarUri ? 1 : 0) + gallery.filter(Boolean).length)} รูป ให้เพื่อนเห็นมุมต่าง ๆ ของคุณ
               </Text>
             </View>
           )}
-          {isProcessingImage ? (
-            <View style={{ alignItems: 'center', flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md }}>
-              <ActivityIndicator color={colors.primary} size="small" />
-              <Text style={{ color: colors.inkMuted, fontSize: type.caption }}>กำลังประมวลผลรูปภาพ...</Text>
-            </View>
-          ) : null}
+
 
 
           <Card style={styles.formCard}>
@@ -812,25 +911,6 @@ export default function ProfileScreen({
               required
               value={gender}
             />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="เลือกช่วงเวลาว่างสะดวก"
-              onPress={() => setShowAvailabilityModal(true)}
-              style={styles.fullRowDropdownButton}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <FeatureIcon color={colors.primary} name="clock.fill" size={18} style={styles.fullRowDropdownIcon} />
-                <View style={styles.fullRowDropdownCopy}>
-                  <Text style={styles.fullRowDropdownLabel}>
-                    ช่วงเวลาว่างสะดวก{isFirstSetup ? <Text style={styles.requiredMark}> {REQUIRED_MARK}</Text> : null}
-                  </Text>
-                  <Text style={availabilitySlots.length > 0 ? styles.fullRowDropdownValue : styles.fullRowDropdownPlaceholder}>
-                    {availabilitySlots.length > 0 ? `เลือกไว้ ${availabilitySlots.length} ช่วงเวลา` : 'เลือกหลายวันและเวลา'}
-                  </Text>
-                </View>
-                <Feather name="chevron-down" size={18} color={colors.inkSoft} />
-              </View>
-            </Pressable>
             <View style={{ marginTop: spacing.xs }}>
               <Field
                 colors={colors}
@@ -862,16 +942,12 @@ export default function ProfileScreen({
           <View style={styles.formSectionSpacing}>
           <View style={styles.interestGrid}>
             {ACTIVITY_CATEGORIES.filter((category) => category.id !== 'all').map((category) => (
-              <View key={category.id} style={styles.interestGridItem}>
-                <Chip
-                  active={interests.includes(category.id)}
-                  color={category.color}
-                  iconName={category.symbol}
-                  label={category.label}
-                  onPress={() => toggleInterest(category.id)}
-                  style={styles.uniformInterestChip}
-                />
-              </View>
+              <ProfileActivityChip
+                key={category.id}
+                category={category}
+                selected={interests.includes(category.id)}
+                onPress={() => toggleInterest(category.id)}
+              />
             ))}
           </View>
 
@@ -926,53 +1002,14 @@ export default function ProfileScreen({
                 <View style={styles.fieldContainer}>
                   <FormLabel label={`เพลงโปรด (${favoriteTracks.length}/${MAX_FAVORITE_TRACKS})`} styles={styles} />
                   {favoriteTracks.map((track) => (
-                    <View key={track.id} style={[styles.favoriteTrackRow, isDark ? styles.favoriteTrackRowDark : styles.favoriteTrackRowLight]}>
-                      {track.albumArt ? (
-                        <Image source={{ uri: track.albumArt }} style={styles.favoriteTrackArt} />
-                      ) : (
-                        <View style={[styles.favoriteTrackArt, styles.favoriteTrackArtPlaceholder]}>
-                          <FeatureIcon color={colors.inkSoft} name="music.note" size={16} />
-                        </View>
-                      )}
-                      <View style={styles.favoriteTrackMeta}>
-                        <Text numberOfLines={1} style={styles.favoriteTrackName}>{track.name}</Text>
-                        <Text numberOfLines={1} style={styles.favoriteTrackArtists}>{track.artists}</Text>
-                      </View>
-                      <TrackPreviewButton
-                        backgroundColor={colors.primarySoft}
-                        color={colors.primary}
-                        previewEndMs={track.previewEndMs}
-                        previewStartMs={track.previewStartMs}
-                        previewUrl={track.previewUrl}
-                        size={34}
-                        track={track}
-                        trackArtists={track.artists}
-                        trackName={track.name}
-                        youtubeVideoId={track.youtubeVideoId}
-                      />
-                      <Pressable
-                        accessibilityLabel={`ลบ ${track.name}`}
-                        hitSlop={8}
-                        onPress={() => setFavoriteTracks((current) => current.filter((item) => item.id !== track.id))}
-                        style={({ pressed }) => pressed && { opacity: 0.6 }}
-                      >
-                        <FeatureIcon color={colors.danger} name="xmark.circle.fill" size={20} />
-                      </Pressable>
-                    </View>
+                    <ProfileFavoriteTrackRow
+                      key={track.id}
+                      track={track}
+                      onRemove={(id) => setFavoriteTracks((current) => current.filter((item) => item.id !== id))}
+                    />
                   ))}
                   {favoriteTracks.length < MAX_FAVORITE_TRACKS ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      onPress={() => setShowSpotifySearch(true)}
-                      style={({ pressed }) => [
-                        styles.addTrackButton,
-                        isDark ? styles.addTrackButtonDark : styles.addTrackButtonLight,
-                        pressed && { opacity: 0.75 },
-                      ]}
-                    >
-                      <FeatureIcon color={colors.primary} name="music.note" size={16} />
-                      <Text style={styles.addTrackButtonText}>ค้นหาและเพิ่มเพลงจาก Spotify</Text>
-                    </Pressable>
+                    <TonalButton iconName="magnifyingglass" label="ค้นหาและเพิ่มเพลง" onPress={() => setShowSpotifySearch(true)} style={{ marginTop: 4 }} />
                   ) : (
                     <Text style={styles.favoriteTracksHint}>เพิ่มได้สูงสุด {MAX_FAVORITE_TRACKS} เพลง</Text>
                   )}
@@ -982,32 +1019,19 @@ export default function ProfileScreen({
           </LiquidGlassView>
           </View>
         ) : null}
-        </ScrollView>
+        </ScreenScrollView>
       )}
-      <AvailabilityModal
-        visible={showAvailabilityModal}
-        onClose={() => setShowAvailabilityModal(false)}
-        availabilitySlots={availabilitySlots}
-        onSave={(slots) => {
-          setAvailabilitySlots(slots);
-          // Maintain legacy string for backward compatibility
-          setAvailability(slots.length > 0 ? `ระบุ ${slots.length} ช่วงเวลา` : '');
-        }}
-      />
       <FaceVerificationModal
-        avatarUri={avatarUri}
+        avatarUri={verificationCandidate?.uri || avatarUri}
+        candidateAvatarUri={verificationCandidate?.uri}
         onClose={() => {
           setShowFaceVerificationModal(false);
+          setVerificationCandidate(null);
           if (!verificationPassedRef.current) {
-            onToast?.('บันทึกรูปใหม่แล้ว โปรไฟล์จะแสดงในหน้าค้นหาหลังยืนยันใบหน้ากับรูปนี้', 'info');
+            onToast?.('ยังไม่ได้เปลี่ยนรูปหลัก ต้องยืนยันรูปใหม่ให้ผ่านก่อน', 'info');
           }
         }}
-        onSuccess={() => {
-          // The server already recorded the result; only mirror it locally.
-          verificationPassedRef.current = true;
-          markFaceVerified?.();
-          onToast?.('ยืนยันใบหน้าเรียบร้อยแล้ว', 'success');
-        }}
+        onSuccess={handleFaceVerified}
         visible={showFaceVerificationModal}
       />
       {showSpotifySearch ? (
@@ -1024,25 +1048,156 @@ export default function ProfileScreen({
           visible
         />
       ) : null}
+
+      {editingPhoto ? (
+        <ChatImageEditorModal
+          confirmLabel="ใช้รูปนี้"
+          imageUri={editingPhoto.uri}
+          imageUris={editingPhoto.uris}
+          onClose={() => setEditingPhoto(null)}
+          onSend={async (edited) => {
+            const targetIndex = editingPhoto.index;
+            const editedUri = Array.isArray(edited) ? edited[0]?.uri : edited?.uri;
+            if (!editedUri) return;
+            setEditingPhoto(null);
+            if (targetIndex === 0) {
+              setAvatarUri(editedUri);
+            } else {
+              setGallery((current) => {
+                const next = [...current];
+                next[targetIndex - 1] = editedUri;
+                return next;
+              });
+              if (currentOwnerId) {
+                uploadGalleryImage(editedUri, currentOwnerId)
+                  .then((remoteUrl) => {
+                    setGallery((current) => {
+                      const next = [...current];
+                      const idx = next.indexOf(editedUri);
+                      if (idx !== -1) {
+                        next[idx] = remoteUrl;
+                        return [...next];
+                      }
+                      return current;
+                    });
+                  })
+                  .catch((err) => {
+                    console.warn('[ProfileScreen] Background gallery upload error:', err);
+                  });
+              }
+            }
+            onToast?.('บันทึกการแก้ไขรูปภาพแล้ว', 'success');
+          }}
+          showCaption={false}
+          visible
+        />
+      ) : null}
+
+      {/* Photo Management Action Sheet */}
+      <Modal
+        animationType="slide"
+        onRequestClose={() => setSelectedPhotoIndex(null)}
+        transparent
+        visible={selectedPhotoIndex !== null}
+      >
+        <Pressable onPress={() => setSelectedPhotoIndex(null)} style={styles.sheetBackdrop}>
+          <Pressable onPress={(e) => e.stopPropagation()} style={[styles.sheetContainer, glass
+            ? { backgroundColor: 'transparent', borderColor: 'transparent' }
+            : { backgroundColor: colors.card, borderColor: colors.line }]}>
+            <GlassBackground style={{ borderTopLeftRadius: 24, borderTopRightRadius: 24 }} tintColor={glassTint} />
+            <View style={[styles.sheetHandle, { backgroundColor: colors.line }]} />
+            <Text accessibilityRole="header" style={[styles.sheetTitle, { color: colors.ink }]}>
+              {selectedPhotoIndex === 0 ? 'รูปโปรไฟล์หลัก' : `รูปที่ ${(selectedPhotoIndex || 0) + 1}`}
+            </Text>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                const idx = selectedPhotoIndex;
+                triggerEditPhoto(idx);
+              }}
+              style={[styles.sheetActionItem, { borderBottomColor: colors.line }]}
+            >
+              <FeatureIcon color={colors.ink} name="slider.horizontal.3" size={20} />
+              <Text style={[styles.sheetActionText, { color: colors.ink }]}>แก้ไขรูปภาพ</Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                const idx = selectedPhotoIndex;
+                triggerReplacePhoto(idx);
+              }}
+              style={[styles.sheetActionItem, { borderBottomColor: colors.line }]}
+            >
+              <FeatureIcon color={colors.ink} name="pencil" size={20} />
+              <Text style={[styles.sheetActionText, { color: colors.ink }]}>เปลี่ยนรูปภาพ</Text>
+            </Pressable>
+
+            {selectedPhotoIndex > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  const idx = selectedPhotoIndex;
+                  setSelectedPhotoIndex(null);
+                  handleMakeMainPhoto(idx);
+                }}
+                style={[styles.sheetActionItem, { borderBottomColor: colors.line }]}
+              >
+                <FeatureIcon color={colors.ink} name="person.crop.square.fill" size={20} />
+                <Text style={[styles.sheetActionText, { color: colors.ink }]}>ตั้งเป็นรูปหลัก</Text>
+              </Pressable>
+            ) : null}
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                const idx = selectedPhotoIndex;
+                setSelectedPhotoIndex(null);
+                handleDeletePhoto(idx);
+              }}
+              style={[styles.sheetActionItem, { borderBottomColor: colors.line }]}
+            >
+              <FeatureIcon color={colors.danger} name="trash" size={20} />
+              <Text style={[styles.sheetActionText, { color: colors.danger }]}>ลบรูปภาพ</Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                setSelectedPhotoIndex(null);
+                clearTimeout(photoActionTimer.current);
+                photoActionTimer.current = setTimeout(() => {
+                  router.push('/profile-photos');
+                }, 300);
+              }}
+              style={[styles.sheetActionItem, { borderBottomColor: colors.line }]}
+            >
+              <FeatureIcon color={colors.primary} name="photo.on.rectangle.angled" size={20} />
+              <Text style={[styles.sheetActionText, { color: colors.primary }]}>เปิดหน้ารูปภาพของฉัน</Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setSelectedPhotoIndex(null)}
+              style={[styles.sheetCloseButton, { backgroundColor: colors.surfaceRaised }]}
+            >
+              <Text style={[styles.sheetCloseText, { color: colors.ink }]}>ยกเลิก</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
       {activeTab === 'edit' && (
-        <View pointerEvents="box-none" style={[styles.stickySaveBarContainer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
-          <LiquidGlassView
-            borderRadius={24}
-            borderWidth={StyleSheet.hairlineWidth}
-            contentStyle={{ width: '100%', alignItems: 'stretch' }}
-            glassEffectStyle="regular"
-            specular
-            style={styles.stickySaveBarGlass}
-          >
+        <ScreenChrome elevated pointerEvents="box-none" style={[styles.stickySaveBarContainer, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
             <PrimaryButton
               iconName="checkmark.circle.fill"
               label={isFirstSetup ? 'สร้างโปรไฟล์' : 'บันทึกโปรไฟล์'}
               loading={saving}
               onPress={handleSave}
-              style={styles.stickySaveButton}
+              numberOfLines={0}
+              style={[styles.stickySaveButton, { borderRadius: Platform.OS === 'ios' ? 28 : 16 }]}
             />
-          </LiquidGlassView>
-        </View>
+        </ScreenChrome>
       )}
     </KeyboardAvoidingView>
   );
@@ -1175,6 +1330,8 @@ export function AndroidSelectionRow({ icon, label, onSelect, options, placeholde
 
 function CustomDropdown({ colors, styles, value, onSelect, options, placeholder, compact = false, disabled = false, fullRow = false, icon, label, required = false }) {
   const [modalVisible, setModalVisible] = useState(false);
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const { height: windowHeight } = useWindowDimensions();
   const selectedOption = options.find((option) => (typeof option === 'string' ? option : option.value) === value);
   const selectedLabel = typeof selectedOption === 'string' ? selectedOption : selectedOption?.label;
@@ -1316,8 +1473,10 @@ function CustomDropdown({ colors, styles, value, onSelect, options, placeholder,
                 height: Math.min(Math.max(windowHeight * 0.82, 220), 680),
                 transform: [{ translateY }],
               },
+              glass && { backgroundColor: 'transparent' },
             ]}
           >
+            <GlassBackground style={{ borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl }} tintColor={glassTint} />
             <View
               {...panResponder.panHandlers}
               accessibilityHint="ลากลงเพื่อปิด"
@@ -1388,9 +1547,12 @@ const getStyles = (colors) => StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.canvas },
   stickyTabBarContainer: {
     backgroundColor: 'transparent',
+    alignSelf: 'center',
+    maxWidth: 680,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.xs,
     paddingBottom: spacing.xs,
+    width: '100%',
     zIndex: 999,
   },
   tabSwitcher: {
@@ -1434,7 +1596,7 @@ const getStyles = (colors) => StyleSheet.create({
   tabButtonTextInactive: {
     color: colors.inkMuted,
   },
-  content: { padding: spacing.md, paddingBottom: spacing.xxxl },
+  content: { alignSelf: 'center', maxWidth: 680, padding: spacing.md, paddingBottom: spacing.xxxl, width: '100%' },
   contentWithStickySave: { paddingBottom: spacing.lg },
   eyebrow: { color: colors.primary, fontSize: type.micro, fontWeight: '800', letterSpacing: 1, marginBottom: spacing.xs, textTransform: 'uppercase' },
   title: { color: colors.ink, fontSize: type.h1, fontWeight: '900', letterSpacing: -0.5, marginBottom: spacing.xs },
@@ -1487,30 +1649,11 @@ const getStyles = (colors) => StyleSheet.create({
   modalItemActive: { backgroundColor: colors.greenSoft, borderRadius: radius.sm, borderBottomWidth: 0, paddingHorizontal: spacing.sm },
   modalItemText: { color: colors.ink, flex: 1, fontSize: type.body },
   modalItemTextActive: { color: colors.primary, fontWeight: '800' },
-  interestGrid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4, marginBottom: spacing.md },
-  interestGridItem: { width: '50%', paddingHorizontal: 4, marginBottom: 8 },
-  uniformInterestChip: { width: '100%', minHeight: 46, paddingVertical: 10, justifyContent: 'center', alignItems: 'center' },
+  interestGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: spacing.lg, marginBottom: spacing.md },
   formSectionSpacing: { marginTop: spacing.md },
   fieldContainer: { marginBottom: spacing.md },
-  favoriteTrackRow: { alignItems: 'center', backgroundColor: colors.surfaceRaised, borderCurve: 'continuous', borderRadius: 16, flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.sm, padding: spacing.sm },
-  favoriteTrackRowLight: {
-    backgroundColor: 'rgba(255, 255, 255, 0.75)',
-    borderColor: 'rgba(0, 0, 0, 0.06)',
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  favoriteTrackRowDark: {
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderColor: 'rgba(255, 255, 255, 0.14)',
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  favoriteTrackArt: { backgroundColor: colors.canvas, borderRadius: radius.sm, height: 44, width: 44 },
-  favoriteTrackArtPlaceholder: { alignItems: 'center', justifyContent: 'center' },
-  favoriteTrackMeta: { flex: 1, minWidth: 0 },
-  favoriteTrackName: { color: colors.ink, fontSize: type.body, fontWeight: '700' },
-  favoriteTrackArtists: { color: colors.inkSoft, fontSize: type.caption, marginTop: 2 },
-  addTrackButton: { alignItems: 'center', borderColor: colors.primary, borderCurve: 'continuous', borderRadius: 16, borderStyle: 'dashed', borderWidth: 1, flexDirection: 'row', gap: spacing.sm, justifyContent: 'center', minHeight: 46, paddingHorizontal: spacing.md },
-  addTrackButtonLight: { backgroundColor: 'rgba(40, 105, 199, 0.05)' },
-  addTrackButtonDark: { backgroundColor: 'rgba(40, 105, 199, 0.14)' },
+  addTrackButton: { alignItems: 'center', borderCurve: 'continuous', borderRadius: 16, flexDirection: 'row', gap: spacing.sm, justifyContent: 'center', minHeight: 52, paddingHorizontal: spacing.md, paddingVertical: 12 },
+  addTrackButtonText: { color: colors.accentText, fontSize: 15, lineHeight: 23, fontWeight: '700', flexShrink: 1, textAlign: 'center' },
   favoriteTracksHint: { color: colors.inkSoft, fontSize: type.caption2, marginTop: spacing.xs },
   field: { marginBottom: spacing.md },
   label: { color: colors.inkMuted, fontSize: type.caption, fontWeight: '800', marginBottom: 6 },
@@ -1553,29 +1696,92 @@ const getStyles = (colors) => StyleSheet.create({
     elevation: 3,
   },
   stickySaveBarContainer: {
+    alignSelf: 'center',
+    maxWidth: 680,
     paddingHorizontal: spacing.md,
-    paddingTop: spacing.xs,
-    backgroundColor: 'transparent',
+    paddingTop: spacing.sm,
+    width: '100%',
     zIndex: 999,
   },
-  stickySaveBarGlass: {
-    borderRadius: 24,
-    borderCurve: 'continuous',
-    overflow: 'hidden',
-    padding: 4,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 6,
-  },
-  stickySaveBar: { backgroundColor: colors.canvas, borderTopColor: colors.line, borderTopWidth: StyleSheet.hairlineWidth, elevation: 8, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, shadowColor: '#000000', shadowOffset: { height: -3, width: 0 }, shadowOpacity: 0.12, shadowRadius: 8 },
   stickySaveButton: { alignSelf: 'stretch' },
   accountSettingsTitle: { color: colors.ink, fontSize: type.section, fontWeight: '900', paddingHorizontal: spacing.lg, paddingTop: spacing.md },
   visibilityEntry: { alignItems: 'center', backgroundColor: colors.card, borderColor: colors.line, borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', marginBottom: spacing.md, minHeight: 60, paddingHorizontal: spacing.md },
   visibilityEntryCopy: { flex: 1, marginLeft: spacing.md },
   visibilityEntryTitle: { color: colors.ink, fontSize: type.body, fontWeight: '900' },
   visibilityEntrySubtitle: { color: colors.inkMuted, fontSize: type.caption, marginTop: 2 },
+  photoActionButtonTop: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    borderRadius: 16,
+    height: 32,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: 6,
+    top: 6,
+    width: 32,
+    zIndex: 2,
+  },
+  photoActionButtonBottom: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    borderRadius: 16,
+    height: 32,
+    justifyContent: 'center',
+    position: 'absolute',
+    bottom: 6,
+    right: 6,
+    width: 32,
+    zIndex: 2,
+  },
+  sheetBackdrop: {
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  sheetContainer: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    paddingBottom: 34,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    borderRadius: 3,
+    height: 5,
+    marginBottom: 16,
+    width: 36,
+  },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  sheetActionItem: {
+    alignItems: 'center',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: 12,
+    minHeight: 52,
+    paddingVertical: 12,
+  },
+  sheetActionText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  sheetCloseButton: {
+    alignItems: 'center',
+    borderRadius: radius.md,
+    justifyContent: 'center',
+    marginTop: 14,
+    minHeight: 48,
+  },
+  sheetCloseText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
 });
 
 function OptionPillRows({ onToggle, options, colors, styles, selected }) {

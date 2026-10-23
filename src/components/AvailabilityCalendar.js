@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import { useTheme } from '../theme';
 import { availabilityDateKey, availabilityMonths, availabilityMonthCells } from '../utils/availabilityCalendar';
@@ -19,7 +21,7 @@ export default function AvailabilityCalendar({ days, selectedDate, onSelect, slo
   const today = availabilityDateKey(days[0]);
   const occupied = new Set(slots.map((slot) => slot.date).filter(Boolean));
   return (
-    <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
+    <NativeCard style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
       <View style={styles.monthRow}>
         <Text accessibilityRole="header" style={[styles.month, { color: colors.ink }]}>{MONTHS[monthNumber - 1]} {year + 543}</Text>
         <View style={styles.arrows}>
@@ -53,7 +55,7 @@ export default function AvailabilityCalendar({ days, selectedDate, onSelect, slo
         })}
       </View>
       <View style={styles.legend}><View style={[styles.dot, { backgroundColor: colors.primary }]} /><Text style={[styles.hint, { color: colors.inkMuted }]}>วันที่เพิ่มช่วงเวลาไว้แล้ว · สีจางอยู่นอกช่วงที่เลือกได้</Text></View>
-    </View>
+    </NativeCard>
   );
 }
 

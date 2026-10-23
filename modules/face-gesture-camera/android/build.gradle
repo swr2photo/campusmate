@@ -1,0 +1,27 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+group = 'expo.modules.facegesturecamera'
+version = '1.0.0'
+android {
+  namespace 'expo.modules.facegesturecamera'
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+// Same CameraX as expo-camera, so the app ships one copy.
+def camerax_version = "1.6.0"
+dependencies {
+  implementation "androidx.camera:camera-core:${camerax_version}"
+  implementation "androidx.camera:camera-camera2:${camerax_version}"
+  implementation "androidx.camera:camera-lifecycle:${camerax_version}"
+  implementation "androidx.camera:camera-view:${camerax_version}"
+  // Bundled model: works without Google Play services downloading it first.
+  implementation 'com.google.mlkit:face-detection:16.1.7'
+}
+// CameraX needs the real ListenableFuture class (see expo-camera's build.gradle).
+configurations.configureEach {
+  resolutionStrategy.force "com.google.guava:listenablefuture:1.0"
+}

@@ -1,5 +1,6 @@
+import { Pressable } from './NativePressable';
 import React from 'react';
-import { ActivityIndicator, Pressable, View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
 import Text from './AppText';
 import { useTheme } from '../theme';
 

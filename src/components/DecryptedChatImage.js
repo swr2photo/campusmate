@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React, { useState, useEffect, useRef } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { chatImageSize } from '../utils/chatMediaLayout';
 import { Image as ExpoImage } from 'expo-image';
 import FeatureIcon from './FeatureIcon';
 import { useDecryptedMedia } from '../hooks/useDecryptedMedia';
@@ -24,9 +26,12 @@ export default function DecryptedChatImage({
   onLongPress,
   showExpandBadge = false,
   useDynamicSize = false,
+  isPreview = false,
+  isGif = false,
   onAspectRatioMeasured,
   accessibilityLabel = 'ดูรูปภาพขนาดใหญ่',
 }) {
+  const { width: screenWidth } = useWindowDimensions();
   const { uri, loading, retry } = useDecryptedMedia(mediaUrl, {
     conversationId,
     currentUserId,
@@ -94,8 +99,9 @@ export default function DecryptedChatImage({
     }
   };
 
-  const dynamicContainerStyle = useDynamicSize
-    ? { width: bubbleSize.width, height: bubbleSize.height }
+  const responsiveSize = chatImageSize(screenWidth, bubbleSize.width / bubbleSize.height, isPreview);
+  const dynamicContainerStyle = useDynamicSize || isPreview
+    ? { width: responsiveSize.width, height: responsiveSize.height }
     : null;
 
   return (
@@ -108,7 +114,7 @@ export default function DecryptedChatImage({
       style={[styles.container, dynamicContainerStyle, style]}
     >
       {loading && !displayUri ? (
-        <View style={styles.loadingContainer}>
+        <View style={[styles.loadingContainer, isPreview && { minHeight: 0 }]}>
           <ActivityIndicator color="#3B5AFE" size="small" />
         </View>
       ) : isUnavailable ? (
@@ -128,7 +134,12 @@ export default function DecryptedChatImage({
             const size = getChatImageBubbleSize(ratio);
             cacheAspectRatio(displayUri, ratio);
             if (mediaUrl) cacheAspectRatio(mediaUrl, ratio);
-            setBubbleSize(size);
+            setBubbleSize((prev) => {
+              if (prev && prev.width === size.width && prev.height === size.height) {
+                return prev;
+              }
+              return size;
+            });
             onAspectRatioMeasuredRef.current?.(ratio, size);
           }}
           recyclingKey={displayUri}
@@ -151,11 +162,14 @@ export default function DecryptedChatImage({
           <FeatureIcon color="#FFFFFF" name="arrow.up.left.and.arrow.down.right" size={12} />
         </View>
       ) : null}
+      {isGif ? <View pointerEvents="none" style={styles.gifBadge}><Text style={styles.gifLabel}>GIF</Text></View> : null}
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
+  gifBadge: { position: 'absolute', bottom: 8, left: 8, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  gifLabel: { color: '#FFFFFF', fontSize: 11 },
   container: {
     borderRadius: 18,
     overflow: 'hidden',

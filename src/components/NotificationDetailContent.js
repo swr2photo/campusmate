@@ -1,5 +1,6 @@
+import { Pressable } from './NativePressable';
 import React from 'react';
-import { Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
+import { ScrollView, View, useWindowDimensions } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import AppText from './AppText';
 import { PrimaryButton } from './ui';

@@ -1,7 +1,8 @@
+import { Pressable } from '../../../src/components/NativePressable';
 import NotificationBell from '../../../src/components/NotificationBell';
-import { View } from 'react-native';
+import { Platform, View } from 'react-native';
 import React from 'react';
-import { Pressable } from 'react-native';
+
 import { router, Stack } from 'expo-router';
 import HomeScreen from '../../../src/screens/HomeScreen';
 import FeatureIcon from '../../../src/components/FeatureIcon';
@@ -15,7 +16,9 @@ export default function HomeRoute() {
       <Stack.Screen
         options={{
           title: 'หาเพื่อน',
-          headerShown: true,
+          // On iOS, HomeScreen.ios renders its own in-page header (title, notification bell, filter button).
+          // Hide Stack.Screen header on iOS to prevent duplicate/overlapping headers.
+          headerShown: Platform.OS !== 'ios',
           headerTransparent: false,
           headerLargeTitle: false,
           headerRight: () => (

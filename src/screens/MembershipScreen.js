@@ -1,5 +1,7 @@
+import { Pressable } from '../components/NativePressable';
+import NativeCard from '../components/NativeCard';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Linking, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { router, Stack, useIsFocused } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -55,6 +57,7 @@ export default function MembershipScreen() {
   const cardStride = cardWidth + 12;
   const selectedCopy = selected ? packageCopy(selected) : null;
   const canPurchase = membership.ready && membership.configured && !membership.plus && !membership.busy && Boolean(selected);
+  const canManageCurrentMembership = membership.plus && !membership.isAdmin && Boolean(membership.managementUrl);
   const shortViewport = height < 650 || fontScale > 1.3;
 
   useEffect(() => {
@@ -153,7 +156,7 @@ export default function MembershipScreen() {
               {membership.packages.map((entry) => {
                 const copy = packageCopy(entry);
                 const checked = entry.identifier === selected.identifier;
-                return <Pressable key={entry.identifier} accessibilityRole="radio"
+                return <Pressable nativeCardSurface key={entry.identifier} accessibilityRole="radio"
                   accessibilityLabel={`${copy.title}, ${copy.billing}, ${copy.total}`}
                   accessibilityState={{ checked, disabled: membership.busy }} disabled={membership.busy}
                   onPress={() => setSelectedId(entry.identifier)}
@@ -197,6 +200,7 @@ export default function MembershipScreen() {
         </View>
 
         <View style={styles.links}>
+          {membership.plus && membership.isAdmin && membership.hasStoreSubscription ? <TextAction label="จัดการการสมัครที่ซื้อไว้" disabled={membership.busy} onPress={() => void manageMembership()} /> : null}
           {membership.configured ? <TextAction label="คืนค่าการซื้อ" disabled={membership.busy} onPress={() => void restore()} /> : null}
           <TextAction label="เงื่อนไขการใช้งาน" onPress={() => router.push('/terms')} />
           <TextAction label="ความเป็นส่วนตัว" onPress={() => router.push('/privacy-policy')} />
@@ -206,8 +210,8 @@ export default function MembershipScreen() {
 
       <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 16) }]}>
         {membership.error || managementError ? <Text selectable accessibilityRole="alert" style={styles.error}>{membership.error || managementError}</Text> : null}
-        {membership.plus ? <PurchaseButton label={membership.managementUrl ? 'จัดการสมาชิกในสโตร์' : 'เริ่มใช้งาน Plus'}
-          onPress={membership.managementUrl ? () => void manageMembership() : close} disabled={membership.busy} busy={membership.busy} /> : <>
+        {membership.plus ? <PurchaseButton label={canManageCurrentMembership ? 'จัดการสมาชิกในสโตร์' : 'เริ่มใช้งาน Plus'}
+          onPress={canManageCurrentMembership ? () => void manageMembership() : close} disabled={membership.busy} busy={membership.busy} /> : <>
           {!shortViewport ? <RenewalTerms /> : null}
           {compactFooter && selectedCopy ? <View style={styles.compactPurchase}>
             <FeatureIcon name="sparkles" size={29} color={palette.gold} />
@@ -240,11 +244,11 @@ function PackagesLoading({ cardWidth, offline }) {
   const label = offline ? 'รอการเชื่อมต่ออินเทอร์เน็ต…' : 'กำลังโหลดแพ็กเกจ…';
   return <View accessible accessibilityRole="progressbar" accessibilityLabel={label} style={styles.loading}>
     <View style={styles.skeletonRow}>
-      {[0, 1].map((index) => <View key={index} style={[styles.planCard, styles.skeletonCard, { width: cardWidth }]}>
+      {[0, 1].map((index) => <NativeCard key={index} style={[styles.planCard, styles.skeletonCard, { width: cardWidth }]}>
         <View style={[styles.skeletonLine, { width: '40%' }]} />
         <View style={[styles.skeletonLine, { width: '60%', height: 32 }]} />
         <View style={[styles.skeletonLine, { width: '72%', marginTop: 40 }]} />
-      </View>)}
+      </NativeCard>)}
     </View>
     <View style={styles.loadingStatus}><ActivityIndicator size="small" color={palette.gold} /><Text style={styles.secondary}>{label}</Text></View>
   </View>;

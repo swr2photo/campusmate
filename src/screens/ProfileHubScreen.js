@@ -1,10 +1,11 @@
+import { Pressable } from '../components/NativePressable';
+import NativeCard from '../components/NativeCard';
 import React, { useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Text from '../components/AppText';
-import CachedImage from '../components/CachedImage';
 import FeatureIcon from '../components/FeatureIcon';
 import FaceVerificationModal from '../components/FaceVerificationModal';
 import { useAppActions, useAppBadges, useAppProfile } from '../context/AppContext';
@@ -15,27 +16,23 @@ import { getActivityCategory } from '../data/activityCategories';
 import { FEATURE_UNLIMITED_REWIND } from '../data/plans';
 import { MAX_PROFILE_PHOTOS } from '../data/profilePhotos';
 import { isSpotifyFeatureAllowed } from '../utils/featureFlags';
-import { getImageRequestUri } from '../utils/useRemoteImage';
+import { formatStudyYearLabel } from '../utils/studentId';
 import { useTheme } from '../theme';
+import { StatusBarScrim } from '../components/TabPageHeader';
+import { GlassBackground, useLiquidGlass } from '../components/LiquidGlassSurface';
+import ProfilePhotoThumbnail from '../components/ProfilePhotoThumbnail';
+import ProfileCompletionCard from '../components/ProfileCompletionCard';
 
 const PHOTO_PREVIEW_SLOTS = 6;
 const RECOMMENDED_PHOTOS = 3;
 
 function ProfilePhoto({ uri, profile, index, style }) {
   const { colors } = useTheme();
-  const [failedSource, setFailedSource] = useState(null);
-  const source = getImageRequestUri(uri, profile?.avatarRevision);
 
   return (
     <View style={[styles.photo, { backgroundColor: colors.surfaceRaised }, style]}>
-      {source && failedSource !== source ? (
-        <CachedImage
-          contentFit="cover"
-          imageIdentity={`profile-hub:${profile?.id || 'me'}:${index}`}
-          onError={() => setFailedSource(source)}
-          source={{ uri: source }}
-          style={StyleSheet.absoluteFill}
-        />
+      {uri ? (
+        <ProfilePhotoThumbnail uri={uri} revision={index === 0 ? profile?.avatarRevision : undefined} identity={`profile-hub:${profile?.id || 'me'}:${index}`} />
       ) : (
         <FeatureIcon color={colors.inkMuted} name={uri ? 'photo' : 'person.fill'} size={24} />
       )}
@@ -44,6 +41,8 @@ function ProfilePhoto({ uri, profile, index, style }) {
 }
 
 function RoundButton({ label, icon, onPress, palette, size = 44 }) {
+  // Header controls float over the page: Liquid Glass on iOS 26.
+  const glass = useLiquidGlass();
   return (
     <Pressable
       accessibilityLabel={label}
@@ -51,12 +50,13 @@ function RoundButton({ label, icon, onPress, palette, size = 44 }) {
       hitSlop={4}
       onPress={onPress}
       style={({ pressed }) => [styles.roundButton, {
-        backgroundColor: palette.raised,
-        borderColor: palette.line,
+        backgroundColor: glass ? 'transparent' : palette.raised,
+        borderColor: glass ? 'transparent' : palette.line,
         height: size,
         width: size,
       }, pressed && styles.pressed]}
     >
+      <GlassBackground style={{ borderRadius: size / 2 }} />
       <FeatureIcon color={palette.text} name={icon} size={23} />
     </Pressable>
   );
@@ -83,16 +83,28 @@ function SectionHeading({ title, incomplete, palette, action }) {
   return (
     <View style={styles.sectionHeading}>
       <Text style={[styles.sectionTitle, { color: palette.text }]}>{title}</Text>
-      {incomplete ? <FeatureIcon color={palette.coral} name="exclamationmark.circle.fill" size={19} /> : null}
+      {incomplete ? <FeatureIcon color={palette.hint} name="sparkles" size={17} /> : null}
       {action}
     </View>
   );
+}
+
+// The first missing piece, phrased as a friendly suggestion with where to fix it.
+function nextProfileStep(profile, { photos, interests, hasBio }) {
+  if (!(profile.name || profile.nickname)) return { label: 'เพิ่มชื่อที่อยากให้เพื่อนเรียก', section: 'basic' };
+  if (photos.length < RECOMMENDED_PHOTOS) return { label: `เพิ่มรูปอีก ${RECOMMENDED_PHOTOS - photos.length} รูป ให้เพื่อนเห็นตัวตนของคุณ`, route: '/profile-photos' };
+  if (!profile.faculty || !profile.year) return { label: 'บอกคณะและชั้นปีของคุณ', section: 'basic' };
+  if (!profile.age || !profile.gender) return { label: 'เติมข้อมูลพื้นฐานอีกนิด', section: 'basic' };
+  if (!interests.length) return { label: 'เลือกกิจกรรมที่ชอบ เพื่อเจอเพื่อนสายเดียวกัน', section: 'activities' };
+  if (!hasBio) return { label: 'เขียนประโยคแนะนำตัวสั้น ๆ สักประโยค', section: 'basic' };
+  return { label: '', section: 'basic' };
 }
 
 export default function ProfileHubScreen({ onToast }) {
   const { colors, isDark } = useTheme();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  const isTablet = (Platform.OS === 'ios' && Boolean(Platform.isPad)) || width >= 700;
   const { profile, profileLoading } = useAppProfile();
   const { user } = useAuth();
   const { saveProfile, markFaceVerified } = useAppActions();
@@ -110,6 +122,7 @@ export default function ProfileHubScreen({ onToast }) {
     text: colors.ink,
     muted: isDark ? '#B8B3AD' : colors.inkMuted,
     coral: isDark ? '#FF686E' : colors.danger,
+    hint: colors.amber,
   };
 
   if (!profile) {
@@ -131,7 +144,6 @@ export default function ProfileHubScreen({ onToast }) {
     .slice(0, MAX_PROFILE_PHOTOS);
   const interests = [profile.interests, profile.activities].find((value) => Array.isArray(value) && value.length)
     || (profile.activity ? [profile.activity] : []);
-  const hasAvailability = Boolean(profile.availability?.trim()) || Boolean(profile.availabilitySlots?.length);
   const hasBio = Boolean(profile.bio?.trim());
   const checklist = [
     profile.name || profile.nickname,
@@ -141,10 +153,10 @@ export default function ProfileHubScreen({ onToast }) {
     profile.age,
     profile.gender,
     interests.length,
-    hasAvailability,
     hasBio,
   ];
   const completion = Math.round(checklist.filter(Boolean).length / checklist.length * 100);
+  const nextStep = nextProfileStep(profile, { photos, interests, hasBio });
   const isFaceVerified = profile.isFaceVerified === true;
   const isAdmin = profile.isAdmin === true || profile.role === 'admin';
   const remainingRecommended = Math.max(RECOMMENDED_PHOTOS - photos.length, 0);
@@ -166,8 +178,7 @@ export default function ProfileHubScreen({ onToast }) {
   const detailRows = [
     [
       { label: 'คณะ', icon: 'building.columns.fill', filled: Boolean(profile.faculty), section: 'basic' },
-      { label: profile.year ? `ชั้นปี ${profile.year}` : 'ชั้นปี', icon: 'graduationcap.fill', filled: Boolean(profile.year), section: 'basic' },
-      { label: 'เวลาว่าง', icon: 'clock', filled: hasAvailability, section: 'basic' },
+      { label: formatStudyYearLabel(profile.year) || 'ชั้นปี', icon: 'graduationcap.fill', filled: Boolean(profile.year), section: 'basic' },
     ],
     [
       { label: 'ข้อมูลพื้นฐาน', icon: 'person.text.rectangle.fill', filled: Boolean(profile.age && profile.gender), section: 'basic' },
@@ -178,13 +189,18 @@ export default function ProfileHubScreen({ onToast }) {
 
   return (
     <View style={[styles.screen, { backgroundColor: palette.canvas }]}>
+      <StatusBarScrim />
       <ScrollView
         ref={scrollRef}
-        contentInsetAdjustmentBehavior="never"
-        contentContainerStyle={[styles.content, {
-          paddingTop: insets.top + 18,
-          paddingBottom: Math.max(insets.bottom + 32, 52),
-        }]}
+        contentInsetAdjustmentBehavior={Platform.OS === 'ios' ? 'automatic' : 'never'}
+        contentContainerStyle={[
+          styles.content,
+          isTablet && { maxWidth: 960, paddingHorizontal: 28 },
+          {
+            paddingTop: Platform.OS === 'ios' ? (isTablet ? 28 : 18) : Math.max(insets.top, isTablet ? 36 : 24) + (isTablet ? 28 : 18),
+            paddingBottom: Platform.OS === 'ios' ? 32 : Math.max(insets.bottom + 32, 52),
+          },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         <TourTarget id="me.profile" scrollRef={scrollRef}>
@@ -228,17 +244,18 @@ export default function ProfileHubScreen({ onToast }) {
           ) : null}
         </TourTarget>
 
-        <Pressable
-          accessibilityLabel={`โปรไฟล์สมบูรณ์ ${completion} เปอร์เซ็นต์ แตะเพื่อแก้ไขข้อมูล`}
-          accessibilityRole="button"
-          onPress={() => editSection('basic')}
-          style={({ pressed }) => [styles.completenessBanner, { backgroundColor: palette.card }, pressed && styles.pressed]}
-        >
-          <FeatureIcon color={completion === 100 ? colors.green : palette.coral} name={completion === 100 ? 'checkmark.circle.fill' : 'exclamationmark.circle.fill'} size={19} />
-          <Text style={[styles.completenessText, { color: palette.text }]}>{completion === 100 ? 'โปรไฟล์พร้อมให้เพื่อนรู้จักแล้ว' : 'เพิ่มข้อมูลบนโปรไฟล์ให้ครบ'}</Text>
-          <Text style={{ color: palette.muted, fontSize: 12 }}>{completion}%</Text>
-        </Pressable>
+        {completion < 100 ? (
+          <ProfileCompletionCard
+            percent={completion}
+            nextStep={nextStep.label}
+            onPress={() => (nextStep.route ? router.push(nextStep.route) : editSection(nextStep.section))}
+          />
+        ) : null}
 
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="ดูตัวอย่างโปรไฟล์ของฉัน" onPress={() => router.push({ pathname: '/profile', params: { tab: 'preview' } })} style={({ pressed }) => [styles.profileAction, { backgroundColor: palette.card, opacity: pressed ? 0.65 : 1 }]}><Text style={[styles.profileActionText, { color: colors.accentText }]}>ดูตัวอย่างโปรไฟล์</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="ตั้งค่าข้อมูลที่เพื่อนมองเห็น" onPress={() => router.push('/profile-visibility')} style={({ pressed }) => [styles.profileAction, { backgroundColor: palette.card, opacity: pressed ? 0.65 : 1 }]}><Text style={[styles.profileActionText, { color: colors.accentText }]}>ข้อมูลที่เพื่อนมองเห็น</Text></Pressable>
+        </View>
         <View style={styles.detailRows}>
           {detailRows.map((row, index) => (
             <ScrollView horizontal key={index} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.detailRow}>
@@ -249,11 +266,11 @@ export default function ProfileHubScreen({ onToast }) {
 
         <View style={styles.section}>
           <SectionHeading title="รูปภาพของฉัน" incomplete={remainingRecommended > 0} palette={palette} />
-          <Text style={[styles.sectionHint, { color: remainingRecommended ? palette.coral : palette.muted }]}>
+          <Text style={[styles.sectionHint, { color: palette.muted }]}>
             {remainingRecommended ? `เพิ่มอีก ${remainingRecommended} รูป เพื่อให้เพื่อนรู้จักคุณมากขึ้น` : `${photos.length}/${MAX_PROFILE_PHOTOS} รูป · เติมเรื่องราวในแบบของคุณ`}
           </Text>
-          <View style={[styles.photoCard, { backgroundColor: palette.card }]}>
-            <View style={styles.photoStrip}>
+          <NativeCard style={[styles.photoCard, { backgroundColor: palette.card }]}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoStrip}>
               {Array.from({ length: PHOTO_PREVIEW_SLOTS }, (_, index) => (
                 <Pressable
                   key={index}
@@ -268,7 +285,7 @@ export default function ProfileHubScreen({ onToast }) {
                   ) : null}
                 </Pressable>
               ))}
-            </View>
+            </ScrollView>
             <View style={styles.photoCardFooter}>
               <Text style={[styles.photoCardCopy, { color: palette.text }]}>เล่าเรื่องของคุณผ่านรูปภาพ{ '\n' }เพิ่มได้สูงสุด {MAX_PROFILE_PHOTOS} รูป</Text>
               <Pressable
@@ -280,12 +297,12 @@ export default function ProfileHubScreen({ onToast }) {
                 <Text style={{ color: palette.canvas, fontSize: 16, fontWeight: '600' }}>แก้ไข</Text>
               </Pressable>
             </View>
-          </View>
+          </NativeCard>
         </View>
 
         <View style={styles.section}>
           <SectionHeading title="ประโยคชวนรู้จักของฉัน" incomplete={!hasBio} palette={palette} />
-          <Pressable
+          <Pressable nativeCardSurface
             accessibilityLabel="แก้ไขคำแนะนำตัวของฉัน"
             accessibilityRole="button"
             onPress={() => editSection('basic')}
@@ -304,7 +321,7 @@ export default function ProfileHubScreen({ onToast }) {
 
         {!isFaceVerified ? (
           <TourTarget id="me.face" scrollRef={scrollRef}>
-            <Pressable accessibilityLabel="เริ่มยืนยันใบหน้า" accessibilityRole="button" onPress={verifyFace} style={({ pressed }) => [styles.faceCard, { backgroundColor: palette.card }, pressed && styles.pressed]}>
+            <Pressable nativeCardSurface accessibilityLabel="เริ่มยืนยันใบหน้า" accessibilityRole="button" onPress={verifyFace} style={({ pressed }) => [styles.faceCard, { backgroundColor: palette.card }, pressed && styles.pressed]}>
               <FeatureIcon color={palette.coral} name="checkmark.seal.fill" size={27} />
               <View style={styles.faceCopy}>
                 <Text style={{ color: palette.text, fontSize: 17, fontWeight: '600' }}>เป็นตัวเองอย่างมั่นใจ</Text>
@@ -329,7 +346,7 @@ export default function ProfileHubScreen({ onToast }) {
                 <FeatureIcon color="#FFFFFF" name="arrow.right" size={30} />
               </LinearGradient>
             </Pressable>
-            <View style={[styles.statsCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
+            <NativeCard style={[styles.statsCard, { backgroundColor: palette.card, borderColor: palette.line }]}>
               <Pressable accessibilityRole="button" accessibilityLabel={`มีคนถูกใจคุณ ${pendingLikeCount} คน`} onPress={() => router.push('/likes')} style={({ pressed }) => [styles.stat, pressed && styles.pressed]}>
                 <FeatureIcon color="#8BB2E9" name="heart.fill" size={22} />
                 <Text style={[styles.statValue, { color: palette.text }]}>{pendingLikeCount}</Text>
@@ -347,7 +364,7 @@ export default function ProfileHubScreen({ onToast }) {
                 <Text style={[styles.statValue, { color: palette.text }]}>{membership.loading ? '…' : membership.can(FEATURE_UNLIMITED_REWIND) ? 'ไม่จำกัด' : 'Plus'}</Text>
                 <Text style={[styles.statLabel, { color: palette.muted }]}>ย้อนกลับ</Text>
               </Pressable>
-            </View>
+            </NativeCard>
           </View>
         </TourTarget>
 
@@ -392,20 +409,20 @@ const styles = StyleSheet.create({
   roundButton: { alignItems: 'center', justifyContent: 'center', borderRadius: 99, borderWidth: StyleSheet.hairlineWidth },
   identityBadges: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 8 },
   verificationBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 32 },
-  completenessBanner: { borderRadius: 99, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, paddingHorizontal: 16, gap: 9, minHeight: 49 },
-  completenessText: { fontSize: 16, flexShrink: 1 },
   detailRows: { gap: 9, marginTop: -7 },
   detailRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 4 },
   detailChip: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 99, paddingHorizontal: 13, paddingVertical: 10, minHeight: 42 },
-  chipLabel: { fontSize: 15, maxWidth: 180 },
+  chipLabel: { fontSize: 15, maxWidth: 220 },
   section: { gap: 10 },
   sectionHeading: { flexDirection: 'row', alignItems: 'center', gap: 9, flexWrap: 'wrap' },
   sectionTitle: { fontSize: 23, fontWeight: '500', flexShrink: 1 },
   sectionHint: { fontSize: 14, marginTop: -5 },
   photoCard: { borderRadius: 26, borderCurve: 'continuous', padding: 8, gap: 12 },
-  photoStrip: { borderRadius: 19, borderCurve: 'continuous', overflow: 'hidden', flexDirection: 'row', height: 86 },
-  photoSlot: { flex: 1, alignItems: 'center', justifyContent: 'center', borderRightWidth: 1, minWidth: 0 },
-  morePhotos: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.48)' },
+  photoStrip: { flexDirection: 'row', gap: 10, padding: 4 },
+  photoSlot: { width: 88, height: 120, borderRadius: 16, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  profileAction: { flexGrow: 1, flexBasis: 144, minWidth: 0, minHeight: 52, paddingHorizontal: 16, paddingVertical: 14, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
+  profileActionText: { fontWeight: '700', fontSize: 14, lineHeight: 22, textAlign: 'center' },
+  morePhotos: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.48)' },
   morePhotosText: { color: '#FFFFFF', fontSize: 23, fontWeight: '600' },
   photoCardFooter: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 5, paddingBottom: 8 },
   photoCardCopy: { flex: 1, fontSize: 14 },

@@ -10,6 +10,13 @@ export function getPreviewImageUrls(messages, limit = 2) {
   for (const message of (messages || []).slice(-8).reverse()) {
     // Never pre-open disappearing media or deleted messages.
     if (message.viewMode === 'once' || message.viewMode === 'replay' || message.deleted || message.isDeleted || message.decryptionFailed) continue;
+    if (message.mediaType === 'track') {
+      if (typeof message.albumArt === 'string' && /^https?:\/\//i.test(message.albumArt) && !urls.includes(message.albumArt)) {
+        urls.push(message.albumArt);
+        if (urls.length >= limit) return urls;
+      }
+      continue;
+    }
     if (message.mediaType && !['image', 'gif'].includes(message.mediaType)) continue;
     if (message.audioUrl) continue;
     for (const url of [message.mediaUrl, ...(Array.isArray(message.mediaUrls) ? message.mediaUrls : [])]) {

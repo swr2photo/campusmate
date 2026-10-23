@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, Platform, StyleSheet, View } from 'react-native';
 import Constants from 'expo-constants';
 import * as Location from 'expo-location';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
@@ -86,7 +88,7 @@ export default function CampusMapView({ spots = [], selectedSpot, onSelectSpot, 
         <Text style={{ color: colors.primary }}>เปิดแผนที่ภายนอก</Text>
       </Pressable>
     </View> : null}
-    {selected ? <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
+    {selected ? <NativeCard style={[styles.card, { backgroundColor: colors.card, borderColor: colors.line }]}>
       <View style={styles.cardHeaderRow}>
         <View style={styles.cardPhotoWrap}>
           <PlacePhoto spot={selected} style={StyleSheet.absoluteFill} />
@@ -101,7 +103,7 @@ export default function CampusMapView({ spots = [], selectedSpot, onSelectSpot, 
         {onScheduleSpot ? <Pressable accessibilityRole="button" onPress={() => onScheduleSpot(selected)} style={styles.button}><Text style={{ color: colors.primary }}>นัดหมาย</Text></Pressable> : null}
         <Pressable accessibilityRole="button" onPress={() => openInExternalMaps(selected)} style={styles.button}><Text style={{ color: colors.primary }}>เส้นทาง</Text></Pressable>
       </View>
-    </View> : null}
+    </NativeCard> : null}
   </View>;
 }
 

@@ -1,10 +1,13 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React, { useMemo } from 'react';
-import { Image, Modal, Pressable, StyleSheet, View } from 'react-native';
+import { Image, Modal, StyleSheet, View } from 'react-native';
 import FeatureIcon from './FeatureIcon';
 import { radius, shadow, spacing, type, useTheme } from '../theme';
 import { useRemoteImage } from '../utils/useRemoteImage';
 import { getMessageReactionEntries } from '../utils/messageReactions';
+import { GlassBackground, GlassIconButton, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 function toDate(value) {
   if (!value) return null;
@@ -97,6 +100,8 @@ export default function ReactionDetailsModal({
   visible,
 }) {
   const { colors } = useTheme();
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const entries = useMemo(
     () => getReactionEntries(item, profiles, currentUserId),
     [currentUserId, item, profiles]
@@ -113,21 +118,24 @@ export default function ReactionDetailsModal({
     >
       <View style={styles.modalRoot}>
         <Pressable accessibilityLabel="ปิดรายละเอียดรีแอค" onPress={onClose} style={StyleSheet.absoluteFill} />
-        <View style={[styles.sheet, { backgroundColor: colors.card, borderColor: colors.line }]}>
+        <NativeCard style={[styles.sheet, glass
+          ? { backgroundColor: 'transparent', borderColor: 'transparent' }
+          : { backgroundColor: colors.card, borderColor: colors.line }]}>
+          <GlassBackground style={{ borderRadius: radius.xl }} tintColor={glassTint} />
           <View style={styles.header}>
             <View style={styles.headerCopy}>
               <Text style={[styles.title, { color: colors.ink }]}>รีแอคของข้อความ</Text>
               <Text style={[styles.subtitle, { color: colors.inkMuted }]}>{entries.length} คน</Text>
             </View>
-            <Pressable
+            <GlassIconButton
               accessibilityLabel="ปิดรายละเอียดรีแอค"
-              accessibilityRole="button"
               hitSlop={8}
+              icon="xmark"
+              iconColor={colors.inkMuted}
+              iconSize={16}
               onPress={onClose}
-              style={({ pressed }) => [styles.closeButton, { backgroundColor: colors.surfaceRaised }, pressed && styles.pressed]}
-            >
-              <FeatureIcon color={colors.inkMuted} name="xmark" size={16} />
-            </Pressable>
+              size={40}
+            />
           </View>
 
           {entries.length ? entries.map((entry) => {
@@ -155,7 +163,7 @@ export default function ReactionDetailsModal({
           {entries.length ? (
             <Text style={[styles.hint, { color: colors.inkSoft }]}>แตะแถวเพื่อดูโปรไฟล์</Text>
           ) : null}
-        </View>
+        </NativeCard>
       </View>
     </Modal>
   );
@@ -185,7 +193,6 @@ const styles = StyleSheet.create({
   headerCopy: { flex: 1 },
   title: { fontSize: type.h3, fontWeight: '800' },
   subtitle: { fontSize: type.caption, marginTop: 2 },
-  closeButton: { alignItems: 'center', borderRadius: radius.pill, height: 34, justifyContent: 'center', width: 34 },
   profileRow: { alignItems: 'center', borderRadius: radius.md, flexDirection: 'row', marginTop: spacing.xs, minHeight: 54, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
   avatar: { alignItems: 'center', borderRadius: 20, height: 40, justifyContent: 'center', overflow: 'hidden', width: 40 },
   avatarImage: { height: 40, width: 40 },

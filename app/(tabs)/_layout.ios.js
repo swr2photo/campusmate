@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Redirect, ThemeProvider, DarkTheme, DefaultTheme } from 'expo-router';
+import { Redirect, ThemeProvider, DarkTheme, DefaultTheme, usePathname, useSegments } from 'expo-router';
 import CircularTabAvatar from '../../src/components/CircularTabAvatar.ios';
 import { useRemoteImage } from '../../src/utils/useRemoteImage';
 import { NativeTabs } from 'expo-router/native-tabs';
@@ -9,6 +9,7 @@ import { createNavigationTheme, useTheme } from '../../src/theme';
 import { isBlockedCampusAccount, needsCampusEmailMigration } from '../../src/utils/campusEmail';
 import AppSplashScreen from '../../src/components/AppSplashScreen';
 import TabsBlurTargetContext from '../../src/context/TabsBlurTargetContext';
+import { enforcePhonePortraitLock } from '../../src/utils/screenOrientation';
 
 const LABELS = {
   home: 'หาเพื่อน',
@@ -26,10 +27,21 @@ export default function NativeTabLayout() {
 
   const { pendingLikeCount, totalUnreadMessages = 0 } = useAppBadges();
   const { colors, isDark } = useTheme();
+  const segments = useSegments();
+  const pathname = usePathname();
+
+  // Pure Native iOS: the Activities tab requests the native UIKit minimize behavior
+  // on scroll down per Apple HIG / iOS 26+ specifications.
+  const isMeetupTab = segments.includes('meetup') || pathname === '/meetup' || pathname?.startsWith('/meetup');
+  const minimizeBehavior = isMeetupTab || segments[1] === 'meetup' ? 'onScrollDown' : 'never';
   const unreadCount = totalUnreadMessages;
-  const tabTint = colors.primary;
+  const tabTint = colors.accentText;
   const navigationTheme = createNavigationTheme(isDark ? DarkTheme : DefaultTheme, colors);
   const blocked = isBlockedCampusAccount(user, profile);
+
+  useEffect(() => {
+    enforcePhonePortraitLock();
+  }, []);
 
   useEffect(() => {
     if (!blocked) return undefined;
@@ -60,12 +72,12 @@ export default function NativeTabLayout() {
           badgeBackgroundColor={isDark ? colors.coral : '#FF3B30'}
           shadowColor={isDark ? 'transparent' : undefined}
           sidebarAdaptable={false}
-          minimizeBehavior="never"
           unstable_nativeProps={{
             ios: {
               tabBarControllerMode: 'tabBar',
             },
           }}
+          minimizeBehavior={minimizeBehavior}
         >
           <NativeTabs.Trigger name="home" contentStyle={{ backgroundColor: colors.canvas }}>
             <NativeTabs.Trigger.Icon sf={{ default: 'person.2', selected: 'person.2.fill' }} />
@@ -92,7 +104,7 @@ export default function NativeTabLayout() {
           <NativeTabs.Trigger name="me" contentStyle={{ backgroundColor: colors.canvas }}>
             {tabAvatar?.input === avatarUri && tabAvatar?.source ? (
               <NativeTabs.Trigger.Icon src={tabAvatar.source} renderingMode="original" />
-            ) : null}
+            ) : <NativeTabs.Trigger.Icon sf={{ default: 'person.crop.circle', selected: 'person.crop.circle.fill' }} />}
             <NativeTabs.Trigger.Label>{LABELS.me}</NativeTabs.Trigger.Label>
           </NativeTabs.Trigger>
         </NativeTabs>
@@ -100,3 +112,4 @@ export default function NativeTabLayout() {
     </TabsBlurTargetContext.Provider>
   );
 }
+

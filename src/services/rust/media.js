@@ -2,6 +2,7 @@
 // strips EXIF/GPS, runs moderation and stores it; no client URL is trusted.
 import * as FileSystem from 'expo-file-system/legacy';
 import { rustAccessToken, rustOrigin } from './backend';
+import { compressUploadImage } from '../../utils/compressImage';
 
 function moderationError(body) {
   const error = new Error(body?.error?.message || 'อัปโหลดรูปภาพไม่สำเร็จ');
@@ -32,17 +33,31 @@ async function localFile(uri) {
 }
 
 /** `kind`: `avatar` | `gallery` | `moderate`. Returns the parsed JSON body. */
-export async function uploadRawImage(kind, uri, contentType = 'image/jpeg') {
+export async function uploadRawImage(kind, uri, contentType = 'image/jpeg', onProgress) {
   const route = { avatar: ['PUT', 'avatar'], gallery: ['PUT', 'gallery'], moderate: ['POST', 'moderate'] }[kind];
   if (!route) throw new Error('ประเภทการอัปโหลดไม่ถูกต้อง');
   const { token } = await rustAccessToken();
   const file = await localFile(uri);
   try {
-    const result = await FileSystem.uploadAsync(`${rustOrigin()}/v1/media/${route[1]}`, file.path, {
+    const prepared = kind === 'moderate' ? { uri: file.path } : await compressUploadImage(file.path);
+    const options = {
       httpMethod: route[0],
       uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType, Accept: 'application/json' },
-    });
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': kind === 'moderate' ? contentType : 'image/jpeg', Accept: 'application/json' },
+    };
+    const url = `${rustOrigin()}/v1/media/${route[1]}`;
+    const task = typeof FileSystem.createUploadTask === 'function' ? FileSystem.createUploadTask(url, prepared.uri, options, event => {
+      try { onProgress?.(event.totalBytesExpectedToSend > 0 ? event.totalBytesSent / event.totalBytesExpectedToSend : null); } catch { /* UI feedback cannot fail uploads. */ }
+    }) : null;
+    let timeout;
+    let result;
+    try {
+      result = await Promise.race([
+        task ? task.uploadAsync() : FileSystem.uploadAsync(url, prepared.uri, options),
+        new Promise((_, reject) => { timeout = setTimeout(() => { void task?.cancelAsync().catch(() => {}); reject(new Error('อัปโหลดรูปนานเกินไป กรุณาตรวจสอบการเชื่อมต่อแล้วลองอีกครั้ง')); }, 45000); }),
+      ]);
+    } finally { clearTimeout(timeout); }
+    if (!result) throw new Error('การอัปโหลดถูกขัดจังหวะ กรุณาลองอีกครั้ง');
     let body = null;
     try { body = JSON.parse(result.body); } catch { /* handled below */ }
     if (result.status < 200 || result.status >= 300) throw moderationError(body);

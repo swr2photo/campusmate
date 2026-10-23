@@ -1,8 +1,10 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
 import ChatVideoComposer from './ChatVideoComposer';
 import React, { useRef, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -10,18 +12,21 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VIDEO_MODES } from '../utils/chatVideoPolicy';
 import ChatImageEditorModal from './ChatImageEditorModal';
 import { showAlert } from '../utils/appAlert';
-import useAutoplayPreference from '../hooks/useAutoplayPreference';
+import useAutoplayPreference, { useAutoplayMuted } from '../hooks/useAutoplayPreference';
+import { GlassBackground, useLiquidGlass } from './LiquidGlassSurface';
 
 const modeIcons = { once: 'radio-button-on-outline', replay: 'play-circle-outline', chat: 'chatbubble-outline' };
 const descriptions = { once: 'เปิดได้ครั้งเดียว ปิดแล้วจะเปิดซ้ำไม่ได้', replay: 'เปิดดูซ้ำได้ พร้อมป้องกันแคปหน้าจอ', chat: 'เก็บรูปหรือวิดีโอไว้ในบทสนทนา' };
 
 function VideoPreview({ uri }) {
   const autoplay = useAutoplayPreference();
+  const muted = useAutoplayMuted();
   const player = useVideoPlayer(uri, p => { p.loop = true; });
   React.useEffect(() => {
+    player.muted = muted;
     if (autoplay) player.play();
     else player.pause();
-  }, [autoplay, player]);
+  }, [autoplay, muted, player]);
   return <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="contain"
     allowsPictureInPicture={false} fullscreenOptions={{ enable: false }} />;
 }
@@ -32,6 +37,7 @@ export default function ChatMediaComposer(props) {
 }
 
 function ImageMediaComposer({ asset, recipientName, recipientAvatar, onSend, onClose }) {
+  const glass = useLiquidGlass();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState(asset.mode || 'chat');
   const [showModes, setShowModes] = useState(false);
@@ -65,25 +71,25 @@ function ImageMediaComposer({ asset, recipientName, recipientAvatar, onSend, onC
       <View style={styles.preview}>
         {video ? <VideoPreview uri={asset.uri} /> : <Image source={{ uri: uris[index] }} style={StyleSheet.absoluteFill} contentFit="contain" />}
         <View style={styles.toolbar}>
-          <Pressable accessibilityLabel="ปิดพรีวิว" disabled={sending} onPress={close} style={styles.tool}><Ionicons name="close" size={30} color="#fff" /></Pressable>
+          <Pressable accessibilityLabel="ปิดพรีวิว" disabled={sending} onPress={close} style={[styles.tool, glass && styles.glassClear]}><GlassBackground colorScheme="dark" style={{ borderRadius: 23 }} /><Ionicons name="close" size={30} color="#fff" /></Pressable>
           <View style={styles.toolsRight}>
-            {!video && <Pressable accessibilityLabel="แต่งรูปภาพ" disabled={sending} onPress={() => setEditing(true)} style={styles.tool}>
+            {!video && <Pressable accessibilityLabel="แต่งรูปภาพ" disabled={sending} onPress={() => setEditing(true)} style={[styles.tool, glass && styles.glassClear]}><GlassBackground colorScheme="dark" style={{ borderRadius: 23 }} />
               <Ionicons name="color-wand-outline" size={24} color="#fff" />
             </Pressable>}
-            <Pressable accessibilityLabel="เพิ่มคำบรรยาย" disabled={sending} onPress={() => setShowCaption(v => !v)} style={styles.tool}><Text style={styles.aa}>Aa</Text></Pressable>
+            <Pressable accessibilityLabel="เพิ่มคำบรรยาย" disabled={sending} onPress={() => setShowCaption(v => !v)} style={[styles.tool, glass && styles.glassClear]}><GlassBackground colorScheme="dark" style={{ borderRadius: 23 }} /><Text style={styles.aa}>Aa</Text></Pressable>
           </View>
         </View>
         <View pointerEvents="none" style={styles.recipient}><Text numberOfLines={1} style={styles.recipientText}>ส่งถึง {recipientName || 'เพื่อน'}</Text></View>
         {video && <View style={styles.duration}><Text style={styles.white}>{Math.ceil(asset.duration / 1000)} วินาที</Text></View>}
         {!video && uris.length > 1 && <View style={styles.pages}>
-          <Pressable disabled={index === 0} onPress={() => setIndex(i => i - 1)} accessibilityLabel="รูปก่อนหน้า" style={styles.tool}><Ionicons name="chevron-back" size={24} color={index === 0 ? '#666' : '#fff'} /></Pressable>
+          <Pressable disabled={index === 0} onPress={() => setIndex(i => i - 1)} accessibilityLabel="รูปก่อนหน้า" style={[styles.tool, glass && styles.glassClear]}><GlassBackground colorScheme="dark" style={{ borderRadius: 23 }} /><Ionicons name="chevron-back" size={24} color={index === 0 ? '#666' : '#fff'} /></Pressable>
           <Text style={styles.white}>{index + 1} / {uris.length}</Text>
-          <Pressable disabled={index === uris.length - 1} onPress={() => setIndex(i => i + 1)} accessibilityLabel="รูปถัดไป" style={styles.tool}><Ionicons name="chevron-forward" size={24} color={index === uris.length - 1 ? '#666' : '#fff'} /></Pressable>
+          <Pressable disabled={index === uris.length - 1} onPress={() => setIndex(i => i + 1)} accessibilityLabel="รูปถัดไป" style={[styles.tool, glass && styles.glassClear]}><GlassBackground colorScheme="dark" style={{ borderRadius: 23 }} /><Ionicons name="chevron-forward" size={24} color={index === uris.length - 1 ? '#666' : '#fff'} /></Pressable>
         </View>}
         {showCaption && <TextInput autoFocus multiline maxLength={500} editable={!sending} value={caption} onChangeText={setCaption}
           accessibilityLabel="คำบรรยายสื่อ" placeholder="เพิ่มคำบรรยาย…" placeholderTextColor="#ccc" style={styles.caption} />}
       </View>
-      {showModes && <View style={styles.modeSheet}>
+      {showModes && <NativeCard style={styles.modeSheet}>
         <Text style={styles.sheetTitle}>เลือกวิธีการดู</Text>
         {Object.entries(VIDEO_MODES).map(([value, label]) => <Pressable key={value} accessibilityRole="radio"
           accessibilityState={{ checked: mode === value }} disabled={sending} onPress={() => { setMode(value); setShowModes(false); }} style={styles.modeRow}>
@@ -91,7 +97,7 @@ function ImageMediaComposer({ asset, recipientName, recipientAvatar, onSend, onC
           <View style={{ flex: 1 }}><Text style={styles.modeTitle}>{label}</Text><Text style={styles.description}>{descriptions[value]}</Text></View>
           {mode === value && <Ionicons name="checkmark-circle" color="#fff" size={24} />}
         </Pressable>)}
-      </View>}
+      </NativeCard>}
       <View style={styles.footer}>
         <Pressable accessibilityLabel={`วิธีการดู: ${VIDEO_MODES[mode]}`} accessibilityRole="button" accessibilityState={{ expanded: showModes }}
           disabled={sending} onPress={() => setShowModes(v => !v)} style={styles.modeButton}>
@@ -112,6 +118,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#000' },
   preview: { flex: 1, backgroundColor: '#101010', borderRadius: 26, overflow: 'hidden' },
   toolbar: { position: 'absolute', top: 14, left: 14, right: 14, flexDirection: 'row', justifyContent: 'space-between' },
+  glassClear: { backgroundColor: 'transparent' },
   tool: { width: 46, height: 46, borderRadius: 25, backgroundColor: '#252525bb', alignItems: 'center', justifyContent: 'center' },
   toolsRight: { flexDirection: 'row', gap: 10 }, aa: { color: '#fff', fontSize: 25, fontWeight: '500' },
   recipient: { position: 'absolute', top: 72, left: 24, right: 24, alignItems: 'center' }, recipientText: { color: '#fff', fontSize: 13, textShadowColor: '#000', textShadowRadius: 5 },

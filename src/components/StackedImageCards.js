@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Animated, Pressable, StyleSheet, View } from 'react-native';
+import { Animated, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { chatImageSize } from '../utils/chatMediaLayout';
 import FeatureIcon from './FeatureIcon';
 import DecryptedChatImage from './DecryptedChatImage';
 import {
@@ -35,6 +37,7 @@ export default function StackedImageCards({
   style,
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
+  const { width: screenWidth } = useWindowDimensions();
   const [showFlipHint, setShowFlipHint] = useState(false);
   const flipAnim = useRef(new Animated.Value(1)).current;
 
@@ -68,8 +71,9 @@ export default function StackedImageCards({
     });
   }, [mediaUrls, activeIndex]);
 
-  const deckWidth = width || cardSize.width;
-  const deckHeight = height || cardSize.height;
+  const renderSize = chatImageSize(screenWidth, (width || cardSize.width) / (height || cardSize.height));
+  const deckWidth = renderSize.width;
+  const deckHeight = renderSize.height;
 
   if (!total) return null;
 

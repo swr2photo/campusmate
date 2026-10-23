@@ -7,3 +7,8 @@ export default function useAutoplayPreference() {
   const network = useNetInfo();
   return ready && canAutoplay(preferences.autoplay, network);
 }
+
+export function useAutoplayMuted() {
+  const { preferences } = usePreferences();
+  return preferences.muteAutoplayVideo !== false;
+}

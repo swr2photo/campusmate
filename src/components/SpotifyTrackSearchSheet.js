@@ -1,7 +1,9 @@
+import { Pressable } from './NativePressable';
+import NativeAnimatedCard from './NativeAnimatedCard';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, BackHandler, FlatList, Keyboard, Modal, Platform, Pressable, ScrollView, SectionList, StyleSheet, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, BackHandler, FlatList, Keyboard, Linking, Modal, Platform, SectionList, StyleSheet, useColorScheme, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import Animated, {
@@ -14,87 +16,22 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { scheduleOnRN } from 'react-native-worklets';
-import { useTrackLyrics } from '../hooks/useTrackLyrics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FeatureIcon from './FeatureIcon';
 import { browseMusicTracks, getCachedBrowseMusicTracks, searchSpotifyTracksPage } from '../services/spotifyService';
 import { getValidAccessToken, fetchSpotifyTopTracks } from '../services/spotifyAuthService';
-import { getTrackLyrics } from '../services/musicLyricsService';
-import { resolveYouTubeTrack } from '../services/youtubeAudioService';
-import YouTubeAudioPlayer from './YouTubeAudioPlayer';
-import { ensureAudioPlaybackMode, formatAudioDuration } from '../services/chatMediaService';
+import { resolvePlayablePreview } from '../services/previewAudioService';
+import { isReliablePreviewUrl, spotifyListenUrl } from '../utils/trackPlayback';
+import { ensureAudioPlaybackMode } from '../services/chatMediaService';
 import { scheduleIdleTask } from '../utils/scheduleIdleTask';
 import { getAlbumCardColor } from '../utils/albumArtColor';
 import { project, rubberband } from '../utils/motion';
 import { spacing, type, useTheme } from '../theme';
+import { GlassBackground, GlassIconButton, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 export const MAX_FAVORITE_TRACKS = 10;
 const DEBOUNCE_MS = 550;
 const MIN_QUERY_LENGTH = 1;
-const MIN_SEGMENT_MS = 1000;
-const DEFAULT_SEGMENT_MS = 30000;
-const WAVE_BARS = 56;
-
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function formatMs(ms) {
-  return formatAudioDuration(Math.max(0, Math.floor((Number(ms) || 0) / 1000)));
-}
-
-function hashSeed(input) {
-  const text = String(input || 'track');
-  let hash = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    hash = ((hash << 5) - hash) + text.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash) || 1;
-}
-
-function buildWaveHeights(trackId, count = WAVE_BARS) {
-  const seed = hashSeed(trackId);
-  const heights = [];
-  for (let i = 0; i < count; i += 1) {
-    const n = Math.sin((i + 1) * 0.55 + seed * 0.001) * 0.35
-      + Math.sin((i + 3) * 1.15 + seed * 0.002) * 0.25
-      + Math.cos((i + 7) * 0.33 + seed * 0.0015) * 0.2
-      + 0.42;
-    heights.push(clamp(n, 0.18, 1));
-  }
-  return heights;
-}
-
-function moveSegmentHandle(startMs, endMs, handle, value, durationMs, isFullSong) {
-  'worklet';
-  if (isFullSong) {
-    const windowMs = Math.min(30000, durationMs);
-    const position = Math.round(Math.max(0, Math.min(durationMs, value)));
-    if (handle === 'start') {
-      const nextStart = Math.min(position, durationMs - windowMs);
-      return { startMs: Math.max(0, nextStart), endMs: Math.max(0, nextStart) + windowMs };
-    }
-    const nextEnd = Math.max(position, windowMs);
-    return { startMs: Math.max(0, Math.min(durationMs, nextEnd) - windowMs), endMs: Math.min(durationMs, nextEnd) };
-  }
-  const minimum = Math.min(MIN_SEGMENT_MS, durationMs);
-  const position = Math.round(Math.max(0, Math.min(durationMs, value)));
-  if (handle === 'start') {
-    const nextStart = Math.min(position, endMs - minimum);
-    return { startMs: Math.max(0, nextStart), endMs };
-  }
-  const nextEnd = Math.max(position, startMs + minimum);
-  return { startMs, endMs: Math.min(durationMs, nextEnd) };
-}
-
-function scrubPosition(x, width, durationMs, startMs, endMs) {
-  'worklet';
-  if (!width || !durationMs) return startMs;
-  const position = (Math.max(0, Math.min(width, x)) / width) * durationMs;
-  return Math.max(startMs, Math.min(endMs, Math.round(position)));
-}
-
 function TrackRow({ alreadyAdded, colors, isPlaying, item, onPress, selected }) {
   return (
     <Pressable
@@ -122,19 +59,19 @@ function TrackRow({ alreadyAdded, colors, isPlaying, item, onPress, selected }) 
         />
       ) : (
         <View style={[styles.albumArt, styles.albumArtFallback, { backgroundColor: colors.primarySoft || '#EEF2F7' }]}>
-          <FeatureIcon color={colors.primary || '#3986E8'} name="music.note" size={18} />
+          <FeatureIcon color={colors.accentText || colors.primary || '#3986E8'} name="music.note" size={18} />
         </View>
       )}
       <View style={styles.trackCopy}>
         <View style={styles.trackTitleRow}>
           {selected && isPlaying ? (
-            <FeatureIcon color={colors.primary || '#3986E8'} name="speaker.wave.3.fill" size={12} />
+            <FeatureIcon color={colors.accentText || colors.primary || '#3986E8'} name="speaker.wave.3.fill" size={12} />
           ) : null}
           <Text
             numberOfLines={1}
             style={[
               styles.trackName,
-              { color: selected ? (colors.primary || '#3986E8') : (colors.ink || '#25272B'), flex: 1 },
+              { color: selected ? (colors.accentText || colors.primary || '#3986E8') : (colors.ink || '#25272B'), flex: 1 },
             ]}
           >
             {item.name}
@@ -144,15 +81,20 @@ function TrackRow({ alreadyAdded, colors, isPlaying, item, onPress, selected }) 
           {item.artists || 'Unknown'}
         </Text>
       </View>
-      <Text style={[styles.addHint, { color: alreadyAdded ? colors.inkSoft : (colors.primary || '#3986E8') }]}>
-        {alreadyAdded ? 'เพิ่มแล้ว' : (selected ? 'แตะเพื่อเลือก' : 'เลือก')}
+      <Text style={[styles.addHint, { color: alreadyAdded ? colors.inkSoft : (colors.accentText || colors.primary || '#3986E8') }]}>
+        {alreadyAdded ? 'เพิ่มแล้ว' : (selected ? 'ส่งเพลงนี้' : 'เลือก')}
       </Text>
     </Pressable>
   );
 }
 
-function MiniPlayerBar({ colors, hasPreview, insets, isPlaying, onNext, onTogglePlay, track }) {
-  const fallback = colors.ink || '#1A2333';
+// The mini player always draws white text/icons, so its fallback card must stay
+// dark in both themes (the theme `ink` token is near-white in dark mode).
+const MINI_PLAYER_FALLBACK = '#1F2533';
+const MINI_PLAYER_NEXT_ICON = '#1A2333';
+
+function MiniPlayerBar({ hasPreview, insets, isPlaying, loading = false, missingMessage = '', onNext, onTogglePlay, track }) {
+  const fallback = MINI_PLAYER_FALLBACK;
   const [cardColor, setCardColor] = useState(fallback);
 
   useEffect(() => {
@@ -176,7 +118,7 @@ function MiniPlayerBar({ colors, hasPreview, insets, isPlaying, onNext, onToggle
         { bottom: Math.max(insets.bottom, 10) },
       ]}
     >
-      <Pressable accessibilityLabel="ต่อไป เลือกท่อน" onPress={onNext} style={{ flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0, gap: 10 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0, gap: 10 }}>
         {track.albumArt ? (
           <Image contentFit="cover" source={{ uri: track.albumArt }} style={styles.miniArt} />
         ) : (
@@ -186,759 +128,39 @@ function MiniPlayerBar({ colors, hasPreview, insets, isPlaying, onNext, onToggle
         )}
         <View style={styles.miniCopy}>
           <Text numberOfLines={1} style={styles.miniTitle}>{track.name}</Text>
-          <Text numberOfLines={1} style={styles.miniArtists}>{track.artists || 'Unknown'}</Text>
+          <Text numberOfLines={1} style={styles.miniArtists}>{missingMessage || track.artists || 'Unknown'}</Text>
         </View>
-      </Pressable>
+      </View>
       <Pressable
-        accessibilityLabel={hasPreview ? (isPlaying ? 'หยุดชั่วคราว' : 'เล่น') : 'ไม่มีเสียงตัวอย่าง'}
-        disabled={!hasPreview}
+        accessibilityLabel={loading ? 'กำลังโหลดเสียงตัวอย่าง' : hasPreview ? (isPlaying ? 'หยุดชั่วคราว' : 'เล่น') : (missingMessage || 'ไม่มีเสียงตัวอย่าง')}
+        accessibilityState={{ busy: loading, disabled: loading || !hasPreview }}
+        disabled={loading || !hasPreview}
         hitSlop={8}
         onPress={onTogglePlay}
-        style={({ pressed }) => [styles.miniIconBtn, !hasPreview && { opacity: 0.6 }, pressed && { opacity: 0.75 }]}
+        style={({ pressed }) => [styles.miniIconBtn, !hasPreview && !loading && { opacity: 0.6 }, pressed && { opacity: 0.75 }]}
       >
-        <FeatureIcon color="#FFFFFF" name={hasPreview ? (isPlaying ? 'pause.fill' : 'play.fill') : 'speaker.slash.fill'} size={22} />
+        {loading ? (
+          <ActivityIndicator color="#FFFFFF" size="small" />
+        ) : (
+          <FeatureIcon color="#FFFFFF" name={hasPreview ? (isPlaying ? 'pause.fill' : 'play.fill') : 'speaker.slash.fill'} size={22} />
+        )}
       </Pressable>
       <Pressable
-        accessibilityLabel="ต่อไป เลือกท่อน"
+        accessibilityLabel="ส่งเพลงนี้"
         onPress={onNext}
         style={({ pressed }) => [
           styles.nextBtn,
           pressed && { opacity: 0.88 },
         ]}
       >
-        <FeatureIcon color={colors.ink || '#1A2333'} name="chevron.right" size={22} />
+        <FeatureIcon color={MINI_PLAYER_NEXT_ICON} name="paperplane.fill" size={18} />
       </Pressable>
     </View>
   );
 }
 
-function WaveHandle({
-  colors,
-  disabled,
-  durationMs,
-  durationSV,
-  endMs,
-  endMsSV,
-  onCommit,
-  side,
-  startMs,
-  startMsSV,
-  widthSV,
-  isFullSong,
-}) {
-  const originStart = useSharedValue(0);
-  const originEnd = useSharedValue(0);
-  const pan = useMemo(() => Gesture.Pan()
-    .enabled(!disabled)
-    .minDistance(0)
-    .onStart(() => {
-      originStart.set(startMsSV.get());
-      originEnd.set(endMsSV.get());
-    })
-    .onUpdate((event) => {
-      const trackWidth = widthSV.get();
-      const trackDuration = durationSV.get();
-      if (!trackWidth || !trackDuration) return;
-      const origin = side === 'start' ? originStart.get() : originEnd.get();
-      const value = origin + (event.translationX / trackWidth) * trackDuration;
-      const next = moveSegmentHandle(originStart.get(), originEnd.get(), side, value, trackDuration, isFullSong);
-      startMsSV.set(next.startMs);
-      endMsSV.set(next.endMs);
-    })
-    .onEnd(() => {
-      scheduleOnRN(onCommit, startMsSV.get(), endMsSV.get());
-    }), [disabled, durationSV, endMsSV, onCommit, originEnd, originStart, side, startMsSV, widthSV]);
-
-  const handleStyle = useAnimatedStyle(() => {
-    const trackWidth = widthSV.get();
-    const trackDuration = durationSV.get() || 1;
-    const ms = side === 'start' ? startMsSV.get() : endMsSV.get();
-    return { transform: [{ translateX: 10 + (ms / trackDuration) * trackWidth - 12 }] };
-  });
-
-  const onAccessibilityAdjust = useCallback((event) => {
-    const action = event?.nativeEvent?.actionName;
-    if (action !== 'increment' && action !== 'decrement') return;
-    const current = side === 'start' ? startMs : endMs;
-    const delta = action === 'increment' ? 1000 : -1000;
-    const next = moveSegmentHandle(startMs, endMs, side, current + delta, durationMs, isFullSong);
-    onCommit(next.startMs, next.endMs);
-  }, [durationMs, endMs, onCommit, side, startMs]);
-
-  return (
-    <GestureDetector gesture={pan}>
-      <Animated.View
-        accessible
-        accessibilityActions={[
-          { name: 'increment', label: 'เพิ่มเวลา 1 วินาที' },
-          { name: 'decrement', label: 'ลดเวลา 1 วินาที' },
-        ]}
-        accessibilityHint="ปัดขึ้นหรือลงเพื่อปรับทีละ 1 วินาที"
-        accessibilityLabel={side === 'start' ? 'จุดเริ่มท่อน' : 'จุดจบท่อน'}
-        accessibilityRole="adjustable"
-        accessibilityValue={{
-          min: 0,
-          max: Math.round(durationMs / 1000),
-          now: Math.round((side === 'start' ? startMs : endMs) / 1000),
-          text: formatMs(side === 'start' ? startMs : endMs),
-        }}
-        onAccessibilityAction={onAccessibilityAdjust}
-        style={[styles.waveHandle, handleStyle]}
-      >
-        <View style={[styles.waveHandleGrip, { backgroundColor: colors.primary || '#3986E8' }]} />
-      </Animated.View>
-    </GestureDetector>
-  );
-}
-
-function TrimModule({
-  colors,
-  currentMs,
-  durationMs,
-  hasPreview,
-  initialStartMs = 0,
-  insets,
-  isFullSong,
-  isPlaying,
-  onBack,
-  onConfirm,
-  onPause,
-  onSeek,
-  onSeekPlay,
-  onTogglePlay,
-  player,
-  track,
-  ytLoading,
-}) {
-  const { height: viewportHeight } = useWindowDimensions();
-  const safeDuration = durationMs > 0 ? durationMs : (Number(track?.durationMs) > 0 ? Number(track.durationMs) : 30000);
-  const numBars = useMemo(() => {
-    return isFullSong && safeDuration > 30000 ? Math.max(40, Math.round(40 * (safeDuration / 30000))) : 40;
-  }, [isFullSong, safeDuration]);
-  const waveHeights = useMemo(() => buildWaveHeights(track?.id, numBars), [track?.id, numBars]);
-  const defaultInitialStart = (track?.previewStartMs != null && track.previewStartMs >= 0)
-    ? track.previewStartMs
-    : (initialStartMs > 0 && initialStartMs < safeDuration ? initialStartMs : 0);
-  const [startMs, setStartMs] = useState(defaultInitialStart);
-  const [endMs, setEndMs] = useState(Math.min(safeDuration, defaultInitialStart + DEFAULT_SEGMENT_MS));
-  const [width, setWidth] = useState(0);
-  const [segmentLoop, setSegmentLoop] = useState(false);
-  const [lyricsRetry, setLyricsRetry] = useState(0);
-  const lyricsResult = useTrackLyrics(track, lyricsRetry);
-  const rangeReadyRef = useRef(false);
-  const rangeEditedRef = useRef(false);
-  const rangeTrackRef = useRef(null);
-
-  const startMsSV = useSharedValue(defaultInitialStart);
-  const endMsSV = useSharedValue(Math.min(safeDuration, defaultInitialStart + DEFAULT_SEGMENT_MS));
-  const durationSV = useSharedValue(safeDuration);
-  const widthSV = useSharedValue(0);
-  const currentMsSV = useSharedValue(defaultInitialStart);
-  const progressWidthSV = useSharedValue(0);
-  const scrubbingSV = useSharedValue(false);
-  const scrubbedMsRef = useRef(null);
-  const originScrollSV = useSharedValue(0);
-
-  useEffect(() => {
-    if (!scrubbingSV.get()) currentMsSV.set(currentMs);
-  }, [currentMs, currentMsSV, scrubbingSV]);
-
-  useEffect(() => {
-    durationSV.set(safeDuration);
-    const songKey = `${track?.id}:${track?.name}:${track?.artists}`;
-    if (rangeTrackRef.current !== songKey) {
-      rangeTrackRef.current = songKey;
-      rangeReadyRef.current = false;
-      rangeEditedRef.current = false;
-      setSegmentLoop(false);
-    }
-    if (!rangeReadyRef.current && safeDuration > 0) {
-      const initStart = (track?.previewStartMs != null && track.previewStartMs >= 0)
-        ? track.previewStartMs
-        : (initialStartMs > 0 && initialStartMs < safeDuration ? initialStartMs : 0);
-      const nextEnd = Math.min(safeDuration, initStart + DEFAULT_SEGMENT_MS);
-      setStartMs(initStart);
-      setEndMs(nextEnd);
-      startMsSV.set(initStart);
-      endMsSV.set(nextEnd);
-      rangeReadyRef.current = true;
-    } else if (rangeEditedRef.current) {
-      // Late duration metadata may clamp a range, but must not reset it.
-      const nextStart = clamp(startMsSV.get(), 0, Math.max(0, safeDuration - MIN_SEGMENT_MS));
-      const nextEnd = clamp(endMsSV.get(), nextStart + MIN_SEGMENT_MS, safeDuration);
-      setStartMs(nextStart); setEndMs(nextEnd);
-      startMsSV.set(nextStart); endMsSV.set(nextEnd);
-    }
-  }, [durationSV, endMsSV, initialStartMs, safeDuration, startMsSV, track?.id, track?.name, track?.artists, track?.previewStartMs]);
-
-  useEffect(() => {
-    widthSV.set(width);
-  }, [width, widthSV]);
-
-  // Boundary check: pause automatically as soon as playback reaches or exceeds the trim window
-  useEffect(() => {
-    if (!isPlaying) return;
-    if (currentMs >= endMs - 40 || currentMs < startMs - 500) {
-      try {
-        onPause?.();
-        player?.pause?.();
-        setSegmentLoop(false);
-        onSeek?.(startMs);
-        currentMsSV.set(startMs);
-      } catch (_) {}
-    }
-  }, [currentMs, endMs, isPlaying, onPause, onSeek, player, startMs]);
-
-  useEffect(() => {
-    // Position a default range after lyrics arrive, independently of fetch.
-    if (!rangeEditedRef.current && lyricsResult?.suggestedLineStartMs && track?.previewStartMs == null && startMs === 0) {
-      const hookStart = clamp(lyricsResult.suggestedLineStartMs, 0, Math.max(0, safeDuration - MIN_SEGMENT_MS));
-      const hookEnd = clamp(hookStart + DEFAULT_SEGMENT_MS, hookStart + MIN_SEGMENT_MS, safeDuration);
-      setStartMs(hookStart);
-      setEndMs(hookEnd);
-      startMsSV.set(hookStart);
-      endMsSV.set(hookEnd);
-    }
-  }, [lyricsResult, safeDuration, startMs, startMsSV, endMsSV, track?.previewStartMs]);
-
-  const commitRange = useCallback((nextStart, nextEnd) => {
-    rangeEditedRef.current = true;
-    try {
-      onPause?.();
-      player?.pause?.();
-    } catch (_) {}
-    setSegmentLoop(false);
-    const start = clamp(Math.round(nextStart), 0, Math.max(0, safeDuration - MIN_SEGMENT_MS));
-    const end = clamp(Math.round(nextEnd), start + MIN_SEGMENT_MS, safeDuration);
-    setStartMs(start);
-    setEndMs(end);
-    startMsSV.set(start);
-    endMsSV.set(end);
-    scrubbedMsRef.current = null;
-    currentMsSV.set(start);
-    onSeek?.(start);
-  }, [currentMsSV, endMsSV, onPause, onSeek, player, safeDuration, startMsSV]);
-
-  const commitScrub = useCallback((ms) => {
-    const position = clamp(ms, startMs, endMs);
-    scrubbedMsRef.current = position;
-    currentMsSV.set(position);
-    onSeek?.(position);
-  }, [currentMsSV, endMs, onSeek, startMs]);
-
-  const windowPan = useMemo(() => Gesture.Pan()
-    .enabled(isFullSong)
-    .onStart(() => {
-      originScrollSV.set(startMsSV.get());
-    })
-    .onUpdate((event) => {
-      const trackDuration = durationSV.get() || 1;
-      // Dragging left = scroll forward (increase startMs), right = backward
-      const deltaMs = - (event.translationX / 200) * 30000;
-      let nextStart = originScrollSV.get() + deltaMs;
-      nextStart = Math.max(0, Math.min(nextStart, Math.max(0, trackDuration - 30000)));
-      startMsSV.set(nextStart);
-      endMsSV.set(Math.min(trackDuration, nextStart + 30000));
-    })
-    .onEnd(() => {
-      scheduleOnRN(commitRange, startMsSV.get(), endMsSV.get());
-    }), [isFullSong, commitRange, originScrollSV, startMsSV, endMsSV, durationSV]);
-
-  const progressScrub = useMemo(() => Gesture.Pan()
-    .minDistance(0)
-    .onStart((event) => {
-      scrubbingSV.set(true);
-      currentMsSV.set(scrubPosition(event.x, progressWidthSV.get(), durationSV.get(), startMsSV.get(), endMsSV.get()));
-    })
-    .onUpdate((event) => {
-      currentMsSV.set(scrubPosition(event.x, progressWidthSV.get(), durationSV.get(), startMsSV.get(), endMsSV.get()));
-    })
-    .onEnd(() => {
-      scheduleOnRN(commitScrub, currentMsSV.get());
-      scrubbingSV.set(false);
-    }), [commitScrub, currentMsSV, durationSV, endMsSV, progressWidthSV, scrubbingSV, startMsSV]);
-
-  const waveScrub = useMemo(() => Gesture.Pan()
-    .minDistance(0)
-    .onStart((event) => {
-      scrubbingSV.set(true);
-      currentMsSV.set(scrubPosition(event.x, widthSV.get(), durationSV.get(), startMsSV.get(), endMsSV.get()));
-    })
-    .onUpdate((event) => {
-      currentMsSV.set(scrubPosition(event.x, widthSV.get(), durationSV.get(), startMsSV.get(), endMsSV.get()));
-    })
-    .onEnd(() => {
-      scheduleOnRN(commitScrub, currentMsSV.get());
-      scrubbingSV.set(false);
-    }), [commitScrub, currentMsSV, durationSV, endMsSV, scrubbingSV, startMsSV, widthSV]);
-
-  const handlePlaySegment = useCallback(async () => {
-    setSegmentLoop(true);
-    const resumeAt = scrubbedMsRef.current;
-    await onSeekPlay?.(resumeAt != null && resumeAt >= startMs && resumeAt < endMs - 250 ? resumeAt : startMs);
-  }, [endMs, onSeekPlay, startMs]);
-
-  const handleToggle = useCallback(async () => {
-    if (isPlaying) {
-      setSegmentLoop(false);
-      onTogglePlay?.();
-      return;
-    }
-    await handlePlaySegment();
-  }, [handlePlaySegment, isPlaying, onTogglePlay]);
-
-  const handleConfirm = useCallback(() => {
-    onConfirm?.(hasPreview ? {
-      ...track,
-      previewStartMs: Math.round(startMs),
-      previewEndMs: Math.round(endMs),
-      durationMs: safeDuration,
-    } : track);
-  }, [endMs, hasPreview, onConfirm, safeDuration, startMs, track]);
-
-  const selectionStyle = useAnimatedStyle(() => {
-    const trackWidth = widthSV.get();
-    if (isFullSong) {
-      return {
-        left: 10,
-        width: trackWidth,
-      };
-    }
-    const trackDuration = durationSV.get() || 1;
-    const left = (startMsSV.get() / trackDuration) * trackWidth;
-    const right = (endMsSV.get() / trackDuration) * trackWidth;
-    return { left: 10 + left, width: Math.max(4, right - left) };
-  });
-
-  const playheadStyle = useAnimatedStyle(() => {
-    const trackWidth = widthSV.get();
-    if (isFullSong) {
-      const relativeMs = Math.max(0, currentMsSV.get() - startMsSV.get());
-      const ratio = Math.min(1, Math.max(0, relativeMs / 30000));
-      return { transform: [{ translateX: 10 + ratio * trackWidth - 1 }] };
-    }
-    const trackDuration = durationSV.get() || 1;
-    const ratio = Math.min(1, Math.max(0, currentMsSV.get() / trackDuration));
-    return { transform: [{ translateX: 10 + ratio * trackWidth - 1 }] };
-  });
-
-  const waveBarsStyle = useAnimatedStyle(() => {
-    if (!isFullSong) return { width: '100%', transform: [{ translateX: 0 }] };
-    const trackWidth = widthSV.get();
-    const trackDuration = durationSV.get() || 1;
-    const waveBarsWidth = trackWidth * (trackDuration / 30000);
-    const tx = - (startMsSV.get() / trackDuration) * waveBarsWidth;
-    return {
-      width: waveBarsWidth,
-      transform: [{ translateX: tx }],
-    };
-  });
-
-  const progressPlayheadStyle = useAnimatedStyle(() => ({
-    left: `${Math.min(100, Math.max(0, (currentMsSV.get() / (durationSV.get() || 1)) * 100))}%`,
-  }));
-
-  const previewSeconds = Math.max(1, Math.round(safeDuration / 1000));
-  const hasSyncedLines = Boolean(lyricsResult?.lines?.length);
-  const lyricText = hasSyncedLines
-    ? lyricsResult.lines.map((line) => line.text).join('\n')
-    : lyricsResult?.plainLyrics || '';
-  const suggestedLines = Array.isArray(lyricsResult?.suggestedLines)
-    ? lyricsResult.suggestedLines
-    : [];
-
-  const theme = useTheme();
-  const colorScheme = useColorScheme();
-  const isDark = theme?.dark ?? (colorScheme === 'dark');
-
-  const lyricsCardBg = isDark ? '#141416' : (colors.surface || '#FFFFFF');
-  const lyricsCardBorder = isDark ? 'rgba(255, 255, 255, 0.08)' : (colors.line || '#E2E8F0');
-  const lyricsOverlayBg = isDark ? 'rgba(0, 0, 0, 0.45)' : 'rgba(255, 255, 255, 0.85)';
-  const lyricsAlbumArtOpacity = isDark ? 0.65 : 0.2;
-  const lyricsTitleColor = isDark ? 'rgba(255, 255, 255, 0.95)' : (colors.ink || '#25272B');
-  const lyricsSourceColor = isDark ? 'rgba(255, 255, 255, 0.5)' : (colors.inkSoft || '#6B7078');
-  const lyricsBadgeBg = isDark ? 'rgba(255, 255, 255, 0.18)' : (colors.primarySoft || '#EEF2F7');
-  const lyricsBadgeColor = isDark ? '#FFFFFF' : (colors.primary || '#3986E8');
-  const lyricsPlainBadgeBg = isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.06)';
-  const lyricsPlainBadgeColor = isDark ? 'rgba(255, 255, 255, 0.7)' : (colors.inkSoft || '#6B7078');
-  const lyricsActiveLineColor = isDark ? '#FFFFFF' : (colors.primary || '#2563EB');
-  const lyricsInactiveLineColor = isDark ? '#FFFFFF' : (colors.ink || '#25272B');
-  const lyricsBodyColor = isDark ? 'rgba(255, 255, 255, 0.92)' : (colors.ink || '#25272B');
-
-  const lyricsScrollViewRef = useRef(null);
-  const lineLayoutsRef = useRef([]);
-  const userScrolledRef = useRef(false);
-  const userScrollTimeoutRef = useRef(null);
-  const [lyricsNotice, setLyricsNotice] = useState('');
-  const lyricsNoticeTimeoutRef = useRef(null);
-
-  const activeLineIndex = useMemo(() => {
-    if (!hasSyncedLines) return -1;
-    let idx = -1;
-    for (let i = 0; i < lyricsResult.lines.length; i += 1) {
-      if (lyricsResult.lines[i].timeMs <= currentMs + 250) {
-        idx = i;
-      } else {
-        break;
-      }
-    }
-    return idx;
-  }, [currentMs, hasSyncedLines, lyricsResult?.lines]);
-
-  useEffect(() => {
-    if (activeLineIndex < 0 || userScrolledRef.current) return;
-    const layout = lineLayoutsRef.current[activeLineIndex];
-    if (layout && lyricsScrollViewRef.current) {
-      lyricsScrollViewRef.current.scrollTo({
-        y: Math.max(0, layout.y - 36),
-        animated: true,
-      });
-    }
-  }, [activeLineIndex]);
-
-  const handleLinePress = useCallback((line) => {
-    if (!hasPreview || !Number.isFinite(line?.timeMs)) return;
-    userScrolledRef.current = false;
-    if (line.timeMs <= safeDuration) {
-      const segLen = Math.max(MIN_SEGMENT_MS, endMs - startMs);
-      const nextStart = clamp(line.timeMs, 0, Math.max(0, safeDuration - MIN_SEGMENT_MS));
-      const nextEnd = clamp(nextStart + segLen, nextStart + MIN_SEGMENT_MS, safeDuration);
-      commitRange(nextStart, nextEnd);
-      onSeekPlay?.(line.timeMs);
-    } else {
-      setLyricsNotice(`ท่อนนี้อยู่ที่ ${formatMs(line.timeMs)} (ตัวอย่างเพลงมีถึง ${formatMs(safeDuration)})`);
-      if (lyricsNoticeTimeoutRef.current) clearTimeout(lyricsNoticeTimeoutRef.current);
-      lyricsNoticeTimeoutRef.current = setTimeout(() => { setLyricsNotice(''); }, 3500);
-    }
-  }, [commitRange, endMs, hasPreview, onSeekPlay, safeDuration, startMs]);
-
-  return (
-    <View style={styles.trimContainer}>
-      <View style={styles.trimTopRow}>
-        <Pressable
-          accessibilityLabel="กลับไปเลือกเพลง"
-          accessibilityRole="button"
-          hitSlop={8}
-          onPress={onBack}
-          style={({ pressed }) => [
-            styles.backPill,
-            { backgroundColor: colors.surface || '#FFFFFF', borderColor: colors.line || '#E2E8F0' },
-            pressed && { opacity: 0.8 },
-          ]}
-        >
-          <FeatureIcon color={colors.ink || '#25272B'} name="chevron.left" size={13} />
-          <Text style={[styles.backPillText, { color: colors.ink || '#25272B' }]}>เพลงทั้งหมด</Text>
-        </Pressable>
-        <Text style={[styles.trimScreenTitle, { color: colors.ink || '#25272B' }]}>เลือกท่อนเพลง</Text>
-        <Pressable
-          accessibilityLabel="ยืนยันท่อน"
-          accessibilityRole="button"
-          hitSlop={8}
-          onPress={handleConfirm}
-          style={({ pressed }) => [
-            styles.donePill,
-            { backgroundColor: colors.primary || '#3986E8' },
-            pressed && { opacity: 0.9 },
-          ]}
-        >
-          <Text style={styles.donePillText}>ใช้ท่อนนี้</Text>
-        </Pressable>
-      </View>
-
-      <View style={[styles.trimSongCard, { backgroundColor: colors.surface || '#FFFFFF', borderColor: colors.line || '#E2E8F0' }]}>
-        {track.albumArt ? (
-          <Image contentFit="cover" source={{ uri: track.albumArt }} style={styles.trimArt} />
-        ) : (
-          <View style={[styles.trimArt, styles.albumArtFallback, { backgroundColor: colors.primarySoft || '#EEF2F7' }]}>
-            <FeatureIcon color={colors.primary || '#3986E8'} name="music.note" size={20} />
-          </View>
-        )}
-        <View style={styles.trimSongCopy}>
-          <Text numberOfLines={1} style={[styles.trimTitle, { color: colors.ink || '#25272B' }]}>{track.name}</Text>
-          <Text numberOfLines={1} style={[styles.trimArtists, { color: colors.inkSoft || '#6B7078' }]}>
-            {track.artists || 'Unknown'}
-          </Text>
-        </View>
-        <View style={[styles.durationBadge, { backgroundColor: isFullSong ? '#ECFDF5' : (colors.primarySoft || '#EEF2F7') }]}>
-          <Text style={[styles.durationBadgeText, { color: isFullSong ? '#059669' : (colors.primary || '#3986E8') }]}>
-            {isFullSong ? `เพลงเต็ม ${formatMs(safeDuration)}` : (hasPreview ? `${previewSeconds}วิ` : (ytLoading ? 'กำลังโหลด...' : 'ไม่มีเสียง'))}
-          </Text>
-        </View>
-      </View>
-
-      {hasPreview ? (
-        <View style={[styles.trimWaveCard, { backgroundColor: colors.surface || '#FFFFFF', borderColor: colors.line || '#E2E8F0', paddingVertical: 20, paddingHorizontal: 0, overflow: 'hidden' }]}>
-          {/* Top Controls: (30) | Timeline | Play/Pause */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 30, paddingHorizontal: 16 }}>
-            <View style={{ width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: colors.ink || '#25272B', justifyContent: 'center', alignItems: 'center', marginRight: 16 }}>
-              <Text style={{ color: colors.ink || '#25272B', fontSize: 10, fontWeight: '700' }}>30</Text>
-            </View>
-            
-            <GestureDetector gesture={progressScrub}>
-              <View 
-                style={{ flex: 1, height: 20, justifyContent: 'center', marginRight: 16 }}
-                onLayout={(e) => {
-                  progressWidthSV.set(e.nativeEvent.layout.width);
-                }}
-              >
-                <View style={{ height: 2, backgroundColor: colors.line || '#E2E8F0', width: '100%', borderRadius: 1 }} />
-              {/* Chorus dots (fake markers for popular parts at 30% and 60%) */}
-              <View style={{ position: 'absolute', left: '30%', width: 4, height: 4, borderRadius: 2, backgroundColor: colors.danger || '#E85D5D', top: 8 }} />
-              <View style={{ position: 'absolute', left: '60%', width: 4, height: 4, borderRadius: 2, backgroundColor: colors.danger || '#E85D5D', top: 8 }} />
-              
-              {/* Macro progress segment */}
-              <Animated.View style={[
-                { position: 'absolute', height: 2, backgroundColor: colors.primary || '#3986E8', borderRadius: 1, top: 9 },
-                useAnimatedStyle(() => {
-                  const trackDuration = durationSV.get() || 1;
-                  const left = (startMsSV.get() / trackDuration) * 100;
-                  const width = (30000 / trackDuration) * 100;
-                  return { left: `${left}%`, width: `${width}%` };
-                })
-              ]} />
-              
-              {/* Macro playhead */}
-              <Animated.View style={[
-                { position: 'absolute', height: 6, width: 6, borderRadius: 3, backgroundColor: colors.primary || '#3986E8', top: 7, marginLeft: -3 },
-                useAnimatedStyle(() => {
-                  const trackDuration = durationSV.get() || 1;
-                  const left = (currentMsSV.get() / trackDuration) * 100;
-                  return { left: `${left}%` };
-                })
-              ]} />
-            </View>
-            </GestureDetector>
-
-            <Pressable onPress={handleToggle} style={{ width: 40, height: 40, justifyContent: 'center', alignItems: 'flex-end' }}>
-              <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: colors.ink || '#25272B', justifyContent: 'center', alignItems: 'center' }}>
-                <FeatureIcon color={colors.surface || '#FFFFFF'} name={isPlaying ? "pause.fill" : "play.fill"} size={16} />
-              </View>
-            </Pressable>
-          </View>
-
-          {/* Bottom Waveform */}
-          <View style={{ height: 60, justifyContent: 'center' }}>
-            <GestureDetector gesture={isFullSong ? windowPan : waveScrub}>
-              <View style={{ height: 60, width: '100%' }}>
-                <Animated.View style={[
-                  { flexDirection: 'row', alignItems: 'center', height: '100%', paddingLeft: (global.screenWidth || 390) / 2 - 100 },
-                  useAnimatedStyle(() => {
-                    if (!isFullSong) return { transform: [{ translateX: 0 }] };
-                    const tx = - (startMsSV.get() / 30000) * 200;
-                    return { transform: [{ translateX: tx }] };
-                  })
-                ]}>
-                  {waveHeights.map((height, index) => {
-                    const numBars = waveHeights.length;
-                    const barStart = (index / numBars) * safeDuration;
-                    const inRange = isFullSong ? true : (barStart >= startMs && barStart <= endMs);
-                    return (
-                      <View
-                        key={`bar-${index}`}
-                        style={{
-                          width: 3,
-                          height: 10 + height * 40,
-                          backgroundColor: inRange ? (colors.primary || '#3986E8') : 'rgba(150,150,150,0.3)',
-                          marginRight: 2,
-                          borderRadius: 1.5,
-                        }}
-                      />
-                    );
-                  })}
-                </Animated.View>
-              </View>
-            </GestureDetector>
-
-            {/* Fixed Center Frame */}
-            <View pointerEvents="none" style={{
-              position: 'absolute',
-              left: (global.screenWidth || 390) / 2 - 100,
-              width: 200,
-              height: 70,
-              borderWidth: 3,
-              borderColor: 'transparent',
-              borderRadius: 8,
-              overflow: 'hidden'
-            }}>
-              {/* Gradient border effect */}
-              <View style={{
-                position: 'absolute',
-                top: -2, left: -2, right: -2, bottom: -2,
-                backgroundColor: '#E1306C',
-                borderWidth: 3,
-                borderColor: '#F56040',
-                borderRadius: 10,
-                opacity: 0.8
-              }} />
-              <View style={{ flex: 1, backgroundColor: 'transparent', borderWidth: 2, borderColor: '#C13584', borderRadius: 6 }} />
-            </View>
-
-            {/* Center Playhead */}
-            <Animated.View pointerEvents="none" style={[
-              { position: 'absolute', top: 5, bottom: -5, width: 2, backgroundColor: '#FFF', shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 3, shadowOffset: { width: 0, height: 0 } },
-              useAnimatedStyle(() => {
-                if (isFullSong) {
-                  const relativeMs = Math.max(0, currentMsSV.get() - startMsSV.get());
-                  const ratio = Math.min(1, Math.max(0, relativeMs / 30000));
-                  const left = ((global.screenWidth || 390) / 2 - 100) + (ratio * 200);
-                  return { left };
-                }
-                const trackWidth = widthSV.get() || 1;
-                const trackDuration = durationSV.get() || 1;
-                const ratio = Math.min(1, Math.max(0, currentMsSV.get() / trackDuration));
-                return { left: 10 + ratio * trackWidth };
-              })
-            ]} />
-          </View>
-        </View>
-      ) : (
-        <View style={[styles.noPreviewNotice, { backgroundColor: colors.surface || '#FFFFFF', borderColor: colors.line || '#E2E8F0' }]}>
-          {ytLoading ? (
-            <>
-              <ActivityIndicator color={colors.primary || '#3986E8'} size="small" />
-              <Text style={[styles.noPreviewText, { color: colors.ink || '#25272B' }]}>
-                กำลังเตรียมระบบเสียงเต็มเพลง...
-              </Text>
-            </>
-          ) : (
-            <>
-              <FeatureIcon color={colors.inkSoft || '#6B7078'} name="speaker.slash.fill" size={20} />
-              <Text style={[styles.noPreviewText, { color: colors.inkSoft || '#6B7078' }]}>
-                เพลงนี้ไม่มีเสียงตัวอย่าง จึงเลือกช่วงเสียงไม่ได้ แต่ยังเพิ่มเพลงได้
-              </Text>
-            </>
-          )}
-        </View>
-      )}
-
-      {suggestedLines.length > 0 && lyricsResult?.status === 'found' ? (
-        <Pressable
-          accessibilityLabel="กระโดดไปท่อนฮิต"
-          accessibilityRole="button"
-          onPress={() => {
-            const hookMs = lyricsResult.suggestedLineStartMs;
-            if (Number.isFinite(hookMs) && hookMs >= 0) {
-              const segLen = Math.max(MIN_SEGMENT_MS, endMs - startMs);
-              const nextStart = clamp(hookMs, 0, Math.max(0, safeDuration - MIN_SEGMENT_MS));
-              const nextEnd = clamp(nextStart + segLen, nextStart + MIN_SEGMENT_MS, safeDuration);
-              commitRange(nextStart, nextEnd);
-              onSeekPlay?.(nextStart);
-            }
-          }}
-          style={({ pressed }) => [
-            styles.hitCard,
-            { backgroundColor: colors.primarySoft || '#EEF2F7' },
-            pressed && { opacity: 0.8 },
-          ]}
-        >
-          <FeatureIcon color={colors.primary || '#3986E8'} name="flame.fill" size={13} />
-          <Text numberOfLines={1} style={[styles.hitCardTitle, { color: colors.primary || '#3986E8', flex: 1 }]}>
-            ท่อนฮิต: {suggestedLines.join(' / ')} (แตะเพื่อใช้ท่อนนี้)
-          </Text>
-        </Pressable>
-      ) : null}
-
-      {lyricsResult?.status === 'found' && (hasSyncedLines || lyricText) ? (
-        <View style={[styles.lyricsCard, { backgroundColor: lyricsCardBg, borderColor: lyricsCardBorder, borderWidth: 1, overflow: 'hidden' }]}>
-          {track?.albumArt ? (
-            <Image 
-              source={{ uri: track.albumArt }} 
-              style={[StyleSheet.absoluteFill, { opacity: lyricsAlbumArtOpacity }]} 
-              blurRadius={50} 
-              contentFit="cover" 
-            />
-          ) : null}
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: lyricsOverlayBg }]} />
-          
-          <View style={styles.lyricsHeading}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Text style={[styles.lyricsTitle, { color: lyricsTitleColor }]}>เนื้อเพลง</Text>
-              {hasSyncedLines ? (
-                <View style={[styles.syncedBadge, { backgroundColor: lyricsBadgeBg }]}>
-                  <FeatureIcon color={lyricsBadgeColor} name="waveform" size={10} />
-                  <Text style={[styles.syncedBadgeText, { color: lyricsBadgeColor }]}>แตะเพื่อเล่นท่อนนี้</Text>
-                </View>
-              ) : (
-                <View style={[styles.syncedBadge, { backgroundColor: lyricsPlainBadgeBg }]}>
-                  <FeatureIcon color={lyricsPlainBadgeColor} name="doc.text" size={10} />
-                  <Text style={[styles.syncedBadgeText, { color: lyricsPlainBadgeColor }]}>เนื้อเพลงแบบข้อความ</Text>
-                </View>
-              )}
-            </View>
-            <Text style={[styles.lyricsSource, { color: lyricsSourceColor }]}>LRCLIB</Text>
-          </View>
-
-          {lyricsNotice ? (
-            <View style={[styles.lyricsNoticeBar, { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' }]}>
-              <FeatureIcon color="#D97706" name="info.circle.fill" size={12} />
-              <Text style={[styles.lyricsNoticeText, { color: '#B45309' }]}>{lyricsNotice}</Text>
-            </View>
-          ) : null}
-
-          <ScrollView
-            ref={lyricsScrollViewRef}
-            contentContainerStyle={styles.lyricsScrollContent}
-            nestedScrollEnabled
-            onScrollBeginDrag={() => {
-              userScrolledRef.current = true;
-              if (userScrollTimeoutRef.current) clearTimeout(userScrollTimeoutRef.current);
-              userScrollTimeoutRef.current = setTimeout(() => {
-                userScrolledRef.current = false;
-              }, 4000);
-            }}
-            showsVerticalScrollIndicator
-            style={styles.lyricsScroll}
-          >
-            {hasSyncedLines ? (
-              lyricsResult.lines.map((line, index) => {
-                const isActive = index === activeLineIndex;
-                const isPast = activeLineIndex >= 0 && index < activeLineIndex;
-                const isWithinPreview = line.timeMs <= safeDuration;
-                return (
-                  <Pressable
-                    key={`synced-line-${index}-${line.timeMs}`}
-                    onLayout={(e) => {
-                      lineLayoutsRef.current[index] = e.nativeEvent.layout;
-                    }}
-                    onPress={() => handleLinePress(line)}
-                    style={({ pressed }) => [
-                      styles.syncedLineRow,
-                      pressed && { opacity: 0.7 },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.syncedLineText,
-                        {
-                          color: isActive ? lyricsActiveLineColor : lyricsInactiveLineColor,
-                          opacity: isActive ? 1.0 : (isDark ? 0.4 : 0.35),
-                          fontWeight: isActive ? '800' : '700',
-                          fontSize: isActive ? 24 : 18,
-                          lineHeight: isActive ? 32 : 24,
-                          transform: [{ scale: isActive ? 1.05 : 1 }],
-                          textShadowColor: isActive && isDark ? 'rgba(0,0,0,0.3)' : 'transparent',
-                          textShadowOffset: { width: 0, height: 2 },
-                          textShadowRadius: 6,
-                        },
-                      ]}
-                    >
-                      {line.text}
-                    </Text>
-                  </Pressable>
-                );
-              })
-            ) : (
-              <Text selectable style={[styles.lyricsBody, { color: lyricsBodyColor }]}>{lyricText}</Text>
-            )}
-          </ScrollView>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
 /**
- * Search / browse tracks → tap plays in mini bar → Next opens waveform trim module.
+ * Search tracks, preview them, then send the selected song.
  */
 export default function SpotifyTrackSearchSheet({
   colors: colorsProp,
@@ -947,14 +169,16 @@ export default function SpotifyTrackSearchSheet({
   onClose,
   onSelect,
   onSelectTrack,
-  subtitle = 'แตะเพื่อฟัง แล้วกดต่อไปเพื่อเลือกท่อน',
+  subtitle = 'แตะเพื่อฟัง แล้วกดส่งเพื่อแชร์เพลง',
   title = 'ค้นหาเพลง',
   visible,
 }) {
   const theme = useTheme();
   const colorScheme = useColorScheme();
-  const isDark = theme?.dark ?? (colorScheme === 'dark');
+  const isDark = theme?.isDark ?? (colorScheme === 'dark');
   const rawColors = colorsProp || theme?.colors || {};
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   
   const colors = {
     canvas: rawColors.canvas || rawColors.background || (isDark ? '#000000' : '#F7F7F8'),
@@ -963,6 +187,7 @@ export default function SpotifyTrackSearchSheet({
     inkSoft: rawColors.inkSoft || (isDark ? '#A1A1AA' : '#6B7078'),
     line: rawColors.line || rawColors.border || (isDark ? '#333336' : '#E2E8F0'),
     primary: rawColors.primary || '#3986E8',
+    accentText: rawColors.accentText || rawColors.primary || (isDark ? '#7CB8FF' : '#245DAF'),
     primarySoft: rawColors.primarySoft || (isDark ? '#172B4D' : '#EEF2F7'),
     danger: rawColors.danger || rawColors.notification || '#E85D5D',
     ...rawColors,
@@ -991,10 +216,20 @@ export default function SpotifyTrackSearchSheet({
   const [showTrim, setShowTrim] = useState(false);
   const [autoPlayToken, setAutoPlayToken] = useState(0);
 
-  const hasPreview = typeof selectedTrack?.previewUrl === 'string' && selectedTrack.previewUrl.length > 0;
+  // Apple's preview is tried first (one fast request); Spotify's own file is the
+  // fallback once that lookup has finished without a match. Before, a track
+  // that only had a Spotify preview could never play here.
+  const [previewLookup, setPreviewLookup] = useState({ id: null, done: false });
+  const lookupDone = Boolean(selectedTrack?.id) && previewLookup.id === selectedTrack.id && previewLookup.done;
+  const ownPreviewUrl = typeof selectedTrack?.previewUrl === 'string' && /^https?:\/\//i.test(selectedTrack.previewUrl.trim())
+    ? selectedTrack.previewUrl.trim()
+    : '';
+  const playableUrl = isReliablePreviewUrl(ownPreviewUrl) || lookupDone ? ownPreviewUrl : '';
+  const hasPreview = Boolean(playableUrl);
+  const previewLookupPending = Boolean(selectedTrack?.name) && !hasPreview && !lookupDone;
   const sourceRef = useRef(null);
-  if (hasPreview && sourceRef.current?.uri !== selectedTrack.previewUrl) {
-    sourceRef.current = { uri: selectedTrack.previewUrl };
+  if (hasPreview && sourceRef.current?.uri !== playableUrl) {
+    sourceRef.current = { uri: playableUrl };
   } else if (!hasPreview) {
     sourceRef.current = null;
   }
@@ -1010,6 +245,7 @@ export default function SpotifyTrackSearchSheet({
   const [ytIsPlaying, setYtIsPlaying] = useState(false);
   const [ytState, setYtState] = useState('UNSTARTED');
   const ytPlayerRef = useRef(null);
+  const pendingPlayMsRef = useRef(null);
   const showTrimRef = useRef(false);
   showTrimRef.current = showTrim;
 
@@ -1024,13 +260,13 @@ export default function SpotifyTrackSearchSheet({
   const durationMs = Math.round((Number(status?.duration) || 0) * 1000);
   const currentMs = Math.round((Number(status?.currentTime) || 0) * 1000);
 
-  const handleBackFromTrim = useCallback(() => {
+  const handleBackFromTrim = useCallback(async () => {
     setShowTrim(false);
     if (hasPreview) {
       try { ytPlayerRef.current?.pause?.(); } catch (_) {}
       if (player) {
         try {
-          player.seekTo(0);
+          await player.seekTo(0);
           player.play();
         } catch (_) {}
       }
@@ -1154,50 +390,59 @@ export default function SpotifyTrackSearchSheet({
     }
 
     let active = true;
-    setYtLoading(true);
+    pendingPlayMsRef.current = null;
     setYtCurrentMs(0);
     setYtDurationMs(Number(selectedTrack?.durationMs) || 0);
     setHookStartMs(0);
     hookStartMsRef.current = 0;
     hasJumpedToHookRef.current = false;
 
-    // Prefetch lyrics to identify hook/chorus timestamp immediately
-    getTrackLyrics({ track: selectedTrack })
-      .then((lyrics) => {
-        if (!active) return;
-        const hook = lyrics?.suggestedLineStartMs;
-        if (Number.isFinite(hook) && hook > 0) {
-          hookStartMsRef.current = hook;
-          setHookStartMs(hook);
-          // If already playing near start in search list, jump right into the hook!
-          if (!hasJumpedToHookRef.current && ytPlayerRef.current) {
-            hasJumpedToHookRef.current = true;
-            ytPlayerRef.current.seekTo(hook / 1000);
-          }
-        }
-      })
-      .catch(() => {});
-
-    resolveYouTubeTrack(selectedTrack)
-      .then((data) => {
-        if (!active) return;
-        setYtTrackData(data);
-        if (data?.durationMs) {
-          setYtDurationMs(data.durationMs);
-        }
-        setYtLoading(false);
-      })
-      .catch(() => {
-        if (active) setYtLoading(false);
-      });
-
     return () => {
       active = false;
     };
   }, [selectedTrack?.artists, selectedTrack?.id, selectedTrack?.name]);
 
-  const activeDurationMs = ytDurationMs > 0
-    ? ytDurationMs
+  useEffect(() => {
+    if (!selectedTrack?.name) return undefined;
+    let active = true;
+    const trackId = selectedTrack.id;
+    const hasDirectPreview = isReliablePreviewUrl(selectedTrack.previewUrl);
+    if (!hasDirectPreview) {
+      resolvePlayablePreview({ ...selectedTrack, previewUrl: '' })
+        .then((hit) => {
+          if (!active || !hit?.previewUrl) return;
+          setSelectedTrack((current) => {
+            if (!current || current.id !== selectedTrack.id) return current;
+            if (isReliablePreviewUrl(current.previewUrl)) return current;
+            if (current.previewUrl === hit.previewUrl) return current;
+            return {
+              ...current,
+              previewUrl: hit.previewUrl,
+              ...(current.durationMs || !hit.durationMs ? {} : { durationMs: hit.durationMs }),
+            };
+          });
+          if (!showTrimRef.current) {
+            try { ytPlayerRef.current?.pause?.(); } catch (_) {}
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (!active) return;
+          setYtLoading(false);
+          setPreviewLookup({ id: trackId, done: true });
+        });
+    }
+
+    if (hasDirectPreview) {
+      setYtLoading(false);
+      return () => { active = false; };
+    }
+    setYtLoading(true);
+    return () => { active = false; };
+  }, [selectedTrack?.artists, selectedTrack?.id, selectedTrack?.name, selectedTrack?.previewUrl]);
+
+  const activeDurationMs = hasPreview
+    ? (durationMs > 0 && durationMs <= 35000 ? durationMs : 30000)
     : (Number(selectedTrack?.durationMs) > 0
       ? Number(selectedTrack.durationMs)
       : (durationMs > 0 ? durationMs : 30000));
@@ -1238,7 +483,8 @@ export default function SpotifyTrackSearchSheet({
       try {
         await ensureAudioPlaybackMode();
         if (cancelled) return;
-        player.seekTo(0);
+        await player.seekTo(0);
+        if (cancelled) return;
         player.play();
       } catch (_) {}
     })();
@@ -1267,16 +513,15 @@ export default function SpotifyTrackSearchSheet({
       if (requestId !== browseRequestRef.current) return;
       
       const topList = personalized.length ? personalized : (Array.isArray(result?.recommended) ? result.recommended : []);
-      setRecommended(topList);
+      setRecommended(topList.filter((track) => track?.id && track?.name));
       setTrending(Array.isArray(result?.trending) ? result.trending : []);
       setTrendingHasMore(true);
       setBrowseError('');
 
       if (topList.length > 0) {
         scheduleIdleTask(() => {
-          topList.slice(0, 2).forEach((track) => {
-            if (!track?.previewUrl) resolveYouTubeTrack(track).catch(() => {});
-            getTrackLyrics({ track }).catch(() => {});
+          topList.slice(0, 4).forEach((track) => {
+            if (!isReliablePreviewUrl(track?.previewUrl)) resolvePlayablePreview(track, { priority: 'background' }).catch(() => {});
           });
         });
       }
@@ -1354,9 +599,8 @@ export default function SpotifyTrackSearchSheet({
 
       if (foundTracks.length > 0) {
         scheduleIdleTask(() => {
-          foundTracks.slice(0, 3).forEach((track) => {
-            if (!track?.previewUrl) resolveYouTubeTrack(track).catch(() => {});
-            getTrackLyrics({ track }).catch(() => {});
+          foundTracks.slice(0, 4).forEach((track) => {
+            if (!isReliablePreviewUrl(track?.previewUrl)) resolvePlayablePreview(track, { priority: 'background' }).catch(() => {});
           });
         });
       }
@@ -1432,110 +676,70 @@ export default function SpotifyTrackSearchSheet({
   const openTrimForTrack = useCallback((track) => {
     if (!track) return;
     Keyboard.dismiss();
-    
-    // Always pause Spotify when entering Trim mode
     try { player?.pause?.(); } catch (_) {}
-    
-    setSelectedTrack(track);
-    setShowTrim(true);
-    
-    // If YouTube is ready, play it from hook. Otherwise onReady will handle auto-play.
-    if (ytTrackData?.videoId) {
-      try {
-        const startSec = Math.floor((hookStartMsRef.current || 0) / 1000);
-        if (startSec > 0) {
-          ytPlayerRef.current?.seekTo?.(startSec);
-        }
-        ytPlayerRef.current?.play?.();
-      } catch (_) {}
-    }
-    // Do NOT change autoPlayToken here - that would trigger Spotify auto-play effect
-  }, [player, ytTrackData?.videoId]);
+    const { previewStartMs, previewEndMs, youtubeVideoId, ...song } = track;
+    handlePick?.(song);
+    closeWithAnimation();
+  }, [closeWithAnimation, handlePick, player]);
 
   const handleNext = useCallback(() => {
     if (!selectedTrack) return;
     openTrimForTrack(selectedTrack);
   }, [openTrimForTrack, selectedTrack]);
 
+  const playPreviewAt = useCallback(async (ms) => {
+    if (!hasPreview || !player) return false;
+    try { ytPlayerRef.current?.pause?.(); } catch (_) {}
+    try {
+      await ensureAudioPlaybackMode();
+      await player.seekTo(Math.max(0, ms) / 1000);
+      player.play();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }, [hasPreview, player]);
+
+  const openFullSong = useCallback(() => {
+    pendingPlayMsRef.current = null;
+    try { player?.pause?.(); } catch (_) {}
+    const url = spotifyListenUrl(selectedTrack);
+    if (!url) return false;
+    Linking.openURL(url).catch(() => {});
+    return true;
+  }, [player, selectedTrack]);
+
   const togglePlay = useCallback(async () => {
-    // === TRIM + FULL SONG MODE: control YouTube only ===
-    if (showTrim && isFullSongActive) {
-      // Always silence Spotify in this mode
+    if (playerPlaying || ytIsPlaying) {
+      pendingPlayMsRef.current = null;
       try { player?.pause?.(); } catch (_) {}
-      if (ytIsPlaying) {
-        ytPlayerRef.current?.pause?.();
-      } else {
-        ytPlayerRef.current?.play?.();
-      }
-      return;
-    }
-
-    // === LIST MODE (Spotify preview) ===
-    if (hasPreview && player) {
-      // Always silence YouTube in this mode
       try { ytPlayerRef.current?.pause?.(); } catch (_) {}
-      try {
-        await ensureAudioPlaybackMode();
-        if (playerPlaying) {
-          player.pause();
-          return;
-        }
-        if (durationMs > 0 && currentMs >= durationMs - 120) {
-          player.seekTo(0);
-        }
-        player.play();
-      } catch (_) {}
       return;
     }
 
-    // === FALLBACK: YouTube only (no Spotify preview) ===
-    if (isFullSongActive) {
-      if (ytIsPlaying) {
-        ytPlayerRef.current?.pause?.();
-      } else {
-        ytPlayerRef.current?.play?.();
-      }
-    }
-  }, [currentMs, durationMs, hasPreview, isFullSongActive, playerPlaying, player, showTrim, ytIsPlaying]);
+    if (!hasPreview || !player) return;
+    // At the end of the clip, play again from the start instead of doing nothing.
+    const atEnd = durationMs > 0 && currentMs >= durationMs - 300;
+    await playPreviewAt(atEnd ? 0 : currentMs);
+  }, [currentMs, durationMs, hasPreview, playPreviewAt, player, playerPlaying, ytIsPlaying]);
 
   const seekAndPlay = useCallback(async (ms) => {
-    if (showTrim && isFullSongActive) {
-      try { player?.pause?.(); } catch (_) {}
-      ytPlayerRef.current?.seekTo?.(Math.max(0, ms) / 1000);
-      ytPlayerRef.current?.play?.();
+    const at = Math.max(0, Number(ms) || 0);
+    if (at < 30000 && await playPreviewAt(at)) {
+      pendingPlayMsRef.current = null;
       return;
     }
-
-    if (hasPreview && player) {
-      try {
-        await ensureAudioPlaybackMode();
-        player.seekTo(Math.max(0, ms) / 1000);
-        player.play();
-      } catch (_) {}
-      return;
-    }
-
-    if (isFullSongActive) {
-      ytPlayerRef.current?.seekTo?.(Math.max(0, ms) / 1000);
-      ytPlayerRef.current?.play?.();
-    }
-  }, [hasPreview, isFullSongActive, player, showTrim]);
+    openFullSong();
+  }, [openFullSong, playPreviewAt]);
 
   const seekPreview = useCallback((ms) => {
-    if (showTrim && isFullSongActive) {
-      ytPlayerRef.current?.seekTo?.(Math.max(0, ms) / 1000);
+    const at = Math.max(0, Number(ms) || 0);
+    if (at < 30000 && hasPreview && player) {
+      try { player.seekTo(at / 1000); } catch (_) {}
       return;
     }
-
-    if (hasPreview && player) {
-      try { player.seekTo(Math.max(0, ms) / 1000); } catch (_) {}
-      return;
-    }
-
-    if (isFullSongActive) {
-      ytPlayerRef.current?.seekTo?.(Math.max(0, ms) / 1000);
-    }
-  }, [hasPreview, isFullSongActive, player, showTrim]);
+    ytPlayerRef.current?.seekTo?.(at / 1000);
+  }, [hasPreview, player]);
 
   const handleTapTrack = useCallback((track) => {
     if (!track?.id || excludeSet.has(track.id)) return;
@@ -1604,16 +808,17 @@ export default function SpotifyTrackSearchSheet({
             <Pressable accessibilityLabel="ปิดแผง" onPress={closeWithAnimation} style={StyleSheet.absoluteFill} />
           </Animated.View>
 
-          <Animated.View
+          <NativeAnimatedCard
             style={[
               styles.jsSheet,
               {
-                backgroundColor: colors.canvas || colors.bg || colors.background || '#F7F7F8',
+                backgroundColor: glass ? 'transparent' : (colors.canvas || colors.bg || colors.background || '#F7F7F8'),
                 paddingBottom: Math.max(insets.bottom, 10),
               },
               sheetStyle,
             ]}
           >
+            <GlassBackground style={styles.sheetGlass} tintColor={glassTint} />
             <GestureDetector gesture={panGesture}>
               <View collapsable={false} style={styles.sheetHeader}>
                 <View style={styles.grabberHit}>
@@ -1623,41 +828,22 @@ export default function SpotifyTrackSearchSheet({
             </GestureDetector>
 
             <View style={styles.sheetBody}>
-              {showTrim && selectedTrack ? (
-                <TrimModule
-                  colors={colors}
-                  currentMs={activeCurrentMs}
-                  durationMs={activeDurationMs}
-                  hasPreview={activeHasAudio}
-                  initialStartMs={hookStartMs}
-                  insets={insets}
-                  isFullSong={isFullSongActive}
-                  isPlaying={activeIsPlaying}
-                  onBack={handleBackFromTrim}
-                  onConfirm={handleConfirmTrim}
-                  onPause={pauseAudio}
-                  onSeek={seekPreview}
-                  onSeekPlay={seekAndPlay}
-                  onTogglePlay={togglePlay}
-                  player={player}
-                  track={selectedTrack}
-                  ytLoading={ytLoading}
-                />
-              ) : (
                 <>
                   <View style={styles.header}>
                     <View style={styles.headerCopy}>
                       <Text style={[styles.title, { color: colors.ink || '#25272B' }]}>{title}</Text>
                       <Text style={[styles.subtitle, { color: colors.inkSoft || '#6B7078' }]}>{subtitle}</Text>
                     </View>
-                    <Pressable
+                    <GlassIconButton
                       accessibilityLabel="ปิด"
+                      fallbackBackgroundColor="transparent"
                       hitSlop={10}
+                      icon="xmark"
+                      iconColor={colors.ink || '#25272B'}
+                      iconSize={18}
                       onPress={closeWithAnimation}
-                      style={({ pressed }) => [styles.closeBtn, pressed && { opacity: 0.7 }]}
-                    >
-                      <FeatureIcon color={colors.ink || '#25272B'} name="xmark" size={20} />
-                    </Pressable>
+                      size={40}
+                    />
                   </View>
 
                   <View style={[styles.searchRow, { backgroundColor: colors.surface || '#FFFFFF', borderColor: colors.line || '#E2E8F0' }]}>
@@ -1736,7 +922,7 @@ export default function SpotifyTrackSearchSheet({
                           style={({ pressed }) => [styles.showMoreButton, pressed && { opacity: 0.7 }]}
                           onPress={loadMoreTrending}
                         >
-                          <Text style={[styles.showMoreText, { color: colors.primary || '#6E56FF' }]}>
+                          <Text style={[styles.showMoreText, { color: colors.accentText || colors.primary || '#6E56FF' }]}>
                             {trendingLoadingMore ? 'กำลังโหลด...' : 'แสดงเพิ่มเติม'}
                           </Text>
                         </Pressable>
@@ -1747,75 +933,24 @@ export default function SpotifyTrackSearchSheet({
                     />
                   )}
 
-                  {!showTrim ? (
+                  {selectedTrack ? (
                     <MiniPlayerBar
-                      colors={colors}
-                      hasPreview={activeHasAudio}
+                      hasPreview={activeHasAudio && !status?.error}
                       insets={insets}
                       isPlaying={activeIsPlaying}
+                      loading={previewLookupPending || (hasPreview && !status?.isLoaded && !status?.error)}
+                      missingMessage={status?.error
+                        ? 'โหลดเสียงตัวอย่างไม่สำเร็จ'
+                        : (lookupDone && !hasPreview ? 'ไม่มีเสียงตัวอย่างของเพลงนี้' : '')}
                       onNext={handleNext}
                       onTogglePlay={togglePlay}
                       track={selectedTrack}
                     />
                   ) : null}
                 </>
-              )}
             </View>
 
-            <YouTubeAudioPlayer
-              ref={ytPlayerRef}
-              videoId={ytTrackData?.videoId}
-              candidates={ytTrackData?.candidates}
-              initialSeconds={Math.floor((hookStartMsRef.current || 0) / 1000)}
-              onError={(code) => {
-                console.warn('[SpotifyTrackSearchSheet] YouTube audio error:', code);
-              }}
-              onReady={(data) => {
-                if (data?.duration > 0) {
-                  setYtDurationMs(Math.round(data.duration * 1000));
-                }
-                const startSec = Math.floor((hookStartMsRef.current || 0) / 1000);
-                // Auto-play YouTube when user is in Trim screen OR if there is no Spotify preview
-                if (showTrimRef.current || !hasPreview) {
-                  try {
-                    // CRITICAL: force-pause Spotify before playing YouTube
-                    player?.pause?.();
-                  } catch (_) {}
-                  // Small delay to ensure Spotify is fully paused
-                  setTimeout(() => {
-                    if (showTrimRef.current || !hasPreview) {
-                      if (startSec > 0) {
-                        hasJumpedToHookRef.current = true;
-                        ytPlayerRef.current?.seekTo?.(startSec);
-                      }
-                      ytPlayerRef.current?.play?.();
-                    }
-                  }, 120);
-                }
-              }}
-              onStateChange={(state, info) => {
-                setYtState(state);
-                const isNowPlaying = state === 'PLAYING';
-                setYtIsPlaying(isNowPlaying);
-                if (isNowPlaying && !hasJumpedToHookRef.current && (hookStartMsRef.current || 0) > 0) {
-                  const cur = Number(info?.currentTime) || 0;
-                  if (cur < 3) {
-                    hasJumpedToHookRef.current = true;
-                    ytPlayerRef.current?.seekTo?.(hookStartMsRef.current / 1000);
-                  }
-                }
-                if (info?.duration > 0 && Math.abs((ytDurationMs || 0) - info.duration * 1000) > 2000) {
-                  setYtDurationMs(Math.round(info.duration * 1000));
-                }
-              }}
-              onTimeUpdate={({ currentTime, duration }) => {
-                setYtCurrentMs(Math.round(currentTime * 1000));
-                if (duration > 0 && Math.abs((ytDurationMs || 0) - duration * 1000) > 2000) {
-                  setYtDurationMs(Math.round(duration * 1000));
-                }
-              }}
-            />
-          </Animated.View>
+          </NativeAnimatedCard>
         </View>
       </GestureHandlerRootView>
     </Modal>
@@ -1826,6 +961,10 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: 'flex-end',
+  },
+  sheetGlass: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
   },
   jsSheet: {
     borderTopLeftRadius: 24,
@@ -1873,12 +1012,6 @@ const styles = StyleSheet.create({
     fontSize: type.micro || type.caption || 12,
     fontWeight: '600',
     marginTop: 2,
-  },
-  closeBtn: {
-    alignItems: 'center',
-    height: 36,
-    justifyContent: 'center',
-    width: 36,
   },
   searchRow: {
     alignItems: 'center',

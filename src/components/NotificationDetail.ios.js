@@ -6,11 +6,15 @@ import { Button, Text } from './NativeTypography';
 import { font } from './brandFont';
 import { useTheme } from '../theme';
 import { timestampMillis } from '../services/notificationInboxService';
+import { useLiquidGlass } from './LiquidGlassSurface';
 
 export default function NotificationDetail({ notification, onClose, actionLabel, onAction }) {
   const pendingAction = useRef(null);
   const { width, height } = useWindowDimensions();
   const { colors, isDark } = useTheme();
+  // iOS 26 gives partial-height sheets a Liquid Glass background; an opaque
+  // content fill would hide it.
+  const glass = useLiquidGlass();
   const timestamp = timestampMillis(notification?.createdAt);
   const body = notification?.body || '';
   const charsPerLine = Math.max(20, Math.floor((Math.min(width, 760) - 64) / 7));
@@ -18,7 +22,7 @@ export default function NotificationDetail({ notification, onClose, actionLabel,
   const bodyHeight = Math.min(height * 0.4, Math.max(40, lines * 28));
   return <Host colorScheme={isDark ? 'dark' : 'light'} style={{ position: 'absolute', width: 0, height: 0 }}>
     <BottomSheet isPresented={Boolean(notification)} onIsPresentedChange={(presented) => { if (!presented) onClose(); }} onDismiss={() => { const action = pendingAction.current; pendingAction.current = null; action?.(); }} fitToContents modifiers={[presentationDragIndicator('visible')]}>
-      <VStack alignment="leading" spacing={18} modifiers={[padding({ horizontal: 24, top: 24, bottom: 28 }), frame({ maxWidth: Infinity, alignment: 'leading' }), background(colors.card)]}>
+      <VStack alignment="leading" spacing={18} modifiers={[padding({ horizontal: 24, top: 24, bottom: 28 }), frame({ maxWidth: Infinity, alignment: 'leading' }), ...(glass ? [] : [background(colors.card)])]}>
         <HStack spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
           <Image systemName="bell" color={colors.primary} size={22} modifiers={[frame({ width: 44, height: 44 }), background(colors.primarySoft, shapes.roundedRectangle({ cornerRadius: 14 }))]} />
           <VStack alignment="leading" spacing={4}>

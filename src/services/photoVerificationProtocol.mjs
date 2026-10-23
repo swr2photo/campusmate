@@ -8,6 +8,13 @@ export const PHOTO_BADGE = 'PHOTO_VERIFIED';
 /** AWS Face Liveness without the flashing colour sequence (photosensitivity). */
 export const NO_FLASH_CHALLENGE = 'FACE_MOVEMENT';
 export const ALTERNATIVE_REASONS = ['PHOTOSENSITIVITY', 'CAMERA_UNAVAILABLE', 'ACCESSIBILITY', 'OTHER'];
+/** Face ID-style movements the server may ask for, before the AWS check. */
+export const GESTURES = ['CENTER', 'BLINK', 'TURN_LEFT', 'TURN_RIGHT', 'NOD_DOWN'];
+/** What the server may tell the person after a frame that missed the movement. */
+export const GESTURE_HINTS = ['NO_FACE', 'MULTIPLE_FACES', 'TOO_FAR', 'TOO_CLOSE', 'OFF_CENTER', 'TOO_DARK',
+  'LOOK_STRAIGHT', 'OPEN_EYES', 'CLOSE_EYES', 'TURN_MORE', 'OTHER_WAY', 'KEEP_LEVEL', 'NOD_MORE', 'HEAD_TILTED', 'HOLD_STILL'];
+/** Frames one gesture request may carry. */
+export const MAX_GESTURE_FRAMES = 3;
 const CHALLENGES = ['FACE_MOVEMENT_AND_LIGHT', NO_FLASH_CHALLENGE];
 const STATUSES = ['UNVERIFIED', 'VERIFIED', 'LEGACY', 'REVIEW_REQUIRED', 'REVOKED'];
 
@@ -18,6 +25,7 @@ const MESSAGES = {
   ALREADY_VERIFIED: 'รูปโปรไฟล์นี้ยืนยันแล้ว',
   REFERENCE_UNAVAILABLE: 'กรุณาตั้งรูปโปรไฟล์หลักผ่านแอปก่อนยืนยันใบหน้า',
   REFERENCE_UNUSABLE: 'รูปโปรไฟล์หลักใช้เปรียบเทียบไม่ได้ กรุณาอัปโหลดรูปที่เห็นใบหน้าชัด',
+  PHOTO_UPLOAD_FAILED: 'อัปโหลดรูปใหม่ไม่สำเร็จ กรุณาลองเลือกรูปอีกครั้ง',
   IDENTITY_UNAVAILABLE: 'ระบบยืนยันใบหน้ายังไม่เปิดให้ใช้งาน',
   SERVICE_UNAVAILABLE: 'ระบบยืนยันใบหน้าไม่พร้อม กรุณาลองใหม่ภายหลัง',
   AWAITING_RESULT: 'ยังไม่ได้รับผลการตรวจ กรุณาลองอีกครั้ง',
@@ -33,6 +41,28 @@ const MESSAGES = {
   CAMERA_UNAVAILABLE: 'เปิดกล้องไม่ได้ กรุณาอนุญาตการใช้กล้องในการตั้งค่า',
   CANCELLED: 'ยกเลิกการยืนยันใบหน้าแล้ว',
   NATIVE_UNAVAILABLE: 'แอปเวอร์ชันนี้ยังไม่รองรับการตรวจใบหน้าจริง กรุณาอัปเดตแอป',
+  GESTURES_INCOMPLETE: 'กรุณาทำท่าทางตามหน้าจอให้ครบก่อน',
+  GESTURE_NOT_CONFIRMED: 'ทำท่าทางไม่สำเร็จหลายครั้ง กรุณาอยู่ในที่สว่างแล้วเริ่มใหม่',
+  GESTURE_OUT_OF_ORDER: 'กรุณาทำท่าทางตามลำดับบนหน้าจอ',
+  GESTURE_NOT_DETECTED: 'ยังไม่เห็นท่าทางนี้ชัด ลองอีกครั้ง',
+  FACE_NOT_FOUND: 'ไม่พบใบหน้า กรุณาให้ใบหน้าอยู่กลางวงกลม',
+  MULTIPLE_FACES: 'พบหลายใบหน้า กรุณาให้มีเพียงคุณคนเดียวหน้ากล้อง',
+  FRAME_UNUSABLE: 'ภาพจากกล้องใช้ไม่ได้ กรุณาลองใหม่',
+  TOO_FAR: 'ขยับเข้าใกล้กล้องอีกนิด',
+  TOO_CLOSE: 'ถอยห่างจากกล้องเล็กน้อย',
+  NO_FACE: 'ไม่พบใบหน้า ให้ใบหน้าอยู่ในวงกลม',
+  OFF_CENTER: 'ขยับใบหน้าให้อยู่กลางวงกลม',
+  TOO_DARK: 'แสงน้อยไป หันหน้าเข้าหาแสงหรือไปที่สว่างขึ้น',
+  LOOK_STRAIGHT: 'มองตรงมาที่กล้องก่อน',
+  OPEN_EYES: 'ลืมตาและมองกล้อง',
+  CLOSE_EYES: 'หลับตาให้สนิทสักครู่ แล้วลืมตา',
+  TURN_MORE: 'หันเพิ่มอีกนิด',
+  OTHER_WAY: 'หันไปอีกฝั่ง ตรงข้ามกับครั้งก่อน',
+  KEEP_LEVEL: 'หันไปด้านข้างโดยไม่ก้มหรือเงย',
+  NOD_MORE: 'ก้มหน้าลงอีกนิด',
+  HEAD_TILTED: 'ตั้งศีรษะให้ตรง ไม่เอียงคอ',
+  HOLD_STILL: 'ถือโทรศัพท์นิ่งๆ แล้วทำอีกครั้ง',
+  LIVENESS_PREVIEW_ONLY: 'ตรวจท่าทางครบแล้ว แต่แอปรุ่นนี้ยังตรวจใบหน้าต่อไม่ได้ กรุณาอัปเดตแอปหรือเลือกใช้วิธีอื่น',
 };
 
 export function messageFor(code) {
@@ -56,6 +86,23 @@ export function publicDecision(value = {}) {
     badge: value.badge === PHOTO_BADGE && status === 'VERIFIED' ? PHOTO_BADGE : null,
     verifiedAt: status === 'VERIFIED' && typeof value.verifiedAt === 'string' ? value.verifiedAt : null,
     reason: status === 'VERIFIED' ? null : (typeof value.reason === 'string' ? value.reason : null),
+  };
+}
+
+/** One gesture step as the server judged it; never a score. */
+export function publicGestureStep(value = {}) {
+  const passed = value.passed === true;
+  return {
+    passed,
+    complete: passed && value.complete === true,
+    nextStep: passed && Number.isInteger(value.nextStep) ? value.nextStep : null,
+    nextGesture: passed && GESTURES.includes(value.nextGesture) ? value.nextGesture : null,
+    reason: passed ? null : (typeof value.reason === 'string' ? value.reason : 'GESTURE_NOT_DETECTED'),
+    retriesLeft: !passed && Number.isInteger(value.retriesLeft) ? value.retriesLeft : null,
+    // What to do next, from the server's view of the frame.
+    hint: !passed && GESTURE_HINTS.includes(value.hint) ? value.hint : null,
+    // How far a turn or nod got (0..1). Head geometry, not a face score.
+    progress: !passed && Number.isFinite(value.progress) ? Math.min(Math.max(value.progress, 0), 1) : 0,
   };
 }
 
@@ -98,17 +145,46 @@ export function createPhotoVerification({ client, bridge, consentVersion, syncBa
     }
   }
 
-  async function complete(id) {
+  async function complete(id, signal) {
     // Results can lag the stream briefly; retry a few times, never past expiry.
     for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (signal?.aborted) throw Object.assign(new Error('Cancelled'), { code: 'CANCELLED' });
       try {
-        return publicDecision(await client.request(`/v1/identity/photo-verifications/${id}/complete`, { method: 'POST', body: {} }));
+        return publicDecision(await client.request(`/v1/identity/photo-verifications/${id}/complete`, { method: 'POST', body: {}, ...(signal ? { signal } : {}) }));
       } catch (error) {
         if (codeOf(error) !== 'AWAITING_RESULT' || attempt === 3) throw error;
         await sleep(1500 * (attempt + 1));
       }
     }
     throw Object.assign(new Error(messageFor('AWAITING_RESULT')), { code: 'AWAITING_RESULT' });
+  }
+
+  /**
+   * Send one camera frame, or up to three recent ones oldest first, for the
+   * step the server asked for. `probe` marks continuous sampling (no
+   * on-device tracking): frames that have not caught the movement yet cost
+   * no retry on the server.
+   */
+  async function submitGesture(id, step, frame, { probe = false, signal } = {}) {
+    if (signal?.aborted) throw Object.assign(new Error('Cancelled'), { code: 'CANCELLED' });
+    const frames = Array.isArray(frame) ? frame : [frame];
+    if (!Number.isInteger(step) || step < 0 || frames.length === 0 || frames.length > MAX_GESTURE_FRAMES
+      || !frames.every((item) => typeof item === 'string' && item)) {
+      throw Object.assign(new Error(messageFor('FRAME_UNUSABLE')), { code: 'FRAME_UNUSABLE' });
+    }
+    const body = { step, ...(Array.isArray(frame) ? { frames } : { frame }), ...(probe === true ? { probe: true } : {}) };
+    for (let attempt = 0; ; attempt += 1) {
+        if (signal?.aborted) throw Object.assign(new Error('Cancelled'), { code: 'CANCELLED' });
+      try {
+        return publicGestureStep(await client.request(`/v1/identity/photo-verifications/${id}/gestures`, {
+          method: 'POST', body, ...(signal ? { signal } : {}),
+        }));
+      } catch (error) {
+        // Another request for the same step is still being checked.
+        if (codeOf(error) !== 'AWAITING_RESULT' || attempt === 2) throw error;
+        await sleep(400 * (attempt + 1));
+      }
+    }
   }
 
   return {
@@ -119,19 +195,34 @@ export function createPhotoVerification({ client, bridge, consentVersion, syncBa
     /**
      * `consent` must come from an explicit user action on the consent screen.
      * `noFlash` asks AWS for the movement-only check (no flashing lights).
+     * `performGestures({ gestures, expiresAt, submit })` runs the camera for
+     * the server's gesture order and resolves `{ completed: true }` once the
+     * server passed the last step; `submit(step, base64Jpeg)` sends a frame,
+     * or an array of up to three recent frames.
+     * `previewWithoutLiveness` (development builds only) lets a build without
+     * the AWS module run the gestures, then stops before the AWS check; the
+     * server never grants a badge without that check.
      */
-    async run({ consent, noFlash = false, onStage = () => {} } = {}) {
+    async run({
+      consent, noFlash = false, candidateAvatarUri = null, onStage = () => {}, performGestures = null,
+      previewWithoutLiveness = false,
+      signal,
+    } = {}) {
       if (consent !== true) return failure('CONSENT_REQUIRED');
-      if (!bridge?.isAvailable?.()) return failure('NATIVE_UNAVAILABLE');
+      if (signal?.aborted) return failure('CANCELLED');
+      const livenessReady = Boolean(bridge?.isAvailable?.());
+      if (!livenessReady && previewWithoutLiveness !== true) return failure('NATIVE_UNAVAILABLE');
       let session;
       try {
         onStage('creating');
         const body = { consent: true, consentVersion };
+        if (candidateAvatarUri) body.candidateAvatarUri = candidateAvatarUri;
         if (noFlash === true) body.challenge = NO_FLASH_CHALLENGE;
-        session = await client.request('/v1/identity/photo-verifications', { method: 'POST', body });
+        session = await client.request('/v1/identity/photo-verifications', { method: 'POST', body, ...(signal ? { signal } : {}) });
       } catch (error) {
         return failure(codeOf(error));
       }
+      if (signal?.aborted) return failure('CANCELLED');
       if (!UUID.test(session?.verificationId || '') || typeof session?.sessionId !== 'string') {
         return failure('SERVICE_UNAVAILABLE');
       }
@@ -139,6 +230,30 @@ export function createPhotoVerification({ client, bridge, consentVersion, syncBa
       // flashing check after the person asked for the no-flash one.
       const challenge = CHALLENGES.includes(session.challenge) ? session.challenge : 'FACE_MOVEMENT_AND_LIGHT';
       if (noFlash === true && challenge !== NO_FLASH_CHALLENGE) return failure('SERVICE_UNAVAILABLE');
+      // Gestures first, in the server's order; each frame is judged there.
+      // A reply without gestures is an older server and skips this phase.
+      const gestures = session.gestures;
+      if (gestures !== undefined && gestures !== null) {
+        if (!Array.isArray(gestures) || gestures.length === 0 || gestures.length > 8
+          || !gestures.every((name) => GESTURES.includes(name))) {
+          return failure('SERVICE_UNAVAILABLE');
+        }
+        if (typeof performGestures !== 'function') return failure('NATIVE_UNAVAILABLE');
+        onStage('gestures');
+        try {
+          const done = await performGestures({
+            gestures: [...gestures],
+            expiresAt: typeof session.gesturesExpiresAt === 'string' ? session.gesturesExpiresAt : null,
+            submit: (step, frame, options) => submitGesture(session.verificationId, step, frame, { ...options, signal }),
+          });
+          // An abandoned attempt simply expires on the server.
+          if (done?.completed !== true || signal?.aborted) return failure('CANCELLED');
+        } catch (error) {
+          return failure(codeOf(error));
+        }
+      }
+      if (signal?.aborted) return failure('CANCELLED');
+      if (!livenessReady) return failure(gestures ? 'LIVENESS_PREVIEW_ONLY' : 'NATIVE_UNAVAILABLE');
       onStage('capturing');
       let streamed;
       try {
@@ -151,10 +266,11 @@ export function createPhotoVerification({ client, bridge, consentVersion, syncBa
         // An abandoned attempt simply expires on the server.
         return failure(code);
       }
-      if (!streamed?.streamCompleted) return failure('CANCELLED');
+      if (!streamed?.streamCompleted || signal?.aborted) return failure('CANCELLED');
       onStage('checking');
       try {
-        const decision = await complete(session.verificationId);
+        const decision = await complete(session.verificationId, signal);
+        if (signal?.aborted) return failure('CANCELLED');
         if (decision.status !== 'VERIFIED') return { ...decision, message: messageFor(decision.reason || decision.status) };
         const badgeSynced = await mirror();
         return {

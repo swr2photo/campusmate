@@ -1,12 +1,16 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import { AppTextInput as TextInput } from './AppText';
 import ReplyPreview from './ReplyPreviewNative';
 import { ChatVideoCover } from './ChatVideoBubble';
 import ChatProtectedImageBubble from './ChatProtectedImageBubble';
+import TrackShareCard from './TrackShareCard';
+import TrackPreviewButton from './TrackPreviewButton';
+import { chatImageSize, chatTrackWidth, isGifMessage } from '../utils/chatMediaLayout';
 import { useDecryptedMedia } from '../hooks/useDecryptedMedia';
 import { getDecryptedMediaUri, getSyncCachedMediaUri } from '../services/chatMediaService';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, FlatList, Image, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { Animated, Easing, FlatList, Image, Modal, Platform, ScrollView, Share, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Reanimated, {
   Easing as ReanimatedEasing,
   cancelAnimation,
@@ -58,6 +62,7 @@ import {
 } from '../utils/messageReactions';
 import { showAlert } from '../utils/appAlert';
 import { showInAppNotification } from './InAppNotificationBanner';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from './LiquidGlassSurface';
 
 export const QUICK_REACTIONS = DEFAULT_QUICK_REACTIONS;
 export const DEFAULT_MESSAGE_REACTION = DEFAULT_QUICK_REACTIONS[0];
@@ -152,11 +157,33 @@ function ForwardAvatar({ conversation, fallbackColor }) {
 }
 
 function GlassSurface({ children, intensity = 72, isDark = false, style }) {
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const surfaceStyle = [
     styles.glassSurface,
     isDark ? styles.glassSurfaceDark : styles.glassSurfaceLight,
     style,
   ];
+  if (glass) {
+    // iOS 26: real Liquid Glass for the reaction bar and menus (system context
+    // menus use the same material). Corner radii follow the caller's style.
+    const flat = StyleSheet.flatten(style) || {};
+    return (
+      <View style={[...surfaceStyle, styles.glassSurfaceClear]}>
+        <GlassBackground
+          style={{
+            borderRadius: flat.borderRadius,
+            borderTopLeftRadius: flat.borderTopLeftRadius,
+            borderTopRightRadius: flat.borderTopRightRadius,
+            borderBottomLeftRadius: flat.borderBottomLeftRadius,
+            borderBottomRightRadius: flat.borderBottomRightRadius,
+          }}
+          tintColor={glassTint}
+        />
+        {children}
+      </View>
+    );
+  }
   if (Platform.OS === 'ios') {
     return (
       <BlurView
@@ -1185,7 +1212,9 @@ export default function InstagramMessageOverlay({
     ? palette.isDark
     : (palette?.background === '#0D0F12' ? true : (palette?.background === '#F5F7FB' ? false : Boolean(theme?.isDark)));
   const { height: screenHeight, width: screenWidth } = useWindowDimensions();
-  const { uri: clipboardImageUri } = useDecryptedMedia(isOpen && item?.mediaType !== 'video' ? (item?.mediaUrl || item?.mediaUrls?.[0]) : null, { conversationId: currentConversationId, currentUserId });
+  const backdropBlur = useLiquidGlass();
+  const isProtectedImage = item?.mediaType !== 'video' && (item?.viewMode === 'once' || item?.viewMode === 'replay');
+  const { uri: clipboardImageUri } = useDecryptedMedia(isOpen && !isProtectedImage && item?.mediaType !== 'video' ? (item?.mediaUrl || item?.mediaUrls?.[0]) : null, { conversationId: currentConversationId, currentUserId });
   const [panel, setPanel] = useState('actions');
   const [quickReactions, setQuickReactions] = useState(() => getQuickReactionsSync());
   const [editingSlotIndex, setEditingSlotIndex] = useState(null);
@@ -1241,6 +1270,7 @@ export default function InstagramMessageOverlay({
   const primaryMediaUrl = item?.mediaUrl || (Array.isArray(item?.mediaUrls) ? item?.mediaUrls[0] : null);
 
   const resolveInitialSize = () => {
+    if (isProtectedImage) return chatImageSize(screenWidth);
     if (item?.imageSize?.width && item?.imageSize?.height) {
       return item.imageSize;
     }
@@ -1270,6 +1300,10 @@ export default function InstagramMessageOverlay({
 
   useEffect(() => {
     if (!isOpen || !isImage) return;
+    if (isProtectedImage) {
+      setImageBubbleSize(chatImageSize(screenWidth));
+      return;
+    }
 
     if (item?.imageSize?.width && item?.imageSize?.height) {
       setImageBubbleSize(item.imageSize);
@@ -1312,7 +1346,7 @@ export default function InstagramMessageOverlay({
       }
       if (primaryMediaUrl && ratio) cacheAspectRatio(primaryMediaUrl, ratio);
     });
-  }, [isOpen, isImage, primaryMediaUrl, clipboardImageUri, item?.imageSize, item?.aspectRatio, item?.layout, item?.text]);
+  }, [isOpen, isImage, isProtectedImage, screenWidth, primaryMediaUrl, clipboardImageUri, item?.imageSize, item?.aspectRatio, item?.layout, item?.text]);
 
   if (!item || !isOpen) return null;
 
@@ -1329,8 +1363,10 @@ export default function InstagramMessageOverlay({
     item.mediaType === 'audio' || item.audioUrl
   );
   const textVal = item.text?.trim?.() || '';
+  const isTrack = item.mediaType === 'track';
   const hasCaptionText = Boolean(
     textVal &&
+    !isTrack &&
     item.mediaType !== 'call' &&
     textVal !== '[รูปภาพ]' &&
     !textVal.startsWith('[รูปภาพ ') &&
@@ -1340,21 +1376,22 @@ export default function InstagramMessageOverlay({
     textVal.toUpperCase() !== '[GIF]'
   );
 
-  const effectiveImageWidth = (hasLayout && !hasCaptionText && layout.width > 0)
+  const protectedSize = chatImageSize(screenWidth);
+  const effectiveImageWidth = isProtectedImage ? protectedSize.width : (hasLayout && !hasCaptionText && layout.width > 0)
     ? layout.width
     : (item?.imageSize?.width || imageBubbleSize.width);
 
-  const effectiveImageHeight = (hasLayout && !hasCaptionText && layout.height > 0)
+  const effectiveImageHeight = isProtectedImage ? protectedSize.height : (hasLayout && !hasCaptionText && layout.height > 0)
     ? layout.height
     : (item?.imageSize?.height || imageBubbleSize.height);
 
-  const fallbackHeight = item.mediaType === 'video' ? (hasCaptionText ? 266 : 220) : isImage
+  const fallbackHeight = isTrack ? 84 : item.mediaType === 'video' ? (hasCaptionText ? 266 : 220) : isImage
     ? (hasCaptionText ? effectiveImageHeight + 46 : effectiveImageHeight)
     : isAudio
       ? 70
       : 44;
-  const bubbleHeight = hasLayout ? layout.height : fallbackHeight;
-  const resolvedBubbleWidth = item.mediaType === 'video' ? 250 : isImage
+  const bubbleHeight = isProtectedImage ? fallbackHeight : hasLayout ? layout.height : fallbackHeight;
+  const resolvedBubbleWidth = isTrack ? Math.min(chatTrackWidth(screenWidth), hasLayout ? layout.width : screenWidth - 48) : item.mediaType === 'video' ? 250 : isImage
     ? (hasCaptionText ? Math.max(effectiveImageWidth, 220) : effectiveImageWidth)
     : (hasLayout ? Math.ceil(layout.width) + 2 : Math.min(260, screenWidth - 48));
   const bubbleWidth = resolvedBubbleWidth;
@@ -1525,21 +1562,24 @@ export default function InstagramMessageOverlay({
       animationType="none"
       onRequestClose={() => animateClose(onClose)}
       statusBarTranslucent
+      navigationBarTranslucent
+      presentationStyle="overFullScreen"
       transparent
       visible={isOpen}
     >
-      <GestureHandlerRootView style={StyleSheet.absoluteFill}>
+      <GestureHandlerRootView style={styles.modalRoot}>
+        {/* Root-sized backdrop never moves with the focused message/menu. */}
+        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: fadeAnim }]}>
+          {backdropBlur ? <BlurView intensity={isDark ? 92 : 82} tint={isDark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} /> : null}
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: backdropBlur ? (isDark ? 'rgba(7,9,12,0.35)' : 'rgba(0,0,0,0.18)') : (isDark ? 'rgba(7,9,12,0.90)' : 'rgba(235,238,244,0.94)') }]} />
+        </Animated.View>
         <Pressable
           accessibilityLabel="ปิดเมนูข้อความ"
           onPress={() => {
             animateClose(onClose);
           }}
-          style={[styles.backdrop, isDark ? styles.backdropDark : styles.backdropLight]}
+          style={styles.backdrop}
         >
-          <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { opacity: fadeAnim }]}>
-            <BlurView intensity={isDark ? 92 : 82} tint={isDark ? 'dark' : 'light'} style={StyleSheet.absoluteFill} />
-            <View style={[StyleSheet.absoluteFill, isDark ? styles.backdropShadeDark : styles.backdropShadeLight]} />
-          </Animated.View>
 
           {panel !== 'reactions' ? (
             <Animated.View
@@ -1612,6 +1652,7 @@ export default function InstagramMessageOverlay({
               isImage && hasCaptionText && styles.imageBubbleWrapper,
               isAudio && styles.audioBubbleWrapper,
               isMultiImage && { backgroundColor: 'transparent', borderWidth: 0, padding: 0 },
+              isTrack && { backgroundColor: 'transparent', borderWidth: 0, paddingHorizontal: 0, paddingVertical: 0, overflow: 'visible' },
               bubbleWidth ? { width: bubbleWidth } : null,
               {
                 position: 'absolute',
@@ -1640,6 +1681,10 @@ export default function InstagramMessageOverlay({
               </View>
             ) : null}
 
+            {isTrack ? <TrackShareCard albumArt={item.albumArt} artists={item.artists} name={item.trackName || item.text} size={bubbleWidth}>
+              <TrackPreviewButton fill backgroundColor="transparent" color="#FFFFFF" track={item} trackName={item.trackName || item.text} />
+            </TrackShareCard> : null}
+
             {isImage && (item.viewMode === 'once' || item.viewMode === 'replay') ? (
               <ChatProtectedImageBubble item={item} conversationId={currentConversationId} currentUserId={currentUserId} mine={mine} previewOnly />
             ) : isImage ? (
@@ -1659,6 +1704,7 @@ export default function InstagramMessageOverlay({
               ) : (
                 <View style={[styles.overlayImageContainer, { width: effectiveImageWidth, height: effectiveImageHeight }]}>
                   <DecryptedChatImage
+                    isGif={isGifMessage(item)}
                     conversationId={currentConversationId}
                     currentUserId={currentUserId}
                     isUploading={Boolean(item.isUploading)}
@@ -1876,6 +1922,7 @@ export default function InstagramMessageOverlay({
 }
 
 const styles = StyleSheet.create({
+  modalRoot: { flex: 1 },
   glassSurface: {
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
@@ -1903,6 +1950,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.30)',
     borderWidth: 1,
   },
+  glassSurfaceClear: { backgroundColor: 'transparent', borderColor: 'transparent' },
   glassSurfaceIOSLight: {
     backgroundColor: 'rgba(255,255,255,0.90)',
     borderColor: 'rgba(0,0,0,0.08)',
@@ -1931,10 +1979,6 @@ const styles = StyleSheet.create({
   },
   animatedGroup: { gap: 9, maxWidth: 320, width: '100%' },
   backdrop: { flex: 1 },
-  backdropDark: { backgroundColor: 'rgba(0,0,0,0.50)' },
-  backdropLight: { backgroundColor: 'rgba(0,0,0,0.40)' },
-  backdropShadeDark: { backgroundColor: 'rgba(7,9,12,0.35)' },
-  backdropShadeLight: { backgroundColor: 'rgba(0,0,0,0.18)' },
   closePanelButton: {
     alignItems: 'center',
     borderRadius: 15,

@@ -52,10 +52,10 @@ function waitBeforeR2Retry() {
   return new Promise((resolve) => setTimeout(resolve, R2_RETRY_DELAY_MS));
 }
 
-async function requestR2UploadUrl({ conversationId, mediaType, extension, contentType }) {
+async function requestR2UploadUrl({ conversationId, groupChatId, mediaType, extension, contentType }) {
   const getR2UploadUrlFn = getCallable('getR2ChatUploadUrl', { timeout: 20000 });
   const r2Result = await getR2UploadUrlFn({
-    conversationId,
+    ...(groupChatId ? { groupChatId } : { conversationId }),
     mediaType,
     extension,
     contentType,
@@ -64,13 +64,23 @@ async function requestR2UploadUrl({ conversationId, mediaType, extension, conten
   return r2Result.data || {};
 }
 
-async function putFileToR2(uploadUrl, uploadUri, headers, fileBlobRef) {
+async function putFileToR2(uploadUrl, uploadUri, headers, fileBlobRef, onProgress) {
   if (uploadUri.startsWith('file://') || uploadUri.startsWith('content://')) {
-    const uploadRes = await FileSystem.uploadAsync(uploadUrl, uploadUri, {
+    const options = {
       httpMethod: 'PUT',
       headers,
       uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
-    });
+    };
+    const task = typeof FileSystem.createUploadTask === 'function'
+      ? FileSystem.createUploadTask(uploadUrl, uploadUri, options, event => {
+        if (event.totalBytesExpectedToSend > 0) onProgress?.(event.totalBytesSent / event.totalBytesExpectedToSend);
+      }) : null;
+    let timer;
+    const uploadRes = await (task ? Promise.race([
+      task.uploadAsync(),
+      new Promise((_, reject) => { timer = setTimeout(() => { void task.cancelAsync().catch(() => {}); reject(new Error('Upload timed out')); }, 45000); }),
+    ]).finally(() => clearTimeout(timer)) : FileSystem.uploadAsync(uploadUrl, uploadUri, options));
+    if (!uploadRes) throw new Error('Upload interrupted');
     return uploadRes.status;
   }
 
@@ -213,7 +223,7 @@ export async function ensureLocalFileUri(uri) {
   return uri;
 }
 
-export async function uploadChatMedia(localUri, { conversationId, mediaType = 'image', extension, conversationKey, videoDuration }) {
+export async function uploadChatMedia(localUri, { conversationId, groupChatId, mediaType = 'image', extension, conversationKey, videoDuration, preparedImage = false, onProgress }) {
   if (!localUri || !conversationId) {
     throw new Error('Missing file URI or conversation ID');
   }
@@ -222,7 +232,11 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
   }
 
   const uploadStartedAt = Date.now();
-  const fileUri = await ensureLocalFileUri(localUri);
+  const progress = (stage, value = null) => { try { onProgress?.({ stage, progress: value == null ? null : Math.max(0, Math.min(1, value)) }); } catch { /* UI feedback cannot fail an upload. */ } };
+  progress('preparing');
+  let fileUri = await ensureLocalFileUri(localUri);
+  if (mediaType === 'image' && !preparedImage) fileUri = (await compressUploadImage(fileUri)).uri;
+  progress('checking');
 
   if (mediaType === 'video') {
     const info = await FileSystem.getInfoAsync(fileUri);
@@ -260,6 +274,7 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
     signerPromise = requestR2UploadUrl({
       app,
       conversationId,
+      groupChatId,
       mediaType,
       extension: nextExt,
       contentType: nextContentType,
@@ -281,36 +296,53 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
     return signerPromise;
   };
 
-  // Encrypt binary bytes on-device with TweetNaCl (secretbox).
+  // Encrypt binary bytes on-device with TweetNaCl (secretbox) concurrently with moderation & signer.
+  let encryptionPromise = null;
   if (conversationKey) {
     // Prefetch the .enc signed URL while checking safety and encrypting.
     startSigner('enc', 'application/octet-stream');
-    if (moderationResult) {
-      const result = await moderationResult;
-      if (!result.ok) throw result.error;
-    }
     const encryptionStartedAt = Date.now();
-    try {
-      const rawBase64 = await FileSystem.readAsStringAsync(fileUri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      const rawBytes = base64ToBytes(rawBase64);
-      const encryptedBytes = encryptMediaBytes(rawBytes, conversationKey);
-      const encryptedBase64 = bytesToBase64(encryptedBytes);
+    encryptionPromise = (async () => {
+      try {
+        const rawBase64 = await FileSystem.readAsStringAsync(fileUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        const rawBytes = base64ToBytes(rawBase64);
+        const encryptedBytes = encryptMediaBytes(rawBytes, conversationKey);
+        const encryptedBase64 = bytesToBase64(encryptedBytes);
 
-      tempEncUri = `${FileSystem.cacheDirectory}enc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.enc`;
-      await FileSystem.writeAsStringAsync(tempEncUri, encryptedBase64, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-      uploadUri = tempEncUri;
-      ext = 'enc';
-      contentType = 'application/octet-stream';
-      logUploadStage('encryption', encryptionStartedAt, 'success');
-    } catch (encryptErr) {
-      logUploadStage('encryption', encryptionStartedAt, 'failed');
-      if (tempEncUri) await FileSystem.deleteAsync(tempEncUri, { idempotent: true }).catch(() => {});
-      throw encryptErr;
+        const encPath = `${FileSystem.cacheDirectory}enc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.enc`;
+        await FileSystem.writeAsStringAsync(encPath, encryptedBase64, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        logUploadStage('encryption', encryptionStartedAt, 'success');
+        return { ok: true, uri: encPath };
+      } catch (encryptErr) {
+        logUploadStage('encryption', encryptionStartedAt, 'failed');
+        return { ok: false, error: encryptErr };
+      }
+    })();
+  }
+
+  // Await moderation check and client encryption in parallel
+  if (moderationResult) {
+    const modResult = await moderationResult;
+    if (!modResult.ok) {
+      if (encryptionPromise) {
+        const encResult = await encryptionPromise.catch(() => ({}));
+        if (encResult.uri) await FileSystem.deleteAsync(encResult.uri, { idempotent: true }).catch(() => {});
+      }
+      throw modResult.error;
     }
+  }
+
+  if (encryptionPromise) {
+    const encResult = await encryptionPromise;
+    if (!encResult.ok) throw encResult.error;
+    tempEncUri = encResult.uri;
+    uploadUri = tempEncUri;
+    ext = 'enc';
+    contentType = 'application/octet-stream';
   }
 
   try {
@@ -326,11 +358,13 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
           let refreshUrl = false;
           try {
             const headers = data.uploadHeaders || { 'Content-Type': data.contentType || contentType };
-            const status = await putFileToR2(data.uploadUrl, uploadUri, headers, fileBlobRef);
+            progress('uploading', 0);
+            const status = await putFileToR2(data.uploadUrl, uploadUri, headers, fileBlobRef, value => progress('uploading', value));
             logUploadStage('r2_put', putStartedAt, status, { attempt });
             if (status >= 200 && status < 300) {
               preCacheDecryptedMedia(data.downloadUrl, fileUri, { conversationKey, mediaType });
               logUploadStage('total', uploadStartedAt, 'r2');
+              progress('uploaded', 1);
               return data.downloadUrl;
             }
             shouldRetry = isTransientR2Status(status);
@@ -366,10 +400,10 @@ export async function uploadChatMedia(localUri, { conversationId, mediaType = 'i
     // Avoid re-uploading large encrypted videos through Firebase when R2 failed —
     // that path is the multi-second/minute hang users hit. The native backend
     // has no Firebase Storage fallback at all.
-    if (mediaType === 'video' || RUST_BACKEND) {
+    if (mediaType === 'video' || RUST_BACKEND || groupChatId) {
       logUploadStage('firebase_fallback', Date.now(), 'skipped', { reason: fallbackReason });
       logUploadStage('total', uploadStartedAt, 'failed');
-      throw new Error('อัปโหลดวิดีโอไปยังพื้นที่จัดเก็บไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+      throw new Error('อัปโหลดสื่อไปยังพื้นที่จัดเก็บไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
     }
 
     let uploadBytesEstimate = null;

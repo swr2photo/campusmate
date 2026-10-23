@@ -1,6 +1,8 @@
+import { Pressable } from './NativePressable';
+import NativeCard from './NativeCard';
 import Text from './AppText';
 import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
 import FeatureIcon from './FeatureIcon';
@@ -72,7 +74,7 @@ export default function SpotifyNowPlayingCard({
   if (!current) return null;
 
   return (
-    <View
+    <NativeCard
       style={[
         styles.card,
         {
@@ -134,7 +136,7 @@ export default function SpotifyNowPlayingCard({
           </Pressable>
         ) : null}
       </View>
-    </View>
+    </NativeCard>
   );
 }
 

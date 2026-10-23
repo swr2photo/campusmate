@@ -15,6 +15,9 @@ function hashSeed(seed) {
 
 export function dailyPick(items, seed) {
   if (!Array.isArray(items) || items.length <= 1) return items || [];
+  const restored = items.filter(item => Number.isFinite(item.rewindPriority))
+    .sort((a, b) => b.rewindPriority - a.rewindPriority)[0];
+  if (restored) return [restored];
   let best = items[0];
   let bestScore = hashSeed(`${seed}:${best.id}`);
   for (let index = 1; index < items.length; index += 1) {
@@ -30,6 +33,7 @@ export function dailyPick(items, seed) {
 
 export function pickDailyProfile(items, seed, pinnedId) {
   if (!Array.isArray(items) || items.length === 0) return [];
+  if (items.some(item => Number.isFinite(item.rewindPriority))) return dailyPick(items, seed);
   if (pinnedId) {
     const pinned = items.find((item) => item.id === pinnedId);
     if (pinned) return [pinned];

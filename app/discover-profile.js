@@ -1,6 +1,7 @@
+import { Pressable } from '../src/components/NativePressable';
 import Text from '../src/components/AppText';
 import React from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import DiscoverProfileScreen from '../src/screens/DiscoverProfileScreen';
 import { useToast } from '../src/context/ToastContext';
@@ -43,7 +44,7 @@ export default function DiscoverProfileRoute() {
   };
 
   return (
-    <DiscoverProfileErrorBoundary onClose={close}>
+    <DiscoverProfileErrorBoundary key={`${normalizedProfileId || 'discovery'}:${isExplicitViewOnly ? 'view' : 'browse'}`} onClose={close}>
       <DiscoverProfileScreen
         isViewOnlyParam={isExplicitViewOnly}
         onClose={close}

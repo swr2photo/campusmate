@@ -28,30 +28,37 @@ const androidMessagingSenderId = androidProjectInfo.project_number
   || process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID;
 
 const iosFirebaseConfig = Constants.expoConfig?.extra?.iosFirebaseConfig || {};
+const defaultIosFirebaseConfig = {
+  apiKey: 'AIzaSyCDtGUoJUIRPxImm-a_yO4t9yK-_qOcH-s',
+  authDomain: 'campusmate-7f1ab.firebaseapp.com',
+  projectId: 'campusmate-7f1ab',
+  messagingSenderId: '865275661439',
+  appId: '1:865275661439:ios:8bf4a3193c34a7fac9c34a',
+};
 
 const firebaseConfig = {
   apiKey: Platform.select({
-    ios: iosFirebaseConfig.apiKey || process.env.EXPO_PUBLIC_FIREBASE_IOS_API_KEY,
+    ios: iosFirebaseConfig.apiKey || process.env.EXPO_PUBLIC_FIREBASE_IOS_API_KEY || defaultIosFirebaseConfig.apiKey,
     android: androidApiKey,
     default: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
   }),
   authDomain: Platform.select({
-    ios: iosFirebaseConfig.authDomain || process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+    ios: iosFirebaseConfig.authDomain || process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || defaultIosFirebaseConfig.authDomain,
     android: androidAuthDomain,
     default: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
   }),
   projectId: Platform.select({
-    ios: iosFirebaseConfig.projectId || process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+    ios: iosFirebaseConfig.projectId || process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || defaultIosFirebaseConfig.projectId,
     android: androidProjectId,
     default: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
   }),
   messagingSenderId: Platform.select({
-    ios: iosFirebaseConfig.messagingSenderId || process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+    ios: iosFirebaseConfig.messagingSenderId || process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || defaultIosFirebaseConfig.messagingSenderId,
     android: androidMessagingSenderId,
     default: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
   }),
   appId: Platform.select({
-    ios: iosFirebaseConfig.appId || process.env.EXPO_PUBLIC_FIREBASE_IOS_APP_ID,
+    ios: iosFirebaseConfig.appId || process.env.EXPO_PUBLIC_FIREBASE_IOS_APP_ID || defaultIosFirebaseConfig.appId,
     android: androidAppId,
     default: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
   }),

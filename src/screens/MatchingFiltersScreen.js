@@ -1,6 +1,8 @@
+import { Pressable } from '../components/NativePressable';
+import NativeCard from '../components/NativeCard';
 import Text from '../components/AppText';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, BackHandler, Modal, Platform, Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, BackHandler, Modal, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { router, Stack, useNavigation } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { finishMatchingFilters } from '../utils/matchingFilterNavigation';
@@ -20,6 +22,7 @@ import AgeRangeSlider from '../components/age-range-slider';
 import { useEntitlement } from '../context/MembershipContext';
 import { FEATURE_ADVANCED_FILTERS } from '../data/plans';
 import { useTheme } from '../theme';
+import { GlassBackground, useLiquidGlass, useSheetGlassTint } from '../components/LiquidGlassSurface';
 
 function optionSummary(options, state, allLabel = 'ทั้งหมด') {
   const selected = getSelectedMatchingValues(options, state);
@@ -150,13 +153,14 @@ export default function MatchingFiltersScreen() {
         activities: nextActivities,
         activityDetails: pruneActivityDetailFilters(detailFilters, nextActivities),
         ageMin: min, ageMax: max,
-        availabilityPeriods: getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods),
+        availabilityPeriods: [],
+        weekdays: [],
+        requireAvailability: false,
         faculty: sameFacultyOnly ? 'all' : faculty,
         genders: getSelectedMatchingValues(MATCHING_GENDER_OPTIONS, genders),
         maxDistance: Math.round(distance),
         paces: showPace ? getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces) : [],
-        requireAvailability, requirePhoto, sameFacultyOnly,
-        weekdays: getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays),
+        requirePhoto, sameFacultyOnly,
         years: getSelectedMatchingValues(MATCHING_YEAR_OPTIONS, years),
       });
       if (!mounted.current || !navigation.isFocused()) return;
@@ -210,14 +214,14 @@ export default function MatchingFiltersScreen() {
         <SectionLabel label="การค้นหาพื้นฐาน" colors={colors} />
         <SettingsCard colors={colors}>
           <View style={[styles.sliderSection, { borderBottomColor: colors.line }]}>
-            <View style={styles.labelValue}><Text style={[styles.rowLabel, { color: colors.ink }]}>ระยะห่างสูงสุด</Text><Text style={[styles.rowValue, { color: colors.primary }]}>{distance === MATCHING_UNLIMITED_DISTANCE ? 'ไม่จำกัด' : `${Math.round(distance)} กม.`}</Text></View>
+            <View style={styles.labelValue}><Text style={[styles.rowLabel, { color: colors.ink }]}>ระยะห่างสูงสุด</Text><Text style={[styles.rowValue, { color: colors.accentText }]}>{distance === MATCHING_UNLIMITED_DISTANCE ? 'ไม่จำกัด' : `${Math.round(distance)} กม.`}</Text></View>
             <FilterSlider label="ระยะห่างสูงสุด" value={distance || lastDistance.current} min={1} max={distanceSliderMax.current} onValueChange={change(value => { const next = Math.round(value); lastDistance.current = next; setDistance(next); })} />
             <View style={styles.sliderLimits}><Text style={[styles.helper, { color: colors.inkMuted }]}>1 กม.</Text><Text style={[styles.helper, { color: colors.inkMuted }]}>{distanceSliderMax.current} กม.</Text></View>
             <ToggleRow label="ไม่จำกัดระยะทาง" value={distance === MATCHING_UNLIMITED_DISTANCE} onValueChange={change(value => setDistance(value ? MATCHING_UNLIMITED_DISTANCE : lastDistance.current))} colors={colors} inset={false} />
           </View>
           <SelectionRow label="คนที่สนใจ" value={optionSummary(MATCHING_GENDER_OPTIONS, genders)} onPress={() => openPopup('gender')} colors={colors} />
           <View style={[styles.sliderSection, { borderBottomColor: colors.line }]}>
-            <View style={styles.labelValue}><Text style={[styles.rowLabel, { color: colors.ink }]}>ช่วงอายุ</Text><Text style={[styles.rowValue, { color: colors.primary }]}>{ageMin}–{ageMax} ปี</Text></View>
+            <View style={styles.labelValue}><Text style={[styles.rowLabel, { color: colors.ink }]}>ช่วงอายุ</Text><Text style={[styles.rowValue, { color: colors.accentText }]}>{ageMin}–{ageMax} ปี</Text></View>
             <AgeRangeSlider min={MATCHING_AGE_MIN} max={MATCHING_AGE_MAX} minValue={ageMin} maxValue={ageMax}
               onChangeMin={change(value => { const next = normalizeMatchingAge(value, ageMin); setAgeMin(next); if (next > ageMax) setAgeMax(next); })}
               onChangeMax={change(value => { const next = normalizeMatchingAge(value, ageMax); setAgeMax(next); if (next < ageMin) setAgeMin(next); })} />
@@ -238,22 +242,19 @@ export default function MatchingFiltersScreen() {
         </View>)}
         {!selectedActivities.length ? <Text style={[styles.note, { color: colors.inkMuted }]}>เลือกกิจกรรมเพื่อระบุรายละเอียด เช่น ชนิดกีฬา วิชาที่ติว หรือแนวเพลง</Text> : null}
 
-        <View style={styles.plusHeading}><SectionLabel label="ตัวกรองเพิ่มเติม" colors={colors} /><View style={[styles.plusBadge, { backgroundColor: colors.primarySoft }]}><FeatureIcon name="sparkles" size={12} color={colors.primary} /><Text style={[styles.plusBadgeText, { color: colors.primary }]}>CampusMate Plus</Text></View></View>
+        <View style={styles.plusHeading}><SectionLabel label="ตัวกรองเพิ่มเติม" colors={colors} /><View style={[styles.plusBadge, { backgroundColor: colors.primarySoft }]}><FeatureIcon name="sparkles" size={12} color={colors.accentText} /><Text style={[styles.plusBadgeText, { color: colors.accentText }]}>CampusMate Plus</Text></View></View>
         <SettingsCard colors={colors}>
           <SelectionRow label="คณะ" value={sameFacultyOnly ? 'คณะเดียวกับฉัน' : faculty === 'all' ? 'ทุกคณะ' : faculty} onPress={() => openPopup('faculty', true)} colors={colors} locked={!canAdvanced} />
           <ToggleRow label="เฉพาะคณะเดียวกับฉัน" value={sameFacultyOnly} onValueChange={paidChange(value => { setSameFacultyOnly(value); if (value) setFaculty('all'); })} colors={colors} locked={!canAdvanced} />
-          <SelectionRow label="ชั้นปี" value={optionSummary(MATCHING_YEAR_OPTIONS, years)} onPress={() => openPopup('years', true)} colors={colors} locked={!canAdvanced} />
-          {showPace ? <SelectionRow label="เพซวิ่ง" value={optionSummary(MATCHING_PACE_OPTIONS, paces)} onPress={() => openPopup('paces', true)} colors={colors} locked={!canAdvanced} /> : null}
-          <SelectionRow label="วันที่สะดวก" value={optionSummary(MATCHING_WEEKDAY_OPTIONS, weekdays)} onPress={() => openPopup('weekdays', true)} colors={colors} locked={!canAdvanced} />
-          <SelectionRow label="ช่วงเวลาที่สะดวก" value={optionSummary(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods)} onPress={() => openPopup('availability', true)} colors={colors} locked={!canAdvanced} />
-          <ToggleRow label="ต้องระบุเวลาว่าง" value={requireAvailability} onValueChange={paidChange(setRequireAvailability)} colors={colors} locked={!canAdvanced} last />
+          <SelectionRow label="ชั้นปี" value={optionSummary(MATCHING_YEAR_OPTIONS, years)} onPress={() => openPopup('years', true)} colors={colors} locked={!canAdvanced} last={!showPace} />
+          {showPace ? <SelectionRow label="เพซวิ่ง" value={optionSummary(MATCHING_PACE_OPTIONS, paces)} onPress={() => openPopup('paces', true)} colors={colors} locked={!canAdvanced} last /> : null}
         </SettingsCard>
         {!canAdvanced ? <Text style={[styles.note, { color: colors.inkMuted }]}>{advancedFilters.loading ? 'กำลังตรวจสอบสถานะ CampusMate Plus…' : 'ตัวกรองเพิ่มเติมจะทำงานเมื่อใช้ CampusMate Plus'}</Text> : null}
-        <Pressable accessibilityRole="button" onPress={resetFilters} style={[styles.resetButton, { backgroundColor: colors.card }]}><Text style={[styles.resetText, { color: colors.primary }]}>รีเซ็ตตัวกรอง</Text></Pressable>
+        <Pressable accessibilityRole="button" onPress={resetFilters} style={[styles.resetButton, { backgroundColor: colors.card }]}><Text style={[styles.resetText, { color: colors.accentText }]}>รีเซ็ตตัวกรอง</Text></Pressable>
         <Text style={[styles.note, { color: colors.inkMuted, textAlign: 'center' }]}>แตะ ✓ เพื่อบันทึก · ปิดหน้าต่างเพื่อยกเลิกการเปลี่ยนแปลง</Text>
       </ScrollView>
     </View>
-    {saveError ? <View accessibilityRole="alert" style={[styles.errorBar, { backgroundColor: colors.card, borderTopColor: colors.line }]}><Text style={[styles.errorText, { color: colors.danger }]}>{saveError}</Text><Pressable accessibilityRole="button" onPress={saveSearchSettings} style={styles.retry}><Text style={[styles.retryText, { color: colors.primary }]}>ลองบันทึกอีกครั้ง</Text></Pressable></View> : null}
+    {saveError ? <View accessibilityRole="alert" style={[styles.errorBar, { backgroundColor: colors.card, borderTopColor: colors.line }]}><Text style={[styles.errorText, { color: colors.danger }]}>{saveError}</Text><Pressable accessibilityRole="button" onPress={saveSearchSettings} style={styles.retry}><Text style={[styles.retryText, { color: colors.accentText }]}>ลองบันทึกอีกครั้ง</Text></Pressable></View> : null}
     <SelectionPopup config={popupOptions[popup]} onClose={() => setPopup(null)} />
   </>;
   return <>
@@ -271,7 +272,7 @@ function SheetHeader({ colors, saving, onClose, onSave }) {
 }
 
 function SettingsCard({ colors, children }) {
-  return <View style={[styles.card, { backgroundColor: colors.card }]}>{children}</View>;
+  return <NativeCard style={[styles.card, { backgroundColor: colors.card }]}>{children}</NativeCard>;
 }
 function SectionLabel({ label, colors }) { return <Text style={[styles.sectionLabel, { color: colors.ink }]}>{label}</Text>; }
 function SelectionRow({ label, value, onPress, colors, locked, last }) {
@@ -292,6 +293,8 @@ function ToggleRow({ label, value, onValueChange, colors, locked, last, inset = 
 
 function SelectionPopup({ config, onClose }) {
   const { colors } = useTheme();
+  const glass = useLiquidGlass();
+  const glassTint = useSheetGlassTint();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const lastConfig = useRef(config);
@@ -307,8 +310,9 @@ function SelectionPopup({ config, onClose }) {
   return <Modal visible={Boolean(config)} transparent animationType="fade" onRequestClose={onClose}>
     <View style={styles.popupOverlay}>
       <Pressable accessibilityRole="button" accessibilityLabel="ปิดตัวเลือก" onPress={onClose} style={StyleSheet.absoluteFill} />
-      <View style={[styles.popup, { backgroundColor: colors.card, maxHeight: height * 0.78, paddingBottom: Math.max(12, insets.bottom + 8) }]}>
-        <View style={[styles.popupHeader, { borderBottomColor: colors.line }]}><Text style={[styles.popupTitle, { color: colors.ink }]}>{current?.title || 'เลือกตัวกรอง'}</Text><Pressable accessibilityRole="button" accessibilityLabel="เสร็จสิ้นการเลือก" onPress={onClose} style={styles.headerButton}><FeatureIcon name="checkmark" size={22} color={colors.primary} /></Pressable></View>
+      <View style={[styles.popup, { backgroundColor: glass ? 'transparent' : colors.card, maxHeight: height * 0.78, paddingBottom: Math.max(12, insets.bottom + 8) }]}>
+        <GlassBackground style={{ borderTopLeftRadius: 24, borderTopRightRadius: 24 }} tintColor={glassTint} />
+        <View style={[styles.popupHeader, { borderBottomColor: colors.line }]}><Text style={[styles.popupTitle, { color: colors.ink }]}>{current?.title || 'เลือกตัวกรอง'}</Text><Pressable accessibilityRole="button" accessibilityLabel="เสร็จสิ้นการเลือก" onPress={onClose} style={styles.headerButton}><FeatureIcon name="checkmark" size={22} color={colors.accentText} /></Pressable></View>
         {!current?.single ? <Text style={[styles.popupHelper, { color: colors.inkMuted }]}>เลือกได้มากกว่าหนึ่งรายการ · ทั้งหมดหมายถึงไม่จำกัด</Text> : null}
         <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} style={styles.popupList}>
           {!current?.single ? <PopupOption label="ทั้งหมด" active={all} colors={colors} onPress={() => current.onChange(createMatchingOptionState(options))} /> : null}
@@ -319,7 +323,7 @@ function SelectionPopup({ config, onClose }) {
   </Modal>;
 }
 function PopupOption({ label, active, colors, onPress, single }) {
-  return <Pressable accessibilityRole={single ? 'radio' : 'checkbox'} accessibilityState={{ checked: active }} onPress={onPress} style={({ pressed }) => [styles.popupOption, { borderBottomColor: colors.line, backgroundColor: active ? colors.primarySoft : colors.card }, pressed && styles.pressed]}><Text style={[styles.popupOptionText, { color: active ? colors.primary : colors.ink }]}>{label}</Text>{active ? <FeatureIcon name="checkmark" size={18} color={colors.primary} /> : <View style={{ width: 18 }} />}</Pressable>;
+  return <Pressable accessibilityRole={single ? 'radio' : 'checkbox'} accessibilityState={{ checked: active }} onPress={onPress} style={({ pressed }) => [styles.popupOption, { borderBottomColor: colors.line, backgroundColor: active ? colors.primarySoft : colors.card }, pressed && styles.pressed]}><Text style={[styles.popupOptionText, { color: active ? colors.accentText : colors.ink }]}>{label}</Text>{active ? <FeatureIcon name="checkmark" size={18} color={colors.accentText} /> : <View style={{ width: 18 }} />}</Pressable>;
 }
 const styles = StyleSheet.create({
   screen: { flex: 1, width: '100%', borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },

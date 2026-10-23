@@ -1,6 +1,7 @@
+import { Pressable } from './NativePressable';
 import Text from './AppText';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, Modal, Platform, Pressable, StatusBar, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Animated, Easing, Modal, Platform, StatusBar, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Reanimated, {
   cancelAnimation,
@@ -45,6 +46,7 @@ import {
   setLiveKitSpeaker,
   switchLiveKitCamera,
 } from '../services/livekitService';
+import { GlassBackground, useLiquidGlass } from './LiquidGlassSurface';
 
 let LiveKitVideoView = null;
 try {
@@ -294,6 +296,7 @@ export default function CallModal({
   const [isSpeaker, setIsSpeaker] = useState(true);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
+  const glass = useLiquidGlass();
   const [isInPip, setIsInPip] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [isReconnecting, setIsReconnecting] = useState(false);
@@ -1042,8 +1045,9 @@ export default function CallModal({
               <Pressable
                 accessibilityLabel="ย่อหน้าจอโทร"
                 onPress={() => setIsMinimized(true)}
-                style={styles.headerIconButton}
+                style={[styles.headerIconButton, glass && styles.glassClear]}
               >
+                <GlassBackground colorScheme="dark" style={{ borderRadius: 22 }} />
                 <FeatureIcon color="#FFFFFF" name="chevron.down" size={24} />
               </Pressable>
             ) : (
@@ -1064,8 +1068,9 @@ export default function CallModal({
               <Pressable
                 accessibilityLabel="ย่อออกนอกแอป"
                 onPress={enterPip}
-                style={styles.headerIconButton}
+                style={[styles.headerIconButton, glass && styles.glassClear]}
               >
+                <GlassBackground colorScheme="dark" style={{ borderRadius: 22 }} />
                 <FeatureIcon color="#FFFFFF" name="arrow.up.right.square" size={20} />
               </Pressable>
             ) : (
@@ -1197,8 +1202,9 @@ export default function CallModal({
                     <Pressable
                       accessibilityLabel={isMuted ? 'เปิดไมค์' : 'ปิดไมค์'}
                       onPress={handleToggleMute}
-                      style={[styles.controlCircleBtn, isMuted && styles.controlCircleBtnActive]}
+                      style={[styles.controlCircleBtn, isMuted && styles.controlCircleBtnActive, glass && styles.glassClear]}
                     >
+                      <GlassBackground colorScheme="dark" style={{ borderRadius: 28 }} tintColor={isMuted ? 'rgba(255,255,255,0.32)' : undefined} />
                       <FeatureIcon
                         color={isMuted ? '#EF4444' : '#FFFFFF'}
                         name={isMuted ? 'mic.slash.fill' : 'mic.fill'}
@@ -1213,8 +1219,9 @@ export default function CallModal({
                     <Pressable
                       accessibilityLabel="สลับลำโพง"
                       onPress={handleToggleSpeaker}
-                      style={[styles.controlCircleBtn, isSpeaker && styles.controlCircleBtnActive]}
+                      style={[styles.controlCircleBtn, isSpeaker && styles.controlCircleBtnActive, glass && styles.glassClear]}
                     >
+                      <GlassBackground colorScheme="dark" style={{ borderRadius: 28 }} tintColor={isSpeaker ? 'rgba(255,255,255,0.32)' : undefined} />
                       <FeatureIcon
                         color={isSpeaker ? '#3B5AFE' : '#FFFFFF'}
                         name={isSpeaker ? 'speaker.wave.3.fill' : 'speaker.slash.fill'}
@@ -1231,8 +1238,9 @@ export default function CallModal({
                         <Pressable
                           accessibilityLabel={isVideoOff ? 'เปิดกล้อง' : 'ปิดกล้อง'}
                           disabled={mediaBusy} onPress={handleToggleVideo}
-                          style={[styles.controlCircleBtn, isVideoOff && styles.controlCircleBtnActive]}
+                          style={[styles.controlCircleBtn, isVideoOff && styles.controlCircleBtnActive, glass && styles.glassClear]}
                         >
+                          <GlassBackground colorScheme="dark" style={{ borderRadius: 28 }} tintColor={isVideoOff ? 'rgba(255,255,255,0.32)' : undefined} />
                           <FeatureIcon
                             color={isVideoOff ? '#EF4444' : '#FFFFFF'}
                             name={isVideoOff ? 'video.slash.fill' : 'video.fill'}
@@ -1247,8 +1255,9 @@ export default function CallModal({
                         <Pressable
                           accessibilityLabel="สลับกล้องหน้าหลัง"
                           disabled={mediaBusy} onPress={handleSwitchCamera}
-                          style={styles.controlCircleBtn}
+                          style={[styles.controlCircleBtn, glass && styles.glassClear]}
                         >
+                          <GlassBackground colorScheme="dark" style={{ borderRadius: 28 }} />
                           <FeatureIcon color="#FFFFFF" name="camera.rotate.fill" size={24} />
                         </Pressable>
                         <Text style={styles.controlLabel}>สลับกล้อง</Text>
@@ -1336,6 +1345,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 8 : 10,
   },
+  glassClear: { backgroundColor: 'transparent' },
   headerIconButton: {
     alignItems: 'center',
     backgroundColor: 'rgba(255, 255, 255, 0.12)',

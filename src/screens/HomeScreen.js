@@ -1,45 +1,57 @@
+import { Pressable } from '../components/NativePressable';
+import NativeCard from '../components/NativeCard';
+import { getDiscoverySummary } from '../utils/discoveryPresentation';
 import Text from '../components/AppText';
 import { useToast } from '../context/ToastContext';
+import { showInAppNotification } from '../components/InAppNotificationBanner';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Animated, Easing, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Image from '../components/CachedImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import {
   MATCHING_ACTIVITY_OPTIONS,
   MATCHING_AGE_MIN,
-  MATCHING_AVAILABILITY_OPTIONS,
   MATCHING_DEFAULT_AGE_MAX,
   MATCHING_GENDER_OPTIONS,
   MATCHING_PACE_OPTIONS,
-  MATCHING_WEEKDAY_OPTIONS,
   MATCHING_YEAR_OPTIONS,
   createMatchingOptionState,
   getSelectedMatchingValues,
   matchesActivityDetailFilters,
-  matchesAvailabilityPeriods,
-  matchesAvailabilityWeekdays,
   normalizeMatchingAge,
-  profileHasAvailability,
   profileHasPhoto,
   pruneActivityDetailFilters,
 } from '../data/matchingFilters';
-import { useAppActions, useAppBadges, useAppConversations, useAppFeed, useAppProfile } from '../context/AppContext';
+import { useAppActions, useAppConversations, useAppFeed, useAppProfile } from '../context/AppContext';
 import { IosLikeScreen } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';
 import NativeAdCard from '../components/NativeAdCard';
 import { isDiscoveryAdDue } from '../utils/adPolicy';
 import { useEntitlement } from '../context/MembershipContext';
-import { FEATURE_ADVANCED_FILTERS, FEATURE_UNLIMITED_REWIND } from '../data/plans';
+import { FEATURE_ADVANCED_FILTERS } from '../data/plans';
 import { allowedMatchingPreferences } from '../services/secureDiscoveryService';
 import { TourTarget } from '../context/AppTourContext';
 import { HomeCardSkeleton } from '../components/LikesSkeleton';
 import { useDiscoveryDeckState } from '../hooks/useDiscoveryDeckState';
 import { getImageRequestUri, useProfileImagePrefetch } from '../utils/useRemoteImage';
+import ProfilePhotoCarousel from '../components/ProfilePhotoCarousel';
 import { ACTIVITY_CATEGORY_BY_ID } from '../data/activityCategories';
 import { ACTIVITY_LABELS, formatDistance, formatReadableDate, getActivityLabel } from '../utils/formatters';
 import { dailyPick, getDailySeed, pickDailyProfile } from '../utils/dailyPick';
+import {
+  noteDismissWithoutOpen,
+  noteProfileOpened,
+  rewindEligibleProfileId,
+  subscribeRewindEligibility,
+} from '../utils/rewindEligibility';
 import { radius, spacing, type, useTheme } from '../theme';
+import * as Haptics from 'expo-haptics';
+import CampusVibeBanner from '../components/discovery/CampusVibeBanner';
+import SpotifyMiniPlayer from '../components/discovery/SpotifyMiniPlayer';
+import AnimatedStatusBadge from '../components/status/AnimatedStatusBadge';
+import ParticleBurst from '../components/effects/ParticleBurst';
+import { statusBadgeFor } from '../utils/userStatus';
 
 function getTagDisplayLabel(tag) {
   if (!tag) return '';
@@ -62,6 +74,15 @@ const QUICK_ACTIVITIES = [
   { id: 'sports', label: 'กีฬา', symbol: 'sportscourt.fill' },
 ];
 
+const FACULTY_COLORS = ['#5B8DEF', '#E8734A', '#2FA36B', '#B57BEE', '#E85D9A', '#12A5A5', '#D8901B', '#6C63FF'];
+
+// Stable, vivid colour per faculty name for its chip.
+function facultyColor(name) {
+  let hash = 0;
+  for (let index = 0; index < name.length; index += 1) hash = (hash * 31 + name.charCodeAt(index)) >>> 0;
+  return FACULTY_COLORS[hash % FACULTY_COLORS.length];
+}
+
 function stripEmojis(text) {
   if (typeof text !== 'string') return text;
   return text
@@ -69,25 +90,16 @@ function stripEmojis(text) {
     .trim();
 }
 
-function getRemainingTime() {
-  const now = new Date();
-  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  return Math.max(0, tomorrow.getTime() - now.getTime());
-}
-
-function formatRemainingTime(milliseconds) {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-  const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
-  const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
-  const seconds = (totalSeconds % 60).toString().padStart(2, '0');
-  return `${hours}:${minutes}:${seconds}`;
+function useRewindEligibleId() {
+  const [profileId, setProfileId] = useState(rewindEligibleProfileId);
+  useEffect(() => subscribeRewindEligibility(setProfileId), []);
+  return profileId;
 }
 
 export default function HomeScreen({ onOpenLikes }) {
   const { showToast } = useToast();
   const { colors, isDark } = useTheme();
   const advancedFilters = useEntitlement(FEATURE_ADVANCED_FILTERS);
-  const rewind = useEntitlement(FEATURE_UNLIMITED_REWIND);
   const {
     availableProfiles = [],
     hasMoreProfiles = false,
@@ -98,8 +110,8 @@ export default function HomeScreen({ onOpenLikes }) {
     matchedProfileIds = [],
     selectedMeetup,
     discoveryActionCount = 0,
+    canRewindSkippedProfiles,
   } = useAppFeed();
-  const { conversationCount = 0, matchedCount = 0 } = useAppBadges();
   const {
     dismissProfile,
     getMeetupStats,
@@ -116,7 +128,6 @@ export default function HomeScreen({ onOpenLikes }) {
 
   const recycleLock = useRef(false);
   const pinnedDailyRef = useRef({ day: getDailySeed(), id: null });
-  const openLikes = onOpenLikes || (() => router.push('/likes'));
   const preferences = allowedMatchingPreferences(profile?.matchingPreferences, advancedFilters.allowed);
 
   const faculty = preferences.sameFacultyOnly === true ? 'all' : (preferences.faculty || 'all');
@@ -131,19 +142,9 @@ export default function HomeScreen({ onOpenLikes }) {
     () => pruneActivityDetailFilters(preferences.activityDetails, preferences.activities || []),
     [preferences.activityDetails, preferences.activities]
   );
-  const availabilityPeriods = createMatchingOptionState(
-    MATCHING_AVAILABILITY_OPTIONS,
-    preferences.availabilityPeriods || []
-  );
-  const weekdays = createMatchingOptionState(MATCHING_WEEKDAY_OPTIONS, preferences.weekdays || []);
-  const selectedAvailabilityPeriods = getSelectedMatchingValues(MATCHING_AVAILABILITY_OPTIONS, availabilityPeriods);
-  const selectedWeekdays = getSelectedMatchingValues(MATCHING_WEEKDAY_OPTIONS, weekdays);
-  const availabilityFilterActive = selectedAvailabilityPeriods.length > 0
-    && selectedAvailabilityPeriods.length < MATCHING_AVAILABILITY_OPTIONS.length;
   const activeFacultyFilter = sameFacultyOnly ? (profile?.faculty || 'all') : faculty;
   const maxDistance = Number(preferences.maxDistance);
   const requirePhoto = preferences.requirePhoto === true;
-  const requireAvailability = preferences.requireAvailability === true;
   const meetupStats = selectedMeetup && profile ? getMeetupStats(profile) : null;
 
   const filteredProfiles = useMemo(() => {
@@ -175,12 +176,7 @@ export default function HomeScreen({ onOpenLikes }) {
       const selectedPaces = getSelectedMatchingValues(MATCHING_PACE_OPTIONS, paces);
       if (selectedPaces.length && candidate.pace && !selectedPaces.includes(candidate.pace)) return false;
       if (!matchesActivityDetailFilters(candidate, activityDetailFilters)) return false;
-      if (availabilityFilterActive && !matchesAvailabilityPeriods(candidate, selectedAvailabilityPeriods)) {
-        return false;
-      }
-      if (selectedWeekdays.length && !matchesAvailabilityWeekdays(candidate, selectedWeekdays)) return false;
       if (requirePhoto && !profileHasPhoto(candidate)) return false;
-      if (requireAvailability && !profileHasAvailability(candidate)) return false;
       if (
         Number.isFinite(maxDistance)
         && maxDistance > 0
@@ -206,7 +202,6 @@ export default function HomeScreen({ onOpenLikes }) {
     activityDetailFilters,
     ageMax,
     ageMin,
-    availabilityFilterActive,
     activities,
     availableProfiles,
     genders,
@@ -214,12 +209,9 @@ export default function HomeScreen({ onOpenLikes }) {
     maxDistance,
     profile?.faculty,
     profile?.id,
-    requireAvailability,
     requirePhoto,
     sameFacultyOnly,
-    selectedAvailabilityPeriods,
     selectedCategory,
-    selectedWeekdays,
     years,
   ]);
 
@@ -233,6 +225,18 @@ export default function HomeScreen({ onOpenLikes }) {
     discoveryError,
     retryDiscovery,
   });
+
+  useEffect(() => {
+    if (!discoveryError) return;
+    const rawMsg = discoveryError?.message || 'โหลดโปรไฟล์ไม่สำเร็จ';
+    const cleanMsg = rawMsg.replace(/\s*\[\d{3}\]/g, '').trim();
+    showInAppNotification({
+      title: 'ค้นหาเพื่อน',
+      message: cleanMsg,
+      tone: 'warning',
+      icon: 'exclamationmark.triangle.fill',
+    });
+  }, [discoveryError]);
 
   useEffect(() => {
     if (currentProfile || isLoadingMoreProfiles || isResolvingDistances || !hasMoreProfiles) {
@@ -249,22 +253,49 @@ export default function HomeScreen({ onOpenLikes }) {
     return () => clearTimeout(timer);
   }, [currentProfile, hasMoreProfiles, isLoadingMoreProfiles, isResolvingDistances, loadMoreProfiles]);
 
-  const restartDeck = useCallback(() => {
-    // Bringing skipped people back is CampusMate Plus (unlimited rewind).
-    if (!rewind.guard()) return;
-    pinnedDailyRef.current.id = null;
-    void recycleSkippedProfiles()?.catch?.((error) => {
-      console.warn('[HomeScreen] restartDeck recycle error:', error?.message || error);
-    });
-    if (hasMoreProfiles && !isLoadingMoreProfiles) {
-      void loadMoreProfiles()?.catch?.((error) => {
-        console.warn('[HomeScreen] restartDeck loadMore error:', error?.message || error);
-      });
+  const rewindEligibleId = useRewindEligibleId();
+  const rewindEntrance = useRef(new Animated.Value(1)).current;
+  const rewindPending = useRef(false);
+
+  const restartDeck = useCallback(async () => {
+    // The server reauthorizes a pending skip; local history may be stale.
+    if (actionInProgress) return;
+    setActionInProgress(true);
+    rewindPending.current = true;
+    try {
+      const result = await recycleSkippedProfiles();
+      if (result?.profile?.id) pinnedDailyRef.current.id = result.profile.id;
+      if (!result?.profile && !result?.busy && !result?.plusRequired) {
+        rewindPending.current = false;
+        showToast('ไม่มีรายการที่ย้อนกลับได้ในขณะนี้', 'info');
+      } else if (result?.profile) {
+        showToast(`ย้อนกลับไปยังโปรไฟล์ของ ${result.profile.name || 'เพื่อน'} แล้ว`, 'success');
+      }
+    } catch (error) {
+      rewindPending.current = false;
+      if (error?.details?.reason === 'PLUS_REQUIRED') router.push('/membership');
+      else showToast(error?.message || 'ย้อนกลับไม่สำเร็จ กรุณาลองอีกครั้ง', 'error');
     }
-  }, [hasMoreProfiles, isLoadingMoreProfiles, loadMoreProfiles, recycleSkippedProfiles, rewind.guard]);
+    finally { setActionInProgress(false); }
+  }, [actionInProgress, recycleSkippedProfiles, showToast]);
+
+  useEffect(() => {
+    if (!currentProfile?.id || !rewindPending.current) return undefined;
+    rewindPending.current = false;
+    rewindEntrance.setValue(0);
+    const animation = Animated.timing(rewindEntrance, {
+      toValue: 1,
+      duration: 360,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [currentProfile?.id, rewindEntrance]);
 
   const handlePass = useCallback(async () => {
     if (!currentProfile || actionInProgress) return;
+    noteDismissWithoutOpen(currentProfile.id);
     setActionInProgress(true);
     try {
       await dismissProfile(currentProfile.id);
@@ -292,53 +323,21 @@ export default function HomeScreen({ onOpenLikes }) {
     }
   }, [actionInProgress, currentProfile, matchProfile, showToast]);
 
-  const handleSuperLike = useCallback(async () => {
+  const handleDirectChat = useCallback(() => {
     if (!currentProfile || actionInProgress) return;
-    setActionInProgress(true);
-    try {
-      const result = await matchProfile(currentProfile);
-      if (result?.queued) showToast('บันทึกถูกใจไว้แล้ว จะส่งเมื่อเชื่อมต่ออินเทอร์เน็ต', 'info');
-      if (result?.matched && result?.conversationId) {
-        router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
-      }
-    } catch (error) {
-      console.warn('[HomeScreen] superLike error:', error?.message || error);
-      showToast(error?.discoveryActionCommitted ? 'บันทึกถูกใจแล้ว แต่เปิดแชตไม่สำเร็จ ลองเปิดจากหน้าแชตอีกครั้ง' : 'ส่งถูกใจไม่สำเร็จ กรุณาลองอีกครั้ง', 'info');
-    } finally {
-      setActionInProgress(false);
-    }
-  }, [actionInProgress, currentProfile, matchProfile, showToast]);
-
-  const handleDirectChat = useCallback(async () => {
-    if (!currentProfile || actionInProgress) return;
-    if (isCurrentMatched) {
-      const convo = conversations?.find((c) =>
-        c?.participants?.includes?.(currentProfile.id) || c?.otherUser?.id === currentProfile.id
-      );
-      if (convo?.id) {
-        router.push({ pathname: '/chat-room', params: { chatId: convo.id } });
-        return;
-      }
-    }
-    setActionInProgress(true);
-    try {
-      const result = await matchProfile(currentProfile);
-      if (result?.conversationId) {
-        router.push({ pathname: '/chat-room', params: { chatId: result.conversationId } });
-      } else {
-        router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } });
-      }
-    } catch (error) {
+    const convo = conversations?.find(c => c?.participants?.includes?.(currentProfile.id) || c?.otherUser?.id === currentProfile.id);
+    if (isCurrentMatched && convo?.id) {
+      router.push({ pathname: '/chat-room', params: { chatId: convo.id } });
+    } else {
       router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } });
-    } finally {
-      setActionInProgress(false);
     }
-  }, [actionInProgress, conversations, currentProfile, isCurrentMatched, matchProfile]);
+  }, [actionInProgress, conversations, currentProfile, isCurrentMatched]);
 
   const tourScrollRef = useRef(null);
 
   const handleOpenProfile = useCallback(() => {
     if (!currentProfile) return;
+    noteProfileOpened(currentProfile.id);
     router.push({ pathname: '/discover-profile', params: { profileId: currentProfile.id } });
   }, [currentProfile]);
 
@@ -356,12 +355,8 @@ export default function HomeScreen({ onOpenLikes }) {
       >
 
 
-        {/* 1. Collegiate Campus Context Header */}
-        <CampusContextBar
-          faculty={profile?.faculty}
-          matchedCount={Math.max(matchedCount, conversationCount)}
-          onOpenLikes={openLikes}
-        />
+        {/* 1. Live campus vibe: weather, mascot, people around, map shortcut */}
+        <CampusVibeBanner count={availableProfiles.length} hasMore={hasMoreProfiles} />
 
         {/* Unverified users: their profile stays hidden until face verification. */}
 
@@ -379,6 +374,7 @@ export default function HomeScreen({ onOpenLikes }) {
         <TourTarget id="home.dailyPick" scrollRef={tourScrollRef}>
           <DailyPickBanner
             candidate={deck.state === 'card' ? currentProfile : null}
+            state={deck.state}
             onOpenCandidate={handleOpenProfile}
           />
         </TourTarget>
@@ -388,34 +384,43 @@ export default function HomeScreen({ onOpenLikes }) {
         {deck.state === 'card' ? (
           <>
             <TourTarget id="home.deck" scrollRef={tourScrollRef}>
-              <DiscoverProfileCard
-                key={currentProfile.id}
-                candidate={currentProfile}
-                isMatched={isCurrentMatched}
-                onPress={handleOpenProfile}
-              />
+              <Animated.View style={{
+                opacity: rewindEntrance,
+                transform: [{
+                  translateX: rewindEntrance.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-28, 0],
+                  }),
+                }],
+              }}
+              >
+                <DiscoverProfileCard
+                  key={currentProfile.id}
+                  candidate={currentProfile}
+                  isMatched={isCurrentMatched}
+                  onPress={handleOpenProfile}
+                />
+              </Animated.View>
             </TourTarget>
 
             {/* 5. 5-Button Tactile Action Bar */}
             <TourTarget id="home.actions" scrollRef={tourScrollRef} scrollOffset={360}>
               <DiscoveryActionBar
+                canRewind={Boolean(canRewindSkippedProfiles)}
                 disabled={actionInProgress}
                 isMatched={isCurrentMatched}
                 onChat={handleDirectChat}
                 onMatch={handleMatch}
                 onPass={handlePass}
                 onRestart={restartDeck}
-                onSuperLike={handleSuperLike}
               />
             </TourTarget>
           </>
+        ) : deck.state === 'error' ? (
+          <DiscoveryErrorState offline={deck.offline} stalled={deck.stalled} onRetry={deck.retry} />
         ) : deck.state === 'loading' ? (
           <TourTarget id="home.deck" scrollRef={tourScrollRef}>
             <HomeCardSkeleton />
-          </TourTarget>
-        ) : deck.state === 'error' ? (
-          <TourTarget id="home.deck" scrollRef={tourScrollRef}>
-            <DiscoveryErrorState offline={deck.offline} onRetry={deck.retry} stalled={deck.stalled} />
           </TourTarget>
         ) : (
           <TourTarget id="home.deck" scrollRef={tourScrollRef}>
@@ -424,40 +429,6 @@ export default function HomeScreen({ onOpenLikes }) {
         )}
       </ScrollView>
     </IosLikeScreen>
-  );
-}
-
-function CampusContextBar({ faculty, matchedCount, onOpenLikes }) {
-  const { colors, isDark } = useTheme();
-  return (
-    <View style={[styles.campusBar, { backgroundColor: isDark ? colors.surfaceRaised : colors.surface }]}>
-      <View style={styles.campusInfo}>
-        <View style={[styles.campusBadgeIcon, { backgroundColor: colors.primarySoft }]}>
-          <FeatureIcon color={colors.primary} name="building.columns.fill" size={16} />
-        </View>
-        <View style={styles.campusTexts}>
-          <Text numberOfLines={1} style={[styles.campusTitle, { color: colors.ink }]}>
-            มหาวิทยาลัยสงขลานครินทร์
-          </Text>
-          <Text numberOfLines={1} style={[styles.campusSubtitle, { color: colors.inkMuted }]}>
-            {faculty ? `คณะ${faculty.replace(/^คณะ/, '')}` : 'วิทยาเขตหาดใหญ่'}
-          </Text>
-        </View>
-      </View>
-      <Pressable
-        accessibilityLabel="ดูรายการถูกใจและการแมตช์"
-        accessibilityRole="button"
-        onPress={onOpenLikes}
-        style={({ pressed }) => [
-          styles.campusLikesChip,
-          { backgroundColor: colors.primarySoft },
-          pressed && styles.pressed,
-        ]}
-      >
-        <FeatureIcon color={colors.primary} name="heart.fill" size={13} />
-        <Text style={[styles.campusLikesText, { color: colors.primary }]}>{matchedCount}</Text>
-      </Pressable>
-    </View>
   );
 }
 
@@ -507,16 +478,12 @@ function ActivityFilterStrip({ categories, selected, onSelect }) {
   );
 }
 
-function DailyPickBanner({ candidate, onOpenCandidate }) {
+function DailyPickBanner({ candidate, state, onOpenCandidate }) {
   const { colors, isDark } = useTheme();
-  const [timeLeft, setTimeLeft] = useState(() => formatRemainingTime(getRemainingTime()));
-  useEffect(() => {
-    const timer = setInterval(() => setTimeLeft(formatRemainingTime(getRemainingTime())), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const summary = getDiscoverySummary(candidate);
   return (
-    <Pressable
-      accessibilityLabel={candidate ? 'การ์ดแนะนำประจำวัน แตะเพื่อดูโปรไฟล์' : 'แนะนำประจำวัน ยังไม่มีคนที่ตรงกันวันนี้'}
+    <Pressable nativeCardSurface
+      accessibilityLabel={candidate ? 'แนะนำให้รู้จัก แตะเพื่อดูโปรไฟล์' : state === 'loading' ? 'กำลังค้นหาเพื่อน' : state === 'error' ? 'ยังโหลดคำแนะนำไม่ได้' : 'ยังไม่มีคำแนะนำในหมวดนี้'}
       accessibilityRole={candidate ? 'button' : 'text'}
       disabled={!candidate}
       onPress={onOpenCandidate}
@@ -549,31 +516,25 @@ function DailyPickBanner({ candidate, onOpenCandidate }) {
         <View style={styles.dailyPickCenter}>
           <View style={styles.dailyPickTitleRow}>
             <Text numberOfLines={1} style={[styles.dailyPickTitle, { color: colors.ink }]}>
-              แนะนำประจำวัน
+              แนะนำให้รู้จัก
             </Text>
-            {candidate ? (
+            {candidate && summary.score !== null ? (
               <View style={[styles.matchScoreBadge, { backgroundColor: isDark ? 'rgba(59,130,246,0.25)' : '#DBEAFE' }]}>
-                <Text style={[styles.matchScoreText, { color: colors.primary }]}>ตรงกัน 98%</Text>
+                <Text style={[styles.matchScoreText, { color: colors.accentText }]}>เข้ากัน {summary.score}%</Text>
               </View>
             ) : null}
           </View>
           <Text numberOfLines={1} style={[styles.dailyPickDesc, { color: colors.inkMuted }]}>
-            {candidate ? `ตรงกับตารางและเป้าหมายของ ${stripEmojis(candidate.name)}` : 'ยังไม่มีคนที่ตรงกันวันนี้ ลองปรับตัวกรองดูนะ'}
+            {candidate ? summary.reason : state === 'loading' ? 'กำลังค้นหาเพื่อนที่ตรงกับตัวกรอง…' : state === 'error' ? 'เชื่อมต่อไม่สำเร็จ ลองโหลดอีกครั้งด้านล่าง' : 'ลองเลือกกิจกรรมหรือปรับตัวกรอง'}
           </Text>
-          <View style={styles.dailyPickTimerRow}>
-            <FeatureIcon color={colors.inkMuted} name="clock" size={11} />
-            <Text style={[styles.dailyPickTimeText, { color: colors.inkMuted }]}>
-              รีเซ็ตใน {timeLeft}
-            </Text>
-          </View>
         </View>
 
         {/* Right: CTA Button (only when there is someone to open) */}
         {candidate ? (
           <View style={styles.dailyPickActionCol}>
             <View style={styles.dailyPickActionBtn}>
-              <Text style={[styles.dailyPickActionText, { color: colors.primary }]}>ดูทันที</Text>
-              <FeatureIcon color={colors.primary} name="chevron.right" size={14} />
+              <Text style={[styles.dailyPickActionText, { color: colors.accentText }]}>ดูทันที</Text>
+              <FeatureIcon color={colors.accentText} name="chevron.right" size={14} />
             </View>
           </View>
         ) : null}
@@ -584,58 +545,59 @@ function DailyPickBanner({ candidate, onOpenCandidate }) {
 
 function DiscoverProfileCard({ candidate, isMatched, onPress }) {
   const { colors } = useTheme();
-  const imageUri = getImageRequestUri(candidate.avatarUri, candidate.avatarRevision);
+  const { width: windowWidth } = useWindowDimensions();
+  const [photoWidth, setPhotoWidth] = useState(0);
+  const cardWidth = photoWidth || Math.max(0, windowWidth - spacing.md * 2);
+  const cardHeight = Math.round(cardWidth * 4 / 3);
 
   const rawTags = candidate.activities || [candidate.activity].filter(Boolean);
   const displayTags = rawTags.map(stripEmojis).filter(Boolean);
   const bioText = stripEmojis(candidate.bio);
-  const trackName = stripEmojis(candidate.favoriteTracks?.[0]?.name || candidate.favoriteTracks?.[0]?.title);
-  const trackArtist = stripEmojis(candidate.favoriteTracks?.[0]?.artist);
+  const firstTrack = candidate.favoriteTracks?.[0];
+  const status = statusBadgeFor(candidate);
+  const summary = getDiscoverySummary(candidate);
 
   return (
-    <Pressable
-      accessibilityLabel={`เปิดโปรไฟล์ ${candidate.name}`}
-      accessibilityRole="button"
-      onPress={onPress}
-      style={({ pressed }) => [styles.profileCardWrapper, pressed && styles.cardPressed]}
-    >
-      <View style={[styles.profileCard, { backgroundColor: candidate.avatarColor || colors.card }]}>
-        {imageUri ? (
-          <Image
-            cachePolicy="memory-disk"
-            contentFit="cover"
-            recyclingKey={candidate.id}
-            source={{ uri: imageUri }}
-            style={StyleSheet.absoluteFill}
-            transition={0}
+    <View>
+      <NativeCard style={[styles.profileCard, { backgroundColor: candidate.avatarColor || colors.card, height: cardHeight }]}>
+        <View
+          onLayout={(event) => {
+            const next = Math.round(event?.nativeEvent?.layout?.width || 0);
+            if (next > 0 && next !== photoWidth) setPhotoWidth(next);
+          }}
+          style={[styles.cardPhoto, { height: cardHeight }]}
+        >
+          <ProfilePhotoCarousel
+            profile={candidate}
+            height={cardHeight}
+            width={cardWidth}
+            interactive
+            onPress={onPress}
+            swipePhotos
+            tapToChangePhotos={false}
+            footerBlurHeight={Math.min(280, Math.max(180, Math.round(cardHeight * 0.46)))}
           />
-        ) : (
-          <View style={styles.profilePlaceholder}>
-            <FeatureIcon color={colors.inkMuted} name="person.crop.square.fill" size={84} />
-          </View>
-        )}
+        </View>
 
-        {/* Top Badges (Verified, Location, Match) */}
-        <View style={styles.cardTopBadges}>
+        {/* Top badges: only real signals (verification, distance, server match score). */}
+        <View pointerEvents="none" style={styles.cardTopBadges}>
           <View style={styles.cardTopLeftBadges}>
-            {candidate.isFaceVerified ? (
-              <View style={[styles.glassBadge, { borderColor: 'rgba(35, 123, 231, 0.4)' }]}>
-                <FeatureIcon color="#2869C7" name="checkmark.seal.fill" size={11} />
-                <Text style={[styles.glassBadgeText, { color: '#2869C7', fontWeight: '700' }]}>ยืนยันใบหน้าแล้ว</Text>
-              </View>
-            ) : (
+            {status ? <AnimatedStatusBadge kind={status.kind} text={status.text} /> : null}
+            <View style={styles.badgeRow}>
+              {candidate.isFaceVerified ? (
+                <View style={[styles.glassBadge, { borderColor: 'rgba(35, 123, 231, 0.4)' }]}>
+                  <FeatureIcon color="#5EA2FF" name="checkmark.seal.fill" size={11} />
+                  <Text style={[styles.glassBadgeText, { fontWeight: '700' }]}>ยืนยันใบหน้าแล้ว</Text>
+                </View>
+              ) : null}
               <View style={styles.glassBadge}>
-                <FeatureIcon color="#2869C7" name="lock.shield.fill" size={11} />
-                <Text style={styles.glassBadgeText}>ยืนยันตัวตนแล้ว</Text>
+                <FeatureIcon color="#FFFFFF" name="mappin.and.ellipse" size={11} />
+                <Text style={styles.glassBadgeText}>
+                  {typeof candidate.distance === 'number' && candidate.distance > 100
+                    ? 'ในวิทยาเขต'
+                    : (formatDistance(candidate.distance) || 'ในวิทยาเขต')}
+                </Text>
               </View>
-            )}
-            <View style={styles.glassBadge}>
-              <FeatureIcon color="#FFFFFF" name="mappin.and.ellipse" size={11} />
-              <Text style={styles.glassBadgeText}>
-                {typeof candidate.distance === 'number' && candidate.distance > 100
-                  ? 'ในวิทยาเขต'
-                  : (formatDistance(candidate.distance) || 'ในวิทยาเขต')}
-              </Text>
             </View>
           </View>
 
@@ -644,44 +606,65 @@ function DiscoverProfileCard({ candidate, isMatched, onPress }) {
               <FeatureIcon color="#10B981" name="checkmark.circle.fill" size={11} />
               <Text style={[styles.glassBadgeText, { color: '#10B981', fontWeight: '700' }]}>แมตช์แล้ว</Text>
             </View>
-          ) : (
+          ) : summary.score !== null ? (
             <View style={styles.glassBadge}>
               <FeatureIcon color="#F59E0B" name="sparkles" size={11} />
-              <Text style={styles.glassBadgeText}>ตรงกัน 96%</Text>
+              <Text style={styles.glassBadgeText}>เข้ากัน {summary.score}%</Text>
             </View>
-          )}
+          ) : null}
         </View>
 
         {/* Bottom Gradient Overlay */}
+        <Pressable
+          accessibilityHint="แตะเพื่อเปิดโปรไฟล์"
+          accessibilityLabel={`ดูรายละเอียดโปรไฟล์ของ ${candidate.name || 'เพื่อน'}`}
+          accessibilityRole="button"
+          onPress={onPress}
+          style={styles.cardBottomOverlay}
+        >
         <LinearGradient
           colors={['transparent', 'rgba(10,18,32,0.25)', 'rgba(10,18,32,0.85)', '#0B132B']}
           locations={[0, 0.38, 0.72, 1.0]}
-          style={styles.cardBottomOverlay}
-        >
-          <View style={styles.nameRow}>
-            <View style={styles.onlineDot} />
-            <Text numberOfLines={1} style={styles.heroName}>
-              {stripEmojis(candidate.name)}{candidate.age ? `, ${candidate.age}` : ''}
-            </Text>
+          pointerEvents="none"
+          style={StyleSheet.absoluteFill}
+        />
+          <View pointerEvents="box-none" style={styles.heroHeaderRow}>
+            <View pointerEvents="none" style={styles.heroHeaderCopy}>
+              <View style={styles.nameRow}>
+                <Text numberOfLines={1} style={styles.heroName}>
+                  {stripEmojis(candidate.name)}{candidate.age ? ` ${candidate.age}` : ''}
+                </Text>
+              </View>
+
+              <View style={styles.identityChips}>
+                {candidate.faculty ? (
+                  <View style={[styles.identityChip, { backgroundColor: facultyColor(candidate.faculty) }]}>
+                    <FeatureIcon color="#FFFFFF" name="building.columns.fill" size={10} />
+                    <Text numberOfLines={1} style={styles.identityChipText}>คณะ{candidate.faculty.replace(/^คณะ/, '')}</Text>
+                  </View>
+                ) : null}
+                <View style={[styles.identityChip, { backgroundColor: 'rgba(255,255,255,0.22)' }]}>
+                  <FeatureIcon color="#FFFFFF" name="graduationcap.fill" size={10} />
+                  <Text numberOfLines={1} style={styles.identityChipText}>{candidate.year || 'นักศึกษา'}</Text>
+                </View>
+              </View>
+            </View>
+
+            <View pointerEvents="none" style={styles.heroExpandBtn}>
+              <FeatureIcon color="#111827" name="arrow.up" size={20} />
+            </View>
           </View>
 
-          <Text numberOfLines={1} style={styles.heroFaculty}>
-            {[
-              candidate.faculty ? `คณะ${candidate.faculty.replace(/^คณะ/, '')}` : null,
-              candidate.year || 'นักศึกษา',
-            ].filter(Boolean).join(' · ')}
-          </Text>
-
           {bioText ? (
-            <Text numberOfLines={2} style={styles.heroBio}>
+            <Text numberOfLines={1} pointerEvents="none" style={styles.heroBio}>
               {bioText}
             </Text>
           ) : null}
 
           {/* Tags */}
           {displayTags.length > 0 ? (
-            <View style={styles.tagsContainer}>
-              {displayTags.slice(0, 3).map((tag, idx) => (
+            <View pointerEvents="none" style={styles.tagsContainer}>
+              {displayTags.slice(0, 4).map((tag, idx) => (
                 <View key={idx} style={styles.tagPill}>
                   <Text style={styles.tagText}>{getTagDisplayLabel(tag)}</Text>
                 </View>
@@ -689,42 +672,49 @@ function DiscoverProfileCard({ candidate, isMatched, onPress }) {
             </View>
           ) : null}
 
-          {/* Favorite Track Mini Widget */}
-          {trackName ? (
-            <View style={styles.trackPill}>
-              <FeatureIcon color="#10B981" name="music.note" size={11} />
-              <Text numberOfLines={1} style={styles.trackText}>
-                {trackName}{trackArtist ? ` - ${trackArtist}` : ''}
-              </Text>
-            </View>
-          ) : null}
-        </LinearGradient>
-      </View>
-    </Pressable>
+          {/* Favourite track: the record spins only while the preview plays. */}
+          {firstTrack?.name ? <SpotifyMiniPlayer track={firstTrack} style={styles.miniPlayer} /> : null}
+        </Pressable>
+      </NativeCard>
+    </View>
   );
 }
 
-function DiscoveryActionBar({ disabled, isMatched, onRestart, onPass, onSuperLike, onMatch, onChat }) {
+function DiscoveryActionBar({ canRewind, disabled, isMatched, onRestart, onPass, onMatch, onChat }) {
   const { colors, isDark } = useTheme();
+  const [heartBurst, setHeartBurst] = useState(0);
+  const [helloBurst, setHelloBurst] = useState(0);
+  const like = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    setHeartBurst((value) => value + 1);
+    onMatch?.();
+  };
+  const greet = () => {
+    Haptics.selectionAsync().catch(() => {});
+    setHelloBurst((value) => value + 1);
+    onChat?.();
+  };
   return (
     <View style={styles.actionBar}>
       {/* 1. Undo / Rewind */}
-      <Pressable
-        accessibilityLabel="เริ่มใหม่ นำคนที่เคยข้ามกลับมา"
-        accessibilityRole="button"
-        disabled={disabled}
-        onPress={onRestart}
-        style={({ pressed }) => [
-          styles.actionBtnSmall,
-          {
-            backgroundColor: isDark ? 'rgba(30,41,59,0.7)' : colors.surface,
-            borderColor: isDark ? 'rgba(100,116,139,0.3)' : colors.line,
-          },
-          pressed && styles.pressed,
-        ]}
-      >
-        <FeatureIcon color={colors.inkMuted || '#64748B'} name="arrow.counterclockwise" size={19} />
-      </Pressable>
+      {canRewind ? (
+        <Pressable
+          accessibilityLabel="ย้อนกลับไปยังคนที่กดไม่เลือกไว้"
+          accessibilityRole="button"
+          disabled={disabled}
+          onPress={onRestart}
+          style={({ pressed }) => [
+            styles.actionBtnSmall,
+            {
+              backgroundColor: isDark ? 'rgba(30,41,59,0.7)' : colors.surface,
+              borderColor: isDark ? 'rgba(100,116,139,0.3)' : colors.line,
+            },
+            pressed && styles.pressed,
+          ]}
+        >
+          <FeatureIcon color={colors.inkMuted || '#64748B'} name="arrow.counterclockwise" size={19} />
+        </Pressable>
+      ) : null}
 
       {/* 2. Pass / Skip */}
       <Pressable
@@ -744,30 +734,12 @@ function DiscoveryActionBar({ disabled, isMatched, onRestart, onPass, onSuperLik
         <FeatureIcon color="#EF4444" name="xmark" size={24} />
       </Pressable>
 
-      {/* 3. Super Like */}
-      <Pressable
-        accessibilityLabel="ถูกใจเป็นพิเศษ"
-        accessibilityRole="button"
-        disabled={disabled}
-        onPress={onSuperLike}
-        style={({ pressed }) => [
-          styles.actionBtnSmall,
-          {
-            backgroundColor: isDark ? 'rgba(14,165,233,0.15)' : '#F0F9FF',
-            borderColor: isDark ? 'rgba(14,165,233,0.35)' : 'rgba(14,165,233,0.3)',
-          },
-          pressed && styles.pressed,
-        ]}
-      >
-        <FeatureIcon color="#0EA5E9" name="star.fill" size={20} />
-      </Pressable>
-
       {/* 4. Connect / Match (Hero Button) */}
       <Pressable
         accessibilityLabel="ถูกใจและขอเชื่อมต่อเป็นเพื่อน"
         accessibilityRole="button"
         disabled={disabled}
-        onPress={onMatch}
+        onPress={like}
         style={({ pressed }) => [
           styles.actionBtnLarge,
           { backgroundColor: colors.primary },
@@ -775,14 +747,15 @@ function DiscoveryActionBar({ disabled, isMatched, onRestart, onPass, onSuperLik
         ]}
       >
         <FeatureIcon color={colors.onPrimary || '#FFFFFF'} name="heart.fill" size={28} />
+        <ParticleBurst burstKey={heartBurst} icon="heart.fill" color="#FF5A7A" distance={52} />
       </Pressable>
 
       {/* 5. Direct Message / Send */}
       <Pressable
-        accessibilityLabel="ส่งข้อความทักทาย"
+        accessibilityLabel={isMatched ? "เปิดห้องแชต" : "ดูรายละเอียดโปรไฟล์"}
         accessibilityRole="button"
         disabled={disabled}
-        onPress={onChat}
+        onPress={greet}
         style={({ pressed }) => [
           styles.actionBtnSmall,
           {
@@ -792,7 +765,8 @@ function DiscoveryActionBar({ disabled, isMatched, onRestart, onPass, onSuperLik
           pressed && styles.pressed,
         ]}
       >
-        <FeatureIcon color={colors.primary || '#2563EB'} name="paperplane.fill" size={19} />
+        <FeatureIcon color={colors.accentText} name={isMatched ? "bubble.left.fill" : "info.circle"} size={22} />
+        <ParticleBurst burstKey={helloBurst} icon="star.fill" color="#5EA2FF" distance={40} />
       </Pressable>
     </View>
   );
@@ -843,7 +817,7 @@ function DiscoveryErrorState({ offline = false, stalled = false, onRetry }) {
   return (
     <View accessibilityRole="alert" style={[styles.emptyState, { backgroundColor: colors.surfaceRaised }]}>
       <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}>
-        <FeatureIcon color={colors.primary} name={offline ? 'wifi.slash' : 'exclamationmark.triangle'} size={28} />
+        <FeatureIcon color={colors.accentText} name={offline ? 'wifi.slash' : 'exclamationmark.triangle'} size={28} />
       </View>
       <Text style={[styles.emptyTitle, { color: colors.ink }]}>{title}</Text>
       <Text style={[styles.emptyText, { color: colors.inkMuted }]}>{body}</Text>
@@ -875,9 +849,9 @@ function EmptyState({ loading = false, onReset }) {
     <View style={[styles.emptyState, { backgroundColor: colors.surfaceRaised }]}>
       <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}>
         {loading ? (
-          <ActivityIndicator color={colors.primary} />
+          <ActivityIndicator color={colors.accentText} />
         ) : (
-          <FeatureIcon color={colors.primary} name="person.2.slash" size={28} />
+          <FeatureIcon color={colors.accentText} name="person.2.slash" size={28} />
         )}
       </View>
       <Text style={[styles.emptyTitle, { color: colors.ink }]}>
@@ -886,7 +860,7 @@ function EmptyState({ loading = false, onReset }) {
       <Text style={[styles.emptyText, { color: colors.inkMuted }]}>
         {loading
           ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
-          : 'ลองเปลี่ยนหมวดหมู่กิจกรรม หรือกด "เริ่มใหม่" เพื่อดูคนที่เคยข้ามอีกครั้ง'}
+          : 'ลองเปลี่ยนหมวดหมู่กิจกรรม หรือปรับตัวกรองการค้นหา'}
       </Text>
       {!loading ? (
         <View style={styles.emptyActionRow}>
@@ -896,7 +870,7 @@ function EmptyState({ loading = false, onReset }) {
             style={({ pressed }) => [styles.resetButton, { backgroundColor: colors.primary }, pressed && styles.pressed]}
           >
             <FeatureIcon color={colors.onPrimary} name="arrow.triangle.2.circlepath" size={16} />
-            <Text style={[styles.resetButtonText, { color: colors.onPrimary }]}>เริ่มใหม่</Text>
+            <Text style={[styles.resetButtonText, { color: colors.onPrimary }]}>ย้อนกลับ</Text>
           </Pressable>
           <Pressable
             accessibilityRole="button"
@@ -914,10 +888,13 @@ function EmptyState({ loading = false, onReset }) {
 
 const styles = StyleSheet.create({
   content: {
+    alignSelf: 'center',
     gap: 14,
+    maxWidth: 620,
     paddingBottom: spacing.xxxl,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.xs,
+    width: '100%',
   },
   pressed: {
     opacity: 0.76,
@@ -1087,20 +1064,17 @@ const styles = StyleSheet.create({
   },
 
   // 4. Hero Profile Card
-  profileCardWrapper: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 12,
-    elevation: 4,
-  },
   profileCard: {
     borderCurve: 'continuous',
     borderRadius: 26,
     borderWidth: 0,
-    height: 460,
     overflow: 'hidden',
     position: 'relative',
+    width: '100%',
+  },
+  cardPhoto: {
+    height: '100%',
+    width: '100%',
   },
   profilePlaceholder: {
     alignItems: 'center',
@@ -1108,6 +1082,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: '100%',
   },
+  badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  identityChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+  identityChip: { flexDirection: 'row', alignItems: 'center', gap: 4, maxWidth: '100%', borderRadius: 12, paddingHorizontal: 9, paddingVertical: 3 },
+  identityChipText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', flexShrink: 1 },
+  miniPlayer: { marginTop: 10 },
   cardTopBadges: {
     alignItems: 'flex-start',
     flexDirection: 'row',
@@ -1154,6 +1133,30 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 0,
     zIndex: 10,
+  },
+  heroHeaderRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+  },
+  heroHeaderCopy: {
+    flex: 1,
+    gap: 3,
+    minWidth: 0,
+  },
+  heroExpandBtn: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 22,
+    elevation: 5,
+    height: 40,
+    justifyContent: 'center',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    width: 40,
   },
   nameRow: {
     alignItems: 'center',

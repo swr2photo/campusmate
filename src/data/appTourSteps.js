@@ -19,6 +19,7 @@ export const APP_TOUR_STEPS = [
     id: 'filters',
     route: '/home',
     target: 'home.filters',
+    optional: true,
     tab: 'หาเพื่อน',
     icon: 'slider.horizontal.3',
     title: 'ตั้งค่าการจับคู่',
@@ -27,8 +28,8 @@ export const APP_TOUR_STEPS = [
   {
     id: 'activities',
     ios: {
-      title: 'ทางลัดในหน้าหาเพื่อน',
-      body: 'แตะ “ถูกใจ” เพื่อดูคนที่สนใจคุณ หรือ “เริ่มใหม่” เพื่อกลับไปดูโปรไฟล์ที่เคยข้าม เลือกกิจกรรมที่สนใจได้จากปุ่มตัวกรองมุมขวาบน',
+      title: 'ทางลัดและหมวดหมู่กิจกรรม',
+      body: 'แตะหมวดอย่างติวสอบ ทานอาหาร หรือฟิตเนส เพื่อดูเพื่อนที่สนใจเรื่องเดียวกับคุณ หรือแตะ “ถูกใจ” และ “ย้อนกลับ” เพื่อจัดการโปรไฟล์',
     },
     route: '/home',
     target: 'home.activities',

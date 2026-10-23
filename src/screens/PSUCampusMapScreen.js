@@ -359,7 +359,7 @@ const styles = StyleSheet.create({
   screen: { flex: 1 },
   abs: { position: 'absolute' },
   mapViewport: { width: '100%', overflow: 'hidden' },
-  ground: { ...StyleSheet.absoluteFillObject, margin: 24, borderRadius: 48 },
+  ground: { ...StyleSheet.absoluteFill, margin: 24, borderRadius: 48 },
   overlay: { zIndex: 1 },
   road: { position: 'absolute', height: 14, borderRadius: 7 },
   tree: { position: 'absolute', width: 14, height: 14, borderRadius: 7, opacity: 0.9 },

@@ -54,5 +54,5 @@ export default function AnimatedTabIcon({ focused, color, indicatorColor, iconNa
 
 const styles = StyleSheet.create({
   slot: { width: 64, height: 32, alignItems: 'center', justifyContent: 'center' },
-  pill: { ...StyleSheet.absoluteFillObject, borderRadius: 16 },
+  pill: { ...StyleSheet.absoluteFill, borderRadius: 16 },
 });

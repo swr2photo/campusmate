@@ -36,4 +36,4 @@ function Thumbnail({ source, identity }) {
     </View> : null}
   </View>;
 }
-const styles = StyleSheet.create({ center: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', gap: 4 }, label: { fontSize: 12, lineHeight: 18, textAlign: 'center' }, retry: { minHeight: 48, minWidth: 48, justifyContent: 'center', paddingHorizontal: 8 } });
+const styles = StyleSheet.create({ center: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', gap: 4 }, label: { fontSize: 12, lineHeight: 18, textAlign: 'center' }, retry: { minHeight: 48, minWidth: 48, justifyContent: 'center', paddingHorizontal: 8 } });

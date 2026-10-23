@@ -23,6 +23,18 @@ export async function getSavedAccounts() {
   }
 }
 
+// 'google' | 'password' | null. The sign-in screen passes it explicitly; a
+// Firebase user can also tell from its providers. Unknown keeps the old value.
+function signInMethodOf(account) {
+  if (account.signInMethod === 'google' || account.signInMethod === 'password') return account.signInMethod;
+  const providers = Array.isArray(account.providerData) ? account.providerData.map((p) => p?.providerId) : [];
+  const google = providers.includes('google.com');
+  const password = providers.includes('password');
+  // Linked to both: only the sign-in screen knows which one was used.
+  if (google === password) return null;
+  return google ? 'google' : 'password';
+}
+
 export async function saveAccount(account) {
   if (!account || (!account.id && !account.email)) return;
   try {
@@ -50,6 +62,7 @@ export async function saveAccount(account) {
       faculty: account.faculty || prev?.faculty || '',
       avatarColor: account.avatarColor || prev?.avatarColor || null,
       avatarRevision: Number.isSafeInteger(account.avatarRevision) ? account.avatarRevision : (prev?.avatarRevision ?? 0),
+      signInMethod: signInMethodOf(account) || prev?.signInMethod || null,
       updatedAt: timestampToMillis(account.updatedAt) || prev?.updatedAt || Date.now(),
       lastUsedAt: Date.now(),
     };

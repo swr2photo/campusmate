@@ -124,6 +124,6 @@ const styles = StyleSheet.create({
   mainEmptyHint: { fontSize: 12, lineHeight: 17, textAlign: 'center' },
   mainBadge: { position: 'absolute', left: 10, bottom: 10, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 },
   mainBadgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
-  busy: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.42)' },
+  busy: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.42)' },
   remove: { position: 'absolute', top: 6, right: 6, width: 26, height: 26, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.58)' },
 });

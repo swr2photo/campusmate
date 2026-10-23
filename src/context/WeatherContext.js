@@ -42,7 +42,7 @@ export const WEATHER_THEMES = {
     accent: '#5B8DEF', ink: '#16294A', inkDark: '#E4EEFF',
   },
   night: {
-    label: 'ค่ำคืนใน ม.อ.', icon: 'moon.stars.fill',
+    label: 'ท้องฟ้ายามค่ำ', icon: 'moon.stars.fill',
     gradient: ['#252B52', '#11152C'], gradientDark: ['#1B2042', '#0B0E1F'],
     accent: '#F5C451', ink: '#F4F2FF', inkDark: '#F4F2FF',
   },

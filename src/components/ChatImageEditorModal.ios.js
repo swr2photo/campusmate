@@ -1629,11 +1629,11 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   cropGridOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 10,
   },
   cropGestureReceiver: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.001)',
     zIndex: 999,
     elevation: 999,

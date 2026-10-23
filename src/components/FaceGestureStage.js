@@ -375,7 +375,7 @@ const styles = StyleSheet.create({
   stage: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 10 },
   tick: { position: 'absolute', width: 3, borderRadius: 1.5 },
   lens: { position: 'absolute', overflow: 'hidden', backgroundColor: '#111316' },
-  passedBadge: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(52,199,89,0.45)' },
+  passedBadge: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(52,199,89,0.45)' },
   glyph: { position: 'absolute', width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(40,105,199,0.92)', alignItems: 'center', justifyContent: 'center' },
   glyphTop: { top: 0, alignSelf: 'center' },
   glyphBottom: { bottom: 0, alignSelf: 'center' },

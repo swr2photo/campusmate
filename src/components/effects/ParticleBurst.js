@@ -50,6 +50,6 @@ export default function ParticleBurst({ burstKey = 0, icon = 'heart.fill', color
 }
 
 const styles = StyleSheet.create({
-  host: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', overflow: 'visible' },
+  host: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', overflow: 'visible' },
   particle: { position: 'absolute' },
 });

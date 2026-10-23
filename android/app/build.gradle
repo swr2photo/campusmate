@@ -105,8 +105,8 @@ android {
         manifestPlaceholders['googleMapsApiKey'] = System.getenv('CAMPUSMATE_ANDROID_MAPS_SDK_KEY') ?: ''
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 93
-        versionName "3.1.4"
+        versionCode 98
+        versionName "3.1.8"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
@@ -153,6 +153,15 @@ android {
     }
     androidResources {
         ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:!CVS:!thumbs.db:!picasa.ini:!*~'
+        localeFilters += ['en', 'th']
+    }
+    bundle {
+        language {
+            enableSplit = false
+        }
+    }
+    compileOptions {
+        coreLibraryDesugaringEnabled true
     }
 }
 
@@ -177,6 +186,7 @@ android {
 }
 
 dependencies {
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
 

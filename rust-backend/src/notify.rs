@@ -156,13 +156,15 @@ pub fn message(sender: &Value, sender_id: &str, conversation_id: &str, message_i
     notice
 }
 
-pub fn group_message(party_id: &str, message_id: &str, image: bool) -> Notice {
+pub fn group_message(party_id: &str, message_id: &str, kind: &str) -> Notice {
     let mut notice = Notice::new(
         "ข้อความใหม่ในแชตกลุ่ม",
-        if image {
-            "มีรูปภาพใหม่"
-        } else {
-            "มีข้อความใหม่"
+        match kind {
+            "image" => "มีรูปภาพใหม่",
+            "gif" => "มี GIF ใหม่",
+            "audio" => "มีข้อความเสียงใหม่",
+            "track" => "มีเพลงใหม่",
+            _ => "มีข้อความใหม่",
         },
         "messages",
     );
@@ -775,10 +777,12 @@ pub async fn deliver_once(pool: &PgPool, sender: &PushSender) -> Result<bool, sq
     let attempts: i32 = job.get("attempts");
     // Respect the account state and the owner's notification switch at send time.
     let allowed: Option<bool> = sqlx::query_scalar(
-        "SELECT NOT a.suspended AND a.deleted_at IS NULL AND COALESCE((p.raw->>'notificationsEnabled')::boolean,true)
-         FROM accounts a LEFT JOIN profiles p ON p.user_id=a.id WHERE a.id=$1",
+        "SELECT NOT a.suspended AND a.deleted_at IS NULL AND COALESCE((s.settings#>>'{notifications,push}')::boolean,(p.raw->>'notificationsEnabled')::boolean,true)
+         AND ($2 <> 'admin_announcement' OR COALESCE((s.settings#>>'{notifications,team}')::boolean,true))
+         FROM accounts a LEFT JOIN profiles p ON p.user_id=a.id LEFT JOIN user_app_settings s ON s.user_id=a.id WHERE a.id=$1",
     )
     .bind(&user)
+    .bind(payload.get("type").or_else(|| payload.get("data").and_then(|data| data.get("type"))).and_then(Value::as_str).unwrap_or_default())
     .fetch_optional(pool)
     .await?;
     let registrations = if allowed == Some(true) {

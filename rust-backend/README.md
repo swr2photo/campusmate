@@ -21,7 +21,7 @@ All app features are served. Besides the routes below, `POST /v1/rpc/{name}` wit
 | `GET /v1/me/membership` | Server-authoritative entitlement features |
 | `POST /v1/profiles/visible` | At most 50 profiles; rechecks visibility, restrictions and both block directions |
 | `POST /v1/discover` | At most 30 results; immutable ranked ID pages, signed user/filter-bound cursors, fresh authorization |
-| `POST /v1/matching/actions`, `/respond`, `/cancel`, `/unmatch`, `/rewind` | Like/skip with idempotent receipts, like responses, cancel, unmatch and rewind in PostgreSQL transactions (`tests/matching.rs`: concurrent mutual likes, acceptance racing rewind, privacy/block/membership rechecks) |
+| `POST /v1/matching/actions`, `/respond`, `/cancel`, `/unmatch`, `/rewind` | Like/skip with idempotent receipts, like responses, cancel, unmatch and skip-only rewind across earlier history in PostgreSQL transactions (`tests/matching.rs`: concurrent mutual likes, acceptance racing rewind, privacy/block/membership rechecks) |
 | `PUT`, `DELETE /v1/me/encryption-devices/{device_id}` | Publish/remove the caller's chat device keys |
 | `GET /v1/conversations/{id}`, `PUT …/encryption`, `POST …/encryption-profiles` | Direct-room metadata, room key envelopes and member device keys, authorized by room membership |
 | `POST …/messages/page`, `PUT …/messages/{message_id}` | Encrypted message pages and idempotent sends; sender and time are server-authoritative and plaintext is rejected (`tests/chat.rs`) |
@@ -33,6 +33,8 @@ Authentication uses a 15-minute access token and a rotating 30-day refresh token
 Public projections omit exact GPS, email, keys, role and verification scores. Hidden profile attributes do not affect compatibility reasons or scores. Distance requires both participants' sharing permissions and rounds up to whole kilometers, with a minimum of 1 km. Score weights are shared activities 30, activity details 10, upcoming overlapping time 25, coarse proximity 15, faculty/year 10 and profile quality/recency 10. This heuristic is tested, not calibrated against user outcomes. It is not a prediction of the chance that a friendship succeeds.
 
 Only the next 14 calendar days count as dated availability. Overlapping/duplicate intervals are merged, elapsed time today is excluded using Bangkok time, invalid/expired dates are ignored, and weekly recurrence requires an explicit flag. A combined weekday and time-period filter must match the same future interval. Model `native-v3` prevents reuse of snapshots from older availability semantics. Ranked snapshots expire after 15 minutes and include profile revisions; a change that could make ordering stale returns 409 and requires a new search. New blocks and restrictions are checked on subsequent pages. Ranking has an explicit 5,000 eligible-profile bound before user filters and two concurrent jobs per instance; CPU scoring runs outside Tokio's network workers. A larger population needs measured indexed candidate narrowing before raising that bound.
+
+Rewind never removes a like. It finds the latest still-current pending skip, skips unavailable history, and rechecks membership and visibility in the transaction. `getMyDecisionState` returns server-owned `canRewind` and `rewoundProfiles` (up to 30 reauthorized restored cards with `rewindPriority`); change signals make other devices reload these records. Concurrent rewind requests for one actor are serialized.
 
 ## Run and test
 

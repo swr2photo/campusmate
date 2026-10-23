@@ -1077,6 +1077,7 @@ fn chat_json(row: &sqlx::postgres::PgRow, members: Vec<String>) -> Value {
     json!({
         "id": row.get::<String,_>("party_id"), "partyId": row.get::<String,_>("party_id"),
         "hostId": row.get::<String,_>("host_id"), "title": row.get::<String,_>("title"),
+        "avatarUri": row.get::<String,_>("avatar_uri"),
         "memberCount": members.len(), "memberIds": members,
         "currentEpoch": row.get::<i32,_>("current_epoch"), "epochCount": row.get::<i32,_>("epoch_count"),
         "rekeyRequired": row.get::<bool,_>("rekey_required"),
@@ -1087,7 +1088,7 @@ fn chat_json(row: &sqlx::postgres::PgRow, members: Vec<String>) -> Value {
         "createdAt": row.get::<i64,_>("created_ms"), "updatedAt": row.get::<i64,_>("updated_ms"),
     })
 }
-const CHAT_COLUMNS: &str = "g.party_id,g.host_id,g.title,g.current_epoch,g.epoch_count,g.rekey_required,g.last_message_id,g.last_sender_id,
+const CHAT_COLUMNS: &str = "g.party_id,g.host_id,g.title,g.avatar_uri,g.current_epoch,g.epoch_count,g.rekey_required,g.last_message_id,g.last_sender_id,
     (SELECT type FROM group_messages x WHERE x.party_id=g.party_id AND x.id=g.last_message_id) AS last_type,
     (extract(epoch FROM g.last_message_at)*1000)::bigint AS last_ms,(extract(epoch FROM g.created_at)*1000)::bigint AS created_ms,
     (extract(epoch FROM g.updated_at)*1000)::bigint AS updated_ms";
@@ -1176,7 +1177,7 @@ pub async fn send(state: &AppState, headers: &HeaderMap, data: Value) -> Result<
     let record = &data["record"];
     let kind = record["type"]
         .as_str()
-        .filter(|t| ["text", "image"].contains(t))
+        .filter(|t| ["text", "image", "audio", "gif", "track"].contains(t))
         .ok_or_else(|| ApiError::invalid("ข้อความไม่ถูกต้อง"))?;
     let nonce = record["nonce"]
         .as_str()
@@ -1244,7 +1245,7 @@ pub async fn send(state: &AppState, headers: &HeaderMap, data: Value) -> Result<
         .fetch_one(&mut *tx).await?;
     sqlx::query("UPDATE group_chats SET last_message_id=$2,last_message_at=now(),last_sender_id=$3,updated_at=now() WHERE party_id=$1")
         .bind(party_id).bind(message_id).bind(&user.uid).execute(&mut *tx).await?;
-    let notice = notify::group_message(party_id, message_id, kind == "image");
+    let notice = notify::group_message(party_id, message_id, kind);
     for member in members.iter().filter(|m| **m != user.uid) {
         notify::enqueue(
             &mut tx,
@@ -1286,6 +1287,46 @@ pub async fn mark_read(
     events::publish(&mut tx, &users, "group-messages", Some(party_id)).await?;
     tx.commit().await?;
     Ok(json!({"ok":true}))
+}
+
+/// Host-only group name and profile photo. The photo must be a profile image this user uploaded.
+pub async fn update_profile(
+    state: &AppState,
+    headers: &HeaderMap,
+    data: Value,
+) -> Result<Value, ApiError> {
+    let user = auth::authenticate_session(state, headers).await?;
+    let party_id = id_arg(&data, "partyId", "ตี้")?;
+    let title = data["title"].as_str().unwrap_or_default().trim();
+    if title.chars().count() < 1
+        || title.chars().count() > 80
+        || title.chars().any(|c| c.is_control())
+    {
+        return Err(ApiError::invalid("ชื่อกลุ่มต้องมี 1-80 ตัวอักษร"));
+    }
+    let avatar = data["avatarUri"].as_str().unwrap_or_default().trim();
+    if avatar.len() > 2000
+        || (!avatar.is_empty() && !crate::media::owned_profile_url(state, avatar, &user.uid))
+    {
+        return Err(ApiError::invalid("รูปกลุ่มต้องเป็นรูปที่คุณอัปโหลด"));
+    }
+    let updated = sqlx::query(
+        "UPDATE group_chats SET title=$3, avatar_uri=$4, updated_at=now() \
+         WHERE party_id=$1 AND host_id=$2 RETURNING party_id",
+    )
+    .bind(party_id)
+    .bind(&user.uid)
+    .bind(title)
+    .bind(avatar)
+    .fetch_optional(&state.db)
+    .await?;
+    if updated.is_none() {
+        return Err(ApiError::new(
+            "permission-denied",
+            "เฉพาะคนสร้างตี้ที่แก้ไขชื่อและรูปกลุ่มได้",
+        ));
+    }
+    Ok(json!({ "partyId": party_id, "title": title, "avatarUri": avatar }))
 }
 
 /// Legacy `expirePastParties`: open parties whose start time has passed.

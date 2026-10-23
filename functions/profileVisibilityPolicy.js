@@ -15,7 +15,7 @@ export function canViewProfile({ viewerId, ownerId, ownerExists, ownerDiscoverab
   if (blocked) return false;
   if (ownerFaceVerified !== true) return false;
   if (matched) return true;
-  if (!ownerDiscoverable || ownerIsNew) return false;
+  if ((!ownerDiscoverable || ownerIsNew) && !ownerLikedViewer) return false;
   if (visibilityMode === 'incognito') {
     // An expired incognito member stays private until explicitly choosing public.
     return hasPlanFeature(ownerEntitlement, 'incognito', now) && ownerLikedViewer === true;

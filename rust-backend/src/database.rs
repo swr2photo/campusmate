@@ -132,7 +132,40 @@ fn direct_neon_url(url: &str) -> Option<String> {
         return None;
     }
     parsed.set_host(Some(&format!("{endpoint}.{rest}"))).ok()?;
+    // Neon also routes by `options=endpoint=<id>`; a pooler ID there would
+    // send the "direct" connection back through PgBouncer.
+    let pairs: Vec<(String, String)> = parsed.query_pairs().into_owned().collect();
+    let direct: Vec<(String, String)> = pairs
+        .iter()
+        .map(|(key, value)| {
+            let value = if key == "options" {
+                direct_endpoint_option(value)
+            } else {
+                value.clone()
+            };
+            (key.clone(), value)
+        })
+        .collect();
+    if direct != pairs {
+        parsed.query_pairs_mut().clear().extend_pairs(&direct);
+    }
     Some(parsed.into())
+}
+
+fn direct_endpoint_option(options: &str) -> String {
+    options
+        .split(' ')
+        .map(|part| {
+            match part
+                .strip_prefix("endpoint=")
+                .and_then(|id| id.strip_suffix("-pooler"))
+            {
+                Some(id) => format!("endpoint={id}"),
+                None => part.to_owned(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Clone, Debug)]
@@ -228,6 +261,12 @@ mod tests {
         let direct = "postgres://a:p@ep-x.c-4.aws.neon.tech/db?sslmode=verify-full";
         assert_eq!(direct_neon_url(pooled).as_deref(), Some(direct));
         assert!(configured_migration_options(direct).is_ok());
+        // An endpoint named in `options` routes too, so it must lose -pooler.
+        let routed = "postgres://a:p@ep-x-pooler.c-4.aws.neon.tech/db?sslmode=verify-full&options=endpoint%3Dep-x-pooler";
+        let mapped = direct_neon_url(routed).unwrap();
+        let options = PgConnectOptions::from_str(&mapped).unwrap();
+        assert_eq!(options.get_host(), "ep-x.c-4.aws.neon.tech");
+        assert_eq!(options.get_options(), Some("endpoint=ep-x"));
         for url in [
             direct,
             "postgres://a:p@db-pooler.example.test/db",

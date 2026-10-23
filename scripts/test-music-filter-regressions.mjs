@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import * as activities from '../src/data/activityCategories.js';
 import { finishMatchingFilters } from '../src/utils/matchingFilterNavigation.js';
+import { isReliablePreviewUrl } from '../src/utils/trackPlayback.js';
 
 const require = createRequire(import.meta.url), babel = require('@babel/core');
 function source(file) {
@@ -158,36 +159,10 @@ test('switching songs discards old lyrics and late requests; only an explicit re
   assert.equal(h.render(next, 1).status, 'error'); h.close();
 });
 
-test('late lyrics cannot overwrite a manually selected range starting at zero', () => {
+test('music search sends a song without opening a passage editor', () => {
   const file = source('src/components/SpotifyTrackSearchSheet.js');
-  const effect = file.nodes.find(node => node.type === 'CallExpression' && node.callee?.name === 'useEffect'
-    && file.code(node.arguments[0]).includes('Position a default range'));
-  let writes = 0;
-  const context = vm.createContext({ rangeEditedRef: { current: true }, lyricsResult: { suggestedLineStartMs: 42000 },
-    track: {}, startMs: 0, safeDuration: 180000, MIN_SEGMENT_MS: 5000, DEFAULT_SEGMENT_MS: 30000,
-    clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
-    setStartMs: () => writes++, setEndMs: () => writes++, startMsSV: { set() {} }, endMsSV: { set() {} },
-  });
-  vm.runInContext(`(${file.code(effect.arguments[0])})();`, context);
-  assert.equal(writes, 0);
-});
-
-test('late playback duration metadata preserves an edited range; a new song resets it', () => {
-  const file = source('src/components/SpotifyTrackSearchSheet.js');
-  const effect = file.nodes.find(node => node.type === 'CallExpression' && node.callee?.name === 'useEffect'
-    && file.code(node.arguments[0]).includes('Late duration metadata'));
-  const shared = value => ({ value, get() { return this.value; }, set(next) { this.value = next; } });
-  const start = shared(45000), end = shared(75000);
-  const context = vm.createContext({ durationSV: shared(180000), safeDuration: 182000,
-    track: { id: 'song-a', name: 'Test song', artists: 'Artist' }, initialStartMs: 12000,
-    rangeTrackRef: { current: 'song-a:Test song:Artist' }, rangeReadyRef: { current: true }, rangeEditedRef: { current: true },
-    startMsSV: start, endMsSV: end, setStartMs() {}, setEndMs() {}, setSegmentLoop() {},
-    MIN_SEGMENT_MS: 5000, DEFAULT_SEGMENT_MS: 30000, clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
-  });
-  vm.runInContext(`globalThis.update = ${file.code(effect.arguments[0])};`, context);
-  context.update(); assert.equal(start.get(), 45000); assert.equal(end.get(), 75000);
-  context.track = { ...context.track, id: 'song-b' }; context.initialStartMs = 0;
-  context.update(); assert.equal(start.get(), 0); assert.equal(end.get(), 30000);
+  assert.equal(file.nodes.some(node => node.type === 'FunctionDeclaration' && node.id?.name === 'TrimModule'), false);
+  assert.doesNotMatch(readFileSync('src/components/SpotifyTrackSearchSheet.js', 'utf8'), /เลือกท่อนเพลง/);
 });
 
 test('music search initializes its audio and close/back handlers without accessing uninitialized bindings', () => {
@@ -202,6 +177,8 @@ test('music search initializes its audio and close/back handlers without accessi
     getCachedBrowseMusicTracks: () => null, useState: initial => [typeof initial === 'function' ? initial() : initial, () => {}],
     useRef: current => ({ current }), useSharedValue: shared, useCallback: fn => fn, useEffect() {}, useMemo: fn => fn(),
     useAnimatedStyle: fn => fn, useAudioPlayer: () => ({ pause() {} }), useAudioPlayerStatus: () => ({}),
+    useLiquidGlass: () => false, useSheetGlassTint: () => undefined,
+    isReliablePreviewUrl,
     Gesture: { Pan: () => gesture },
   });
   vm.runInContext(prefix + 'return { closeWithAnimation, handleBackFromTrim }; };globalThis.render = SpotifyTrackSearchSheet;', context);

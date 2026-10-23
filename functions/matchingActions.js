@@ -39,7 +39,7 @@ async function pair(tx, db, uid, target, now) {
     ownerFaceVerified: owner.data()?.isFaceVerified === true,
     blocked: viewerBlock.exists || ownerBlock.exists, matched, ownerLikedViewer: isLike(incoming.data(), target, uid),
     visibilityMode: visibility.exists ? (visibility.data()?.mode || 'invalid') : 'public', ownerEntitlement: entitlement.data(), now: now() });
-  return { refs, owner, outgoing, incoming, matched, visible };
+  return { refs, owner, outgoing, incoming, room, matched, visible };
 }
 // All operations read the same pair documents in a transaction. An acceptance
 // racing rewind either commits first (rewind skips the match) or retries on the
@@ -71,7 +71,7 @@ export function createMatchingActionApi({ db, now = Date.now, serverTimestamp })
         tx.set(current.refs[5], decision);
         if (accepted) tx.update(current.refs[6], { status: 'accepted', updatedAt: serverTimestamp() });
         tx.set(entryRef, { target, kind, sequence, previous: current.outgoing.exists ? current.outgoing.data() : null,
-          undoable: !accepted, createdAt: serverTimestamp(), result });
+          undoable: kind === 'skip' && !accepted, createdAt: serverTimestamp(), result });
         tx.set(stateRef, { nextSequence: sequence, secureActionsStarted: true, updatedAt: serverTimestamp() }, { merge: true });
         return result;
       });
@@ -107,7 +107,7 @@ export function createMatchingActionApi({ db, now = Date.now, serverTimestamp })
     unmatchProfile: async (request) => {
       const { uid, target } = ids(request);
       return db.runTransaction(async (tx) => {
-        const current = await pair(tx, db, uid, target, now), room = await tx.get(current.refs[7]);
+        const current = await pair(tx, db, uid, target, now), room = current.room;
         for (const [ref, snap] of [[current.refs[5], current.outgoing], [current.refs[6], current.incoming]]) {
           if (snap.exists) tx.update(ref, { status: 'removed', updatedAt: serverTimestamp() });
         }
@@ -136,15 +136,25 @@ export function createMatchingActionApi({ db, now = Date.now, serverTimestamp })
         if (!isUserAdmin) {
           requireFeature(entitlement.data(), 'unlimitedRewind', now());
         }
-        if (receipt.exists) return receipt.data().result;
+        if (receipt.exists) {
+          const stored = receipt.data();
+          const target = stored.targetId || stored.result?.profile?.id;
+          if (!target || !UID.test(target)) return { profile: null, hasMore: stored.hasMore === true };
+          const current = await pair(tx, db, uid, target, now);
+          const profile = current.visible && !current.matched && !current.outgoing.exists
+            ? { ...toWire(buildPublicProfile(target, current.owner.data())), rewindPriority: stored.rewindPriority || stored.result?.profile?.rewindPriority }
+            : null;
+          return { profile, hasMore: stored.hasMore === true };
+        }
         const history = await tx.get(db.collection(`discoveryActions/${uid}/entries`).where('undoable', '==', true).orderBy('sequence', 'desc').limit(20));
         const evaluated = [];
         for (const entry of history.docs) {
           const target = entry.data().target;
+          if (entry.data().kind !== 'skip') { evaluated.push({ entry, eligible: false }); continue; }
           if (typeof target !== 'string' || !UID.test(target)) { evaluated.push({ entry, eligible: false }); continue; }
           const current = await pair(tx, db, uid, target, now), decision = current.outgoing.data();
           const eligible = current.visible && !current.matched && decision?.lastActionId === entry.id && decision.status === 'pending'
-            && ['skip', 'like'].includes(decision.type);
+            && decision.type === 'skip';
           evaluated.push({ entry, current, eligible });
           if (eligible) break;
         }
@@ -156,11 +166,11 @@ export function createMatchingActionApi({ db, now = Date.now, serverTimestamp })
         for (const item of evaluated) {
           tx.update(item.entry.ref, { undoable: false, undoneAt: serverTimestamp(), undoReason: item.eligible ? 'rewind' : 'unavailable' });
           if (!item.eligible) continue;
-          const previous = item.entry.data().previous;
-          if (previous) tx.set(item.current.refs[5], previous); else tx.delete(item.current.refs[5]);
-          result = { profile: toWire(buildPublicProfile(item.entry.data().target, item.current.owner.data())), hasMore: false };
+          tx.delete(item.current.refs[5]);
+          result = { profile: { ...toWire(buildPublicProfile(item.entry.data().target, item.current.owner.data())), rewindPriority: now() }, hasMore: false };
         }
-        tx.set(receiptRef, { result, createdAt: serverTimestamp() });
+        tx.set(receiptRef, { targetId: result.profile?.id || null, rewindPriority: result.profile?.rewindPriority || null,
+          hasMore: result.hasMore, createdAt: serverTimestamp() });
         return result;
       });
     },

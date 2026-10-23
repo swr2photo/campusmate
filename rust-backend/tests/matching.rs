@@ -235,80 +235,198 @@ async fn acceptance_racing_rewind_never_deletes_an_accepted_relationship(pool: P
         assert_eq!(rewound.0, StatusCode::OK);
         let statuses:Vec<String>=sqlx::query_scalar("SELECT status FROM decisions WHERE (actor_id=$1 AND target_id=$2) OR (actor_id=$2 AND target_id=$1)")
             .bind(&a).bind(&b).fetch_all(&pool).await.unwrap();
-        if accepted.0 == StatusCode::OK {
-            assert_eq!(statuses, vec!["accepted".to_owned(), "accepted".to_owned()]);
-            assert!(rewound.1["profile"].is_null());
-        } else {
-            assert_eq!(accepted.0, StatusCode::NOT_FOUND);
-            assert!(statuses.is_empty());
-            assert_eq!(rewound.1["profile"]["id"], b);
-        }
+        assert_eq!(accepted.0, StatusCode::OK);
+        assert_eq!(statuses, vec!["accepted".to_owned(), "accepted".to_owned()]);
+        assert!(rewound.1["profile"].is_null());
     }
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn rewind_restores_previous_pending_action_and_cancellation_retires_history(pool: PgPool) {
+async fn rewind_finds_older_skips_across_likes_and_never_cancels_a_like(pool: PgPool) {
     let alice = seed(&pool, "alice").await;
-    seed(&pool, "bob").await;
+    for target in ["old-skip", "new-skip", "liked"] {
+        seed(&pool, target).await;
+    }
     plus(&pool, "alice", true).await;
     let app = app(&pool).await;
-    let first = Uuid::new_v4();
-    assert_eq!(
-        call(&app, "/actions", &alice, action("bob", "skip", first))
+    for (target, kind) in [
+        ("old-skip", "skip"),
+        ("new-skip", "skip"),
+        ("liked", "like"),
+    ] {
+        assert_eq!(
+            call(
+                &app,
+                "/actions",
+                &alice,
+                action(target, kind, Uuid::new_v4())
+            )
             .await
             .0,
-        StatusCode::OK
-    );
-    assert_eq!(
-        call(
-            &app,
-            "/actions",
-            &alice,
-            action("bob", "like", Uuid::new_v4())
-        )
+            StatusCode::OK
+        );
+    }
+    // Simulate like history written by the previous backend version.
+    sqlx::query("UPDATE matching_history SET undoable=true WHERE target_id='liked'")
+        .execute(&pool)
         .await
-        .0,
-        StatusCode::OK
-    );
-    let rewound = call(&app, "/rewind", &alice, json!({"actionId":Uuid::new_v4()})).await;
-    assert_eq!(rewound.0, StatusCode::OK);
-    assert_eq!(rewound.1["profile"]["id"], "bob");
-    let last: Uuid = sqlx::query_scalar(
-        "SELECT last_action_id FROM decisions WHERE actor_id='alice' AND target_id='bob'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(last, first);
-    let kind: String =
-        sqlx::query_scalar("SELECT kind FROM decisions WHERE actor_id='alice' AND target_id='bob'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(kind, "skip");
+        .unwrap();
+    let request = json!({"actionId":Uuid::new_v4()});
     assert_eq!(
-        call(
-            &app,
-            "/actions",
-            &alice,
-            action("bob", "like", Uuid::new_v4())
-        )
-        .await
-        .0,
-        StatusCode::OK
+        call(&app, "/rewind", &alice, request.clone()).await.1["profile"]["id"],
+        "new-skip"
     );
     assert_eq!(
-        call(&app, "/cancel", &alice, json!({"targetUserId":"bob"}))
-            .await
-            .0,
-        StatusCode::OK
+        call(&app, "/rewind", &alice, request).await.1["profile"]["id"],
+        "new-skip"
     );
-    assert_eq!(count(&pool, "SELECT count(*) FROM decisions").await, 0);
     assert_eq!(
         call(&app, "/rewind", &alice, json!({"actionId":Uuid::new_v4()}))
             .await
-            .1["profile"],
-        Value::Null
+            .1["profile"]["id"],
+        "old-skip"
+    );
+    assert!(
+        call(&app, "/rewind", &alice, json!({"actionId":Uuid::new_v4()}))
+            .await
+            .1["profile"]
+            .is_null()
+    );
+    assert_eq!(
+        count(
+            &pool,
+            "SELECT count(*) FROM decisions WHERE kind='like' AND status='pending'"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        call(&app, "/cancel", &alice, json!({"targetUserId":"liked"}))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert!(
+        call(&app, "/rewind", &alice, json!({"actionId":Uuid::new_v4()}))
+            .await
+            .1["profile"]
+            .is_null()
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn simultaneous_devices_consume_distinct_skips_and_reload_shared_restorations(pool: PgPool) {
+    let alice = seed(&pool, "alice").await;
+    for target in ["first", "second", "third"] {
+        seed(&pool, target).await;
+    }
+    plus(&pool, "alice", true).await;
+    let app = app(&pool).await;
+    for target in ["first", "second", "third"] {
+        call(
+            &app,
+            "/actions",
+            &alice,
+            action(target, "skip", Uuid::new_v4()),
+        )
+        .await;
+    }
+    let (one, two) = tokio::join!(
+        call(&app, "/rewind", &alice, json!({"actionId":Uuid::new_v4()})),
+        call(&app, "/rewind", &alice, json!({"actionId":Uuid::new_v4()}))
+    );
+    assert_eq!(one.0, StatusCode::OK);
+    assert_eq!(two.0, StatusCode::OK);
+    let mut ids = vec![
+        one.1["profile"]["id"].as_str().unwrap(),
+        two.1["profile"]["id"].as_str().unwrap(),
+    ];
+    ids.sort_unstable();
+    assert_eq!(ids, vec!["second", "third"]);
+    let state = new_state(pool.clone(), vec![94; 32]).await.unwrap();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("authorization", format!("Bearer {alice}").parse().unwrap());
+    for _device in 0..2 {
+        let snapshot = campusmate_backend::social::decision_state(&state, &headers, json!({}))
+            .await
+            .unwrap();
+        assert_eq!(snapshot["canRewind"], true);
+        assert_eq!(snapshot["rewoundProfiles"].as_array().unwrap().len(), 2);
+        assert!(snapshot["rewoundProfiles"][0]["rewindPriority"]
+            .as_i64()
+            .is_some());
+        for result in [&one.1, &two.1] {
+            let restored = snapshot["rewoundProfiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["id"] == result["profile"]["id"])
+                .unwrap();
+            assert_eq!(
+                restored["rewindPriority"],
+                result["profile"]["rewindPriority"]
+            );
+        }
+    }
+    call(
+        &app,
+        "/actions",
+        &alice,
+        action("second", "like", Uuid::new_v4()),
+    )
+    .await;
+    let snapshot = campusmate_backend::social::decision_state(&state, &headers, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(snapshot["rewoundProfiles"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["rewoundProfiles"][0]["id"], "third");
+    sqlx::query("INSERT INTO blocks(actor_id,target_id) VALUES('third','alice')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let snapshot = campusmate_backend::social::decision_state(&state, &headers, json!({}))
+        .await
+        .unwrap();
+    assert!(snapshot["rewoundProfiles"].as_array().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn rewind_search_continues_past_a_full_batch_of_unavailable_skips(pool: PgPool) {
+    let alice = seed(&pool, "alice").await;
+    seed(&pool, "old").await;
+    plus(&pool, "alice", true).await;
+    let app = app(&pool).await;
+    call(
+        &app,
+        "/actions",
+        &alice,
+        action("old", "skip", Uuid::new_v4()),
+    )
+    .await;
+    for index in 0..21 {
+        let target = format!("hidden{index}");
+        seed(&pool, &target).await;
+        call(
+            &app,
+            "/actions",
+            &alice,
+            action(&target, "skip", Uuid::new_v4()),
+        )
+        .await;
+        sqlx::query("UPDATE profiles SET visibility='hidden' WHERE user_id=$1")
+            .bind(target)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let first = call(&app, "/rewind", &alice, json!({"actionId":Uuid::new_v4()})).await;
+    assert!(first.1["profile"].is_null());
+    assert_eq!(first.1["hasMore"], true);
+    assert_eq!(
+        call(&app, "/rewind", &alice, json!({"actionId":Uuid::new_v4()}))
+            .await
+            .1["profile"]["id"],
+        "old"
     );
 }
 

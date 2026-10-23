@@ -1,0 +1,21 @@
+# Verify inbox preferences against disposable PostgreSQL only. No deployment.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['run', '-d', '--name', 'postgres', '--network', 'cloudbuild', '-e', 'POSTGRES_USER=integration', '-e', 'POSTGRES_PASSWORD=disposable-ci-only', '-e', 'POSTGRES_DB=campusmate_test', 'postgres:18-bookworm']
+  - name: rust:1.99-bookworm
+    entrypoint: bash
+    env: ['DATABASE_URL=postgres://integration:disposable-ci-only@postgres:5432/campusmate_test?sslmode=disable']
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        rustup component add rustfmt clippy
+        cargo fmt
+        tar -czf /workspace/inbox-formatted.tgz src/rooms.rs tests/platform.rs
+        cargo test --locked --test platform inbox_preferences_are_per_member_and_do_not_change_receipts -- --nocapture
+        cargo clippy --locked --all-targets -- -D warnings
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    args: ['gcloud', 'storage', 'cp', '/workspace/inbox-formatted.tgz', 'gs://campusmate-7f1ab_cloudbuild/inbox-ui-validation/$BUILD_ID/inbox-formatted.tgz']
+options:
+  machineType: E2_HIGHCPU_32
+timeout: 1800s

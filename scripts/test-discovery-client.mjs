@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
+import { mergeDiscoveryPhoto } from '../src/utils/discoveryPresentation.js';
 
 const read = (file) => readFileSync(file, 'utf8').replaceAll('\r\n', '\n');
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -46,19 +47,20 @@ test('a hidden public profile does not remove an existing conversation or its hi
   assert.equal(context.removedUserIds.size, 0);
 });
 function fixture(handler) {
+  let receiptId = 0;
   const signals = [], auth = { currentUser: { uid: 'owner' } }, emissions = [], errors = [];
   const source = read('src/services/secureDiscoveryService.js')
     .replace(/^import .*;\n/gm, '').replace(/export (?=(?:async )?function|const)/g, '');
-  const context = vm.createContext({ RUST_BACKEND: false, console, Map, Set, Date, Promise,
+  const context = vm.createContext({ RUST_BACKEND: false, console, Map, Set, Date, Promise, mergeDiscoveryPhoto,
     AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
     Constants: { expoConfig: { extra: { secureDiscoveryEnabled: true } } },
-    Crypto: { randomUUID: () => 'receipt' }, requireFirebase: () => ({ app: {}, db: {} }), getAuth: () => auth,
+    Crypto: { randomUUID: () => 'receipt-' + (++receiptId) }, requireFirebase: () => ({ app: {}, db: {} }), getAuth: () => auth,
     onAuthStateChanged: () => () => {},
     getFunctions: () => ({}), httpsCallable: (_functions, name) => async (data) => ({ data: await handler(name, data) }),
     doc: (_db, ...parts) => parts.join('/'), onSnapshot: (_doc, next) => { signals.push(next); return () => {}; },
     setInterval: () => 1, clearInterval() {},
   });
-  vm.runInContext(source + '\nglobalThis.api = { createSecureProfilesSubscription, subscribeSecureDecisions };', context);
+  vm.runInContext(source + '\nglobalThis.api = { createSecureProfilesSubscription, subscribeSecureDecisions, rewindSecureDiscoveryAction };', context);
   return { ...context.api, auth, emissions, errors, signal: () => signals[0](),
     profiles: (value) => emissions.push(Array.from(value, (item) => item.id)), error: (reason) => errors.push(reason) };
 }
@@ -69,10 +71,10 @@ test('live skip hides its card and an empty Rewind snapshot overrides the old de
   const memo = source.slice(source.indexOf('  const outgoingDecisionSnapshot ='), source.indexOf('\n  // Once the live listener', source.indexOf('  const outgoingDecisionSnapshot =')));
   const filter = service.slice(service.indexOf('export function filterAvailableProfiles('), service.indexOf('export function hydrateDecisionLikes(')).replace('export ', '');
   const context = vm.createContext({ RUST_BACKEND: false, Set, Map, Array, useMemo: (fn) => fn(),
-    isProfileReadyForDiscovery: () => true, matchesPreferences: () => true,
+    isProfileReadyForDiscovery: () => true, matchesPreferences: () => true, secureDiscoveryConfigured: () => false,
     allowedMatchingPreferences: (value) => value, profile: { id: 'owner', matchingPreferences: {} },
     user: { id: 'owner' }, membership: { plus: true }, canAdvancedFilters: true, membershipLoading: false, sharedProfiles: [{ id: 'skipped' }, { id: 'unseen' }],
-    cachedOutgoingDecisions: [{ toUserId: 'skipped', type: 'skip', status: 'pending' }], outgoingLikes: [],
+    cachedOutgoingDecisions: [{ toUserId: 'skipped', type: 'skip', status: 'pending' }], outgoingLikes: [], rewoundProfiles: [],
   });
   vm.runInContext(helpers + filter, context);
   function evaluate(decisions) {
@@ -182,4 +184,37 @@ test('bootstrap cannot overwrite a profile created or restored concurrently', as
   const saved = await ctx.save('owner', { name: '', avatarUri: '', isNewUser: true }, { onlyIfMissing: true });
   assert.equal(saved.name, 'Recovered'); assert.equal(saved.avatarUri, restored.avatarUri);
   assert.equal(writes, 0);
+});
+
+
+test('rewind continues through full unavailable history batches using distinct receipts', async () => {
+  const calls = [];
+  const f = fixture(async (name, data) => {
+    assert.equal(name, 'rewindDiscoveryAction'); calls.push(data.actionId);
+    return calls.length < 3 ? { profile: null, hasMore: true } : { profile: { id: 'old-skip', rewindPriority: 123 }, hasMore: false };
+  });
+  const restored = await f.rewindSecureDiscoveryAction();
+  assert.equal(restored.profile.id, 'old-skip'); assert.equal(new Set(calls).size, 3);
+});
+
+test('background discovery refresh preserves the visible card while loading and publishes the server cooldown', async () => {
+  let requests = 0, finish;
+  const states = [];
+  const f = fixture(async name => {
+    assert.equal(name, 'getDiscoveryPage');
+    if (++requests === 1) return { profiles: [{ id: 'visible' }], hasMore: false, nextCursor: null, nextRecycleAt: 1700000300000 };
+    return new Promise(resolve => { finish = resolve; });
+  });
+  const sub = f.createSecureProfilesSubscription(f.profiles, f.error, { onPageInfo: state => states.push(state) });
+  await tick();
+  assert.deepEqual(f.emissions, [['visible']]);
+  assert.equal(states.at(-1).nextRecycleAt, 1700000300000);
+  const refresh = sub.refresh(); await tick();
+  assert.deepEqual(f.emissions, [['visible']], 'refresh must not clear the image/card');
+  finish({ profiles: [{ id: 'recycled' }], hasMore: false, nextCursor: null, nextRecycleAt: null, recycledProfileIds: ['recycled'] });
+  await refresh;
+  assert.deepEqual(f.emissions, [['visible'], ['recycled']]);
+  assert.equal(states.at(-1).nextRecycleAt, null);
+  assert.deepEqual(Array.from(states.at(-1).recycledProfileIds), ['recycled']);
+  sub.unsubscribe();
 });

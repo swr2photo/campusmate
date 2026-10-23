@@ -45,7 +45,7 @@ function harness(overrides = {}, options = {}) {
       return typeof type === 'function' ? type(resolved) : { type, props: resolved, children: resolved.children };
     } },
     useState, useRef, useEffect() {}, useWindowDimensions: () => state, useIsFocused: () => true,
-    View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', ActivityIndicator: 'ActivityIndicator',
+    View: 'View', NativeCard: 'NativeCard', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', ActivityIndicator: 'ActivityIndicator',
     FeatureIcon: 'FeatureIcon', StatusBar: 'StatusBar', Stack: { Screen: 'StackScreen' },
     StyleSheet: { create: styles => styles },
     useSafeAreaInsets: () => ({ top: 44, bottom: 34, left: 0, right: 0 }),
@@ -62,7 +62,7 @@ function harness(overrides = {}, options = {}) {
 function nodes(tree) {
   return typeof tree !== 'object' || tree === null ? [] : [tree, ...tree.children.flatMap(nodes)];
 }
-const button = (tree, prefix) => nodes(tree).find(node => node.type === 'Pressable' && node.props.accessibilityLabel?.startsWith(prefix));
+const button = (tree, prefix) => nodes(tree).find(node => node.type === 'Pressable' && (node.props.accessibilityLabel || text(node)).startsWith(prefix));
 const text = tree => typeof tree === 'string' ? tree : typeof tree === 'object' && tree ? tree.children.map(text).join('') : '';
 const purchaseButton = tree => button(tree, 'ดำเนินการต่อ');
 
@@ -145,6 +145,26 @@ test('active subscribers can manage their membership and recover from a failed s
   await flush();
   assert.equal(h.calls.urls.length, 1);
   assert.match(text(h.render()), /เปิดหน้าจัดการสมาชิกไม่ได้/);
+});
+
+test('an admin grant opens Plus without sending the user to a stale store link', async () => {
+  const h = harness({ plus: true, isAdmin: true, managementUrl: 'https://play.google.com/store/account/subscriptions' });
+  const tree = h.render();
+  assert.equal(button(tree, 'จัดการสมาชิกในสโตร์'), undefined);
+  assert.equal(button(tree, 'จัดการการสมัครที่ซื้อไว้'), undefined);
+  button(tree, 'เริ่มใช้งาน Plus').props.onPress();
+  await flush();
+  assert.equal(h.calls.urls.length, 0);
+  assert.deepEqual(h.calls.routes, ['back']);
+});
+
+test('an admin with a separate active store subscription can still reach its management action', async () => {
+  const h = harness({ plus: true, isAdmin: true, hasStoreSubscription: true, managementUrl: 'https://play.google.com/store/account/subscriptions' });
+  const tree = h.render();
+  assert.ok(button(tree, 'เริ่มใช้งาน Plus'));
+  button(tree, 'จัดการการสมัครที่ซื้อไว้').props.onPress();
+  await flush();
+  assert.deepEqual(h.calls.urls, ['https://play.google.com/store/account/subscriptions']);
 });
 
 test('all real Plus benefits and legal/restore actions remain reachable on short screens', () => {

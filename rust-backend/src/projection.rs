@@ -189,6 +189,7 @@ fn clock(value: Option<&Value>) -> Option<(String, u32)> {
     Some((format!("{:02}:{:02}", minutes / 60, minutes % 60), minutes))
 }
 
+#[allow(dead_code)]
 fn availability_slots(value: Option<&Value>) -> Vec<Value> {
     let Some(items) = value.and_then(Value::as_array) else {
         return Vec::new();
@@ -426,13 +427,6 @@ fn profile_fields(raw: &Value) -> Map<String, Value> {
             out.insert("activityDetails".into(), Value::Object(details));
         }
     }
-    if visible(raw, "showAvailability") {
-        copy_text(&mut out, raw, "availability", 100);
-        let slots = availability_slots(raw.get("availabilitySlots"));
-        if !slots.is_empty() {
-            out.insert("availabilitySlots".into(), Value::Array(slots));
-        }
-    }
     if visible(raw, "showLocation") && raw.get("locationEnabled") != Some(&Value::Bool(false)) {
         if let Some(meetup) = meetup(raw.get("meetup"), visible(raw, "showAvailability")) {
             out.insert("meetup".into(), meetup);
@@ -634,10 +628,7 @@ mod tests {
         assert!(profile.get("avatarUri").is_none());
         assert!(profile.get("age").is_none());
         assert!(profile.get("updatedAt").is_none());
-        assert_eq!(
-            profile["availabilitySlots"].as_array().map(Vec::len),
-            Some(1)
-        );
+        assert!(profile.get("availabilitySlots").is_none());
         assert_eq!(
             profile["activityDetails"]["running"]["timeOfDay"],
             json!(["เย็น"])

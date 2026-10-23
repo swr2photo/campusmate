@@ -13,7 +13,7 @@ const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 export function planFor(record, now = Date.now()) { return isPlusActive(record, now) ? 'plus' : 'free'; }
 // Unknown features never unlock.
 export function hasPlanFeature(record, feature, now = Date.now()) {
-  if (record?.isAdmin === true || record?.isSuperAdmin === true || record?.role === 'admin') return true;
+  if (record?.isAdmin === true || record?.isSuperAdmin === true || record?.role === 'admin' || record?.isPlus === true) return true;
   const features = PLAN_FEATURES[planFor(record, now)];
   return typeof feature === 'string' && own(features, feature) && features[feature] === true;
 }
@@ -21,7 +21,7 @@ export function requireFeature(record, feature, now = Date.now()) {
   if (!hasPlanFeature(record, feature, now)) throw new HttpsError('permission-denied', 'ฟีเจอร์นี้สำหรับ CampusMate Plus', { reason: 'PLUS_REQUIRED', feature });
 }
 export function isPlusActive(record, now = Date.now()) {
-  if (record?.isAdmin === true || record?.isSuperAdmin === true || record?.role === 'admin') return true;
+  if (record?.isAdmin === true || record?.isSuperAdmin === true || record?.role === 'admin' || record?.isPlus === true) return true;
   return record?.source === 'revenuecat' && record?.entitlementId === PLUS_ENTITLEMENT
     && Number.isSafeInteger(record.activeUntil) && record.activeUntil > now
     && Number.isSafeInteger(record.verifiedAt) && record.verifiedAt > 0;

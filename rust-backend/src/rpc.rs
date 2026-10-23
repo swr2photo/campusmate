@@ -39,7 +39,10 @@ pub async fn call(
         return Err(ApiError::new("not-found", "ไม่พบบริการนี้"));
     }
     let data = object(body.get("data").cloned().unwrap_or(Value::Null));
-    let result = dispatch(&state, &headers, &name, data).await?;
+    tracing::info!(rpc_name = %name, "RPC call dispatch");
+    let result = dispatch(&state, &headers, &name, data).await.inspect_err(|err| {
+        tracing::error!(rpc_name = %name, error_code = %err.code, error_msg = %err.message, "RPC call failed");
+    })?;
     Ok(Json(json!({ "result": result })))
 }
 
@@ -52,6 +55,10 @@ pub async fn dispatch(
     let s = || State(state.clone());
     let h = || headers.clone();
     Ok(match name {
+        "getAppPreferences" => crate::settings::get(state, headers).await?,
+        "saveAppPreferences" => crate::settings::save(state, headers, data).await?,
+        "presenceHeartbeat" => crate::settings::heartbeat(state, headers, data).await?,
+        "getChatPresence" => crate::settings::presence(state, headers, data).await?,
         // Matching and discovery (legacy secure callables).
         "recordDiscoveryAction" => matching::record(s(), h(), Json(input(data)?)).await?.0,
         "respondToIncomingLike" => matching::respond(s(), h(), Json(input(data)?)).await?.0,
@@ -217,6 +224,7 @@ pub async fn dispatch(
         "groupMessages" => parties::messages(state, headers, data).await?,
         "sendGroupMessage" => parties::send(state, headers, data).await?,
         "markGroupRead" => parties::mark_read(state, headers, data).await?,
+        "updateGroupProfile" => parties::update_profile(state, headers, data).await?,
 
         // Calls.
         "initiateCall" => calls::initiate(state, headers, data).await?,

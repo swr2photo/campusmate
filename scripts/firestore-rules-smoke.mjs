@@ -365,6 +365,22 @@ await succeeds('participant updates own chat settings', () => updateDoc(
   doc(bobDb, 'conversations', conversationId),
   { [`participantSettings.${bob}.isMuted`]: true },
 ));
+  await succeeds('participant pins only their own inbox and marks it unread', () => updateDoc(
+    doc(bobDb, 'conversations', conversationId),
+    { [`participantSettings.${bob}.isPinned`]: true, [`participantSettings.${bob}.markedUnread`]: true },
+  ));
+  await fails('participant cannot change another member inbox preferences', () => updateDoc(
+    doc(bobDb, 'conversations', conversationId),
+    { [`participantSettings.${alice}.isPinned`]: true },
+  ));
+  await fails('inbox preferences must be booleans', () => updateDoc(
+    doc(bobDb, 'conversations', conversationId),
+    { [`participantSettings.${bob}.markedUnread`]: 'yes' },
+  ));
+  await succeeds('reading clears own manual reminder and unread count atomically', () => updateDoc(
+    doc(bobDb, 'conversations', conversationId),
+    { [`participantSettings.${bob}.markedUnread`]: false, [`unreadCounts.${bob}`]: 0, [`readReceipts.${bob}`]: serverTimestamp() },
+  ));
 await succeeds('participant clears own chat history', () => updateDoc(
   doc(bobDb, 'conversations', conversationId),
   {

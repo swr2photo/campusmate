@@ -152,9 +152,11 @@ export const createParty = onCall({ region: REGION, secrets: [placesKey] }, asyn
   if (!Number.isInteger(maxPeople) || maxPeople < 2 || maxPeople > 50) {
     throw new HttpsError('invalid-argument', 'จำนวนสมาชิกต้องอยู่ระหว่าง 2–50 คน');
   }
-  const location = await normalizedLocation(request.data?.location);
   const db = getFirestore();
-  const profile = await db.doc(`profiles/${hostId}`).get();
+  const [location, profile] = await Promise.all([
+    normalizedLocation(request.data?.location),
+    db.doc(`profiles/${hostId}`).get(),
+  ]);
   const host = profile.data() || {};
   const hostAvatar = String(host.avatarUri || host.photoURL || (Array.isArray(host.photos) ? host.photos[0] : '') || '').slice(0, 5000);
   const hostName = String(host.nickname || host.name || 'เพื่อนใน ม.อ.').slice(0, 100);
@@ -382,7 +384,15 @@ export const approvePartyRequest = onCall({ region: REGION }, async (request) =>
       });
       tx.update(chatRef, { memberIds: nextMembers, memberCount: nextMembers.length, updatedAt: FieldValue.serverTimestamp() });
     }
-    tx.update(partyRef, { memberIds: nextMembers, memberCount: nextMembers.length, updatedAt: FieldValue.serverTimestamp() });
+    const nextMemberEntries = nextMembers.map((uid) => {
+      const p = profiles[uid] || {};
+      return {
+        id: uid,
+        name: String(p.nickname || p.name || 'เพื่อนใน ม.อ.').slice(0, 100),
+        avatarUri: String(p.avatarUri || p.photoURL || (Array.isArray(p.photos) ? p.photos[0] : '') || '').slice(0, 5000),
+      };
+    });
+    tx.update(partyRef, { memberIds: nextMembers, members: nextMemberEntries, memberCount: nextMembers.length, updatedAt: FieldValue.serverTimestamp() });
     tx.update(requestRef, { status: 'approved', updatedAt: FieldValue.serverTimestamp() });
     return { status: 'approved', groupChatId: partyId };
     });
@@ -435,7 +445,15 @@ export const leaveParty = onCall({ region: REGION }, async (request) => {
     if (!party?.memberIds?.includes(userId)) throw new HttpsError('failed-precondition', 'คุณไม่ได้อยู่ในตี้นี้');
     if (party.hostId === userId) throw new HttpsError('failed-precondition', 'เจ้าของตี้ต้องยกเลิกตี้แทนการออก');
     const memberIds = party.memberIds.filter((id) => id !== userId);
-    tx.update(partyRef, { memberIds, memberCount: memberIds.length, updatedAt: FieldValue.serverTimestamp() });
+    const members = Array.isArray(party.members)
+      ? party.members.filter((entry) => entry && entry.id !== userId)
+      : undefined;
+    tx.update(partyRef, {
+      memberIds,
+      ...(members ? { members } : {}),
+      memberCount: memberIds.length,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
     if (chatSnap.exists) {
       tx.update(chatRef, {
         memberIds, memberCount: memberIds.length, rekeyRequired: true,
@@ -471,6 +489,30 @@ export const rotatePartyKey = onCall({ region: REGION }, async (request) => {
     });
     return { epoch };
   });
+});
+
+export const updateGroupProfile = onCall({ region: REGION }, async (request) => {
+  const userId = uidOf(request);
+  const partyId = cleanId(request.data?.partyId, 'ตี้');
+  const title = String(request.data?.title || '').trim();
+  if (!title || title.length > 80 || /[\u0000-\u001F]/.test(title)) {
+    throw new HttpsError('invalid-argument', 'ชื่อกลุ่มต้องมี 1-80 ตัวอักษร');
+  }
+  const avatarUri = String(request.data?.avatarUri || '').trim();
+  if (avatarUri.length > 2000 || (avatarUri && !/^https:\/\//i.test(avatarUri))) {
+    throw new HttpsError('invalid-argument', 'รูปกลุ่มไม่ถูกต้อง');
+  }
+  const db = getFirestore();
+  const chatRef = db.doc(`groupChats/${partyId}`);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(chatRef);
+    const chat = snap.data();
+    if (!chat || chat.hostId !== userId) {
+      throw new HttpsError('permission-denied', 'เฉพาะคนสร้างตี้ที่แก้ไขชื่อและรูปกลุ่มได้');
+    }
+    tx.update(chatRef, { title, avatarUri, updatedAt: FieldValue.serverTimestamp() });
+  });
+  return { partyId, title, avatarUri };
 });
 
 export { pointDistanceMeters, validPoint, scheduleFrom };

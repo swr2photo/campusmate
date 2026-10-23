@@ -2,13 +2,18 @@
 //! the 0..=100 `compatibility` the app already displays on profile cards.
 //! Unknown data gets a neutral value so sparse profiles are not buried.
 
-use std::collections::{BTreeSet, HashSet};
+#[cfg(test)]
+use std::collections::BTreeSet;
+use std::collections::HashSet;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
 use crate::filters::period_words;
-use crate::model::{Slot, UserRecord};
+#[cfg(test)]
+use crate::model::Slot;
+use crate::model::UserRecord;
 
 const W_INTERESTS: f64 = 30.0;
 const W_DETAILS: f64 = 10.0;
@@ -18,6 +23,7 @@ const W_CAMPUS: f64 = 10.0;
 const W_QUALITY: f64 = 10.0;
 
 /// Two shared hours on the same day count as a full availability match.
+#[cfg(test)]
 const FULL_OVERLAP_MINUTES: f64 = 120.0;
 const DAY_MS: i64 = 86_400_000;
 
@@ -100,11 +106,9 @@ pub fn score(
         reasons.push((2.5, "เพซวิ่งใกล้กัน".into()));
     }
 
-    // 3. Free time actually overlapping.
-    let (availability, availability_reason) = availability_fit(ctx, viewer, candidate);
-    if let Some(reason) = availability_reason {
-        reasons.push((2.8, reason));
-    }
+    // Convenient time is no longer a product feature. A flat neutral value
+    // keeps the score scale without letting old slots change rank or reasons.
+    let availability = 0.15;
 
     // 4. Proximity; `distance` is already privacy-floored.
     let proximity = match distance {
@@ -224,6 +228,7 @@ fn detail_fit(viewer: &UserRecord, candidate: &UserRecord, shared: &[&String]) -
     )
 }
 
+#[cfg(test)]
 fn overlap_minutes(a: &Slot, b: &Slot) -> u32 {
     match (a.start, a.end, b.start, b.end) {
         (Some(s1), Some(e1), Some(s2), Some(e2)) if e1 > s1 && e2 > s2 => {
@@ -233,6 +238,7 @@ fn overlap_minutes(a: &Slot, b: &Slot) -> u32 {
     }
 }
 
+#[cfg(test)]
 fn text_periods(user: &UserRecord) -> BTreeSet<&'static str> {
     let text = user
         .raw
@@ -249,6 +255,7 @@ fn text_periods(user: &UserRecord) -> BTreeSet<&'static str> {
         .collect()
 }
 
+#[cfg(test)]
 fn availability_fit(
     ctx: &Context,
     viewer: &UserRecord,
@@ -403,9 +410,9 @@ mod tests {
         let weak = user(json!({ "activities": ["gaming"], "faculty": "แพทยศาสตร์", "year": "ปี 5" }));
         let high = score(&ctx(), &viewer, &great, Some(0.7));
         let low = score(&ctx(), &viewer, &weak, Some(12.0));
-        assert!(high.score > low.score + 40, "{high:?} vs {low:?}");
+        assert!(high.score > low.score + 15, "{high:?} vs {low:?}");
         assert_eq!(high.reasons[0], "ชอบวิ่งเหมือนกัน");
-        assert!(high.reasons.iter().any(|r| r.starts_with("ว่างตรงกัน")));
+        assert!(high.reasons.iter().all(|r| !r.starts_with("ว่างตรงกัน")));
         assert!(high.score <= 100);
     }
 
@@ -447,7 +454,10 @@ mod tests {
             expired_score.reasons,
             score(&after, &no_slots, &no_slots, None).reasons
         );
-        assert!(score(&before, &record, &record, None).score > expired_score.score);
+        assert_eq!(
+            score(&before, &record, &record, None).score,
+            expired_score.score
+        );
     }
 
     #[test]

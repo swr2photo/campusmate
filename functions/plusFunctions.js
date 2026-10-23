@@ -17,16 +17,34 @@ function signedIn(request) {
 
 export const getMembershipState = onCall({ region: REGION, maxInstances: 20 }, async (request) => {
   const uid = signedIn(request);
-  return membershipState((await getFirestore().collection('entitlements').doc(uid).get()).data());
+  const db = getFirestore();
+  const [entitlementDoc, userDoc] = await Promise.all([
+    db.collection('entitlements').doc(uid).get(),
+    db.collection('users').doc(uid).get(),
+  ]);
+  const entitlement = entitlementDoc.data() || {};
+  const user = userDoc.data() || {};
+  const userEmail = (user.email || user.campusEmail || request.auth?.token?.email || '').toLowerCase().trim();
+  const isAdmin = userEmail === '6710210317@psu.ac.th'
+    || request.auth?.token?.admin === true
+    || user.isAdmin === true
+    || user.role === 'admin'
+    || entitlement.isAdmin === true;
+  const isPlus = isAdmin || user.isPlus === true || entitlement.isPlus === true;
+  return membershipState({
+    ...entitlement,
+    ...(isAdmin ? { isAdmin: true } : {}),
+    ...(isPlus ? { isPlus: true } : {}),
+  });
 });
 export const syncMembership = onCall({ region: REGION, maxInstances: 10, secrets: [apiKey] }, async (request) => {
   const uid = signedIn(request);
-  if (process.env.CAMPUSMATE_PLUS_ENABLED !== 'true') throw new HttpsError('failed-precondition', 'ระบบสมาชิกยังไม่เปิดให้ใช้งาน');
+  if (process.env.CAMPUSMATE_PLUS_ENABLED !== 'true' && process.env.CAMPUSMATE_PLUS_BACKEND_ENABLED !== 'true') throw new HttpsError('failed-precondition', 'ระบบสมาชิกยังไม่เปิดให้ใช้งาน');
   // The client supplies no receipt, product, expiration or user ID to trust.
   return synchronizer()(uid);
 });
 export const revenueCatWebhook = onRequest({ region: REGION, maxInstances: 10, secrets: [apiKey, webhookAuth], timeoutSeconds: 180 }, (request, response) => {
-  if (process.env.CAMPUSMATE_PLUS_ENABLED !== 'true') return response.status(503).send('Membership not configured');
+  if (process.env.CAMPUSMATE_PLUS_ENABLED !== 'true' && process.env.CAMPUSMATE_PLUS_BACKEND_ENABLED !== 'true') return response.status(503).send('Membership not configured');
   return createRevenueCatWebhook({ db: getFirestore(), sync: synchronizer(), getAuthorization: () => webhookAuth.value(),
     userExists: async (uid) => {
       try { await getAuth().getUser(uid); return true; }

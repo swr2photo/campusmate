@@ -5,7 +5,14 @@
 //! endpoint, so a stale or misrouted signal cannot disclose anything. Signals
 //! are written with `pg_notify` inside the writer's transaction, which
 //! PostgreSQL delivers only after commit and drops on rollback.
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use axum::{
     extract::State,
@@ -33,6 +40,8 @@ const TOPICS: &[&str] = &[
     "calls",
     "blocks",
     "config",
+    "preferences",
+    "presence",
 ];
 
 #[derive(Clone, Debug)]
@@ -45,12 +54,20 @@ pub struct Signal {
 
 pub struct Hub {
     sender: broadcast::Sender<Signal>,
+    /// Set while the listener holds a LISTEN on a direct connection.
+    listening: AtomicBool,
 }
 
 impl Hub {
     pub fn new() -> Arc<Self> {
         let (sender, _) = broadcast::channel(4096);
-        Arc::new(Self { sender })
+        Arc::new(Self {
+            sender,
+            listening: AtomicBool::new(false),
+        })
+    }
+    pub fn is_listening(&self) -> bool {
+        self.listening.load(Ordering::Relaxed)
     }
     pub fn subscribe(&self) -> broadcast::Receiver<Signal> {
         self.sender.subscribe()
@@ -98,15 +115,15 @@ pub async fn publish(
     if users.is_empty() {
         return Ok(());
     }
-    sqlx::query(
-        "SELECT pg_notify($1, u || chr(31) || $3 || chr(31) || COALESCE($4,''))
+    let _ = sqlx::query(
+        "SELECT pg_notify($1, u || chr(31) || $3 || chr(31) || COALESCE($4::text,''))
          FROM unnest($2::text[]) AS u",
     )
     .bind(CHANNEL)
     .bind(users)
     .bind(topic)
     .bind(id.filter(|id| id.len() <= 259))
-    .execute(connection)
+    .fetch_all(connection)
     .await?;
     Ok(())
 }
@@ -121,6 +138,19 @@ pub async fn publish_one(
     publish(connection, &[user], topic, id).await
 }
 
+/// Whether the listener reached PostgreSQL through PgBouncer, whose server
+/// connections carry its name. A LISTEN there stays on a shared server
+/// connection after the transaction ends, and every later client of that
+/// connection receives notifications it cannot parse, failing its commit.
+async fn behind_pooler(listener: &mut PgListener) -> Result<bool, sqlx::Error> {
+    let name: Option<String> = sqlx::query_scalar(
+        "SELECT application_name FROM pg_stat_activity WHERE pid = pg_backend_pid()",
+    )
+    .fetch_optional(&mut *listener)
+    .await?;
+    Ok(name.as_deref() == Some("pgbouncer"))
+}
+
 /// Long-running LISTEN loop. It needs a direct (non-transaction-pooled)
 /// connection; reconnects with backoff and tells every client to resync after
 /// a gap, because NOTIFY is not replayed.
@@ -129,8 +159,18 @@ pub async fn listen(pool: PgPool, hub: Arc<Hub>) {
     loop {
         match PgListener::connect_with(&pool).await {
             Ok(mut listener) => {
-                if listener.listen(CHANNEL).await.is_ok() {
+                let direct = match behind_pooler(&mut listener).await {
+                    Ok(pooled) => {
+                        if pooled {
+                            tracing::warn!("event listener refused a transaction-pooled connection; set DATABASE_LISTEN_URL to a direct endpoint");
+                        }
+                        !pooled
+                    }
+                    Err(_) => false,
+                };
+                if direct && listener.listen(CHANNEL).await.is_ok() {
                     backoff = Duration::from_secs(1);
+                    hub.listening.store(true, Ordering::Relaxed);
                     hub.resync_all();
                     loop {
                         match listener.try_recv().await {
@@ -142,6 +182,7 @@ pub async fn listen(pool: PgPool, hub: Arc<Hub>) {
                             Err(_) => break,
                         }
                     }
+                    hub.listening.store(false, Ordering::Relaxed);
                 }
             }
             Err(_) => tracing::warn!("event listener connection failed"),
@@ -175,9 +216,12 @@ pub async fn stream(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    // Without a working LISTEN, a stream would stay silent; 503 makes
+    // clients fall back to polling.
     let hub = state
         .events
         .clone()
+        .filter(|hub| hub.is_listening())
         .ok_or_else(|| ApiError::unavailable("ระบบแจ้งเตือนแบบเรียลไทม์ไม่พร้อม"))?;
     let user = crate::auth::authenticate_session(&state, &headers).await?;
     crate::throttle(&state.db, "events", &user.uid, 30).await?;

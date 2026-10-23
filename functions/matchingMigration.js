@@ -46,7 +46,7 @@ export async function migrateLegacyUser(db, uid, { apply = false, serverTimestam
         if (!Number.isSafeInteger(sequence)) throw new Error('Action sequence overflow');
         const result = { status: 'pending', conversationId: null, sequence };
         tx.create(refs[position], { target: next.decision.toUserId, kind: next.decision.type, sequence,
-          previous: null, undoable: true, createdAt: next.decision.updatedAt || next.decision.createdAt,
+          previous: null, undoable: next.decision.type === 'skip', createdAt: next.decision.updatedAt || next.decision.createdAt,
           migrated: true, result });
         tx.update(record.ref, { lastActionId: entry.id });
         count += 1;

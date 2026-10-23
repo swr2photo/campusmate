@@ -28,8 +28,8 @@ use crate::{
     error::ApiError,
     firebase_identity::authenticate,
     identity_provider::{
-        normalize_reference, AwsFaceProvider, Challenge, FaceProvider, LivenessStatus,
-        ProviderError, R2ReferenceStore, ReferenceStore, MAX_COMPARE_BYTES,
+        normalize_reference, AwsFaceProvider, Challenge, FaceProvider, GestureFrame,
+        LivenessStatus, ProviderError, R2ReferenceStore, ReferenceStore, MAX_COMPARE_BYTES,
     },
     AppState,
 };
@@ -45,6 +45,43 @@ const REVIEW_RETENTION_DAYS: i64 = 14;
 /// A request that crashed mid-processing is retried or expired after this.
 const STALE_PROCESSING_SECS: i64 = 60;
 pub const BADGE: &str = "PHOTO_VERIFIED";
+/// The gesture phase must end this soon after the attempt starts, so the
+/// AWS liveness session still has time to run afterwards.
+const GESTURE_WINDOW_SECS: i64 = 120;
+/// Frames that did not show the asked-for gesture before the attempt fails.
+const MAX_GESTURE_FAILURES: i16 = 8;
+/// One frame per attempt is evaluated at a time.
+const GESTURE_LEASE_SECS: i64 = 20;
+/// Largest decoded size of one request's frames together. The app sends far
+/// smaller JPEGs.
+const MAX_GESTURE_FRAME_BYTES: usize = 700 * 1024;
+/// Recent frames one request may carry, oldest first, so a camera without
+/// on-device tracking does not miss a brief movement between round trips.
+const MAX_GESTURE_FRAMES: usize = 3;
+/// Request body limit of the gesture route (base64 frame plus JSON).
+pub const MAX_GESTURE_BODY_BYTES: usize = 1024 * 1024;
+// Head-pose geometry in degrees. These describe the movement asked for, not
+// identity confidence; tune them on physical devices before production.
+const CENTER_MAX_DEG: f32 = 15.0;
+const TURN_MIN_YAW_DEG: f32 = 18.0;
+const NOD_MIN_PITCH_DEG: f32 = 12.0;
+const OFF_AXIS_MAX_DEG: f32 = 25.0;
+const ROLL_MAX_DEG: f32 = 30.0;
+/// How sure Rekognition must be about open or closed eyes.
+const EYE_STATE_MIN_CONFIDENCE: f32 = 70.0;
+/// Face width as a share of the frame outside which the person is told to
+/// move closer or back. Guidance only.
+const FACE_WIDTH_MIN: f32 = 0.2;
+const FACE_WIDTH_MAX: f32 = 0.8;
+/// Face centre outside these shares of the frame is "move into the circle",
+/// and a darker face is "find more light". Guidance only.
+const FACE_CENTER_X: (f32, f32) = (0.3, 0.7);
+const FACE_CENTER_Y: (f32, f32) = (0.2, 0.8);
+const FACE_BRIGHTNESS_MIN: f32 = 20.0;
+/// Gesture requests per user per minute; continuous sampling sends one or
+/// two a second.
+const GESTURE_RATE: i32 = 40;
+const GESTURE_PROBE_RATE: i32 = 150;
 const ALTERNATIVE_REASONS: [&str; 4] = [
     "PHOTOSENSITIVITY",
     "CAMERA_UNAVAILABLE",
@@ -65,6 +102,9 @@ pub struct DecisionPolicy {
     pub liveness_review_min: f32,
     pub similarity_min: f32,
     pub similarity_review_min: f32,
+    /// Each gesture frame must resemble the pinned photo at least this much
+    /// (`FACE_GESTURE_SIMILARITY_MIN`, default: the similarity review floor).
+    pub gesture_similarity_min: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +125,7 @@ impl DecisionPolicy {
             self.liveness_review_min,
             self.similarity_min,
             self.similarity_review_min,
+            self.gesture_similarity_min,
         ] {
             if !range.contains(&value) {
                 return Err("face thresholds must be between 0 and 100");
@@ -123,13 +164,21 @@ impl DecisionPolicy {
                 )),
             }
         };
+        let similarity_review_min = number("FACE_SIMILARITY_REVIEW_MIN", 0.0)?;
+        let gesture_similarity_min = match value("FACE_GESTURE_SIMILARITY_MIN") {
+            Some(text) => text
+                .parse::<f32>()
+                .map_err(|_| anyhow::anyhow!("FACE_GESTURE_SIMILARITY_MIN must be a number"))?,
+            None => similarity_review_min,
+        };
         let policy = Self {
             version: value("FACE_POLICY_VERSION").unwrap_or_default(),
             auto_approve,
             liveness_min: number("FACE_LIVENESS_MIN", 100.0)?,
             liveness_review_min: number("FACE_LIVENESS_REVIEW_MIN", 0.0)?,
             similarity_min: number("FACE_SIMILARITY_MIN", 100.0)?,
-            similarity_review_min: number("FACE_SIMILARITY_REVIEW_MIN", 0.0)?,
+            similarity_review_min,
+            gesture_similarity_min,
         };
         policy.validate().map_err(anyhow::Error::msg)?;
         Ok(policy)
@@ -272,6 +321,12 @@ fn coded(code: &'static str, reason: &'static str, message: &str) -> ApiError {
 pub fn profile_photo_key(avatar_uri: &str, media_origin: &str, uid: &str) -> Option<String> {
     let rest = avatar_uri.strip_prefix(media_origin)?.strip_prefix('/')?;
     let path = rest.split_once('?').map_or(rest, |(path, _)| path);
+    if let Some(file) = path.strip_prefix(&format!("profile_gallery/{uid}/")) {
+        return (file.len() == 40
+            && file.ends_with(".jpg")
+            && Uuid::parse_str(&file[..36]).is_ok())
+        .then(|| path.to_owned());
+    }
     let file = path
         .strip_prefix("users/")?
         .strip_prefix(uid)?
@@ -294,6 +349,195 @@ pub fn cooldown_until(mut failures: Vec<DateTime<Utc>>) -> Option<DateTime<Utc>>
         })
         .map(|window| window[MAX_FAILURES - 1] + chrono::Duration::seconds(COOLDOWN_SECS))
         .max()
+}
+
+/// Face ID-style movement the person performs in front of the camera before
+/// the AWS liveness check. Gestures raise the bar for a printed photo or a
+/// replayed clip; AWS liveness stays the deciding anti-spoofing check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gesture {
+    Center,
+    Blink,
+    TurnLeft,
+    TurnRight,
+    NodDown,
+}
+
+impl Gesture {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Center => "CENTER",
+            Self::Blink => "BLINK",
+            Self::TurnLeft => "TURN_LEFT",
+            Self::TurnRight => "TURN_RIGHT",
+            Self::NodDown => "NOD_DOWN",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        [
+            Self::Center,
+            Self::Blink,
+            Self::TurnLeft,
+            Self::TurnRight,
+            Self::NodDown,
+        ]
+        .into_iter()
+        .find(|gesture| gesture.as_str() == value)
+    }
+
+    fn needs_eyes(self) -> bool {
+        matches!(self, Self::Center | Self::Blink)
+    }
+}
+
+/// Look straight first, then the four movements in an order the client
+/// cannot predict.
+pub fn gesture_sequence() -> Vec<Gesture> {
+    use rand::seq::SliceRandom;
+    let mut moves = [
+        Gesture::Blink,
+        Gesture::TurnLeft,
+        Gesture::TurnRight,
+        Gesture::NodDown,
+    ];
+    moves.shuffle(&mut rand::rngs::OsRng);
+    std::iter::once(Gesture::Center).chain(moves).collect()
+}
+
+/// Why a frame did not show the gesture and what the person should do next.
+/// `hint` and `progress` are guidance only and never decide a step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoseMiss {
+    pub reason: &'static str,
+    pub hint: Option<&'static str>,
+    /// How far a turn or nod got toward the required angle, in tenths (0..=9).
+    pub tenths: u8,
+}
+
+impl PoseMiss {
+    fn new(reason: &'static str, hint: Option<&'static str>, progress: f32) -> Self {
+        Self {
+            reason,
+            hint,
+            // NaN saturates to 0.
+            tenths: (progress * 10.0).clamp(0.0, 9.0) as u8,
+        }
+    }
+
+    /// `tenths` as the 0..1 share the app draws.
+    pub fn progress(&self) -> f64 {
+        f64::from(self.tenths) / 10.0
+    }
+}
+
+/// Whether `frame` shows `gesture`. A head turn returns its yaw sign so the
+/// other turn must go the opposite way. Left and right are judged against
+/// each other rather than by Rekognition's absolute sign, so a mirrored or
+/// rotated camera cannot flip the outcome. Identity is checked afterwards,
+/// on the frame that showed the movement.
+pub fn judge_pose(
+    gesture: Gesture,
+    frame: &GestureFrame,
+    turn_sign: Option<i16>,
+) -> Result<Option<i16>, PoseMiss> {
+    const MISSED: &str = "GESTURE_NOT_DETECTED";
+    match frame.faces {
+        0 => return Err(PoseMiss::new("FACE_NOT_FOUND", Some("NO_FACE"), 0.0)),
+        1 => {}
+        _ => return Err(PoseMiss::new("MULTIPLE_FACES", Some("MULTIPLE_FACES"), 0.0)),
+    }
+    let (yaw, pitch, roll) = (frame.yaw, frame.pitch, frame.roll);
+    // Distance, centring and light come before the movement itself.
+    let framing = framing_hint(frame);
+    if ![yaw, pitch, roll].iter().all(|value| value.is_finite()) {
+        return Err(PoseMiss::new(
+            MISSED,
+            framing.or(Some("LOOK_STRAIGHT")),
+            0.0,
+        ));
+    }
+    if roll.abs() > ROLL_MAX_DEG {
+        return Err(PoseMiss::new(MISSED, framing.or(Some("HEAD_TILTED")), 0.0));
+    }
+    let eyes = |open: bool| {
+        frame.eyes_open.is_some_and(|(value, confidence)| {
+            value == open && confidence >= EYE_STATE_MIN_CONFIDENCE
+        })
+    };
+    let frontal = yaw.abs() <= CENTER_MAX_DEG && pitch.abs() <= CENTER_MAX_DEG;
+    let (hint, progress) = match gesture {
+        Gesture::Center if frontal && eyes(true) => return Ok(None),
+        Gesture::Blink if frontal && eyes(false) => return Ok(None),
+        Gesture::Center => (
+            if frontal {
+                "OPEN_EYES"
+            } else {
+                "LOOK_STRAIGHT"
+            },
+            0.0,
+        ),
+        Gesture::Blink => (
+            if frontal {
+                "CLOSE_EYES"
+            } else {
+                "LOOK_STRAIGHT"
+            },
+            0.0,
+        ),
+        Gesture::NodDown => {
+            let level = yaw.abs() <= OFF_AXIS_MAX_DEG;
+            if level && pitch.abs() >= NOD_MIN_PITCH_DEG {
+                return Ok(None);
+            }
+            (
+                if level { "NOD_MORE" } else { "LOOK_STRAIGHT" },
+                pitch.abs() / NOD_MIN_PITCH_DEG,
+            )
+        }
+        Gesture::TurnLeft | Gesture::TurnRight => {
+            let sign: i16 = if yaw > 0.0 { 1 } else { -1 };
+            if turn_sign == Some(sign) {
+                // The way the first turn already went: never progress.
+                let hint = (yaw.abs() > CENTER_MAX_DEG).then_some("OTHER_WAY");
+                return Err(PoseMiss::new(
+                    MISSED,
+                    hint.or(framing).or(Some("TURN_MORE")),
+                    0.0,
+                ));
+            }
+            let level = pitch.abs() <= OFF_AXIS_MAX_DEG;
+            if level && yaw.abs() >= TURN_MIN_YAW_DEG {
+                return Ok(Some(sign));
+            }
+            (
+                if level { "TURN_MORE" } else { "KEEP_LEVEL" },
+                yaw.abs() / TURN_MIN_YAW_DEG,
+            )
+        }
+    };
+    Err(PoseMiss::new(MISSED, framing.or(Some(hint)), progress))
+}
+
+/// The miss to report for a batch with no frame showing the movement: a
+/// crowd in any frame, otherwise the frame that came closest (newest on ties).
+/// `None` stands for a frame without a usable face.
+fn closest_miss(misses: &[Option<PoseMiss>]) -> PoseMiss {
+    if let Some(crowd) = misses
+        .iter()
+        .flatten()
+        .find(|miss| miss.reason == "MULTIPLE_FACES")
+    {
+        return *crowd;
+    }
+    misses
+        .iter()
+        .flatten()
+        .fold(None, |best: Option<PoseMiss>, miss| match best {
+            Some(best) if best.tenths > miss.tenths => Some(best),
+            _ => Some(*miss),
+        })
+        .unwrap_or(PoseMiss::new("FACE_NOT_FOUND", Some("NO_FACE"), 0.0))
 }
 
 async fn audit(
@@ -558,6 +802,8 @@ pub struct CreateRequest {
     /// `FACE_MOVEMENT` asks for the check without flashing lights.
     #[serde(default)]
     pub challenge: Option<String>,
+    #[serde(default)]
+    pub candidate_avatar_uri: Option<String>,
 }
 
 fn client_ip(headers: &HeaderMap) -> Option<String> {
@@ -625,7 +871,7 @@ pub async fn create(
     }
 
     let profile = sqlx::query(
-        "SELECT p.raw->>'avatarUri' AS avatar,p.face_verified,v.status FROM profiles p
+        "SELECT p.raw,p.raw->>'avatarUri' AS avatar,p.face_verified,v.status FROM profiles p
          LEFT JOIN user_photo_verifications v ON v.user_id=p.user_id WHERE p.user_id=$1",
     )
     .bind(&principal.uid)
@@ -638,7 +884,8 @@ pub async fn create(
             "กรุณาตั้งรูปโปรไฟล์หลักผ่านแอปก่อนยืนยันใบหน้า",
         )
     })?;
-    if profile.get::<bool, _>("face_verified")
+    if input.candidate_avatar_uri.is_none()
+        && profile.get::<bool, _>("face_verified")
         && profile.get::<Option<String>, _>("status").as_deref() == Some("VERIFIED")
     {
         return Err(coded(
@@ -647,9 +894,18 @@ pub async fn create(
             "รูปโปรไฟล์นี้ยืนยันแล้ว",
         ));
     }
-    let avatar: String = profile
+    let previous_avatar: String = profile
         .get::<Option<String>, _>("avatar")
         .unwrap_or_default();
+    let replacement_base = input.candidate_avatar_uri.as_ref().map(|_| {
+        let raw: Value = profile.get("raw");
+        json!({"uri": raw["avatarUri"], "revision": raw["avatarRevision"]})
+    });
+    let avatar = input
+        .candidate_avatar_uri
+        .as_deref()
+        .unwrap_or(&previous_avatar)
+        .to_owned();
     let photo_key = std::iter::once(&services.media_origin)
         .chain(&services.media_alias_origins)
         .find_map(|origin| profile_photo_key(&avatar, origin, &principal.uid));
@@ -660,6 +916,11 @@ pub async fn create(
             "กรุณาตั้งรูปโปรไฟล์หลักผ่านแอปก่อนยืนยันใบหน้า",
         ));
     };
+    if input.candidate_avatar_uri.is_some()
+        && !photo_key.starts_with(&format!("profile_gallery/{}/", principal.uid))
+    {
+        return Err(ApiError::invalid("กรุณาอัปโหลดรูปใหม่ก่อนยืนยัน"));
+    }
     let source = services
         .store
         .read_profile_photo(&photo_key)
@@ -689,11 +950,16 @@ pub async fn create(
     let digest = Sha256::digest(&snapshot).to_vec();
     let attempt_id = Uuid::new_v4();
     let snapshot_key = format!("photo-verification/{}/{attempt_id}.jpg", principal.uid);
+    let gestures: Vec<&str> = gesture_sequence()
+        .into_iter()
+        .map(Gesture::as_str)
+        .collect();
 
     let inserted = sqlx::query(
         "INSERT INTO face_verification_attempts(id,user_id,aws_region,reference_source,reference_key,
-           reference_sha256,consent_version,consented_at,policy_version,state,expires_at,challenge)
-         VALUES($1,$2,$3,$4,$5,$6,$7,now(),$8,'CREATING',now()+make_interval(secs=>$9),$10)",
+           reference_sha256,consent_version,consented_at,policy_version,state,expires_at,challenge,replacement_base,
+           gesture_sequence)
+         VALUES($1,$2,$3,$4,$5,$6,$7,now(),$8,'CREATING',now()+make_interval(secs=>$9),$10,$11,$12)",
     )
     .bind(attempt_id)
     .bind(&principal.uid)
@@ -705,6 +971,8 @@ pub async fn create(
     .bind(&services.policy.version)
     .bind(SESSION_LIFETIME_SECS as f64)
     .bind(challenge.as_str())
+    .bind(replacement_base)
+    .bind(&gestures)
     .execute(&state.db)
     .await;
     if let Err(sqlx::Error::Database(error)) = &inserted {
@@ -758,17 +1026,21 @@ pub async fn create(
         }
     };
     let mut tx = state.db.begin().await?;
-    let expires_at: DateTime<Utc> = sqlx::query_scalar(
+    let created = sqlx::query(
         "UPDATE face_verification_attempts SET state='CREATED',aws_session_id=$2,updated_at=now(),
            expires_at=now()+make_interval(secs=>$3)
-         WHERE id=$1 AND state='CREATING' RETURNING expires_at",
+         WHERE id=$1 AND state='CREATING'
+         RETURNING expires_at,LEAST(expires_at,created_at+make_interval(secs=>$4)) AS gestures_until",
     )
     .bind(attempt_id)
     .bind(&session_id)
     .bind(SESSION_LIFETIME_SECS as f64)
+    .bind(GESTURE_WINDOW_SECS as f64)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(unavailable)?;
+    let expires_at: DateTime<Utc> = created.get("expires_at");
+    let gestures_until: DateTime<Utc> = created.get("gestures_until");
     audit(
         &mut tx,
         &principal.uid,
@@ -787,6 +1059,9 @@ pub async fn create(
         "expiresAt": expires_at,
         "state": "CREATED",
         "challenge": challenge.as_str(),
+        // Performed and checked one by one before the AWS liveness stream.
+        "gestures": gestures,
+        "gesturesExpiresAt": gestures_until,
         // Limited to rekognition:StartFaceLivenessSession; expires in minutes.
         "credentials": {
             "accessKeyId": credentials.access_key_id,
@@ -795,6 +1070,374 @@ pub async fn create(
             "expiration": credentials.expiration,
         },
     })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct GestureRequest {
+    pub step: i16,
+    /// Base64 JPEG of one camera frame. Checked in memory and never stored.
+    #[serde(default)]
+    pub frame: Option<String>,
+    /// Or up to `MAX_GESTURE_FRAMES` recent frames, oldest first.
+    #[serde(default)]
+    pub frames: Vec<String>,
+    /// Continuous sampling from a camera without on-device face tracking: a
+    /// frame that has not caught the movement yet costs no retry. Another
+    /// person's face or several faces still do.
+    #[serde(default)]
+    pub probe: bool,
+}
+
+/// Distance, centring and lighting guidance from where the face sits in the
+/// frame. A hint only: it never decides a step.
+pub fn framing_hint(frame: &GestureFrame) -> Option<&'static str> {
+    let within = |value: f32, (low, high): (f32, f32)| (low..=high).contains(&value);
+    match frame.face_width.filter(|width| width.is_finite()) {
+        Some(width) if width < FACE_WIDTH_MIN => return Some("TOO_FAR"),
+        Some(width) if width > FACE_WIDTH_MAX => return Some("TOO_CLOSE"),
+        _ => {}
+    }
+    if let Some((x, y)) = frame
+        .face_center
+        .filter(|(x, y)| x.is_finite() && y.is_finite())
+    {
+        if !within(x, FACE_CENTER_X) || !within(y, FACE_CENTER_Y) {
+            return Some("OFF_CENTER");
+        }
+    }
+    frame
+        .brightness
+        .is_some_and(|light| light.is_finite() && light < FACE_BRIGHTNESS_MIN)
+        .then_some("TOO_DARK")
+}
+
+/// Reply after a step passed: what to show next. Never a score.
+fn gesture_passed(id: Uuid, sequence: &[String], next: usize) -> Value {
+    json!({
+        "verificationId": id,
+        "passed": true,
+        "nextStep": (next < sequence.len()).then_some(next),
+        "nextGesture": sequence.get(next),
+        "complete": next >= sequence.len(),
+    })
+}
+
+/// Why a step could not be claimed. A repeated request for a step that
+/// already passed gets the same answer again.
+async fn gesture_unclaimed(
+    db: &PgPool,
+    id: Uuid,
+    user_id: &str,
+    step: i16,
+) -> Result<Json<Value>, ApiError> {
+    let row = sqlx::query(
+        "SELECT state::text AS state,failure_code,gesture_sequence,gesture_step,
+           gestures_passed_at IS NOT NULL AS passed,
+           expires_at>now() AND created_at>now()-make_interval(secs=>$3) AS open
+         FROM face_verification_attempts WHERE id=$1 AND user_id=$2",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(GESTURE_WINDOW_SECS as f64)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| ApiError::new("not-found", "ไม่พบรายการยืนยัน"))?;
+    let Some(sequence) = row.get::<Option<Vec<String>>, _>("gesture_sequence") else {
+        return Err(ApiError::invalid("รายการนี้ไม่มีขั้นตอนท่าทาง"));
+    };
+    let current: i16 = row.get("gesture_step");
+    let active = matches!(row.get::<&str, _>("state"), "CREATED" | "IN_PROGRESS");
+    if active && (row.get::<bool, _>("passed") || step < current) {
+        return Ok(Json(gesture_passed(id, &sequence, current as usize)));
+    }
+    if row.get::<Option<String>, _>("failure_code").as_deref() == Some("GESTURE_NOT_CONFIRMED") {
+        return Err(coded(
+            "failed-precondition",
+            "GESTURE_NOT_CONFIRMED",
+            "ทำท่าทางไม่สำเร็จหลายครั้ง กรุณาเริ่มใหม่",
+        ));
+    }
+    if !active || !row.get::<bool, _>("open") {
+        return Err(coded(
+            "failed-precondition",
+            "SESSION_EXPIRED",
+            "หมดเวลาการตรวจ กรุณาเริ่มใหม่",
+        ));
+    }
+    if step > current {
+        return Err(coded(
+            "invalid-argument",
+            "GESTURE_OUT_OF_ORDER",
+            "กรุณาทำท่าทางตามลำดับบนหน้าจอ",
+        ));
+    }
+    Err(coded(
+        "aborted",
+        "AWAITING_RESULT",
+        "กำลังตรวจท่าทาง กรุณารอสักครู่",
+    ))
+}
+
+async fn release_gesture(db: &PgPool, id: Uuid, step: i16) -> Result<(), ApiError> {
+    sqlx::query(
+        "UPDATE face_verification_attempts SET gesture_lease_until=NULL,updated_at=now()
+         WHERE id=$1 AND gesture_step=$2",
+    )
+    .bind(id)
+    .bind(step)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+enum GestureCheck {
+    /// A frame showed the movement by the pinned person; a turn's yaw sign.
+    Shown(Option<i16>),
+    Missed(PoseMiss),
+    Unusable,
+    Unavailable,
+    Tampered,
+}
+
+/// `POST /v1/identity/photo-verifications/{id}/gestures`: check recent frames
+/// against the gesture the server asked for at `step`. The frame that shows
+/// the movement is compared with the pinned profile photo, so every movement
+/// comes from that person.
+pub async fn gesture(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(input): Json<GestureRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let principal = authenticate(&state, &headers).await?;
+    let services = services(&state)?;
+    let id = parse_id(&id)?;
+    let rate = if input.probe {
+        GESTURE_PROBE_RATE
+    } else {
+        GESTURE_RATE
+    };
+    crate::throttle(&state.db, "identity-gesture", &principal.uid, rate).await?;
+    let unusable = || {
+        coded(
+            "invalid-argument",
+            "FRAME_UNUSABLE",
+            "ภาพจากกล้องใช้ไม่ได้ กรุณาลองใหม่",
+        )
+    };
+    let encoded: Vec<String> = input.frame.into_iter().chain(input.frames).collect();
+    if input.step < 0
+        || encoded.is_empty()
+        || encoded.len() > MAX_GESTURE_FRAMES
+        || encoded.iter().map(String::len).sum::<usize>() > MAX_GESTURE_FRAME_BYTES.div_ceil(3) * 4
+    {
+        return Err(unusable());
+    }
+    let raws = encoded
+        .iter()
+        .map(|frame| BASE64.decode(frame.as_bytes()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| unusable())?;
+    drop(encoded);
+    if raws.iter().any(Vec::is_empty)
+        || raws.iter().map(Vec::len).sum::<usize>() > MAX_GESTURE_FRAME_BYTES
+    {
+        return Err(unusable());
+    }
+
+    // One frame per attempt is evaluated at a time, in the server's order.
+    let claimed = sqlx::query(
+        "UPDATE face_verification_attempts SET gesture_lease_until=now()+make_interval(secs=>$4),
+           updated_at=now()
+         WHERE id=$1 AND user_id=$2 AND gesture_step=$3 AND state IN ('CREATED','IN_PROGRESS')
+           AND expires_at>now() AND created_at>now()-make_interval(secs=>$5)
+           AND gesture_sequence IS NOT NULL AND gestures_passed_at IS NULL
+           AND (gesture_lease_until IS NULL OR gesture_lease_until<now())
+         RETURNING gesture_sequence,gesture_turn_sign,reference_key,reference_sha256",
+    )
+    .bind(id)
+    .bind(&principal.uid)
+    .bind(input.step)
+    .bind(GESTURE_LEASE_SECS as f64)
+    .bind(GESTURE_WINDOW_SECS as f64)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some(row) = claimed else {
+        return gesture_unclaimed(&state.db, id, &principal.uid, input.step).await;
+    };
+    let sequence: Vec<String> = row.get("gesture_sequence");
+    let step = input.step as usize;
+    let Some(gesture) = sequence.get(step).and_then(|name| Gesture::parse(name)) else {
+        release_gesture(&state.db, id, input.step).await?;
+        return Err(ApiError::internal());
+    };
+    let turn_sign: Option<i16> = row.get("gesture_turn_sign");
+    let reference_key: String = row.get("reference_key");
+    let reference_sha256: Vec<u8> = row.get("reference_sha256");
+
+    // No transaction or row lock is held during the R2/AWS calls.
+    let check = async {
+        let normalized = tokio::task::spawn_blocking(move || {
+            raws.iter()
+                .map(|raw| normalize_reference(raw))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .await;
+        let mut frames = match normalized {
+            Ok(Ok(frames)) => frames,
+            Ok(Err(_)) => return GestureCheck::Unusable,
+            Err(_) => return GestureCheck::Unavailable,
+        };
+        // Pose first, for every frame at once. Frames that do not show the
+        // movement never reach CompareFaces or the stored snapshot.
+        let detected = futures_util::future::join_all(frames.iter().map(|frame| {
+            services
+                .provider
+                .detect_gesture(frame.clone(), gesture.needs_eyes())
+        }))
+        .await;
+        let mut misses = Vec::with_capacity(detected.len());
+        let mut shown = None;
+        for (index, seen) in detected.into_iter().enumerate() {
+            match seen.map(|seen| judge_pose(gesture, &seen, turn_sign)) {
+                Ok(Ok(sign)) => shown = Some((index, sign)),
+                Ok(Err(miss)) => misses.push(Some(miss)),
+                Err(ProviderError::Rejected) => misses.push(None),
+                Err(_) => return GestureCheck::Unavailable,
+            }
+        }
+        // The newest frame that shows the movement.
+        let Some((index, sign)) = shown else {
+            return GestureCheck::Missed(closest_miss(&misses));
+        };
+        let snapshot = match services.store.read_snapshot(&reference_key).await {
+            Ok(bytes) => bytes,
+            Err(_) => return GestureCheck::Unavailable,
+        };
+        if Sha256::digest(&snapshot).as_slice() != reference_sha256.as_slice() {
+            return GestureCheck::Tampered;
+        }
+        let frame = frames.swap_remove(index);
+        match services.provider.match_gesture(snapshot, frame).await {
+            Ok(Some(similarity))
+                if similarity.is_finite()
+                    && similarity >= services.policy.gesture_similarity_min =>
+            {
+                GestureCheck::Shown(sign)
+            }
+            Ok(Some(_)) => GestureCheck::Missed(PoseMiss::new("FACE_NOT_MATCHED", None, 0.0)),
+            Ok(None) | Err(ProviderError::Rejected) => {
+                GestureCheck::Missed(PoseMiss::new("FACE_NOT_FOUND", Some("HOLD_STILL"), 0.0))
+            }
+            Err(_) => GestureCheck::Unavailable,
+        }
+    };
+    let check = tokio::time::timeout(Duration::from_secs(12), check)
+        .await
+        .unwrap_or(GestureCheck::Unavailable);
+    let verdict = match check {
+        GestureCheck::Shown(sign) => Ok(sign),
+        GestureCheck::Missed(miss) => Err(miss),
+        GestureCheck::Unusable => {
+            release_gesture(&state.db, id, input.step).await?;
+            return Err(unusable());
+        }
+        GestureCheck::Unavailable => {
+            release_gesture(&state.db, id, input.step).await?;
+            return Err(coded(
+                "unavailable",
+                "SERVICE_UNAVAILABLE",
+                "ระบบยืนยันใบหน้าไม่พร้อม กรุณาลองใหม่",
+            ));
+        }
+        GestureCheck::Tampered => {
+            mark_failed(&state.db, id, "REFERENCE_TAMPERED").await?;
+            return Err(coded(
+                "failed-precondition",
+                "REFERENCE_TAMPERED",
+                "ตรวจพบความผิดปกติของรูปอ้างอิง กรุณาเริ่มใหม่",
+            ));
+        }
+    };
+
+    match verdict {
+        Ok(sign) => {
+            let next = step + 1;
+            let done = next >= sequence.len();
+            let mut tx = state.db.begin().await?;
+            let advanced = sqlx::query(
+                "UPDATE face_verification_attempts SET gesture_step=gesture_step+1,
+                   gesture_turn_sign=COALESCE(gesture_turn_sign,$3),gesture_lease_until=NULL,
+                   gestures_passed_at=CASE WHEN $4 THEN now() END,updated_at=now()
+                 WHERE id=$1 AND gesture_step=$2 AND gestures_passed_at IS NULL
+                   AND state IN ('CREATED','IN_PROGRESS') AND expires_at>now()",
+            )
+            .bind(id)
+            .bind(input.step)
+            .bind(sign)
+            .bind(done)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                == 1;
+            if !advanced {
+                drop(tx);
+                return gesture_unclaimed(&state.db, id, &principal.uid, input.step).await;
+            }
+            if done {
+                audit(
+                    &mut tx,
+                    &principal.uid,
+                    Some(id),
+                    "GESTURES_PASSED",
+                    ("user", Some(&principal.uid)),
+                    Some(&services.policy.version),
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(Json(gesture_passed(id, &sequence, next)))
+        }
+        Err(miss) => {
+            let reason = miss.reason;
+            // A probe frame that simply has not caught the movement yet is
+            // free; a stranger's face or a crowd always costs a retry.
+            let counts = !input.probe || matches!(reason, "FACE_NOT_MATCHED" | "MULTIPLE_FACES");
+            let failures: Option<i16> = sqlx::query_scalar(
+                "UPDATE face_verification_attempts SET gesture_failures=gesture_failures+$3::smallint,
+                   gesture_lease_until=NULL,updated_at=now()
+                 WHERE id=$1 AND gesture_step=$2 AND state IN ('CREATED','IN_PROGRESS')
+                 RETURNING gesture_failures",
+            )
+            .bind(id)
+            .bind(input.step)
+            .bind(i16::from(counts))
+            .fetch_optional(&state.db)
+            .await?;
+            let Some(failures) = failures else {
+                return gesture_unclaimed(&state.db, id, &principal.uid, input.step).await;
+            };
+            if counts && failures >= MAX_GESTURE_FAILURES {
+                mark_failed(&state.db, id, "GESTURE_NOT_CONFIRMED").await?;
+                return Err(coded(
+                    "failed-precondition",
+                    "GESTURE_NOT_CONFIRMED",
+                    "ทำท่าทางไม่สำเร็จหลายครั้ง กรุณาเริ่มใหม่",
+                ));
+            }
+            Ok(Json(json!({
+                "verificationId": id,
+                "passed": false,
+                "step": step,
+                "gesture": gesture.as_str(),
+                "reason": reason,
+                "hint": miss.hint,
+                "progress": miss.progress(),
+                "retriesLeft": MAX_GESTURE_FAILURES - failures,
+            })))
+        }
+    }
 }
 
 /// Public view of an attempt: decision only, never scores.
@@ -820,8 +1463,9 @@ async fn load_owned(
     user_id: &str,
 ) -> Result<sqlx::postgres::PgRow, ApiError> {
     sqlx::query(
-        "SELECT state::text AS state,failure_code,finished_at,expires_at FROM face_verification_attempts
-         WHERE id=$1 AND user_id=$2",
+        "SELECT state::text AS state,failure_code,finished_at,expires_at,
+           (gesture_sequence IS NOT NULL AND gestures_passed_at IS NULL) AS gestures_pending
+         FROM face_verification_attempts WHERE id=$1 AND user_id=$2",
     )
     .bind(id)
     .bind(user_id)
@@ -859,6 +1503,7 @@ struct Claimed {
     reference_key: String,
     reference_sha256: Vec<u8>,
     reference_source: String,
+    replacement_base: Option<Value>,
     policy_version: String,
 }
 
@@ -953,12 +1598,16 @@ async fn finalize(
     evidence_stored: bool,
 ) -> Result<Option<Value>, ApiError> {
     let mut tx = db.begin().await?;
-    let current: Option<String> =
-        sqlx::query_scalar("SELECT raw->>'avatarUri' FROM profiles WHERE user_id=$1 FOR UPDATE")
-            .bind(user_id)
-            .fetch_one(&mut *tx)
-            .await?;
-    let outcome = if current.as_deref() == Some(claimed.reference_source.as_str()) {
+    let current: Value = sqlx::query_scalar("SELECT raw FROM profiles WHERE user_id=$1 FOR UPDATE")
+        .bind(user_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let baseline_matches = if let Some(base) = &claimed.replacement_base {
+        current["avatarUri"] == base["uri"] && current["avatarRevision"] == base["revision"]
+    } else {
+        current["avatarUri"].as_str() == Some(claimed.reference_source.as_str())
+    };
+    let outcome = if baseline_matches {
         outcome
     } else {
         Outcome::Failed("IMAGE_CHANGED")
@@ -993,6 +1642,11 @@ async fn finalize(
     let finished: DateTime<Utc> = row.get("finished_at");
     match outcome {
         Outcome::Verified => {
+            if claimed.replacement_base.is_some() {
+                sqlx::query("UPDATE profiles SET raw=raw || jsonb_build_object('avatarUri',$2::text,'avatarRevision',$3::bigint),revision=revision+1,updated_at=now() WHERE user_id=$1")
+                    .bind(user_id).bind(&claimed.reference_source).bind(Utc::now().timestamp_millis())
+                    .execute(&mut *tx).await?;
+            }
             sqlx::query(
                 "INSERT INTO user_photo_verifications(user_id,latest_attempt_id,verified_reference_source,
                    verified_reference_sha256,status,method,policy_version,verified_at,revoked_at,
@@ -1068,11 +1722,13 @@ pub async fn complete(
     let id = parse_id(&id)?;
     crate::throttle(&state.db, "identity-complete", &principal.uid, 20).await?;
 
-    // Exactly one request moves the attempt to PROCESSING.
+    // Exactly one request moves the attempt to PROCESSING, and only after
+    // every gesture passed on the server.
     let claimed = sqlx::query(
         "UPDATE face_verification_attempts SET state='PROCESSING',updated_at=now()
          WHERE id=$1 AND user_id=$2 AND state IN ('CREATED','IN_PROGRESS') AND expires_at>now()
-         RETURNING aws_session_id,reference_key,reference_sha256,reference_source,policy_version,
+           AND (gesture_sequence IS NULL OR gestures_passed_at IS NOT NULL)
+         RETURNING aws_session_id,reference_key,reference_sha256,reference_source,policy_version,replacement_base,
            challenge",
     )
     .bind(id)
@@ -1083,6 +1739,15 @@ pub async fn complete(
         reconcile(&state.db, Some(&principal.uid)).await?;
         let row = load_owned(&state.db, id, &principal.uid).await?;
         let current: String = row.get("state");
+        if matches!(current.as_str(), "CREATED" | "IN_PROGRESS")
+            && row.get::<bool, _>("gestures_pending")
+        {
+            return Err(coded(
+                "failed-precondition",
+                "GESTURES_INCOMPLETE",
+                "กรุณาทำท่าทางตามหน้าจอให้ครบก่อน",
+            ));
+        }
         if matches!(
             current.as_str(),
             "CREATING" | "CREATED" | "IN_PROGRESS" | "PROCESSING"
@@ -1109,6 +1774,7 @@ pub async fn complete(
         reference_key: row.get("reference_key"),
         reference_sha256: row.get("reference_sha256"),
         reference_source: row.get("reference_source"),
+        replacement_base: row.get("replacement_base"),
         policy_version: row.get("policy_version"),
     };
 
@@ -1392,13 +2058,12 @@ pub async fn admin_decision(
         return Err(admin_denied());
     }
     // Same lock order as revocation and finalize: profile, then attempts.
-    let current: Option<String> =
-        sqlx::query_scalar("SELECT raw->>'avatarUri' FROM profiles WHERE user_id=$1 FOR UPDATE")
-            .bind(&user_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let current: Value = sqlx::query_scalar("SELECT raw FROM profiles WHERE user_id=$1 FOR UPDATE")
+        .bind(&user_id)
+        .fetch_one(&mut *tx)
+        .await?;
     let row = sqlx::query(
-        "SELECT a.state::text AS state,a.reference_source,a.reference_sha256,a.policy_version,
+        "SELECT a.state::text AS state,a.reference_source,a.reference_sha256,a.policy_version,a.replacement_base,
            (a.evidence_stored AND a.reference_deleted_at IS NULL) AS has_evidence,r.viewed_by
          FROM identity_review_requests r JOIN face_verification_attempts a ON a.id=r.attempt_id
          WHERE r.attempt_id=$1 AND r.status='OPEN' FOR UPDATE OF r,a",
@@ -1432,7 +2097,13 @@ pub async fn admin_decision(
         ));
     }
     let reference_source: String = row.get("reference_source");
-    if approve && current.as_deref() != Some(reference_source.as_str()) {
+    let replacement_base: Option<Value> = row.get("replacement_base");
+    let baseline_matches = if let Some(base) = &replacement_base {
+        current["avatarUri"] == base["uri"] && current["avatarRevision"] == base["revision"]
+    } else {
+        current["avatarUri"].as_str() == Some(reference_source.as_str())
+    };
+    if approve && !baseline_matches {
         return Err(coded(
             "failed-precondition",
             "IMAGE_CHANGED",
@@ -1452,6 +2123,11 @@ pub async fn admin_decision(
         .await?;
     }
     if approve {
+        if replacement_base.is_some() {
+            sqlx::query("UPDATE profiles SET raw=raw || jsonb_build_object('avatarUri',$2::text,'avatarRevision',$3::bigint),revision=revision+1,updated_at=now() WHERE user_id=$1")
+                .bind(&user_id).bind(&reference_source).bind(Utc::now().timestamp_millis())
+                .execute(&mut *tx).await?;
+        }
         sqlx::query(
             "INSERT INTO user_photo_verifications(user_id,latest_attempt_id,verified_reference_source,
                verified_reference_sha256,status,method,policy_version,verified_at)
@@ -1811,7 +2487,267 @@ mod tests {
             liveness_review_min: 70.0,
             similarity_min: 95.0,
             similarity_review_min: 80.0,
+            gesture_similarity_min: 80.0,
         }
+    }
+
+    fn seen(yaw: f32, pitch: f32, eyes_open: Option<(bool, f32)>) -> GestureFrame {
+        GestureFrame {
+            faces: 1,
+            yaw,
+            pitch,
+            roll: 2.0,
+            eyes_open,
+            face_width: Some(0.45),
+            face_center: Some((0.5, 0.45)),
+            brightness: Some(60.0),
+        }
+    }
+
+    /// Reason, hint and progress of a miss, `None` for a pass.
+    fn missed(
+        gesture: Gesture,
+        frame: GestureFrame,
+        sign: Option<i16>,
+    ) -> Option<(&'static str, Option<&'static str>, f64)> {
+        judge_pose(gesture, &frame, sign)
+            .err()
+            .map(|miss| (miss.reason, miss.hint, miss.progress()))
+    }
+
+    #[test]
+    fn framing_hints_follow_where_the_face_sits_in_the_frame() {
+        let at = |width: Option<f32>| GestureFrame {
+            face_width: width,
+            ..seen(0.0, 0.0, None)
+        };
+        assert_eq!(framing_hint(&at(Some(0.1))), Some("TOO_FAR"));
+        assert_eq!(framing_hint(&at(Some(0.9))), Some("TOO_CLOSE"));
+        assert_eq!(framing_hint(&at(Some(0.45))), None);
+        assert_eq!(framing_hint(&at(None)), None);
+        assert_eq!(framing_hint(&at(Some(f32::NAN))), None);
+        let off = GestureFrame {
+            face_center: Some((0.85, 0.5)),
+            ..seen(0.0, 0.0, None)
+        };
+        assert_eq!(framing_hint(&off), Some("OFF_CENTER"));
+        let dark = GestureFrame {
+            brightness: Some(8.0),
+            ..seen(0.0, 0.0, None)
+        };
+        assert_eq!(framing_hint(&dark), Some("TOO_DARK"));
+        // Distance is the first thing to fix.
+        assert_eq!(
+            framing_hint(&GestureFrame {
+                face_width: Some(0.1),
+                ..dark
+            }),
+            Some("TOO_FAR")
+        );
+    }
+
+    #[test]
+    fn each_gesture_needs_its_own_movement() {
+        let open = Some((true, 96.0));
+        let closed = Some((false, 93.0));
+        let judge = |gesture, frame: GestureFrame, sign| judge_pose(gesture, &frame, sign);
+        assert_eq!(
+            judge(Gesture::Center, seen(3.0, -4.0, open), None),
+            Ok(None)
+        );
+        assert_eq!(
+            judge(Gesture::Blink, seen(2.0, 1.0, closed), None),
+            Ok(None)
+        );
+        assert_eq!(
+            judge(Gesture::NodDown, seen(4.0, -20.0, None), None),
+            Ok(None)
+        );
+        // The first turn fixes a direction; the other turn must be opposite.
+        assert_eq!(
+            judge(Gesture::TurnLeft, seen(30.0, 3.0, None), None),
+            Ok(Some(1))
+        );
+        assert_eq!(
+            judge(Gesture::TurnRight, seen(-29.0, 3.0, None), Some(1)),
+            Ok(Some(-1))
+        );
+        // A miss says what to do next.
+        const MISSED: &str = "GESTURE_NOT_DETECTED";
+        for (gesture, frame, sign, hint, progress) in [
+            (
+                Gesture::Center,
+                seen(28.0, 0.0, open),
+                None,
+                "LOOK_STRAIGHT",
+                0.0,
+            ),
+            (
+                Gesture::Center,
+                seen(0.0, 0.0, None),
+                None,
+                "OPEN_EYES",
+                0.0,
+            ),
+            (
+                Gesture::Blink,
+                seen(2.0, 1.0, open),
+                None,
+                "CLOSE_EYES",
+                0.0,
+            ),
+            (
+                Gesture::Blink,
+                seen(2.0, 1.0, Some((false, 40.0))),
+                None,
+                "CLOSE_EYES",
+                0.0,
+            ),
+            (
+                Gesture::Blink,
+                seen(30.0, 1.0, closed),
+                None,
+                "LOOK_STRAIGHT",
+                0.0,
+            ),
+            (
+                Gesture::NodDown,
+                seen(4.0, -6.0, None),
+                None,
+                "NOD_MORE",
+                0.5,
+            ),
+            (
+                Gesture::NodDown,
+                seen(35.0, -20.0, None),
+                None,
+                "LOOK_STRAIGHT",
+                0.9,
+            ),
+            (
+                Gesture::TurnLeft,
+                seen(9.0, 0.0, None),
+                None,
+                "TURN_MORE",
+                0.5,
+            ),
+            (
+                Gesture::TurnLeft,
+                seen(-9.0, 0.0, None),
+                None,
+                "TURN_MORE",
+                0.5,
+            ),
+            (
+                Gesture::TurnLeft,
+                seen(30.0, 40.0, None),
+                None,
+                "KEEP_LEVEL",
+                0.9,
+            ),
+            (
+                Gesture::TurnRight,
+                seen(31.0, 3.0, None),
+                Some(1),
+                "OTHER_WAY",
+                0.0,
+            ),
+            (
+                Gesture::TurnRight,
+                seen(5.0, 3.0, None),
+                Some(1),
+                "TURN_MORE",
+                0.0,
+            ),
+            (
+                Gesture::TurnRight,
+                seen(-9.0, 3.0, None),
+                Some(1),
+                "TURN_MORE",
+                0.5,
+            ),
+        ] {
+            assert_eq!(
+                missed(gesture, frame, sign),
+                Some((MISSED, Some(hint), progress)),
+                "{gesture:?} {frame:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gesture_frames_reject_missing_extra_or_unreadable_faces() {
+        let open = Some((true, 96.0));
+        let none = GestureFrame {
+            faces: 0,
+            ..seen(0.0, 0.0, open)
+        };
+        let two = GestureFrame {
+            faces: 2,
+            ..seen(0.0, 0.0, open)
+        };
+        let tilted = GestureFrame {
+            roll: 50.0,
+            ..seen(0.0, 0.0, open)
+        };
+        let nan = GestureFrame {
+            yaw: f32::NAN,
+            ..seen(0.0, 0.0, open)
+        };
+        let far_and_unreadable = GestureFrame {
+            face_width: Some(0.1),
+            ..nan
+        };
+        for (frame, reason, hint) in [
+            (none, "FACE_NOT_FOUND", "NO_FACE"),
+            (two, "MULTIPLE_FACES", "MULTIPLE_FACES"),
+            (tilted, "GESTURE_NOT_DETECTED", "HEAD_TILTED"),
+            (nan, "GESTURE_NOT_DETECTED", "LOOK_STRAIGHT"),
+            (far_and_unreadable, "GESTURE_NOT_DETECTED", "TOO_FAR"),
+        ] {
+            assert_eq!(
+                missed(Gesture::Center, frame, None),
+                Some((reason, Some(hint), 0.0))
+            );
+        }
+    }
+
+    #[test]
+    fn a_batch_reports_a_crowd_first_then_the_closest_frame() {
+        let miss = |reason, hint, progress| Some(PoseMiss::new(reason, Some(hint), progress));
+        let near = miss("GESTURE_NOT_DETECTED", "TURN_MORE", 0.8);
+        let far = miss("GESTURE_NOT_DETECTED", "TURN_MORE", 0.2);
+        let crowd = miss("MULTIPLE_FACES", "MULTIPLE_FACES", 0.0);
+        assert_eq!(closest_miss(&[far, near, None]), near.unwrap());
+        assert_eq!(closest_miss(&[near, crowd]).reason, "MULTIPLE_FACES");
+        assert_eq!(closest_miss(&[None, None]).reason, "FACE_NOT_FOUND");
+        // Ties go to the newest frame.
+        let newer = miss("GESTURE_NOT_DETECTED", "KEEP_LEVEL", 0.8);
+        assert_eq!(closest_miss(&[near, newer]), newer.unwrap());
+    }
+
+    #[test]
+    fn gesture_order_starts_centred_and_varies() {
+        let mut orders = std::collections::HashSet::new();
+        for _ in 0..64 {
+            let sequence = gesture_sequence();
+            assert_eq!(sequence.len(), 5);
+            assert_eq!(sequence[0], Gesture::Center);
+            let mut moves: Vec<&str> = sequence[1..].iter().map(|g| g.as_str()).collect();
+            orders.insert(moves.join(","));
+            moves.sort_unstable();
+            assert_eq!(moves, ["BLINK", "NOD_DOWN", "TURN_LEFT", "TURN_RIGHT"]);
+        }
+        // 24 possible orders; 64 draws landing on one would be broken randomness.
+        assert!(orders.len() > 1);
+        for gesture in sequence_names() {
+            assert_eq!(Gesture::parse(gesture).unwrap().as_str(), gesture);
+        }
+        assert_eq!(Gesture::parse("SMILE"), None);
+    }
+
+    fn sequence_names() -> [&'static str; 5] {
+        ["CENTER", "BLINK", "TURN_LEFT", "TURN_RIGHT", "NOD_DOWN"]
     }
 
     #[test]
@@ -1892,6 +2828,18 @@ mod tests {
         assert!(!manual.auto_approve);
         assert_eq!(manual.liveness_review_min, 0.0);
         assert_eq!(manual.similarity_review_min, 0.0);
+        assert_eq!(manual.gesture_similarity_min, 0.0);
+        let gestures = DecisionPolicy::from_lookup(lookup(&[
+            ("FACE_POLICY_VERSION", "v1"),
+            ("FACE_GESTURE_SIMILARITY_MIN", "85"),
+        ]))
+        .unwrap();
+        assert_eq!(gestures.gesture_similarity_min, 85.0);
+        assert!(DecisionPolicy::from_lookup(lookup(&[
+            ("FACE_POLICY_VERSION", "v1"),
+            ("FACE_GESTURE_SIMILARITY_MIN", "150"),
+        ]))
+        .is_err());
         assert!(DecisionPolicy::from_lookup(lookup(&[])).is_err());
         assert!(DecisionPolicy::from_lookup(lookup(&[
             ("FACE_POLICY_VERSION", "v1"),

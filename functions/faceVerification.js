@@ -293,8 +293,10 @@ function primaryAvatar(data = {}) {
  * Accounts verified manually by an admin (`autoVerifyFace`, server-only) are
  * managed through the admin console instead.
  */
-export function shouldRevokeFaceVerification(before, after) {
+export function shouldRevokeFaceVerification(before, after, proof = null) {
   if (!before || !after || after.isFaceVerified !== true || after.autoVerifyFace === true) return false;
+  if (proof?.avatarUri === primaryAvatar(after) && proof.avatarRevision === after.avatarRevision
+    && proof.verifiedAt === after.faceVerifiedAt && typeof proof.sessionId === 'string') return false;
   return primaryAvatar(before) !== primaryAvatar(after)
     || (before.avatarRevision ?? null) !== (after.avatarRevision ?? null);
 }
@@ -335,6 +337,9 @@ export async function createFaceVerificationSession({
   uid,
   authEmail = null,
   authEmailVerified = false,
+  candidateAvatarUri = null,
+  candidateBucket = 'campusmate-7f1ab.firebasestorage.app',
+  avatarHosts = allowedAvatarHosts(),
   now = Date.now(),
 } = {}) {
   if (!uid || typeof uid !== 'string') {
@@ -361,7 +366,12 @@ export async function createFaceVerificationSession({
 
   const userData = userDoc.data() || {};
   const isAutoUser = isAutoVerifiedEmail(authEmail, authEmailVerified) || userData.autoVerifyFace === true;
-  const avatarUri = primaryAvatar(userData);
+  if (candidateAvatarUri && (!isOwnedPhotoCandidate(candidateAvatarUri, uid, avatarHosts)
+    || new URL(candidateAvatarUri).hostname !== 'firebasestorage.googleapis.com'
+    || !new URL(candidateAvatarUri).pathname.startsWith(`/v0/b/${candidateBucket}/o/`))) {
+    throw new Error('รูปใหม่ต้องเป็นรูปที่อัปโหลดผ่านบัญชีของคุณ');
+  }
+  const avatarUri = candidateAvatarUri || primaryAvatar(userData);
   if (!avatarUri && !isAutoUser) {
     throw new Error('ต้องตั้งรูปโปรไฟล์หลักก่อนทำการยืนยันใบหน้า');
   }
@@ -371,6 +381,11 @@ export async function createFaceVerificationSession({
     sessionId,
     uid,
     avatarUri: avatarUri || null,
+    ...(candidateAvatarUri ? {
+      replacement: true,
+      previousAvatarUri: primaryAvatar(userData),
+      previousAvatarRevision: userData.avatarRevision ?? null,
+    } : {}),
     policyVersion: FACE_POLICY_VERSION,
     status: 'PENDING',
     createdAt: now,
@@ -403,6 +418,22 @@ async function claimSession(db, sessionRef, uid, now) {
 
 function failure(reason, message) {
   return { success: false, status: 'failed', reason, message };
+}
+
+// Candidate uploads are moderated, immutable gallery objects, never an
+// arbitrary URL or the mutable /avatar object that is already public.
+export function isOwnedPhotoCandidate(uri, uid, hosts = allowedAvatarHosts()) {
+  if (!isAllowedAvatarUrl(uri, hosts)) return false;
+  try {
+    const url = new URL(uri);
+    const path = decodeURIComponent(url.pathname);
+    const prefix = `/profile_gallery/${encodeURIComponent(uid)}/`;
+    const key = url.hostname === 'firebasestorage.googleapis.com'
+      ? path.slice(path.indexOf('/o/') + 3) : path.replace(/^\//, '');
+    return (url.hostname !== 'firebasestorage.googleapis.com' || path.includes('/o/'))
+      && key.startsWith(prefix.slice(1))
+      && /^[a-f0-9-]{36}\.jpg$/i.test(key.slice(prefix.length - 1));
+  } catch { return false; }
 }
 
 const AVATAR_MESSAGES = {
@@ -448,28 +479,40 @@ export async function verifyFaceMatch({
   const finish = async (status, reason) => {
     await sessionRef.update({ status, ...(reason ? { reason } : {}), finishedAt: now });
   };
-  const markVerified = async (method) => {
-    await userRef.update({
+  const markVerified = async (method) => db.runTransaction(async tx => {
+    const current = (await tx.get(userRef)).data() || {};
+    const baseline = session.replacement ? session.previousAvatarUri : session.avatarUri;
+    if (primaryAvatar(current) !== baseline
+      || (session.replacement && (current.avatarRevision ?? null) !== session.previousAvatarRevision)) {
+      tx.update(sessionRef, { status: 'FAILED', reason: 'image_changed', finishedAt: now });
+      return false;
+    }
+    const patch = {
       isFaceVerified: true,
       faceVerifiedAt: now,
       faceMatchScore: null,
       faceVerificationStatus: 'verified',
-    });
-    await db.collection('faceVerifications').doc(uid).set({
+      ...(session.replacement ? { avatarUri: session.avatarUri, avatarRevision: now, updatedAt: new Date(now) } : {}),
+    };
+    tx.update(userRef, patch);
+    if (session.replacement) tx.set(db.collection('profiles').doc(uid), patch, { merge: true });
+    tx.set(db.collection('faceVerifications').doc(uid), {
       avatarUri: session.avatarUri || null,
+      avatarRevision: session.replacement ? now : (current.avatarRevision ?? null),
       sessionId,
       method,
       policyVersion: session.policyVersion || FACE_POLICY_VERSION,
       verifiedAt: now,
     });
-    await finish('COMPLETED');
-  };
+    tx.update(sessionRef, { status: 'COMPLETED', finishedAt: now });
+    return true;
+  });
 
   // Admin shortcut: only an auth-provider-verified email or a server-only
   // admin flag. Neither can be set from the client profile document.
   const userData = (await userRef.get()).data() || {};
-  if (isAutoVerifiedEmail(authEmail, authEmailVerified) || userData.autoVerifyFace === true) {
-    await markVerified('admin');
+  if (!session.replacement && (isAutoVerifiedEmail(authEmail, authEmailVerified) || userData.autoVerifyFace === true)) {
+    if (!await markVerified('admin')) return failure('image_changed', 'รูปโปรไฟล์เปลี่ยนระหว่างตรวจ กรุณาเริ่มใหม่');
     return { success: true, status: 'verified', message: 'ยืนยันใบหน้าเรียบร้อยแล้ว' };
   }
 
@@ -537,7 +580,7 @@ export async function verifyFaceMatch({
   }
 
   if (matched) {
-    await markVerified('selfie_compare');
+    if (!await markVerified('selfie_compare')) return failure('image_changed', 'รูปโปรไฟล์เปลี่ยนระหว่างตรวจ กรุณาเริ่มใหม่');
     return { success: true, status: 'verified', message: 'ยืนยันใบหน้าสำเร็จ' };
   }
 

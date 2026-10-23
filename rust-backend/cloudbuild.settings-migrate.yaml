@@ -1,0 +1,31 @@
+# Apply only the migration/grants embedded in the already-tested release.
+serviceAccount: projects/campusmate-7f1ab/serviceAccounts/campusmate-rust-schema-ci@campusmate-7f1ab.iam.gserviceaccount.com
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    args: ['gcloud', 'storage', 'cp', 'gs://campusmate-7f1ab_cloudbuild/settings-release/${_RELEASE_BUILD_ID}/settings-release.tgz', '/workspace/settings-release.tgz']
+  - name: rust:1.99-bookworm
+    entrypoint: bash
+    secretEnv: ['DATABASE_DIRECT_URL', 'NEON_API_DATABASE_URL']
+    env: ['APP_ENV=production', 'RUST_LOG=error', 'DB_POOL_MODE=transaction', 'DB_MAX_CONNECTIONS=2', 'DB_MIN_CONNECTIONS=0']
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        tar -xzf /workspace/settings-release.tgz -C /workspace
+        chmod 755 /workspace/settings-bin/*
+        /workspace/settings-bin/check-database --kind owner
+        /workspace/settings-bin/migrate --runtime-grants
+        unset DATABASE_DIRECT_URL
+        export DATABASE_URL="$$NEON_API_DATABASE_URL"
+        unset NEON_API_DATABASE_URL
+        /workspace/settings-bin/check-database --kind api
+        printf 'SETTINGS_PRESENCE_SCHEMA_AND_RUNTIME_OK\n'
+availableSecrets:
+  secretManager:
+    - versionName: projects/campusmate-7f1ab/secrets/CAMPUSMATE_NEON_SCHEMA_CHECK_OWNER/versions/1
+      env: DATABASE_DIRECT_URL
+    - versionName: projects/campusmate-7f1ab/secrets/CAMPUSMATE_NEON_SCHEMA_CHECK_API/versions/1
+      env: NEON_API_DATABASE_URL
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 300s

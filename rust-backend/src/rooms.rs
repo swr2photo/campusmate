@@ -196,7 +196,7 @@ async fn rooms_json(
     }
     let ids: Vec<String> = rows.iter().map(|r| r.get("id")).collect();
     let members = sqlx::query(
-        "SELECT conversation_id,user_id,hidden,muted,show_pinned_meetup,unread,meetup_accepted,
+        "SELECT conversation_id,user_id,hidden,muted,show_pinned_meetup,unread,meetup_accepted,pinned,marked_unread,
             (extract(epoch FROM history_cleared_at)*1000)::bigint AS cleared_ms,
             (extract(epoch FROM read_at)*1000)::bigint AS read_ms
          FROM conversation_members WHERE conversation_id=ANY($1)",
@@ -248,6 +248,8 @@ async fn rooms_json(
                 settings.insert(user.clone(), json!({
                     "isHidden": member.get::<bool,_>("hidden"), "isMuted": member.get::<bool,_>("muted"),
                     "showPinnedMeetup": member.get::<bool,_>("show_pinned_meetup"),
+                    "isPinned": member.get::<bool,_>("pinned"),
+                    "markedUnread": member.get::<bool,_>("marked_unread"),
                     "historyClearedAt": cleared,
                 }));
             }
@@ -430,8 +432,8 @@ pub async fn mark_read(
     let id = room_arg(&data)?;
     crate::throttle(&state.db, "room-read-receipt", &user.uid, 240).await?;
     let mut tx = state.db.begin().await?;
-    let room = chat::member_room(&mut tx, &user.uid, headers, &id, false).await?;
-    sqlx::query("UPDATE conversation_members SET unread=0,read_at=now() WHERE conversation_id=$1 AND user_id=$2")
+    let room = chat::member_room(&mut tx, &user.uid, headers, &id, true).await?;
+    sqlx::query("UPDATE conversation_members SET unread=0,marked_unread=false,read_at=now() WHERE conversation_id=$1 AND user_id=$2")
         .bind(&id)
         .bind(&user.uid)
         .execute(&mut *tx)
@@ -450,12 +452,14 @@ pub async fn settings(
     let id = room_arg(&data)?;
     let settings = data["settings"]
         .as_object()
-        .filter(|s| !s.is_empty() && s.len() <= 4)
+        .filter(|s| !s.is_empty() && s.len() <= 6)
         .ok_or_else(|| ApiError::invalid("Invalid chat setting"))?;
     let mut hidden = None;
     let mut muted = None;
     let mut pinned = None;
     let mut clear = false;
+    let mut inbox_pinned = None;
+    let mut marked_unread = None;
     for (key, value) in settings {
         let value = value
             .as_bool()
@@ -465,18 +469,22 @@ pub async fn settings(
             "isMuted" => muted = Some(value),
             "showPinnedMeetup" => pinned = Some(value),
             "clearHistory" => clear = value,
+            "isPinned" => inbox_pinned = Some(value),
+            "markedUnread" => marked_unread = Some(value),
             _ => return Err(ApiError::invalid("Invalid chat setting")),
         }
     }
     let mut tx = state.db.begin().await?;
     chat::member_room(&mut tx, &user.uid, headers, &id, false).await?;
-    sqlx::query("UPDATE conversation_members SET hidden=COALESCE($3,hidden),muted=COALESCE($4,muted),show_pinned_meetup=COALESCE($5,show_pinned_meetup),history_cleared_at=CASE WHEN $6 THEN now() ELSE history_cleared_at END,unread=CASE WHEN $6 THEN 0 ELSE unread END WHERE conversation_id=$1 AND user_id=$2")
+    sqlx::query("UPDATE conversation_members SET hidden=COALESCE($3,hidden),muted=COALESCE($4,muted),show_pinned_meetup=COALESCE($5,show_pinned_meetup),history_cleared_at=CASE WHEN $6 THEN now() ELSE history_cleared_at END,unread=CASE WHEN $6 THEN 0 ELSE unread END,pinned=COALESCE($7,pinned),marked_unread=CASE WHEN $6 THEN false ELSE COALESCE($8,marked_unread) END WHERE conversation_id=$1 AND user_id=$2")
         .bind(&id)
         .bind(&user.uid)
         .bind(hidden)
         .bind(muted)
         .bind(pinned)
         .bind(clear)
+        .bind(inbox_pinned)
+        .bind(marked_unread)
         .execute(&mut *tx)
         .await?;
     events::publish_one(&mut tx, &user.uid, "conversations", Some(&id)).await?;
@@ -531,7 +539,7 @@ pub async fn unsend(state: &AppState, headers: &HeaderMap, data: Value) -> Resul
     let id = room_arg(&data)?;
     let message_id = message_arg(&data, "messageId")?;
     let mut tx = state.db.begin().await?;
-    let room = chat::member_room(&mut tx, &user.uid, headers, &id, false).await?;
+    let room = chat::member_room(&mut tx, &user.uid, headers, &id, true).await?;
     let Some(row) = locked_message(&mut tx, &id, &message_id).await? else {
         return Ok(json!({"removed":false}));
     };
@@ -568,7 +576,7 @@ pub async fn react(state: &AppState, headers: &HeaderMap, data: Value) -> Result
     }
     crate::throttle(&state.db, "room-react", &user.uid, 120).await?;
     let mut tx = state.db.begin().await?;
-    let room = chat::member_room(&mut tx, &user.uid, headers, &id, false).await?;
+    let room = chat::member_room(&mut tx, &user.uid, headers, &id, true).await?;
     let Some(row) = locked_message(&mut tx, &id, &message_id).await? else {
         return Ok(json!({"changed":false}));
     };
@@ -632,8 +640,8 @@ pub async fn hide_message(
     let id = room_arg(&data)?;
     let message_id = message_arg(&data, "messageId")?;
     let mut tx = state.db.begin().await?;
-    chat::member_room(&mut tx, &user.uid, headers, &id, false).await?;
-    sqlx::query("UPDATE encrypted_messages SET hidden_for=array_append(hidden_for,$3),updated_at=now() WHERE conversation_id=$1 AND id=$2 AND NOT ($3=ANY(hidden_for))")
+    chat::member_room(&mut tx, &user.uid, headers, &id, true).await?;
+    sqlx::query("UPDATE encrypted_messages SET hidden_for=array_append(hidden_for,$3::text),updated_at=now() WHERE conversation_id=$1 AND id=$2 AND NOT ($3::text=ANY(hidden_for))")
         .bind(&id).bind(&message_id).bind(&user.uid).execute(&mut *tx).await?;
     events::publish_one(&mut tx, &user.uid, "messages", Some(&id)).await?;
     tx.commit().await?;
@@ -653,7 +661,7 @@ pub async fn record_view(
     let message_id = message_arg(&data, "messageId")?;
     let exclusive = data["exclusive"] == true;
     let mut tx = state.db.begin().await?;
-    let room = chat::member_room(&mut tx, &user.uid, headers, &id, false).await?;
+    let room = chat::member_room(&mut tx, &user.uid, headers, &id, true).await?;
     let row = sqlx::query(
         "SELECT sender_id,meta FROM encrypted_messages WHERE conversation_id=$1 AND id=$2 FOR UPDATE",
     )
@@ -1007,7 +1015,7 @@ pub async fn ensure_appointment(
     let user = auth::authenticate(state, headers).await?;
     let id = room_arg(&data)?;
     let mut tx = state.db.begin().await?;
-    let room = chat::member_room(&mut tx, &user.uid, headers, &id, false).await?;
+    let room = chat::member_room(&mut tx, &user.uid, headers, &id, true).await?;
     let requested_host = text(&data, "hostUserId").unwrap_or_default();
     let host = if room.members().contains(&requested_host) && requested_host != user.uid {
         requested_host.to_owned()

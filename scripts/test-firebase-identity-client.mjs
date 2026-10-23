@@ -36,3 +36,30 @@ test('a server result arriving after an account change is discarded', async () =
     } });
   await assert.rejects(client.request('/v1/identity/photo-verification'), e => e.code === 'account-changed');
 });
+
+test('request cancellation aborts fetch and exposes only CANCELLED', async () => {
+  const controller = new AbortController();
+  let started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  let requestSignal;
+  const client = createFirebaseIdentityClient({ origin: 'https://identity.example.test', getIdToken: async () => 'synthetic-token',
+    fetch: async (_url, options) => {
+      requestSignal = options.signal;
+      started();
+      return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+    } });
+  const request = client.request('/v1/identity/photo-verification', { signal: controller.signal });
+  await ready;
+  controller.abort();
+  await assert.rejects(request, (error) => error.code === 'CANCELLED');
+  assert.equal(requestSignal.aborted, true);
+});
+
+test('cancelling while fetching the auth token never transmits it', async () => {
+  const controller = new AbortController();
+  let fetches = 0;
+  const client = createFirebaseIdentityClient({ origin: 'https://identity.example.test',
+    getIdToken: async () => { controller.abort(); return 'synthetic-token'; }, fetch: async () => { fetches += 1; } });
+  await assert.rejects(client.request('/v1/identity/photo-verification', { signal: controller.signal }), (error) => error.code === 'CANCELLED');
+  assert.equal(fetches, 0);
+});

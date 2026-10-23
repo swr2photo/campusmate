@@ -1,0 +1,30 @@
+# No real database access: verify and compile against disposable PostgreSQL.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['run', '-d', '--name', 'postgres', '--network', 'cloudbuild', '-e', 'POSTGRES_USER=integration', '-e', 'POSTGRES_PASSWORD=disposable-ci-only', '-e', 'POSTGRES_DB=campusmate_test', 'postgres:18-bookworm']
+  - name: rust:1.99-bookworm
+    entrypoint: bash
+    env:
+      - DATABASE_URL=postgres://integration:disposable-ci-only@postgres:5432/campusmate_test?sslmode=disable
+      - CARGO_PROFILE_RELEASE_LTO=false
+      - CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
+      - CARGO_TERM_COLOR=never
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        rustup component add rustfmt clippy
+        cargo fmt
+        cargo clippy --locked --all-targets -- -D warnings
+        cargo test --locked --all-targets --no-fail-fast
+        cargo build --locked --release --bin campusmate-backend --bin migrate --bin check-database
+        mkdir -p /workspace/settings-bin
+        cp target/release/campusmate-backend target/release/migrate target/release/check-database /workspace/settings-bin/
+        tar -czf /workspace/settings-release.tgz -C /workspace settings-bin
+        tar -czf /workspace/settings-formatted.tgz src/settings.rs src/auth.rs src/events.rs src/lib.rs src/rpc.rs src/social.rs src/notify.rs src/bin/check-database.rs tests/settings.rs
+        sha256sum /workspace/settings-release.tgz
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    args: ['gcloud', 'storage', 'cp', '/workspace/settings-release.tgz', '/workspace/settings-formatted.tgz', 'gs://campusmate-7f1ab_cloudbuild/settings-release/$BUILD_ID/']
+options:
+  machineType: E2_HIGHCPU_32
+timeout: 1800s

@@ -497,11 +497,13 @@ service cloud.firestore {
     function validParticipantSetting(value) {
       return value is map
         && value.keys().hasOnly([
-          'isMuted', 'showPinnedMeetup', 'isHidden', 'hiddenAt', 'historyClearedAt'
+          'isMuted', 'showPinnedMeetup', 'isHidden', 'isPinned', 'markedUnread', 'hiddenAt', 'historyClearedAt'
         ])
         && optionalBoolean(value, 'isMuted')
         && optionalBoolean(value, 'showPinnedMeetup')
         && optionalBoolean(value, 'isHidden')
+        && optionalBoolean(value, 'isPinned')
+        && optionalBoolean(value, 'markedUnread')
         && optionalTimestampOrLegacyMillis(value, 'hiddenAt')
         && optionalTimestampOrLegacyMillis(value, 'historyClearedAt');
     }
@@ -893,8 +895,8 @@ service cloud.firestore {
           ? settingsUpdateAllowed()
           : (affected.hasOnly(['participantProfiles', 'updatedAt']) && ('participantProfiles' in affected))
             ? participantProfileUpdateAllowed()
-            : (affected.hasOnly(['unreadCounts', 'readReceipts', 'updatedAt']) && affected.hasAny(['unreadCounts', 'readReceipts']))
-              ? readStateUpdateAllowed()
+            : (affected.hasOnly(['unreadCounts', 'readReceipts', 'participantSettings', 'updatedAt']) && affected.hasAny(['unreadCounts', 'readReceipts']))
+              ? (readStateUpdateAllowed() && (!('participantSettings' in affected) || settingsUpdateAllowed()))
               : (affected.hasOnly(['encryption', 'lastMessage', 'updatedAt']) && ('encryption' in affected))
                 ? encryptionUpdateAllowed()
                 : affected.hasOnly([
@@ -938,6 +940,8 @@ service cloud.firestore {
               : validPrivateProfile(request.resource.data, userId)
         );
       allow update: if isOwner(userId)
+        && (optionalValue(resource.data, 'avatarUri') == null
+          || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['avatarUri', 'avatarRevision']))
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
         && emailFieldAllowed()
         && usersUpdateAllowed(userId);
@@ -978,6 +982,7 @@ service cloud.firestore {
             : validPublicProfile(request.resource.data, userId)
         );
       allow update: if isOwner(userId)
+        && (optionalValue(request.resource.data, 'avatarUri') == optionalValue(get(/databases/$(database)/documents/users/$(userId)).data, 'avatarUri'))
         && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isFaceVerified', 'faceVerifiedAt', 'faceMatchScore', 'faceVerificationStatus'])
         && profilesUpdateAllowed(userId);
       allow delete: if false;
@@ -1428,7 +1433,7 @@ service cloud.firestore {
           && request.resource.data.senderId == request.auth.uid
           && request.resource.data.epoch == group().currentEpoch
           && request.resource.data.encrypted == true
-          && request.resource.data.type in ['text', 'image']
+          && request.resource.data.type in ['text', 'image', 'audio', 'gif', 'track']
           && request.resource.data.nonce is string
           && request.resource.data.nonce.size() == 32
           && request.resource.data.ciphertext is string

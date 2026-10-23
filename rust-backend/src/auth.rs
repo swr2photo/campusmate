@@ -152,7 +152,7 @@ pub(crate) fn new_token() -> Result<String, ApiError> {
     Ok(hex::encode(bytes))
 }
 
-fn bearer_hash(headers: &HeaderMap) -> Result<Vec<u8>, ApiError> {
+pub(crate) fn bearer_hash(headers: &HeaderMap) -> Result<Vec<u8>, ApiError> {
     // Reject duplicate headers, extra words and unbounded input before hashing.
     let mut values = headers.get_all(axum::http::header::AUTHORIZATION).iter();
     let value = values.next().ok_or_else(ApiError::unauthenticated)?;

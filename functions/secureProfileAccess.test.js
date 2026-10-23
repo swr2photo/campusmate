@@ -83,6 +83,20 @@ test('free caller cannot set incognito or forge a different owner; public remain
   assert.equal(db.rows.get('profileVisibility/viewer').mode, 'incognito');
 });
 
+test('plus members are not shown a count for likes whose profiles stay hidden', async () => {
+  const db = database({
+    'entitlements/viewer': plus,
+    'users/alice': profile('alice'),
+    'users/hidden': { ...profile('hidden'), isFaceVerified: false },
+    'decisions/alice_viewer': like('alice'),
+    'decisions/hidden_viewer': like('hidden'),
+  });
+  const summary = await api(db).getIncomingLikeSummary(request());
+  assert.equal(summary.identitiesAvailable, true);
+  assert.equal(summary.pendingCount, 1);
+  assert.deepEqual(summary.pendingLikes.map((entry) => entry.profile.id), ['alice']);
+});
+
 test('revoke during profile hydration suppresses all paid identities in the response', async () => {
   const db = database({ 'users/alice': profile('alice'), 'entitlements/viewer': plus, 'decisions/alice_viewer': like('alice') });
   db.afterProfiles = () => db.rows.delete('entitlements/viewer');

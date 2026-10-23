@@ -124,6 +124,7 @@ pub async fn discover(
     let (snapshot_id, ranked, start) = if let Some(cursor) =
         request.cursor.as_deref().filter(|s| !s.is_empty())
     {
+        drop(ranking_capacity);
         let key = state.cursor.verify(cursor, &actor.uid, &scope, now)?;
         let id = Uuid::parse_str(&key.id).map_err(|_| ApiError::invalid("หน้ารายการไม่ถูกต้อง"))?;
         let offset: usize = key
@@ -139,6 +140,21 @@ pub async fn discover(
             return Err(ApiError::invalid("หน้ารายการไม่ถูกต้อง"));
         }
         (id, ranked, offset)
+    } else if let Some(row) = sqlx::query(
+        "SELECT id, ranked FROM discovery_snapshots WHERE user_id=$1 AND scope=$2 AND expires_at>now() ORDER BY expires_at DESC LIMIT 1",
+    )
+    .bind(&actor.uid)
+    .bind(&scope)
+    .fetch_optional(&mut *tx)
+    .await?
+    {
+        // Reuse the ranking for this filter set. A fresh score of every profile
+        // on each open is what made Find Friends stall and reshuffle the card.
+        drop(ranking_capacity);
+        let id: Uuid = row.get("id");
+        let ranked: Vec<Ranked> = serde_json::from_value(row.get("ranked"))
+            .map_err(|_| ApiError::internal())?;
+        (id, ranked, 0)
     } else {
         let rows = sqlx::query(CANDIDATES)
             .bind(&actor.uid)

@@ -18,6 +18,7 @@ fn is_admin(record: &Value) -> bool {
     record.get("isAdmin") == Some(&Value::Bool(true))
         || record.get("isSuperAdmin") == Some(&Value::Bool(true))
         || record.get("role").and_then(Value::as_str) == Some("admin")
+        || record.get("isPlus") == Some(&Value::Bool(true))
 }
 
 pub fn is_plus_active(record: Option<&Value>, now_ms: i64) -> bool {
@@ -66,7 +67,7 @@ pub fn can_view_profile(viewer_id: &str, owner_id: &str, check: &ViewCheck) -> b
     if check.matched {
         return true;
     }
-    if !check.owner_discoverable || check.owner_is_new {
+    if (!check.owner_discoverable || check.owner_is_new) && !check.owner_liked_viewer {
         return false;
     }
     match check.visibility_mode.unwrap_or("public") {

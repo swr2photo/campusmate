@@ -85,6 +85,80 @@ fn merge(mut base: Value, extra: Value) -> Value {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn inbox_preferences_are_per_member_and_do_not_change_receipts(pool: PgPool) {
+    let profile = json!({"name":"Student","age":21});
+    let alice = seed(&pool, "alice", profile.clone()).await;
+    let bob = seed(&pool, "bob", profile.clone()).await;
+    let outsider = seed(&pool, "outsider", profile).await;
+    sqlx::query("INSERT INTO conversations(id,member_a,member_b) VALUES('c-inbox','alice','bob')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO conversation_members(conversation_id,user_id,unread) VALUES('c-inbox','alice',2),('c-inbox','bob',5) ON CONFLICT(conversation_id,user_id) DO UPDATE SET unread=EXCLUDED.unread")
+        .execute(&pool).await.unwrap();
+    let app = router(new_state(pool.clone(), vec![71; 32]).await.unwrap());
+    ok(
+        &app,
+        &alice,
+        "chatSettings",
+        json!({"conversationId":"c-inbox","settings":{"isPinned":true,"markedUnread":true}}),
+    )
+    .await;
+    let mine: (bool, bool, i32, bool) = sqlx::query_as("SELECT pinned,marked_unread,unread,read_at IS NULL FROM conversation_members WHERE conversation_id='c-inbox' AND user_id='alice'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(mine, (true, true, 2, true));
+    let peer: (bool, bool, i32) = sqlx::query_as("SELECT pinned,marked_unread,unread FROM conversation_members WHERE conversation_id='c-inbox' AND user_id='bob'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(peer, (false, false, 5));
+    let (status, _) = rpc(
+        &app,
+        &outsider,
+        "chatSettings",
+        json!({"conversationId":"c-inbox","settings":{"isPinned":true}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let list = ok(&app, &alice, "listConversations", json!({})).await;
+    assert_eq!(
+        list["conversations"][0]["participantSettings"]["alice"]["isPinned"],
+        true
+    );
+    assert_eq!(
+        list["conversations"][0]["participantSettings"]["alice"]["markedUnread"],
+        true
+    );
+    assert!(list["conversations"][0]["participantSettings"]
+        .get("bob")
+        .is_none());
+    ok(
+        &app,
+        &alice,
+        "chatMarkRead",
+        json!({"conversationId":"c-inbox"}),
+    )
+    .await;
+    let read: (bool, bool, i32) = sqlx::query_as("SELECT pinned,marked_unread,unread FROM conversation_members WHERE conversation_id='c-inbox' AND user_id='alice'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(read, (true, false, 0));
+    // The peer can set their own reminder without touching Alice's pin.
+    ok(
+        &app,
+        &bob,
+        "chatSettings",
+        json!({"conversationId":"c-inbox","settings":{"markedUnread":true}}),
+    )
+    .await;
+    let (status, _) = rpc(
+        &app,
+        &alice,
+        "chatSettings",
+        json!({"conversationId":"c-inbox","settings":{"isPinned":"yes"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn match_chat_meetup_and_inbox(pool: PgPool) {
     let profile = json!({"name":"Student","age":21,"activities":["running"]});
     let alice = seed(&pool, "alice", profile.clone()).await;
@@ -329,8 +403,19 @@ async fn parties_group_chat_and_calls(pool: PgPool) {
         json!({"partyId":party,"id":"g-1","record":record}),
     )
     .await;
+    let audio = json!({"type":"audio","epoch":0,"encrypted":true,"nonce":STANDARD.encode([6;24]),"ciphertext":STANDARD.encode([6;60])});
+    ok(
+        &app,
+        &host,
+        "sendGroupMessage",
+        json!({"partyId":party,"id":"g-audio","record":audio}),
+    )
+    .await;
+    let (status, _) = rpc(&app, &guest, "sendGroupMessage", json!({"partyId":party,"id":"g-bad","record":{"type":"video","epoch":0,"encrypted":true,"nonce":STANDARD.encode([7;24]),"ciphertext":STANDARD.encode([7;60])}})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     let messages = ok(&app, &host, "groupMessages", json!({"partyId":party})).await;
-    assert_eq!(messages["messages"][0]["id"], "g-1");
+    assert_eq!(messages["messages"][0]["id"], "g-audio");
+    assert_eq!(messages["messages"][1]["id"], "g-1");
     assert!(
         messages["epochs"][0]["keyEnvelopes"].get("guest").is_none(),
         "only own envelopes"
@@ -346,6 +431,25 @@ async fn parties_group_chat_and_calls(pool: PgPool) {
     ok(&app, &guest, "leaveParty", json!({"partyId":party})).await;
     let chats = ok(&app, &host, "listGroupChats", json!({})).await;
     assert_eq!(chats["chats"][0]["rekeyRequired"], true);
+    let renamed = ok(
+        &app,
+        &host,
+        "updateGroupProfile",
+        json!({"partyId":party,"title":"กลุ่มบอล"}),
+    )
+    .await;
+    assert_eq!(renamed["title"], "กลุ่มบอล");
+    assert_eq!(renamed["avatarUri"], "");
+    let chats = ok(&app, &host, "listGroupChats", json!({})).await;
+    assert_eq!(chats["chats"][0]["title"], "กลุ่มบอล");
+    let (status, _) = rpc(
+        &app,
+        &guest,
+        "updateGroupProfile",
+        json!({"partyId":party,"title":"แอบแก้"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = rpc(
         &app,
         &host,
@@ -509,6 +613,7 @@ async fn signals_are_delivered_only_after_commit(pool: PgPool) {
         .unwrap()
         .unwrap();
     assert_eq!(&*first.topic, "resync");
+    assert!(hub.is_listening());
     let mut tx = pool.begin().await.unwrap();
     events::publish(&mut tx, &["alice"], "messages", Some("c-1"))
         .await
@@ -525,6 +630,32 @@ async fn signals_are_delivered_only_after_commit(pool: PgPool) {
         .unwrap();
     assert_eq!(&*signal.user, "bob");
     assert_eq!(&*signal.topic, "conversations");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_listener_never_listens_through_a_transaction_pooler(pool: PgPool) {
+    // PgBouncer's server connections carry its name; a LISTEN left on one
+    // would reach the next unrelated request that commits on it.
+    let options = (*pool.connect_options())
+        .clone()
+        .application_name("pgbouncer");
+    let pooled = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_lazy_with(options);
+    let hub = events::Hub::new();
+    let mut receiver = hub.subscribe();
+    let task = tokio::spawn(events::listen(pooled, hub.clone()));
+    let first = tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv()).await;
+    assert!(first.is_err(), "no resync without a direct connection");
+    let listening: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE query ILIKE 'LISTEN%'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(listening, 0);
+    // Clients are told to poll rather than wait on a silent stream.
+    assert!(!hub.is_listening());
+    task.abort();
 }
 
 #[sqlx::test(migrations = "./migrations")]

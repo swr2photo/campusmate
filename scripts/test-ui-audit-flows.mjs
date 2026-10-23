@@ -77,6 +77,7 @@ function likeHarness({ failure, result = {}, chatFailure, secure = false } = {})
     }, createConversation: async () => { if (chatFailure) throw chatFailure; return 'room'; },
     setOptimisticHiddenIds: fn => { hidden = fn(hidden); }, setRemovedUserIds: fn => fn(new Set()),
     acceptedIncomingLikes: [], activeConversations: [], removedUserIds: new Set(),
+    setRewoundProfiles: fn => fn([]),
     runOrQueue: async () => { if (failure) throw failure; return result; }, saveDecision: () => {},
     ensureConversation: async () => { if (chatFailure) throw chatFailure; return 'room'; }, updateHiddenConversations: fn => fn([]),
   });
@@ -98,7 +99,7 @@ for (const secure of [false, true]) test(`committed like survives chat creation 
 });
 
 const home = load('src/screens/HomeScreen.js');
-for (const name of ['handleMatch', 'handleSuperLike']) test(`${name} reports queued and failed actions`, async () => {
+for (const name of ['handleMatch']) test(`${name} reports queued and failed actions`, async () => {
   const call = home.nodes.find(n => n.type === 'VariableDeclarator' && n.id?.name === name).init;
   for (const queued of [true, false]) {
     const messages = [];
@@ -109,6 +110,21 @@ for (const name of ['handleMatch', 'handleSuperLike']) test(`${name} reports que
     vm.runInContext('globalThis.press = ' + home.code(call.arguments[0]), context);
     await context.press();
     assert.match(messages[0], queued ? /จะส่งเมื่อ/ : /ไม่สำเร็จ/);
+  }
+});
+
+test('opening details never submits a like, and only an existing match opens its chat', () => {
+  const call = home.nodes.find(n => n.type === 'VariableDeclarator' && n.id?.name === 'handleDirectChat').init;
+  for (const matched of [false, true]) {
+    const routes = [];
+    const context = vm.createContext({ currentProfile: { id: 'target' }, actionInProgress: false,
+      isCurrentMatched: matched, conversations: [{ id: 'room', participants: ['me', 'target'] }],
+      matchProfile: () => { throw new Error('Opening a profile must not like it'); },
+      router: { push: route => routes.push(route) },
+    });
+    vm.runInContext('globalThis.press = ' + home.code(call.arguments[0]), context);
+    context.press();
+    assert.equal(routes[0].pathname, matched ? '/chat-room' : '/discover-profile');
   }
 });
 

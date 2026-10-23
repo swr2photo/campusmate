@@ -12,6 +12,7 @@ import {
   isAutoVerifiedEmail,
   shouldRevokeFaceVerification,
   FaceVerificationError,
+  isOwnedPhotoCandidate,
   COOLDOWN_MS,
   MAX_FAILURES_PER_WINDOW,
   MAX_SESSIONS_PER_WINDOW,
@@ -46,7 +47,8 @@ function createMockDb(initialData = {}) {
   return {
     collection: (colName) => ({ doc: (docId) => ref(colName, docId) }),
     runTransaction: (body) => {
-      const run = queue.then(() => body({ get: (r) => r.get(), update: (r, data) => r.update(data) }));
+      const run = queue.then(() => body({ get: (r) => r.get(), update: (r, data) => r.update(data),
+        set: async (r, data, options) => options?.merge ? r.set({ ...(await r.get()).data(), ...data }) : r.set(data) }));
       queue = run.catch(() => {});
       return run;
     },
@@ -55,6 +57,41 @@ function createMockDb(initialData = {}) {
 }
 
 const okAvatar = async () => ({ ok: true, headers: { get: () => null }, arrayBuffer: async () => JPEG });
+
+test('replacement candidates must be immutable uploads owned by the caller', () => {
+  const owned = 'https://cdn.example.com/profile_gallery/u1/ba225618-892e-4643-ae79-90c153258ceb.jpg';
+  assert.equal(isOwnedPhotoCandidate(owned, 'u1', HOSTS), true);
+  assert.equal(isOwnedPhotoCandidate(owned, 'u2', HOSTS), false);
+  assert.equal(isOwnedPhotoCandidate('https://evil.test/profile_gallery/u1/ba225618-892e-4643-ae79-90c153258ceb.jpg', 'u1', HOSTS), false);
+  assert.equal(isOwnedPhotoCandidate('https://cdn.example.com/users/u1/avatar.jpg', 'u1', HOSTS), false);
+});
+
+test('candidate failure leaves main photo intact; only a successful server comparison publishes it', async () => {
+  const now = 100_000, candidate = 'https://firebasestorage.googleapis.com/v0/b/campusmate-7f1ab.firebasestorage.app/o/profile_gallery%2Fu1%2Fba225618-892e-4643-ae79-90c153258ceb.jpg?alt=media';
+  const avatarHosts = [...HOSTS, 'firebasestorage.googleapis.com'];
+  const db = dbWithSession(now);
+  const create = () => createFaceVerificationSession({ db, uid: 'u1', now, candidateAvatarUri: candidate, avatarHosts });
+  const first = await create();
+  assert.equal(db._store.users.get('u1').avatarUri, 'https://cdn.example.com/u1.jpg');
+  const args = { db, uid: 'u1', now, liveSelfieBase64: SELFIE, avatarHosts, fetchImpl: okAvatar };
+  assert.equal((await verifyFaceMatch({ ...args, sessionId: first.sessionId, comparator: async () => ({ matched: false }) })).success, false);
+  assert.equal(db._store.users.get('u1').avatarUri, 'https://cdn.example.com/u1.jpg');
+  const second = await create();
+  assert.equal((await verifyFaceMatch({ ...args, sessionId: second.sessionId, comparator: async () => ({ matched: true, similarity: 99 }) })).success, true);
+  assert.equal(db._store.users.get('u1').avatarUri, candidate);
+  assert.equal(db._store.profiles.get('u1').avatarUri, candidate);
+});
+
+test('a concurrent main-photo change cannot receive a result pinned to another photo', async () => {
+  const now = 100_000, db = dbWithSession(now);
+  const result = await verifyFaceMatch({ db, uid: 'u1', sessionId: 's1', now, liveSelfieBase64: SELFIE,
+    avatarHosts: HOSTS, fetchImpl: okAvatar, comparator: async () => {
+      db._store.users.set('u1', { avatarUri: 'https://cdn.example.com/new.jpg', isFaceVerified: false });
+      return { matched: true, similarity: 99 };
+    } });
+  assert.equal(result.reason, 'image_changed');
+  assert.equal(db._store.users.get('u1').isFaceVerified, false);
+});
 
 function pendingSession(now, extra = {}) {
   return { sessionId: 's1', uid: 'u1', avatarUri: 'https://cdn.example.com/u1.jpg', status: 'PENDING', expiresAt: now + 60_000, ...extra };

@@ -72,6 +72,26 @@ pub struct LivenessResult {
     pub challenge: Option<Challenge>,
 }
 
+/// What DetectFaces saw in one gesture frame. Kept in memory only; identity
+/// is checked separately, and only on a frame that shows the movement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GestureFrame {
+    /// Faces large enough to be someone in front of the camera.
+    pub faces: usize,
+    /// Head pose of the largest face, in degrees.
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    /// `(open, confidence)` when eye state was requested and detected.
+    pub eyes_open: Option<(bool, f32)>,
+    /// Face width as a share of the frame width (0..1), for distance hints.
+    pub face_width: Option<f32>,
+    /// Face centre as shares of the frame `(x, y)`, for framing hints.
+    pub face_center: Option<(f32, f32)>,
+    /// Rekognition's brightness of the face (0..100), for lighting hints.
+    pub brightness: Option<f32>,
+}
+
 pub struct StreamingCredentials {
     pub access_key_id: String,
     pub secret_access_key: String,
@@ -95,6 +115,20 @@ pub trait FaceProvider: Send + Sync {
         &self,
         source: Vec<u8>,
         target: Vec<u8>,
+    ) -> BoxFuture<'_, Result<Option<f32>, ProviderError>>;
+    /// Pose of the face in `frame`, eye state too when `eyes` is set. Turned
+    /// faces are reported, unlike CompareFaces' quality filter.
+    fn detect_gesture(
+        &self,
+        frame: Vec<u8>,
+        eyes: bool,
+    ) -> BoxFuture<'_, Result<GestureFrame, ProviderError>>;
+    /// Similarity of the face in `frame` to `snapshot`, turned faces
+    /// included. `None` when CompareFaces found no face to compare.
+    fn match_gesture(
+        &self,
+        snapshot: Vec<u8>,
+        frame: Vec<u8>,
     ) -> BoxFuture<'_, Result<Option<f32>, ProviderError>>;
     /// Short-lived credentials limited to `rekognition:StartFaceLivenessSession`.
     fn streaming_credentials(
@@ -168,12 +202,47 @@ impl AwsFaceProvider {
             stream_role_arn,
         }
     }
+
+    async fn best_similarity(
+        &self,
+        source: Vec<u8>,
+        target: Vec<u8>,
+        filter: aws_sdk_rekognition::types::QualityFilter,
+    ) -> Result<Option<f32>, ProviderError> {
+        use aws_sdk_rekognition::{primitives::Blob, types::Image};
+        let output = self
+            .rekognition
+            .compare_faces()
+            .source_image(Image::builder().bytes(Blob::new(source)).build())
+            .target_image(Image::builder().bytes(Blob::new(target)).build())
+            .similarity_threshold(0.0)
+            .quality_filter(filter)
+            .send()
+            .await
+            .map_err(|error| classify(&error))?;
+        Ok(output
+            .face_matches()
+            .iter()
+            .filter_map(|matched| matched.similarity())
+            .reduce(f32::max))
+    }
 }
 
-fn classify<E, R>(error: &aws_sdk_rekognition::error::SdkError<E, R>) -> ProviderError {
+fn classify<E: aws_sdk_rekognition::error::ProvideErrorMetadata, R>(
+    error: &aws_sdk_rekognition::error::SdkError<E, R>,
+) -> ProviderError {
     use aws_sdk_rekognition::error::SdkError;
     match error {
-        SdkError::ServiceError(_) => ProviderError::Rejected,
+        // Throttling is a busy service, not a verdict on the image.
+        SdkError::ServiceError(service) => match service.err().code() {
+            Some(
+                "ThrottlingException"
+                | "ProvisionedThroughputExceededException"
+                | "LimitExceededException"
+                | "InternalServerError",
+            ) => ProviderError::Transient,
+            _ => ProviderError::Rejected,
+        },
         _ => ProviderError::Transient,
     }
 }
@@ -270,27 +339,94 @@ impl FaceProvider for AwsFaceProvider {
         source: Vec<u8>,
         target: Vec<u8>,
     ) -> BoxFuture<'_, Result<Option<f32>, ProviderError>> {
+        Box::pin(self.best_similarity(
+            source,
+            target,
+            aws_sdk_rekognition::types::QualityFilter::Auto,
+        ))
+    }
+
+    fn detect_gesture(
+        &self,
+        frame: Vec<u8>,
+        eyes: bool,
+    ) -> BoxFuture<'_, Result<GestureFrame, ProviderError>> {
         Box::pin(async move {
             use aws_sdk_rekognition::{
                 primitives::Blob,
-                types::{Image, QualityFilter},
+                types::{Attribute, FaceDetail, Image},
             };
-            let output = self
+            // DEFAULT always includes pose, bounding box and quality.
+            let mut request = self
                 .rekognition
-                .compare_faces()
-                .source_image(Image::builder().bytes(Blob::new(source)).build())
-                .target_image(Image::builder().bytes(Blob::new(target)).build())
-                .similarity_threshold(0.0)
-                .quality_filter(QualityFilter::Auto)
-                .send()
-                .await
-                .map_err(|error| classify(&error))?;
-            Ok(output
-                .face_matches()
+                .detect_faces()
+                .image(Image::builder().bytes(Blob::new(frame)).build())
+                .attributes(Attribute::Default);
+            if eyes {
+                request = request.attributes(Attribute::EyesOpen);
+            }
+            let output = request.send().await.map_err(|error| classify(&error))?;
+            let finite = |value: Option<f32>| value.filter(|v| v.is_finite());
+            let width = |detail: &FaceDetail| {
+                finite(detail.bounding_box().and_then(|bounds| bounds.width())).unwrap_or(0.0)
+            };
+            let detected: Vec<&FaceDetail> = output
+                .face_details()
                 .iter()
-                .filter_map(|matched| matched.similarity())
-                .reduce(f32::max))
+                .filter(|detail| {
+                    detail.confidence().is_some_and(|c| c >= 80.0) && width(detail) >= 0.03
+                })
+                .collect();
+            let face = detected
+                .iter()
+                .copied()
+                .max_by(|a, b| width(a).total_cmp(&width(b)));
+            // A small face far behind the person (a poster, a passer-by) is
+            // not a second person taking part.
+            let faces = face.map_or(0, |face| {
+                detected
+                    .iter()
+                    .filter(|detail| width(detail) >= width(face) * 0.5)
+                    .count()
+            });
+            let pose = face.and_then(|face| face.pose());
+            // A missing angle never reads as "looking straight".
+            let angle = |value: Option<f32>| finite(value).unwrap_or(f32::NAN);
+            let bounds = face.and_then(|face| face.bounding_box());
+            Ok(GestureFrame {
+                faces,
+                yaw: angle(pose.and_then(|pose| pose.yaw())),
+                pitch: angle(pose.and_then(|pose| pose.pitch())),
+                roll: angle(pose.and_then(|pose| pose.roll())),
+                eyes_open: face
+                    .and_then(|face| face.eyes_open())
+                    .and_then(|state| Some((state.value(), state.confidence()?))),
+                face_width: finite(bounds.and_then(|bounds| bounds.width())),
+                face_center: bounds.and_then(|bounds| {
+                    Some((
+                        finite(bounds.left())? + finite(bounds.width())? / 2.0,
+                        finite(bounds.top())? + finite(bounds.height())? / 2.0,
+                    ))
+                }),
+                brightness: finite(
+                    face.and_then(|face| face.quality())
+                        .and_then(|quality| quality.brightness()),
+                ),
+            })
         })
+    }
+
+    fn match_gesture(
+        &self,
+        snapshot: Vec<u8>,
+        frame: Vec<u8>,
+    ) -> BoxFuture<'_, Result<Option<f32>, ProviderError>> {
+        // The automatic quality bar drops turned faces as extreme poses.
+        Box::pin(self.best_similarity(
+            snapshot,
+            frame,
+            aws_sdk_rekognition::types::QualityFilter::None,
+        ))
     }
 
     fn streaming_credentials(
@@ -477,6 +613,13 @@ pub mod testing {
         pub create_error: Option<ProviderError>,
         /// Challenge reported by results; `None` = AWS omitted it.
         pub challenge: Option<Challenge>,
+        /// Gesture frames: similarity to the snapshot when a frame showed the
+        /// movement, and face count.
+        pub gesture_similarity: Option<f32>,
+        pub gesture_faces: usize,
+        pub gesture_error: Option<ProviderError>,
+        /// Replaces the pose read from a `gesture_frame` fixture.
+        pub gesture_override: Option<GestureFrame>,
     }
 
     impl Default for Script {
@@ -489,6 +632,10 @@ pub mod testing {
                 results_error: None,
                 create_error: None,
                 challenge: None,
+                gesture_similarity: Some(99.0),
+                gesture_faces: 1,
+                gesture_error: None,
+                gesture_override: None,
             }
         }
     }
@@ -499,7 +646,60 @@ pub mod testing {
         pub creates: AtomicUsize,
         pub results: AtomicUsize,
         pub compares: AtomicUsize,
+        /// DetectFaces calls on gesture frames, and CompareFaces on the ones
+        /// that showed the movement.
+        pub gestures: AtomicUsize,
+        pub gesture_matches: AtomicUsize,
         pub last_challenge: Mutex<Option<Challenge>>,
+    }
+
+    /// Gesture names and the solid colour that stands for each in fixtures.
+    const GESTURE_COLOURS: [(&str, [u8; 3]); 5] = [
+        ("CENTER", [230, 30, 30]),
+        ("BLINK", [30, 230, 30]),
+        ("TURN_LEFT", [30, 30, 230]),
+        ("TURN_RIGHT", [230, 230, 30]),
+        ("NOD_DOWN", [30, 230, 230]),
+    ];
+
+    /// A frame the fake provider reads as someone performing `gesture`.
+    pub fn gesture_frame(gesture: &str) -> Vec<u8> {
+        let colour = GESTURE_COLOURS
+            .iter()
+            .find(|(name, _)| *name == gesture)
+            .map_or([128, 128, 128], |(_, colour)| *colour);
+        let image = image::RgbImage::from_pixel(64, 64, image::Rgb(colour));
+        let mut jpeg = Vec::new();
+        image::DynamicImage::ImageRgb8(image)
+            .write_to(&mut Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+            .unwrap();
+        jpeg
+    }
+
+    /// Pose a person shows for each fixture colour; unknown colours face front.
+    fn pose_of(frame: &[u8]) -> (f32, f32, bool) {
+        let pixel = image::load_from_memory(frame)
+            .map(|image| image.to_rgb8().get_pixel(32, 32).0)
+            .unwrap_or([128, 128, 128]);
+        let distance = |colour: &[u8; 3]| -> i32 {
+            colour
+                .iter()
+                .zip(pixel)
+                .map(|(a, b)| (i32::from(*a) - i32::from(b)).pow(2))
+                .sum()
+        };
+        let nearest = GESTURE_COLOURS
+            .iter()
+            .min_by_key(|(_, colour)| distance(colour))
+            .filter(|(_, colour)| distance(colour) < 3_000)
+            .map_or("", |(name, _)| *name);
+        match nearest {
+            "BLINK" => (0.0, 0.0, false),
+            "TURN_LEFT" => (32.0, 0.0, true),
+            "TURN_RIGHT" => (-32.0, 0.0, true),
+            "NOD_DOWN" => (0.0, -22.0, true),
+            _ => (0.0, 0.0, true),
+        }
     }
 
     impl FakeFaceProvider {
@@ -554,6 +754,50 @@ pub mod testing {
                 // Give racing requests a chance to interleave.
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 Ok(self.script.lock().unwrap().similarity)
+            })
+        }
+
+        fn detect_gesture(
+            &self,
+            frame: Vec<u8>,
+            eyes: bool,
+        ) -> BoxFuture<'_, Result<GestureFrame, ProviderError>> {
+            Box::pin(async move {
+                self.gestures.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                let script = self.script.lock().unwrap();
+                if let Some(error) = script.gesture_error {
+                    return Err(error);
+                }
+                if let Some(frame) = script.gesture_override {
+                    return Ok(frame);
+                }
+                let (yaw, pitch, open) = pose_of(&frame);
+                Ok(GestureFrame {
+                    faces: script.gesture_faces,
+                    yaw,
+                    pitch,
+                    roll: 0.0,
+                    eyes_open: eyes.then_some((open, 98.0)),
+                    face_width: Some(0.45),
+                    face_center: Some((0.5, 0.45)),
+                    brightness: Some(60.0),
+                })
+            })
+        }
+
+        fn match_gesture(
+            &self,
+            _snapshot: Vec<u8>,
+            _frame: Vec<u8>,
+        ) -> BoxFuture<'_, Result<Option<f32>, ProviderError>> {
+            Box::pin(async move {
+                self.gesture_matches.fetch_add(1, Ordering::SeqCst);
+                let script = self.script.lock().unwrap();
+                match script.gesture_error {
+                    Some(error) => Err(error),
+                    None => Ok(script.gesture_similarity),
+                }
             })
         }
 

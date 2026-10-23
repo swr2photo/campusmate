@@ -1,9 +1,10 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { Timestamp } from 'firebase-admin/firestore';
 import { HttpsError } from 'firebase-functions/v2/https';
-import { loadVisibleProfiles } from './secureProfileAccess.js';
+import { loadVisibleProfilesWithDetails } from './secureProfileAccess.js';
 import { validateDiscoveryFilters } from './profileVisibilityPolicy.js';
 import { visibleDistanceKm } from './peerDistance.js';
+import { isSuperAdminEmail } from './adminPolicy.js';
 
 const PERIODS = { morning: [[360, 720]], afternoon: [[720, 1080]], evening: [[1080, 1260]], night: [[1260, 1440], [0, 360]] };
 const WORDS = { morning: ['เช้า', 'morning'], afternoon: ['บ่าย', 'afternoon'], evening: ['เย็น', 'ค่ำ', 'evening'], night: ['ดึก', 'กลางคืน', 'night'] };
@@ -55,7 +56,17 @@ export function createDiscoveryApi({ db, now = Date.now, makeCursor = randomUUID
     if (!uid) throw new HttpsError('unauthenticated', 'ต้องเข้าสู่ระบบ');
     const [member, viewer] = await db.getAll(db.doc(`entitlements/${uid}`), db.doc(`users/${uid}`));
     if (!viewer.exists) throw new HttpsError('failed-precondition', 'บัญชีไม่พร้อมใช้งาน');
-    const filters = validateDiscoveryFilters(request.data?.filters || {}, member.data(), now());
+    const viewerData = viewer.data() || {};
+    const email = (viewerData.email || viewerData.campusEmail || request.auth?.token?.email || '').toLowerCase().trim();
+    const isAdmin = isSuperAdminEmail(email)
+      || viewerData.isAdmin === true
+      || viewerData.role === 'admin'
+      || request.auth?.token?.admin === true;
+    const entitlementRecord = {
+      ...(member.data() || {}),
+      ...(isAdmin ? { isAdmin: true } : {}),
+    };
+    const filters = validateDiscoveryFilters(request.data?.filters || {}, entitlementRecord, now());
     const scope = createHash('sha256').update(JSON.stringify(filters)).digest('hex');
     let query = db.collection('discoveryProfiles').where('isDiscoverable', '==', true).orderBy('__name__', 'asc');
     const token = request.data?.cursor;
@@ -67,25 +78,19 @@ export function createDiscoveryApi({ db, now = Date.now, makeCursor = randomUUID
       query = query.startAfter(saved.documentId);
     }
     const page = await query.limit(30).get(), ids = page.docs.map((doc) => doc.id).filter((id) => id !== uid);
-    const profiles = await loadVisibleProfiles(db, uid, ids, now);
-    const peers = ids.length ? await db.getAll(...ids.map((id) => db.doc(`users/${id}`))) : [];
-    const actions = ids.length ? await db.getAll(...ids.map((id) => db.doc(`decisions/${uid}_${id}`))) : [];
-    const privateById = new Map(ids.map((id, index) => [id, peers[index].data()]));
-    const actedOn = new Set(ids.filter((id, index) => {
-      const decision = actions[index].data();
-      return decision?.fromUserId === uid && decision?.toUserId === id && ['pending', 'accepted'].includes(decision.status);
-    }));
+    const visibleEntries = await loadVisibleProfilesWithDetails(db, uid, ids, now);
     // Recheck privilege after network reads, including expiry during this call.
     validateDiscoveryFilters(filters, (await db.doc(`entitlements/${uid}`).get()).data(), now());
-    const result = profiles.flatMap((profile) => {
-      const distance = visibleDistanceKm(viewer.data(), privateById.get(profile.id));
-      return !actedOn.has(profile.id) && matchesServerFilters(privateById.get(profile.id) || {}, filters, distance) ? [{ ...profile, distance }] : [];
+    const result = visibleEntries.flatMap(({ profile, source, viewerDecision }) => {
+      const hasActed = viewerDecision?.fromUserId === uid && viewerDecision?.toUserId === profile.id && ['pending', 'accepted'].includes(viewerDecision.status);
+      const distance = visibleDistanceKm(viewer.data(), source);
+      return !hasActed && matchesServerFilters(source || {}, filters, distance) ? [{ ...profile, distance }] : [];
     });
     let nextCursor = null;
     if (page.size === 30) {
       nextCursor = makeCursor();
       await db.doc(`discoveryPageCursors/${uid}/tokens/${nextCursor}`).set({ documentId: page.docs.at(-1).id, scope, expiresAt: Timestamp.fromMillis(now() + 15 * 60000) });
     }
-    return { profiles: result, hasMore: page.size === 30, nextCursor };
+    return { profiles: result, hasMore: page.size === 30, nextCursor, nextRecycleAt: null, recycledProfileIds: [] };
   };
 }

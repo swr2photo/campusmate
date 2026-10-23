@@ -52,7 +52,7 @@ const stringsPath = path.join(root, 'android', 'app', 'src', 'main', 'res', 'val
 if (fs.existsSync(stringsPath)) {
   let stringsContent = fs.readFileSync(stringsPath, 'utf8');
   stringsContent = stringsContent.replace(
-    /(<string name="expo_runtime_version">)[^<]+(<\/string>)/,
+    /(<string name="expo_runtime_version"[^>]*>)[^<]+(<\/string>)/,
     `$1${nextVersion}$2`,
   );
   fs.writeFileSync(stringsPath, stringsContent);

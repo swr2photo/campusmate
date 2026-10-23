@@ -213,6 +213,23 @@ pub async fn save(
             .await?;
     let photo_changed =
         previous.as_deref() != input.profile.get("avatarUri").and_then(Value::as_str);
+    let current_revision: i64 =
+        sqlx::query_scalar("SELECT revision FROM profiles WHERE user_id=$1")
+            .bind(&principal.uid)
+            .fetch_one(&mut *tx)
+            .await?;
+    if current_revision != input.revision {
+        return Err(ApiError::new(
+            "aborted",
+            "โปรไฟล์เปลี่ยนแล้ว กรุณาโหลดใหม่ก่อนบันทึก",
+        ));
+    }
+    if previous.is_some() && photo_changed {
+        return Err(ApiError::new(
+            "failed-precondition",
+            "ต้องยืนยันรูปหลักใหม่ให้ผ่านก่อนเปลี่ยนรูปโปรไฟล์",
+        ));
+    }
     if photo_changed {
         crate::identity::revoke_in(
             &mut tx,

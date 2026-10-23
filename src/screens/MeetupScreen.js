@@ -4,6 +4,12 @@ import { AppTextInput as TextInput } from '../components/AppText';
 import PlacePhoto from '../components/PlacePhoto';
 import PlacePreviewCard from '../components/PlacePreviewCard';
 import PlaceDetailSheet from '../components/PlaceDetailSheet';
+import ActivityCategoryChips from '../components/activities/ActivityCategoryChips';
+import ActivitiesEmptyState from '../components/activities/ActivitiesEmptyState';
+import ActivitySectionTitle from '../components/activities/ActivitySectionTitle';
+import NearbySpotsCarousel from '../components/activities/NearbySpotsCarousel';
+import { SPOT_CATEGORIES, countByCategory } from '../components/activities/categories';
+import { StaggerIn } from '../components/activities/motion';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, Keyboard, Modal, Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import Image from '../components/CachedImage';
@@ -33,24 +39,16 @@ import CampusMapView from '../components/CampusMapView';
 import AppointmentPlacePicker from '../components/AppointmentPlacePicker';
 import {
   IosLikeCard,
-  IosLikePill,
   IosLikeScreen,
-  IosLikeSectionTitle,
   IconButton,
 } from '../components/iosLike';
 import FeatureIcon from '../components/FeatureIcon';
 import { radius, spacing, type, useTheme } from '../theme';
 import { TourTarget } from '../context/AppTourContext';
 
-const SPOT_CATEGORIES = [
-  { id: 'all', label: 'ทั้งหมด', icon: 'square.grid.2x2.fill', color: '#5B5CE2' },
-  { id: 'sports', label: 'สนามกีฬา', icon: 'sportscourt.fill', color: '#FF9F43' },
-  { id: 'chill', label: 'โซนนั่งเล่น', icon: 'leaf.fill', color: '#18A878' },
-  { id: 'cafe', label: 'คาเฟ่', icon: 'cup.and.saucer.fill', color: '#F47C6B' },
-  { id: 'study', label: 'โซนอ่านหนังสือ', icon: 'book.closed.fill', color: '#3986E8' },
-  { id: 'running', label: 'วิ่งออกกำลัง', icon: 'figure.run', color: '#FF7A6B' },
-  { id: 'gym', label: 'ยิม/ฟิตเนส', icon: 'dumbbell.fill', color: '#9A8CFF' },
-];
+// The first few spots get large carousel cards when there are enough to browse.
+const FEATURED_MIN = 4;
+const FEATURED_COUNT = 5;
 
 function formatLocalDateValue(date) {
   const year = date.getFullYear();
@@ -225,6 +223,12 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       && matchesSpotQuery(spot, normalizedQuery)
     ));
   }, [campusSpots, searchQuery, selectedCategory]);
+  const categoryCounts = useMemo(() => countByCategory(campusSpots), [campusSpots]);
+  // Distances exist only when the profile has a location; without them the
+  // carousel must not claim to show what is nearest.
+  const hasDistance = visibleSpots.some((spot) => Number.isFinite(spot.distanceKm));
+  const featuredSpots = !searchQuery.trim() && visibleSpots.length >= FEATURED_MIN ? visibleSpots.slice(0, FEATURED_COUNT) : [];
+  const listSpots = featuredSpots.length ? visibleSpots.slice(featuredSpots.length) : visibleSpots;
 
   const openMapForSpot = useCallback((spot) => {
     setMapTargetSpot(spot || selectedMeetup || visibleSpots[0] || null);
@@ -319,14 +323,14 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
     }
   };
 
-  const renderSpot = useCallback(({ item }) => (
-    <View style={isTablet ? { width: '48.8%' } : { width: '100%' }}>
+  const renderSpot = useCallback(({ item, index }) => (
+    <StaggerIn index={index} style={isTablet ? { width: '48.8%' } : { width: '100%' }}>
       <PlacePreviewCard
         onPress={setDetailSpot}
         selected={selectedMeetup?.id === item.id}
         spot={item}
       />
-    </View>
+    </StaggerIn>
   ), [isTablet, selectedMeetup?.id]);
 
   // Lets the first-run tour scroll the hero / party finder into view.
@@ -336,34 +340,61 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
   });
 
   const header = (
-    <View>
-      <TourTarget id="meetup.party" scrollRef={tourScrollRef} scrollOffset={24}>
-        <View style={{ marginBottom: 16 }}>
+    <View style={styles.header}>
+      <StaggerIn index={0}>
+        <TourTarget id="meetup.party" scrollRef={tourScrollRef} scrollOffset={24}>
           <PartyFinderEntry onCreateParty={() => openScheduleFor(visibleSpots[0] || campusSpots[0])} />
-        </View>
-      </TourTarget>
-      {selectedSpot ? <SelectedMeetup meetup={selectedSpot} onClear={handleClear} onPress={() => setDetailSpot(selectedSpot)} /> : null}
+        </TourTarget>
+      </StaggerIn>
+      {selectedSpot ? (
+        <StaggerIn index={1}>
+          <SelectedMeetup meetup={selectedSpot} onClear={handleClear} onPress={() => setDetailSpot(selectedSpot)} />
+        </StaggerIn>
+      ) : null}
 
-      <TourTarget id="meetup.spots" scrollRef={tourScrollRef} scrollOffset={30}>
-        <IosLikeSectionTitle subtitle="สถานที่จริงใน มอ. เรียงจากใกล้ไปไกล" title="เลือกกิจกรรมที่สนใจ" />
-      </TourTarget>
-      <ScrollView contentContainerStyle={styles.categoryRow} horizontal showsHorizontalScrollIndicator={false}>
-        {SPOT_CATEGORIES.map((category) => (
-          <IosLikePill
-            active={selectedCategory === category.id}
-            color={category.color}
-            icon={category.icon}
-            key={category.id}
-            onPress={() => setSelectedCategory(category.id)}
-          >
-            {category.label}
-          </IosLikePill>
-        ))}
-      </ScrollView>
-      <View style={styles.resultMeta}>
-        <Text style={[styles.resultTitle, { color: colors.ink }]}>จุดนัดพบแนะนำ</Text>
-        <Text style={[styles.resultCount, { color: colors.coral }]}>{visibleSpots.length} แห่ง · ใกล้สุดก่อน</Text>
+      <View style={styles.headerBlock}>
+        <TourTarget id="meetup.spots" scrollRef={tourScrollRef} scrollOffset={30}>
+          <ActivitySectionTitle
+            icon="mappin.and.ellipse"
+            iconColor={colors.coral}
+            subtitle={hasDistance ? 'สถานที่จริงใน ม.อ. เรียงจากใกล้ไปไกล' : 'สถานที่จริงใน ม.อ.'}
+            title="เลือกกิจกรรมที่สนใจ"
+          />
+        </TourTarget>
+        <ActivityCategoryChips
+          bleed={spacing.lg}
+          categories={SPOT_CATEGORIES}
+          counts={categoryCounts}
+          onSelect={setSelectedCategory}
+          selected={selectedCategory}
+        />
       </View>
+
+      {featuredSpots.length ? (
+        <View style={styles.headerBlock}>
+          <ActivitySectionTitle
+            icon={hasDistance ? 'location.fill' : 'sparkles'}
+            iconColor={colors.coral}
+            title={hasDistance ? 'ใกล้คุณที่สุด' : 'สถานที่แนะนำ'}
+            trailing={`${featuredSpots.length} แห่ง`}
+          />
+          <NearbySpotsCarousel
+            bleed={spacing.lg}
+            key={selectedCategory}
+            onPress={setDetailSpot}
+            selectedId={selectedMeetup?.id}
+            spots={featuredSpots}
+            width={Math.min(windowWidth, 920)}
+          />
+        </View>
+      ) : null}
+
+      {listSpots.length ? (
+        <ActivitySectionTitle
+          title={featuredSpots.length ? 'สถานที่อื่น ๆ' : 'จุดนัดพบแนะนำ'}
+          trailing={`${listSpots.length} แห่ง${hasDistance ? ' · ใกล้สุดก่อน' : ''}`}
+        />
+      ) : null}
     </View>
   );
 
@@ -419,12 +450,18 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
         columnWrapperStyle={isTablet ? { gap: spacing.md, justifyContent: 'flex-start' } : undefined}
         contentContainerStyle={styles.listContent}
         contentInsetAdjustmentBehavior="automatic"
-        data={visibleSpots}
-        keyExtractor={(item) => item.id}
+        data={listSpots}
+        // The category in the key replays the entrance when the filter changes.
+        keyExtractor={(item) => `${selectedCategory}:${item.id}`}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         ItemSeparatorComponent={SpotSeparator}
-        ListEmptyComponent={<EmptySpots query={searchQuery} />}
+        ListEmptyComponent={visibleSpots.length ? null : (
+          <ActivitiesEmptyState
+            onShowAll={selectedCategory !== 'all' ? () => setSelectedCategory('all') : null}
+            searching={Boolean(searchQuery.trim())}
+          />
+        )}
         ListHeaderComponent={header}
         initialNumToRender={6}
         removeClippedSubviews={Platform.OS === 'android'}
@@ -640,17 +677,6 @@ function ActionButton({ disabled = false, emphasized = false, icon, label, onPre
 
 function SpotSeparator() {
   return <View style={{ height: spacing.md }} />;
-}
-
-function EmptySpots({ query }) {
-  const { colors } = useTheme();
-  return (
-    <IosLikeCard style={styles.emptySpots}>
-      <FeatureIcon color={colors.coral} name="mappin.slash.circle.fill" size={42} />
-      <Text style={[styles.emptyTitle, { color: colors.ink }]}>{query ? 'ไม่พบสถานที่ที่ค้นหา' : 'ยังไม่มีสถานที่ในหมวดนี้'}</Text>
-      <Text style={[styles.emptyText, { color: colors.inkMuted }]}>ลองเปลี่ยนคำค้นหาหรือเลือกหมวดกิจกรรมอื่น</Text>
-    </IosLikeCard>
-  );
 }
 
 function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedMeetup, spots, visible }) {
@@ -1037,6 +1063,8 @@ function PickerLabel({ icon, label }) {
 }
 
 const styles = StyleSheet.create({
+  header: { gap: 18, paddingBottom: spacing.md },
+  headerBlock: { gap: 12 },
   listContent: { paddingBottom: spacing.xxxl, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, width: '100%', maxWidth: 920, alignSelf: 'center' },
   hero: { borderRadius: 26, borderCurve: 'continuous', borderWidth: 0, height: 156, marginBottom: spacing.md, overflow: 'hidden', position: 'relative' },
   heroImage: { height: 156 },
@@ -1052,7 +1080,7 @@ const styles = StyleSheet.create({
   searchBar: { alignItems: 'center', borderRadius: radius.lg, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, minHeight: 50, paddingHorizontal: spacing.md },
   searchInput: { flex: 1, fontSize: type.body, minWidth: 0, paddingVertical: 0 },
   clearButton: { elevation: 0, height: 30, shadowOpacity: 0, width: 30 },
-  selectedCard: { marginBottom: spacing.lg, marginTop: 0, padding: spacing.md },
+  selectedCard: { marginTop: 0, padding: spacing.md },
   selectedMainRow: { alignItems: 'stretch', flexDirection: 'row', gap: 12 },
   selectedPhotoWrap: { borderRadius: radius.md, height: 104, overflow: 'hidden', position: 'relative', width: 94 },
   selectedCheckBadge: { alignItems: 'center', borderRadius: radius.pill, height: 20, justifyContent: 'center', left: 6, position: 'absolute', top: 6, width: 20 },
@@ -1072,15 +1100,8 @@ const styles = StyleSheet.create({
   scheduleRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
   tag: { alignItems: 'center', borderRadius: radius.sm, flexDirection: 'row', gap: 5, maxWidth: '100%', paddingHorizontal: 9, paddingVertical: 5 },
   tagText: { flexShrink: 1, fontSize: type.caption2, fontWeight: '800' },
-  categoryRow: { gap: spacing.sm, paddingBottom: spacing.lg, paddingTop: spacing.sm, paddingRight: spacing.md },
-  resultMeta: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.md, marginTop: spacing.xs },
-  resultTitle: { fontSize: type.headline, fontWeight: '900' },
-  resultCount: { flexShrink: 1, fontSize: type.caption2, fontWeight: '800', marginLeft: spacing.sm, textAlign: 'right' },
   actionButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 4, justifyContent: 'center', minHeight: 48, paddingHorizontal: spacing.sm, paddingVertical: 10 },
   actionText: { fontSize: type.caption2, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
-  emptySpots: { alignItems: 'center', marginTop: spacing.sm, padding: spacing.xxl },
-  emptyTitle: { fontSize: type.headline, fontWeight: '900', marginTop: spacing.md, textAlign: 'center' },
-  emptyText: { fontSize: type.caption, lineHeight: 18, marginTop: spacing.sm, textAlign: 'center' },
   modalOverlay: { flex: 1, justifyContent: 'flex-end' },
   mapModalContent: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, height: '84%', padding: spacing.lg },
   scheduleKeyboardAvoiding: { flex: 1, justifyContent: 'flex-end', width: '100%' },

@@ -3,7 +3,7 @@
     "name": "CampusMate",
     "slug": "campusmate",
     "scheme": "campusmate",
-    "version": "3.1.7",
+    "version": "3.1.8",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "icon": "./assets/icon.png",
@@ -26,7 +26,7 @@
     "android": {
       "package": "com.campusmate.app",
       "googleServicesFile": "./google-services.json",
-      "versionCode": 97,
+      "versionCode": 98,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1E6FE0"
@@ -159,7 +159,7 @@
       "revenueCatAndroidKey": "goog_wGhMIrpFIUnKKTRWhfdemIvuxOi"
     },
     "owner": "doralikon",
-    "runtimeVersion": "3.1.7",
+    "runtimeVersion": "3.1.8",
     "updates": {
       "url": "https://u.expo.dev/5ca64c3a-3182-460f-87f6-2342aaba4e2f"
     }

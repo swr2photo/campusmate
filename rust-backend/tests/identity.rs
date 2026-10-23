@@ -9,11 +9,12 @@ use axum::{
     http::{Request, StatusCode},
     Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use campusmate_backend::{
     identity::{sweep, sync_primary_photo, DecisionPolicy, IdentityServices},
     identity_provider::{
-        testing::{sample_jpeg, shared, FakeFaceProvider, FakeReferenceStore},
-        Challenge, LivenessStatus, ProviderError,
+        testing::{gesture_frame, sample_jpeg, shared, FakeFaceProvider, FakeReferenceStore},
+        Challenge, GestureFrame, LivenessStatus, ProviderError,
     },
     new_state, router,
 };
@@ -32,6 +33,7 @@ const CONSENT: &str = "face-consent-2026-10";
 
 struct Harness {
     app: Router,
+    pool: PgPool,
     provider: Arc<FakeFaceProvider>,
     store: Arc<FakeReferenceStore>,
     services: Arc<IdentityServices>,
@@ -46,6 +48,7 @@ fn policy() -> DecisionPolicy {
         liveness_review_min: 70.0,
         similarity_min: 95.0,
         similarity_review_min: 80.0,
+        gesture_similarity_min: 80.0,
     }
 }
 
@@ -73,6 +76,7 @@ async fn harness_with(
     state.identity = Some(services.clone());
     Harness {
         app: router(state),
+        pool: pool.clone(),
         provider,
         store,
         services,
@@ -169,7 +173,64 @@ async fn start_id(h: &Harness, token: &str) -> String {
     body["verificationId"].as_str().unwrap().to_owned()
 }
 
+async fn gesture(
+    h: &Harness,
+    token: &str,
+    id: &str,
+    step: i64,
+    frame: &[u8],
+) -> (StatusCode, Value) {
+    call(
+        &h.app,
+        "POST",
+        &format!("/v1/identity/photo-verifications/{id}/gestures"),
+        token,
+        json!({ "step": step, "frame": BASE64.encode(frame) }),
+    )
+    .await
+}
+
+/// Server-chosen order and progress of an attempt's gesture phase.
+async fn gesture_state(pool: &PgPool, id: &str) -> Option<(Vec<String>, i16, bool, String)> {
+    let row = sqlx::query(
+        "SELECT gesture_sequence,gesture_step,gestures_passed_at IS NOT NULL AS passed,
+           state::text AS state FROM face_verification_attempts WHERE id::text=$1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .unwrap()?;
+    Some((
+        row.get::<Option<Vec<String>>, _>("gesture_sequence")?,
+        row.get("gesture_step"),
+        row.get("passed"),
+        row.get("state"),
+    ))
+}
+
+/// Perform every pending gesture in the order the server asks, as the app
+/// would, stopping at the first answer that is not a pass or a busy step.
+async fn pass_gestures(h: &Harness, token: &str, id: &str) {
+    for _ in 0..20 {
+        let Some((sequence, step, passed, state)) = gesture_state(&h.pool, id).await else {
+            return;
+        };
+        if passed || !matches!(state.as_str(), "CREATED" | "IN_PROGRESS") {
+            return;
+        }
+        let frame = gesture_frame(&sequence[step as usize]);
+        let (status, body) = gesture(h, token, id, step.into(), &frame).await;
+        if status != StatusCode::OK {
+            if reason(&body) != "AWAITING_RESULT" {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+}
+
 async fn finish(h: &Harness, token: &str, id: &str) -> (StatusCode, Value) {
+    pass_gestures(h, token, id).await;
     call(
         &h.app,
         "POST",
@@ -319,7 +380,10 @@ async fn a_verified_badge_comes_only_from_the_server_decision(pool: PgPool) {
         .fetch_all(&pool)
         .await
         .unwrap();
-    assert_eq!(events, ["ATTEMPT_CREATED", "DECIDED_VERIFIED"]);
+    assert_eq!(
+        events,
+        ["ATTEMPT_CREATED", "GESTURES_PASSED", "DECIDED_VERIFIED"]
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -411,6 +475,7 @@ async fn client_claims_in_the_request_are_ignored(pool: PgPool) {
     let token = seed(&pool, &h.store, "alice", "user").await;
     h.provider.set(|script| script.similarity = Some(5.0));
     let id = start_id(&h, &token).await;
+    pass_gestures(&h, &token, &id).await;
     let (_, body) = call(
         &h.app,
         "POST",
@@ -471,25 +536,30 @@ async fn change_photo(h: &Harness, token: &str, id: &str) -> StatusCode {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn replacing_the_photo_revokes_the_badge_and_cancels_attempts(pool: PgPool) {
+async fn direct_replacement_is_rejected_and_keeps_the_published_photo(pool: PgPool) {
     let h = harness(&pool).await;
     let token = seed(&pool, &h.store, "alice", "user").await;
     let id = start_id(&h, &token).await;
     assert_eq!(finish(&h, &token, &id).await.1["status"], "VERIFIED");
-    assert_eq!(change_photo(&h, &token, "alice").await, StatusCode::OK);
-    assert!(!verified(&pool, "alice").await);
+    assert_eq!(
+        change_photo(&h, &token, "alice").await,
+        StatusCode::PRECONDITION_FAILED
+    );
+    assert!(verified(&pool, "alice").await);
     let status = my_status(&h, &token).await;
-    assert_eq!(status["status"], "REVOKED");
-    assert_eq!(status["badge"], Value::Null);
+    assert_eq!(status["status"], "VERIFIED");
+    assert_eq!(status["photo"], avatar("alice"));
 
     // A swap while an attempt is open voids that attempt as well.
     let bob = seed(&pool, &h.store, "bob", "user").await;
     let attempt = start_id(&h, &bob).await;
-    assert_eq!(change_photo(&h, &bob, "bob").await, StatusCode::OK);
+    assert_eq!(
+        change_photo(&h, &bob, "bob").await,
+        StatusCode::PRECONDITION_FAILED
+    );
     let (_, body) = finish(&h, &bob, &attempt).await;
-    assert_eq!(body["status"], "EXPIRED");
-    assert_eq!(body["reason"], "IMAGE_CHANGED");
-    assert!(!verified(&pool, "bob").await);
+    assert_eq!(body["status"], "VERIFIED");
+    assert!(verified(&pool, "bob").await);
     assert!(h.store.snapshots.lock().unwrap().is_empty());
 }
 
@@ -530,6 +600,83 @@ async fn a_photo_change_reported_by_the_mobile_backend_revokes_the_badge(pool: P
             .unwrap()
     );
     tx.commit().await.unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn candidate_is_published_only_after_liveness_and_face_match_pass(pool: PgPool) {
+    let h = harness(&pool).await;
+    let token = seed(&pool, &h.store, "candidate-owner", "user").await;
+    let key = format!("profile_gallery/candidate-owner/{}.jpg", Uuid::new_v4());
+    let candidate = format!("{ORIGIN}/{key}");
+    h.store.photos.lock().unwrap().insert(key, sample_jpeg());
+    let (status, created) = call(
+        &h.app,
+        "POST",
+        "/v1/identity/photo-verifications",
+        &token,
+        json!({"consent":true,"consentVersion":CONSENT,"candidateAvatarUri":candidate}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let read = || {
+        sqlx::query_scalar::<_, String>(
+            "SELECT raw->>'avatarUri' FROM profiles WHERE user_id='candidate-owner'",
+        )
+        .fetch_one(&pool)
+    };
+    assert_eq!(read().await.unwrap(), avatar("candidate-owner"));
+    let id = created["verificationId"].as_str().unwrap();
+    assert_eq!(finish(&h, &token, id).await.1["status"], "VERIFIED");
+    assert_eq!(read().await.unwrap(), candidate);
+    assert_eq!(finish(&h, &token, id).await.1["status"], "VERIFIED");
+    assert_eq!(h.provider.compares.load(Ordering::SeqCst), 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn failed_or_raced_candidate_never_replaces_the_published_photo(pool: PgPool) {
+    let h = harness(&pool).await;
+    for (owner, race) in [("candidate-failed", false), ("candidate-raced", true)] {
+        let token = seed(&pool, &h.store, owner, "user").await;
+        let key = format!("profile_gallery/{owner}/{}.jpg", Uuid::new_v4());
+        let candidate = format!("{ORIGIN}/{key}");
+        h.store.photos.lock().unwrap().insert(key, sample_jpeg());
+        let (status, created) = call(
+            &h.app,
+            "POST",
+            "/v1/identity/photo-verifications",
+            &token,
+            json!({"consent":true,"consentVersion":CONSENT,"candidateAvatarUri":candidate}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        if race {
+            sqlx::query(
+                "UPDATE profiles SET raw=raw || '{\"avatarRevision\":9}'::jsonb WHERE user_id=$1",
+            )
+            .bind(owner)
+            .execute(&pool)
+            .await
+            .unwrap();
+            h.provider.set(|script| script.similarity = Some(99.0));
+        } else {
+            h.provider.set(|script| script.similarity = Some(10.0));
+        }
+        let result = finish(&h, &token, created["verificationId"].as_str().unwrap())
+            .await
+            .1;
+        assert_eq!(result["status"], "FAILED");
+        if race {
+            assert_eq!(result["reason"], "IMAGE_CHANGED");
+        }
+        let actual: String =
+            sqlx::query_scalar("SELECT raw->>'avatarUri' FROM profiles WHERE user_id=$1")
+                .bind(owner)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(actual, avatar(owner));
+        assert!(!verified(&pool, owner).await);
+    }
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -1164,7 +1311,19 @@ async fn the_runtime_role_can_run_every_identity_flow(owner: PgPool) {
     // Automatic decision, then a photo change revokes it.
     let id = start_id(&h, &alice).await;
     assert_eq!(finish(&h, &alice, &id).await.1["status"], "VERIFIED");
-    assert_eq!(change_photo(&h, &alice, "alice").await, StatusCode::OK);
+    assert_eq!(
+        change_photo(&h, &alice, "alice").await,
+        StatusCode::PRECONDITION_FAILED
+    );
+    let mut changed = api.begin().await.unwrap();
+    sync_primary_photo(
+        &mut changed,
+        "alice",
+        &format!("{ORIGIN}/users/alice/avatar.jpg?v=2"),
+    )
+    .await
+    .unwrap();
+    changed.commit().await.unwrap();
     assert!(!verified(&owner, "alice").await);
 
     // Human review with evidence, appeal and approval.
@@ -1230,4 +1389,416 @@ async fn the_runtime_role_can_run_every_identity_flow(owner: PgPool) {
         .execute(&owner)
         .await
         .unwrap();
+}
+
+/// Gesture step reply or error for the step the server currently expects.
+async fn current_step(h: &Harness, id: &str) -> (Vec<String>, i16) {
+    let (sequence, step, _, _) = gesture_state(&h.pool, id).await.unwrap();
+    (sequence, step)
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn gestures_follow_the_server_order_before_the_liveness_check(pool: PgPool) {
+    let h = harness(&pool).await;
+    let token = seed(&pool, &h.store, "alice", "user").await;
+    let (status, created) = start(&h, &token).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["verificationId"].as_str().unwrap().to_owned();
+    let gestures: Vec<String> = serde_json::from_value(created["gestures"].clone()).unwrap();
+    assert_eq!(gestures.len(), 5);
+    assert_eq!(gestures[0], "CENTER");
+    assert!(created["gesturesExpiresAt"].is_string());
+
+    // The liveness result is not even fetched before the gestures pass.
+    let (status, body) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/identity/photo-verifications/{id}/complete"),
+        &token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::PRECONDITION_FAILED, "GESTURES_INCOMPLETE")
+    );
+    assert_eq!(h.provider.results.load(Ordering::SeqCst), 0);
+
+    // Skipping ahead is refused; the wrong movement costs a retry.
+    let (status, body) = gesture(&h, &token, &id, 2, &gesture_frame(&gestures[2])).await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::BAD_REQUEST, "GESTURE_OUT_OF_ORDER")
+    );
+    let (status, body) = gesture(&h, &token, &id, 0, &gesture_frame("BLINK")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["passed"], false);
+    assert_eq!(body["reason"], "GESTURE_NOT_DETECTED");
+    assert_eq!(body["retriesLeft"], 7);
+    assert_no_scores(&body);
+
+    for (step, name) in gestures.iter().enumerate() {
+        let (status, body) = gesture(&h, &token, &id, step as i64, &gesture_frame(name)).await;
+        assert_eq!(status, StatusCode::OK, "{name}: {body}");
+        assert_eq!(body["passed"], true, "{name}: {body}");
+        assert_no_scores(&body);
+        let last = step + 1 == gestures.len();
+        assert_eq!(body["complete"], last);
+        if !last {
+            assert_eq!(body["nextGesture"], gestures[step + 1]);
+        }
+    }
+    // Repeating a passed step answers again without another analysis.
+    let analysed = h.provider.gestures.load(Ordering::SeqCst);
+    let (status, body) = gesture(&h, &token, &id, 1, &gesture_frame(&gestures[1])).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["complete"], true);
+    assert_eq!(h.provider.gestures.load(Ordering::SeqCst), analysed);
+    // Frames were judged in memory; only the pinned reference was stored.
+    assert_eq!(h.store.snapshots.lock().unwrap().len(), 1);
+
+    assert_eq!(finish(&h, &token, &id).await.1["status"], "VERIFIED");
+    assert!(verified(&pool, "alice").await);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_stranger_a_crowd_or_a_still_photo_cannot_pass_the_gestures(pool: PgPool) {
+    let h = harness(&pool).await;
+    let token = seed(&pool, &h.store, "alice", "user").await;
+    let id = start_id(&h, &token).await;
+    let still = GestureFrame {
+        faces: 1,
+        yaw: 0.0,
+        pitch: 0.0,
+        roll: 0.0,
+        eyes_open: Some((true, 99.0)),
+        face_width: Some(0.45),
+        face_center: Some((0.5, 0.45)),
+        brightness: Some(60.0),
+    };
+    // A still photo passes "look straight" but never moves after that.
+    h.provider.set(|s| s.gesture_override = Some(still));
+    let (_, body) = gesture(&h, &token, &id, 0, &gesture_frame("CENTER")).await;
+    assert_eq!(body["passed"], true, "{body}");
+    // Someone else performing the movement asked for at step 1.
+    let (sequence, _) = current_step(&h, &id).await;
+    let moved = match sequence[1].as_str() {
+        "BLINK" => GestureFrame {
+            eyes_open: Some((false, 99.0)),
+            ..still
+        },
+        "NOD_DOWN" => GestureFrame {
+            pitch: -25.0,
+            ..still
+        },
+        _ => GestureFrame { yaw: 35.0, ..still },
+    };
+    let mut failures = Vec::new();
+    for (frame, similarity) in [
+        (still, 99.0),
+        (GestureFrame { faces: 2, ..still }, 99.0),
+        (moved, 12.0),
+        (GestureFrame { faces: 0, ..still }, 99.0),
+    ] {
+        h.provider.set(|s| {
+            s.gesture_override = Some(frame);
+            s.gesture_similarity = Some(similarity);
+        });
+        let (status, body) = gesture(&h, &token, &id, 1, &gesture_frame("CENTER")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["passed"], false);
+        assert_no_scores(&body);
+        failures.push(body["reason"].as_str().unwrap().to_owned());
+    }
+    h.provider.set(|s| s.gesture_similarity = Some(99.0));
+    assert_eq!(
+        failures,
+        [
+            "GESTURE_NOT_DETECTED",
+            "MULTIPLE_FACES",
+            "FACE_NOT_MATCHED",
+            "FACE_NOT_FOUND"
+        ]
+    );
+    // After eight misses the attempt fails and counts toward the cooldown.
+    h.provider.set(|s| s.gesture_override = Some(still));
+    let mut last = Value::Null;
+    for _ in 0..4 {
+        last = gesture(&h, &token, &id, 1, &gesture_frame("CENTER"))
+            .await
+            .1;
+    }
+    assert_eq!(reason(&last), "GESTURE_NOT_CONFIRMED", "{last}");
+    let (status, body) = gesture(&h, &token, &id, 1, &gesture_frame("CENTER")).await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::PRECONDITION_FAILED, "GESTURE_NOT_CONFIRMED")
+    );
+    let (_, decided) = finish(&h, &token, &id).await;
+    assert_eq!(decided["status"], "FAILED");
+    assert_eq!(decided["reason"], "GESTURE_NOT_CONFIRMED");
+    assert_eq!(h.provider.results.load(Ordering::SeqCst), 0);
+    assert!(!verified(&pool, "alice").await);
+    assert!(h.store.snapshots.lock().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_two_head_turns_must_go_opposite_ways(pool: PgPool) {
+    let h = harness(&pool).await;
+    let token = seed(&pool, &h.store, "alice", "user").await;
+    let id = start_id(&h, &token).await;
+    let mut turns = 0;
+    loop {
+        let (sequence, step) = current_step(&h, &id).await;
+        let name = &sequence[step as usize];
+        let turning = name.starts_with("TURN_");
+        // Always turn the same way: the first turn passes, the second not.
+        let frame = gesture_frame(if turning { "TURN_LEFT" } else { name });
+        let (status, body) = gesture(&h, &token, &id, step.into(), &frame).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if turning {
+            turns += 1;
+            if turns == 2 {
+                assert_eq!(body["passed"], false);
+                assert_eq!(body["reason"], "GESTURE_NOT_DETECTED");
+                assert_eq!(body["hint"], "OTHER_WAY");
+                assert_eq!(body["progress"], 0.0);
+                break;
+            }
+        }
+        assert_eq!(body["passed"], true, "{name}: {body}");
+    }
+    let (sequence, step) = current_step(&h, &id).await;
+    let (_, body) = gesture(&h, &token, &id, step.into(), &gesture_frame("TURN_RIGHT")).await;
+    assert_eq!(body["passed"], true, "{}: {body}", sequence[step as usize]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn gesture_frames_are_owned_bounded_images_within_the_window(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = seed(&pool, &h.store, "alice", "user").await;
+    let mallory = seed(&pool, &h.store, "mallory", "user").await;
+    let id = start_id(&h, &alice).await;
+    let center = gesture_frame("CENTER");
+    assert_eq!(
+        gesture(&h, &mallory, &id, 0, &center).await.0,
+        StatusCode::NOT_FOUND
+    );
+    for frame in [b"not an image".to_vec(), vec![0xff; 720 * 1024]] {
+        let (status, body) = gesture(&h, &alice, &id, 0, &frame).await;
+        assert_eq!(
+            (status, reason(&body)),
+            (StatusCode::BAD_REQUEST, "FRAME_UNUSABLE")
+        );
+    }
+    let (status, body) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/identity/photo-verifications/{id}/gestures"),
+        &alice,
+        json!({"step":0,"frame":"%%%"}),
+    )
+    .await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::BAD_REQUEST, "FRAME_UNUSABLE")
+    );
+    // A provider outage releases the step without costing a retry.
+    h.provider
+        .set(|s| s.gesture_error = Some(ProviderError::Transient));
+    let (status, body) = gesture(&h, &alice, &id, 0, &center).await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE")
+    );
+    h.provider.set(|s| s.gesture_error = None);
+    let (_, body) = gesture(&h, &alice, &id, 0, &center).await;
+    assert_eq!(body["passed"], true, "{body}");
+    let failures: i16 =
+        sqlx::query_scalar("SELECT gesture_failures FROM face_verification_attempts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(failures, 0);
+    // The gesture window closes before the AWS session does.
+    sqlx::query("UPDATE face_verification_attempts SET created_at=now()-interval '130 seconds'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (sequence, step) = current_step(&h, &id).await;
+    let frame = gesture_frame(&sequence[step as usize]);
+    let (status, body) = gesture(&h, &alice, &id, step.into(), &frame).await;
+    assert_eq!(
+        (status, reason(&body)),
+        (StatusCode::PRECONDITION_FAILED, "SESSION_EXPIRED")
+    );
+}
+
+async fn probe_gesture(
+    h: &Harness,
+    token: &str,
+    id: &str,
+    step: i64,
+    frame: &[u8],
+) -> (StatusCode, Value) {
+    call(
+        &h.app,
+        "POST",
+        &format!("/v1/identity/photo-verifications/{id}/gestures"),
+        token,
+        json!({ "step": step, "frame": BASE64.encode(frame), "probe": true }),
+    )
+    .await
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn probe_frames_wait_for_the_movement_but_strangers_still_cost_retries(pool: PgPool) {
+    let h = harness(&pool).await;
+    let token = seed(&pool, &h.store, "alice", "user").await;
+    let id = start_id(&h, &token).await;
+    // Continuous sampling before the person looks straight costs nothing.
+    for _ in 0..12 {
+        let (status, body) = probe_gesture(&h, &token, &id, 0, &gesture_frame("BLINK")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["passed"], false);
+        assert_eq!(body["retriesLeft"], 8);
+        assert_no_scores(&body);
+    }
+    // Frames that do not show the movement are never compared with the
+    // stored snapshot.
+    assert_eq!(h.provider.gesture_matches.load(Ordering::SeqCst), 0);
+    let far = GestureFrame {
+        faces: 1,
+        yaw: 30.0,
+        pitch: 0.0,
+        roll: 0.0,
+        eyes_open: Some((true, 99.0)),
+        face_width: Some(0.1),
+        face_center: Some((0.5, 0.45)),
+        brightness: Some(60.0),
+    };
+    h.provider.set(|s| s.gesture_override = Some(far));
+    let (_, body) = probe_gesture(&h, &token, &id, 0, &gesture_frame("CENTER")).await;
+    assert_eq!(body["hint"], "TOO_FAR", "{body}");
+    assert_eq!(body["retriesLeft"], 8);
+    // Someone else's face is never free, probe or not.
+    h.provider.set(|s| {
+        s.gesture_override = Some(GestureFrame {
+            yaw: 0.0,
+            face_width: Some(0.45),
+            ..far
+        });
+        s.gesture_similarity = Some(10.0);
+    });
+    let (_, body) = probe_gesture(&h, &token, &id, 0, &gesture_frame("CENTER")).await;
+    assert_eq!(body["reason"], "FACE_NOT_MATCHED");
+    assert_eq!(body["retriesLeft"], 7);
+    assert_no_scores(&body);
+    // The first frame that shows the movement passes the step at once.
+    h.provider.set(|s| {
+        s.gesture_override = None;
+        s.gesture_similarity = Some(99.0);
+    });
+    let (_, body) = probe_gesture(&h, &token, &id, 0, &gesture_frame("CENTER")).await;
+    assert_eq!(body["passed"], true, "{body}");
+}
+
+async fn gesture_batch(
+    h: &Harness,
+    token: &str,
+    id: &str,
+    step: i64,
+    frames: &[Vec<u8>],
+) -> (StatusCode, Value) {
+    let frames: Vec<String> = frames.iter().map(|frame| BASE64.encode(frame)).collect();
+    call(
+        &h.app,
+        "POST",
+        &format!("/v1/identity/photo-verifications/{id}/gestures"),
+        token,
+        json!({ "step": step, "frames": frames, "probe": true }),
+    )
+    .await
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_batch_of_recent_frames_catches_a_brief_movement(pool: PgPool) {
+    let h = harness(&pool).await;
+    let token = seed(&pool, &h.store, "alice", "user").await;
+    let id = start_id(&h, &token).await;
+    let (sequence, _) = current_step(&h, &id).await;
+    let other = |name: &str| if name == "BLINK" { "CENTER" } else { "BLINK" };
+    // The movement in any of the recent frames passes the step.
+    for (step, name) in sequence.iter().enumerate() {
+        let name = name.as_str();
+        let frames = [
+            gesture_frame(other(name)),
+            gesture_frame(name),
+            gesture_frame(other(name)),
+        ];
+        let (status, body) = gesture_batch(&h, &token, &id, step as i64, &frames).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["passed"], true, "{name}: {body}");
+    }
+    // Every frame's pose was read; identity once per passed step.
+    assert_eq!(
+        h.provider.gestures.load(Ordering::SeqCst),
+        3 * sequence.len()
+    );
+    assert_eq!(
+        h.provider.gesture_matches.load(Ordering::SeqCst),
+        sequence.len()
+    );
+    assert_eq!(finish(&h, &token, &id).await.1["status"], "VERIFIED");
+
+    // A batch is bounded: at least one frame, at most three.
+    let bob = seed(&pool, &h.store, "bob", "user").await;
+    let id = start_id(&h, &bob).await;
+    for frames in [vec![], vec![gesture_frame("CENTER"); 4]] {
+        let (status, body) = gesture_batch(&h, &bob, &id, 0, &frames).await;
+        assert_eq!(
+            (status, reason(&body)),
+            (StatusCode::BAD_REQUEST, "FRAME_UNUSABLE")
+        );
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_missed_frame_says_what_to_do_next(pool: PgPool) {
+    let h = harness(&pool).await;
+    let token = seed(&pool, &h.store, "alice", "user").await;
+    let id = start_id(&h, &token).await;
+    pass_until_turn(&h, &token, &id).await;
+    let partial = GestureFrame {
+        faces: 1,
+        yaw: 9.0,
+        pitch: 0.0,
+        roll: 0.0,
+        eyes_open: None,
+        face_width: Some(0.45),
+        face_center: Some((0.5, 0.45)),
+        brightness: Some(60.0),
+    };
+    h.provider.set(|s| s.gesture_override = Some(partial));
+    let (sequence, step) = current_step(&h, &id).await;
+    assert!(sequence[step as usize].starts_with("TURN_"));
+    let (_, body) = probe_gesture(&h, &token, &id, step.into(), &gesture_frame("CENTER")).await;
+    assert_eq!(body["passed"], false, "{body}");
+    assert_eq!(body["hint"], "TURN_MORE");
+    assert_eq!(body["progress"], 0.5);
+    assert_eq!(body["retriesLeft"], 8);
+    assert_no_scores(&body);
+}
+
+/// Pass steps in order until the server asks for a head turn.
+async fn pass_until_turn(h: &Harness, token: &str, id: &str) {
+    loop {
+        let (sequence, step) = current_step(h, id).await;
+        let name = &sequence[step as usize];
+        if name.starts_with("TURN_") {
+            return;
+        }
+        let (_, body) = gesture(h, token, id, step.into(), &gesture_frame(name)).await;
+        assert_eq!(body["passed"], true, "{name}: {body}");
+    }
 }

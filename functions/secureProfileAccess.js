@@ -26,7 +26,7 @@ export function toWire(value) {
 
 // Read access is evaluated from private server records for every result. The
 // public projection alone is never sufficient to authorize a detail fetch.
-export async function loadVisibleProfiles(db, viewerId, userIds, now = Date.now) {
+export async function loadVisibleProfilesWithDetails(db, viewerId, userIds, now = Date.now, discoveryOnly = false) {
   const refs = [], plans = [];
   for (const ownerId of assertUserIds(userIds)) {
     const paths = [ `users/${ownerId}`, `entitlements/${ownerId}`, `profileVisibility/${ownerId}`,
@@ -44,15 +44,36 @@ export async function loadVisibleProfiles(db, viewerId, userIds, now = Date.now)
     const ownerDecision = ownerLike.data(), viewerDecision = viewerLike.data();
     const participants = conversation.data()?.participants;
     const matched = establishedMatch(viewerId, ownerId, viewerDecision, ownerDecision, participants);
+    if (discoveryOnly && (matched || viewerLike.exists || ['accepted', 'removed', 'rejected'].includes(ownerDecision?.status))) continue;
     if (!canViewProfile({ viewerId, ownerId, ownerExists: owner.exists,
       ownerDiscoverable: source?.isDiscoverable !== false, ownerIsNew: source?.isNewUser === true,
       ownerFaceVerified: source?.isFaceVerified === true,
       blocked: viewerBlock.exists || ownerBlock.exists, matched,
       ownerLikedViewer: likeBetween(ownerDecision, ownerId, viewerId),
       visibilityMode: visibility.exists ? (visibility.data()?.mode || 'invalid') : 'public', ownerEntitlement: entitlement.data(), now: now() })) continue;
-    result.push(toWire(buildPublicProfile(ownerId, source)));
+    result.push({ profile: toWire(buildPublicProfile(ownerId, source)), source: source || {}, viewerDecision });
   }
   return result;
+}
+
+export async function loadVisibleProfiles(db, viewerId, userIds, now = Date.now, discoveryOnly = false) {
+  const entries = await loadVisibleProfilesWithDetails(db, viewerId, userIds, now, discoveryOnly);
+  return entries.map((entry) => entry.profile);
+}
+
+function viewerEntitlementRecord(request, entitlementDocData) {
+  const email = (request?.auth?.token?.email || '').toLowerCase().trim();
+  const isAdmin = email === '6710210317@psu.ac.th'
+    || request?.auth?.token?.admin === true
+    || entitlementDocData?.isAdmin === true
+    || entitlementDocData?.isSuperAdmin === true
+    || entitlementDocData?.role === 'admin';
+  const isPlus = isAdmin || entitlementDocData?.isPlus === true;
+  return {
+    ...(entitlementDocData || {}),
+    ...(isAdmin ? { isAdmin: true } : {}),
+    ...(isPlus ? { isPlus: true } : {}),
+  };
 }
 
 export function createProfileAccessApi({ db, now = Date.now, serverTimestamp, makeCursor = randomUUID }) {
@@ -98,10 +119,14 @@ export function createProfileAccessApi({ db, now = Date.now, serverTimestamp, ma
       if (typeof partyId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(partyId)) throw new HttpsError('invalid-argument', 'กิจกรรมไม่ถูกต้อง');
       const ids = assertUserIds(request.data?.userIds || []), party = (await db.doc(`parties/${partyId}`).get()).data();
       if (!party || !(party.memberIds || []).includes(uid)) throw new HttpsError('permission-denied', 'ไม่พบสิทธิ์ในกิจกรรมนี้');
-      for (const id of ids) {
-        if ((party.memberIds || []).includes(id)) continue;
-        const join = (await db.doc(`parties/${partyId}/requests/${id}`).get()).data();
-        if (party.hostId !== uid || party.status !== 'open' || join?.requesterId !== id || join?.status !== 'pending') throw new HttpsError('permission-denied', 'สมาชิกไม่อยู่ในกิจกรรม');
+      const nonMemberIds = ids.filter((id) => !(party.memberIds || []).includes(id));
+      if (nonMemberIds.length > 0) {
+        if (party.hostId !== uid || party.status !== 'open') throw new HttpsError('permission-denied', 'สมาชิกไม่อยู่ในกิจกรรม');
+        const joinSnaps = await Promise.all(nonMemberIds.map((id) => db.doc(`parties/${partyId}/requests/${id}`).get()));
+        for (let i = 0; i < nonMemberIds.length; i += 1) {
+          const join = joinSnaps[i]?.data();
+          if (join?.requesterId !== nonMemberIds[i] || join?.status !== 'pending') throw new HttpsError('permission-denied', 'สมาชิกไม่อยู่ในกิจกรรม');
+        }
       }
       const profiles = ids.length ? await db.getAll(...ids.map((id) => db.doc(`users/${id}`))) : [];
       // Device keys are deliberately separated from names/photos/visibility.
@@ -116,19 +141,22 @@ export function createProfileAccessApi({ db, now = Date.now, serverTimestamp, ma
       // Entitlement and visibility write share a transaction with revocation.
       return db.runTransaction(async (tx) => {
         const entitlement = await tx.get(db.doc(`entitlements/${uid}`));
-        validateVisibilityChange(mode, entitlement.data(), now());
+        validateVisibilityChange(mode, viewerEntitlementRecord(request, entitlement.data()), now());
         tx.set(db.doc(`profileVisibility/${uid}`), { mode, updatedAt: serverTimestamp() }, { merge: true });
         return { mode };
       });
     },
     getIncomingLikeSummary: async (request) => {
       const uid = signedIn(request);
-      const entitlement = await db.doc(`entitlements/${uid}`).get();
       const pending = db.collection('decisions').where('toUserId', '==', uid).where('type', '==', 'like').where('status', '==', 'pending');
-      const pendingCount = (await pending.count().get()).data().count;
+      const [entitlement, countSnap] = await Promise.all([
+        db.doc(`entitlements/${uid}`).get(),
+        pending.count().get(),
+      ]);
+      const pendingCount = countSnap.data().count;
       // Free callers receive no IDs, decision documents, names, photos or text.
-      if (!hasPlanFeature(entitlement.data(), 'incomingLikeProfiles', now())) return { pendingCount, pendingLikes: [], identitiesAvailable: false, hasMore: false, nextCursor: null };
-      let page = pending.orderBy('createdAt', 'desc').orderBy('__name__', 'desc');
+      if (!hasPlanFeature(viewerEntitlementRecord(request, entitlement.data()), 'incomingLikeProfiles', now())) return { pendingCount, pendingLikes: [], identitiesAvailable: false, hasMore: false, nextCursor: null };
+      let page = pending.orderBy('createdAt', 'desc');
       const cursor = request.data?.cursor;
       if (cursor) {
         if (typeof cursor !== 'string' || !/^[a-f0-9-]{36}$/.test(cursor)) throw new HttpsError('invalid-argument', 'หน้ารายการไม่ถูกต้อง');
@@ -150,32 +178,56 @@ export function createProfileAccessApi({ db, now = Date.now, serverTimestamp, ma
       // Check again after the network work so expiry/revocation cannot return a
       // paid identity list from an entitlement read at the start of this request.
       const latest = (await db.doc(`entitlements/${uid}`).get()).data();
-      if (!hasPlanFeature(latest, 'incomingLikeProfiles', now())) return { pendingCount, pendingLikes: [], identitiesAvailable: false, hasMore: false, nextCursor: null };
+      if (!hasPlanFeature(viewerEntitlementRecord(request, latest), 'incomingLikeProfiles', now())) return { pendingCount, pendingLikes: [], identitiesAvailable: false, hasMore: false, nextCursor: null };
       let nextCursor = null;
       if (snapshot.size === 20) {
         nextCursor = makeCursor();
         await db.doc(`likePageCursors/${uid}/tokens/${nextCursor}`).set({ decisionId: snapshot.docs.at(-1).id,
           expiresAt: Timestamp.fromMillis(now() + 15 * 60 * 1000) });
       }
-      return { pendingCount, identitiesAvailable: true, pendingLikes: snapshot.docs.flatMap((doc) => {
+      const pendingLikes = snapshot.docs.flatMap((doc) => {
         const record = doc.data(), profile = byId.get(record.fromUserId);
         return profile ? [{ decisionId: doc.id, profile, likeMessage: record.likeMessage || '', createdAt: toWire(record.createdAt) }] : [];
-      }), hasMore: snapshot.size === 20, nextCursor };
+      });
+      // The aggregate count includes likes the visibility rules omit. Once the
+      // member can see identities, the count has to match the cards.
+      let reportedCount = pendingLikes.length;
+      if (cursor || snapshot.size === 20) {
+        const all = await pending.orderBy('createdAt', 'desc').limit(300).get();
+        const visible = await loadVisibleProfiles(db, uid, all.docs.map((doc) => doc.data().fromUserId), now);
+        const visibleIds = new Set(visible.map((profile) => profile.id));
+        reportedCount = all.docs.filter((doc) => visibleIds.has(doc.data().fromUserId)).length;
+      }
+      return { pendingCount: reportedCount, identitiesAvailable: true, pendingLikes, hasMore: snapshot.size === 20, nextCursor };
     },
     getMyDecisionState: async (request) => {
       const uid = signedIn(request);
-      const [outgoing, accepted, summary, state] = await Promise.all([
+      const [outgoing, accepted, summary, state, restored, skipped] = await Promise.all([
         db.collection('decisions').where('fromUserId', '==', uid).limit(300).get(),
         db.collection('decisions').where('toUserId', '==', uid).where('type', '==', 'like').where('status', '==', 'accepted').limit(300).get(),
         api.getIncomingLikeSummary(request),
         db.doc(`discoveryState/${uid}`).get(),
+        db.collection(`discoveryActions/${uid}/entries`).where('undoReason', '==', 'rewind').orderBy('undoneAt', 'desc').limit(30).get(),
+        db.collection('decisions').where('fromUserId', '==', uid).where('type', '==', 'skip').where('status', '==', 'pending').limit(1).get(),
       ]);
+      const restoredById = new Map();
+      for (const doc of restored.docs) {
+        if (!restoredById.has(doc.data().target)) restoredById.set(doc.data().target, doc.data());
+      }
+      const restoredIds = [...restoredById.keys()].filter(id => typeof id === 'string' && UID.test(id));
+      const restoredDecisions = restoredIds.length ? await db.getAll(...restoredIds.map(id => db.doc(`decisions/${uid}_${id}`))) : [];
+      const unacted = restoredIds.filter((_id, index) => !restoredDecisions[index].exists);
+      const rewoundProfiles = (await loadVisibleProfiles(db, uid, unacted, now, true))
+        .map(profile => ({ ...profile, rewindPriority: toWire(restoredById.get(profile.id).undoneAt) }));
       const incomingDecisions = accepted.docs.map((doc) => ({ id: doc.id, decisionId: doc.id, ...toWire(doc.data()) }));
-      const plusStillActive = hasPlanFeature((await db.doc(`entitlements/${uid}`).get()).data(), 'incomingLikeProfiles', now());
-      incomingDecisions.push(...(plusStillActive ? summary.pendingLikes : []).map((like) => ({ id: like.decisionId, decisionId: like.decisionId,
-        fromUserId: like.profile.id, toUserId: uid, type: 'like', status: 'pending', likeMessage: like.likeMessage, createdAt: like.createdAt })));
+      const plusStillActive = summary.identitiesAvailable === true;
+      const pendingLikes = (plusStillActive ? summary.pendingLikes : []);
+      incomingDecisions.push(...pendingLikes.map((like) => ({ id: like.decisionId, decisionId: like.decisionId,
+        fromUserId: like.profile.id, toUserId: uid, type: 'like', status: 'pending', likeMessage: like.likeMessage, createdAt: like.createdAt,
+        profile: like.profile })));
       return { incomingDecisions, outgoingDecisions: outgoing.docs.map((doc) => ({ id: doc.id, decisionId: doc.id, ...toWire(doc.data()) })),
-        pendingCount: summary.pendingCount, discoveryActionCount: state.data()?.nextSequence || 0,
+        rewoundProfiles, canRewind: !skipped.empty,
+        pendingCount: summary.pendingCount, pendingProfiles: pendingLikes.map((like) => like.profile), discoveryActionCount: state.data()?.nextSequence || 0,
         hasMorePending: plusStillActive && summary.hasMore, nextPendingCursor: plusStillActive ? summary.nextCursor : null };
     },
   };

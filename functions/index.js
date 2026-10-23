@@ -17,7 +17,7 @@ import { onDocumentCreated, onDocumentWritten } from 'firebase-functions/v2/fire
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { buildDiscoveryProfile, buildPublicProfile } from './discoveryProfile.js';
 import { sanitizePeerUserIds, visibleDistanceKm } from './peerDistance.js';
-import { loadVisibleProfiles } from './secureProfileAccess.js';
+import { loadVisibleProfiles, loadVisibleProfilesWithDetails } from './secureProfileAccess.js';
 import {
   isNewPendingLike,
   likeNotification,
@@ -79,7 +79,7 @@ export { recordDiscoveryAction, respondToIncomingLike, rewindDiscoveryAction, ca
 export {
   searchCampusPlaces, resolveCampusPlace, createParty, requestJoinParty,
   withdrawPartyRequest, rejectPartyRequest, cancelParty, approvePartyRequest,
-  leaveParty, rotatePartyKey, activateLegacyPartyChat,
+  leaveParty, rotatePartyKey, activateLegacyPartyChat, updateGroupProfile,
 } from './partyFunctions.js';
 export { startFaceVerificationSession, completeFaceVerification, syncPhotoVerification } from './faceVerificationFunctions.js';
 
@@ -174,16 +174,23 @@ export const syncPublicProfile = onDocumentWritten(
     // A face verification covers the main photo it was compared with. When
     // that photo changes the badge is revoked here, on the server, because
     // clients cannot (and must not) write verification fields.
-    let data = after.data();
-    if (shouldRevokeFaceVerification(event.data?.before?.data(), data)) {
-      await after.ref.update(FACE_REVOCATION_PATCH);
-      await db.collection('faceVerifications').doc(userId).delete();
-      data = { ...data, ...FACE_REVOCATION_PATCH };
-    }
-
-    const projection = buildPublicProfile(userId, data);
-    if (!projection) return;
-    await profileRef.set(projection);
+    await db.runTransaction(async tx => {
+      const proofRef = db.collection('faceVerifications').doc(userId);
+      const [owner, proof] = await Promise.all([tx.get(after.ref), tx.get(proofRef)]);
+      if (!owner.exists) return;
+      let data = owner.data();
+      // An older trigger must not revoke a later successful verification or
+      // publish an older profile over a newer owner's edit.
+      const eventStillCurrent = data.avatarUri === after.data().avatarUri
+        && data.avatarRevision === after.data().avatarRevision;
+      if (eventStillCurrent && shouldRevokeFaceVerification(event.data?.before?.data(), data, proof.data())) {
+        tx.update(after.ref, FACE_REVOCATION_PATCH);
+        tx.delete(proofRef);
+        data = { ...data, ...FACE_REVOCATION_PATCH };
+      }
+      const projection = buildPublicProfile(userId, data);
+      if (projection) tx.set(profileRef, projection);
+    });
   }
 );
 
@@ -568,17 +575,33 @@ export const unregisterPushToken = onCall({ region: REGION }, async (request) =>
 export const getPeerDistances = onCall({ region: REGION, maxInstances: 20 }, async (request) => {
   const userId = requireSignedIn(request);
   let peerIds = sanitizePeerUserIds(request.data?.userIds, userId);
-  if (process.env.CAMPUSMATE_SECURE_DISCOVERY_ENABLED === 'true') {
-    peerIds = (await loadVisibleProfiles(db, userId, peerIds)).map((profile) => profile.id);
-  }
   if (peerIds.length === 0) return { distances: {} };
 
-  const callerSnapshot = await db.collection('users').doc(userId).get();
+  if (process.env.CAMPUSMATE_SECURE_DISCOVERY_ENABLED === 'true') {
+    const [{ profiles, ownerById }, callerSnapshot] = await Promise.all([
+      loadVisibleProfilesWithDetails(db, userId, peerIds),
+      db.collection('users').doc(userId).get(),
+    ]);
+    peerIds = profiles.map((profile) => profile.id);
+    if (peerIds.length === 0) return { distances: {} };
+    const callerProfile = callerSnapshot.data() || {};
+    const distances = {};
+    peerIds.forEach((peerId) => {
+      const snapshot = ownerById.get(peerId);
+      if (!snapshot?.exists) return;
+      const distanceKm = visibleDistanceKm(callerProfile, snapshot.data() || {});
+      if (distanceKm == null) return;
+      distances[peerId] = distanceKm;
+    });
+    return { distances };
+  }
+
+  const [callerSnapshot, peerSnapshots] = await Promise.all([
+    db.collection('users').doc(userId).get(),
+    db.getAll(...peerIds.map((peerId) => db.collection('users').doc(peerId))),
+  ]);
   const callerProfile = callerSnapshot.data() || {};
   const distances = {};
-  const peerSnapshots = await db.getAll(
-    ...peerIds.map((peerId) => db.collection('users').doc(peerId)),
-  );
   peerSnapshots.forEach((snapshot) => {
     if (!snapshot.exists) return;
     const distanceKm = visibleDistanceKm(callerProfile, snapshot.data() || {});
@@ -683,9 +706,11 @@ async function sendNotificationToUser(userId, notification) {
 }
 
 async function sendOnce(key, userId, notification) {
-  const notificationId = await persistInbox(db, key, userId, notification);
+  const [notificationId, { claimed, ref }] = await Promise.all([
+    persistInbox(db, key, userId, notification),
+    claimDelivery(key, userId, notification.data.type),
+  ]);
   notification = { ...notification, data: { ...notification.data, notificationId } };
-  const { claimed, ref } = await claimDelivery(key, userId, notification.data.type);
   if (!claimed) return;
   try {
     const sentCount = notification.inboxOnly ? 0 : await sendNotificationToUser(userId, notification);
@@ -752,12 +777,14 @@ export const notifyOnMessageCreated = onDocumentCreated(
 
     const senderProfile = conversation.participantProfiles?.[message.senderId] || {};
     let effectiveSenderProfile = senderProfile;
-    try {
-      const senderDoc = await db.collection('profiles').doc(message.senderId).get();
-      if (senderDoc.exists) {
-        effectiveSenderProfile = { ...senderProfile, ...senderDoc.data() };
-      }
-    } catch (_) {}
+    if (!senderProfile.name && !senderProfile.nickname) {
+      try {
+        const senderDoc = await db.collection('profiles').doc(message.senderId).get();
+        if (senderDoc.exists) {
+          effectiveSenderProfile = { ...senderProfile, ...senderDoc.data() };
+        }
+      } catch (_) {}
+    }
 
     const messagePreview = message.preview || message.text || '';
     const sends = participants
@@ -767,6 +794,7 @@ export const notifyOnMessageCreated = onDocumentCreated(
         try {
           const convDocs = await db.collection('conversations')
             .where('participants', 'array-contains', recipientId)
+            .select('unreadCounts')
             .get();
           let count = 0;
           convDocs.forEach((doc) => {
@@ -851,6 +879,14 @@ export const expirePastParties = onSchedule(
       if (page.size < 200) break;
     }
     if (expired) logger.info('parties_expired', { count: expired });
+  },
+);
+
+export const autoRecycleExhaustedSkips = onSchedule(
+  { region: REGION, schedule: 'every 24 hours', retryCount: 0 },
+  async () => {
+    // Skipped profiles stay skipped. The export remains so an existing
+    // schedule can be updated to a no-op instead of scanning every account.
   },
 );
 
@@ -1268,8 +1304,18 @@ export const getLiveKitToken = onCall({ region: REGION, maxInstances: 30 }, asyn
   }
 
   const { callId, participantName } = request.data || {};
-  if (!callId || typeof callId !== 'string') {
-    throw new HttpsError('invalid-argument', 'ต้องระบุ callId');
+  if (!callId || typeof callId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(callId)) {
+    throw new HttpsError('invalid-argument', 'ต้องระบุ callId ที่ถูกต้อง');
+  }
+
+  const userId = request.auth.uid;
+  const callSnap = await db.collection('calls').doc(callId).get();
+  if (!callSnap.exists) {
+    throw new HttpsError('not-found', 'ไม่พบสายสนทนานี้');
+  }
+  const callData = callSnap.data() || {};
+  if (callData.callerId !== userId && callData.receiverId !== userId) {
+    throw new HttpsError('permission-denied', 'คุณไม่ได้เป็นผู้เข้าร่วมสายสนทนานี้');
   }
 
   const apiKey = process.env.LIVEKIT_API_KEY;
@@ -1281,9 +1327,8 @@ export const getLiveKitToken = onCall({ region: REGION, maxInstances: 30 }, asyn
     throw new HttpsError('internal', 'ระบบโทรยังไม่ได้ตั้งค่า LiveKit API Keys');
   }
 
-  const userId = request.auth.uid;
-
   try {
+    const { AccessToken } = await import('livekit-server-sdk');
     const at = new AccessToken(apiKey, apiSecret, {
       identity: userId,
       name: participantName || userId,
@@ -1772,6 +1817,7 @@ export const ensureNotificationInbox = onCall({ region: REGION }, async (request
   const userRef = db.doc(`users/${request.auth.uid}`);
   const userSnap = await userRef.get();
   const userData = userSnap.data() || {};
+  let refreshedUser = userData;
   if (isVerifiedSuperAdmin(request.auth.token)) {
     const patch = {};
     let needsUpdate = false;
@@ -1783,27 +1829,30 @@ export const ensureNotificationInbox = onCall({ region: REGION }, async (request
       patch.faceVerifiedAt = FieldValue.serverTimestamp();
       needsUpdate = true;
     }
+    const writes = [
+      db.doc(`entitlements/${request.auth.uid}`).set({
+        source: 'revenuecat',
+        entitlementId: 'campusmate_plus',
+        activeUntil: 4102444800000,
+        verifiedAt: Date.now(),
+        isAdmin: true,
+        isSuperAdmin: true,
+      }, { merge: true }),
+    ];
     if (needsUpdate) {
-      await userRef.set(patch, { merge: true });
-      await db.doc(`profiles/${request.auth.uid}`).set({
-        isFaceVerified: true,
-      }, { merge: true });
-      const discRef = db.doc(`discoveryProfiles/${request.auth.uid}`);
-      const discSnap = await discRef.get();
-      if (discSnap.exists) {
-        await discRef.set({ isFaceVerified: true }, { merge: true });
-      }
+      refreshedUser = { ...userData, ...patch };
+      writes.push(
+        userRef.set(patch, { merge: true }),
+        db.doc(`profiles/${request.auth.uid}`).set({
+          isFaceVerified: true,
+        }, { merge: true }),
+        db.doc(`discoveryProfiles/${request.auth.uid}`).get().then((discSnap) => (
+          discSnap.exists ? discSnap.ref.set({ isFaceVerified: true }, { merge: true }) : null
+        )),
+      );
     }
-    await db.doc(`entitlements/${request.auth.uid}`).set({
-      source: 'revenuecat',
-      entitlementId: 'campusmate_plus',
-      activeUntil: 4102444800000,
-      verifiedAt: Date.now(),
-      isAdmin: true,
-      isSuperAdmin: true,
-    }, { merge: true });
+    await Promise.all(writes);
   }
-  const refreshedUser = (await userRef.get()).data() || {};
   await syncFaceInbox(db, request.auth.uid, refreshedUser);
   return { ok: true };
 });

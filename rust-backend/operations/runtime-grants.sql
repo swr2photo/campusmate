@@ -32,6 +32,8 @@ GRANT USAGE ON SEQUENCE public.decisions_sequence_seq,public.matching_history_se
 GRANT INSERT ON public.outbox TO campusmate_api;
 GRANT SELECT(id,kind,user_id,created_at) ON public.outbox TO campusmate_api;
 GRANT EXECUTE ON FUNCTION public.scrub_auth_outbox() TO campusmate_api;
+GRANT SELECT,INSERT,UPDATE,DELETE ON public.user_app_settings,public.user_presence TO campusmate_api;
+REVOKE ALL ON public.user_app_settings,public.user_presence FROM campusmate_mail;
 
 -- Photo verification is processed by the API/sweeper. Lifecycle identifiers,
 -- consent and reference pins are immutable after insert. The mail worker has
@@ -42,11 +44,12 @@ REVOKE ALL ON public.face_verification_attempts,public.user_photo_verifications,
     FROM PUBLIC,campusmate_api,campusmate_mail;
 GRANT SELECT ON public.face_verification_attempts,public.user_photo_verifications,
     public.identity_review_requests,public.identity_alternative_requests TO campusmate_api;
-GRANT INSERT(id,user_id,aws_region,challenge,reference_source,reference_key,reference_sha256,
-    consent_version,consented_at,policy_version,state,expires_at)
+GRANT INSERT(id,user_id,aws_region,challenge,reference_source,reference_key,reference_sha256,replacement_base,
+    consent_version,consented_at,policy_version,state,expires_at,gesture_sequence)
     ON public.face_verification_attempts TO campusmate_api;
 GRANT UPDATE(state,failure_code,finished_at,updated_at,reference_purge_after,
-    reference_deleted_at,aws_session_id,expires_at,evidence_key,evidence_stored)
+    reference_deleted_at,aws_session_id,expires_at,evidence_key,evidence_stored,
+    gesture_step,gesture_failures,gesture_turn_sign,gesture_lease_until,gestures_passed_at)
     ON public.face_verification_attempts TO campusmate_api;
 GRANT INSERT(user_id,latest_attempt_id,verified_reference_source,verified_reference_sha256,
     status,method,policy_version,verified_at,revoked_at,revoke_reason,updated_at)

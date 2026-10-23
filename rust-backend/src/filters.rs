@@ -246,6 +246,7 @@ pub fn weekday_of(date: &str) -> Option<String> {
         .then(|| parsed.weekday().num_days_from_sunday().to_string())
 }
 
+#[allow(dead_code)]
 fn slot_matches_periods(slot: &Slot, selected: &[String]) -> bool {
     match (slot.start, slot.end) {
         (Some(start), Some(end)) if end > start => selected.iter().any(|period| {
@@ -314,40 +315,6 @@ pub fn matches(profile: &UserRecord, filters: &DiscoveryFilters, distance: Optio
         }
     }
     if filters.distance_km > 0.0 && distance.is_none_or(|km| km > filters.distance_km) {
-        return false;
-    }
-    let raw_slots =
-        matches!(raw.get("availabilitySlots"), Some(Value::Array(items)) if !items.is_empty());
-    let availability_text = raw
-        .get("availability")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    if filters.require_availability && !raw_slots && availability_text.trim().is_empty() {
-        return false;
-    }
-    if !filters.availability_periods.is_empty() {
-        let text = availability_text.to_lowercase();
-        let legacy = text.contains("ตลอดเวลา")
-            || text.contains("anytime")
-            || filters
-                .availability_periods
-                .iter()
-                .any(|period| period_words(period).iter().any(|word| text.contains(word)));
-        let overlap = profile
-            .slots
-            .iter()
-            .any(|slot| slot_matches_periods(slot, &filters.availability_periods));
-        if !legacy && !overlap {
-            return false;
-        }
-    }
-    if !filters.availability_weekdays.is_empty()
-        && !profile.slots.iter().any(|slot| {
-            weekday_of(&slot.date).is_some_and(|day| filters.availability_weekdays.contains(&day))
-                && (filters.availability_periods.is_empty()
-                    || slot_matches_periods(slot, &filters.availability_periods))
-        })
-    {
         return false;
     }
     true
@@ -492,63 +459,17 @@ mod tests {
     }
 
     #[test]
-    fn availability_filters_ignore_expired_slots_and_honor_weekly_start() {
-        let mut filters = validate(&serde_json::json!({}), None, 0).unwrap();
+    fn availability_filters_do_not_hide_profiles() {
+        let mut filters = validate(&json!({}), None, 0).unwrap();
         filters.require_availability = true;
         filters.availability_weekdays = vec!["3".into()];
-        let expired = user(
-            serde_json::json!({"availabilitySlots":[{"date":"2026-10-07","start":"18:00","end":"19:00"}]}),
-        );
-        assert!(!matches_on_date(&expired, &filters, None, "2026-10-12"));
-        let weekly = user(
-            serde_json::json!({"availabilitySlots":[{"date":"2026-10-07","start":"18:00","end":"19:00","recurring":true}]}),
-        );
-        assert!(matches_on_date(&weekly, &filters, None, "2026-10-12"));
-        let future = user(
-            serde_json::json!({"availabilitySlots":[{"date":"2026-11-04","start":"18:00","end":"19:00","recurring":true}]}),
-        );
-        assert!(!matches_on_date(&future, &filters, None, "2026-10-12"));
-    }
-
-    #[test]
-    fn weekday_and_period_filters_require_the_same_upcoming_interval() {
-        let mut filters = validate(&json!({}), None, 0).unwrap();
-        filters.availability_weekdays = vec!["1".into()]; // Monday
         filters.availability_periods = vec!["evening".into()];
-        let split = user(json!({"availability":"เย็น","availabilitySlots":[
-            {"date":"2026-10-12","start":"09:00","end":"10:00"},
-            {"date":"2026-10-14","start":"18:00","end":"19:00"}
-        ]}));
-        let together = user(json!({"availabilitySlots":[
-            {"date":"2026-10-12","start":"18:00","end":"19:00"}
-        ]}));
-        assert!(!matches_on_date(&split, &filters, None, "2026-10-12"));
-        assert!(matches_on_date(&together, &filters, None, "2026-10-12"));
-        let text_only = user(json!({"availability":"เย็น"}));
-        assert!(!matches_on_date(&text_only, &filters, None, "2026-10-12"));
-        filters.availability_weekdays.clear();
-        assert!(matches_on_date(&text_only, &filters, None, "2026-10-12"));
-    }
-
-    #[test]
-    fn request_time_filters_exclude_today_when_the_selected_period_has_ended() {
-        let mut filters = validate(&json!({}), None, 0).unwrap();
-        filters.require_availability = true;
-        let expired = user(json!({"availabilitySlots":[
-            {"date":"2026-10-12","start":"09:00","end":"12:00"}
-        ]}));
-        let active = user(json!({"availabilitySlots":[
-            {"date":"2026-10-12","start":"11:00","end":"13:00"}
-        ]}));
+        let bare = user(json!({}));
+        assert!(matches(&bare, &filters, None));
+        assert!(matches_on_date(&bare, &filters, None, "2026-10-12"));
         let now = chrono::DateTime::parse_from_rfc3339("2026-10-12T12:00:00+07:00")
             .unwrap()
             .timestamp_millis();
-        assert!(!matches_at(&expired, &filters, None, "2026-10-12", now));
-        assert!(matches_at(&active, &filters, None, "2026-10-12", now));
-        filters.availability_weekdays = vec!["1".into()];
-        filters.availability_periods = vec!["morning".into()];
-        assert!(!matches_at(&active, &filters, None, "2026-10-12", now));
-        filters.availability_periods = vec!["afternoon".into()];
-        assert!(matches_at(&active, &filters, None, "2026-10-12", now));
+        assert!(matches_at(&bare, &filters, None, "2026-10-12", now));
     }
 }

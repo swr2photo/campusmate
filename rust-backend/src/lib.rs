@@ -29,6 +29,7 @@ pub mod projection;
 pub mod rooms;
 pub mod rpc;
 pub mod score;
+pub mod settings;
 pub mod social;
 pub mod value;
 
@@ -150,6 +151,15 @@ pub fn router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(media::MAX_IMAGE_BYTES))
         .layer(RequestBodyLimitLayer::new(media::MAX_IMAGE_BYTES))
         .layer(ConcurrencyLimitLayer::new(8));
+    // Gesture frames (base64 JPEG) are larger than ordinary JSON calls.
+    let gestures = Router::new()
+        .route(
+            "/v1/identity/photo-verifications/{id}/gestures",
+            post(identity::gesture),
+        )
+        .layer(DefaultBodyLimit::max(identity::MAX_GESTURE_BODY_BYTES))
+        .layer(RequestBodyLimitLayer::new(identity::MAX_GESTURE_BODY_BYTES))
+        .layer(ConcurrencyLimitLayer::new(16));
     let rpc = Router::new()
         .route("/v1/rpc/{name}", post(rpc::call))
         .route("/v1/webhooks/revenuecat", post(membership::webhook))
@@ -247,6 +257,7 @@ pub fn router(state: AppState) -> Router {
         .layer(RequestBodyLimitLayer::new(64 * 1024))
         .merge(rpc)
         .merge(uploads)
+        .merge(gestures)
         .fallback(|| async {
             error::ApiError::new("unimplemented", "บริการนี้ยังไม่พร้อมสำหรับ backend ใหม่")
         })

@@ -37,8 +37,9 @@ try {
   assert.equal((await db.doc(`discoveryState/${legacy}`).get()).exists, false);
   assert.equal((await migrateLegacyUser(db, legacy, { ...migrationOptions, apply: true })).written, 2);
   assert.equal((await migrateLegacyUser(db, legacy, { ...migrationOptions, apply: true })).written, 0);
-  assert.equal((await rewind(legacy)).profile.id, oldTwo);
   assert.equal((await rewind(legacy)).profile.id, oldOne);
+  assert.equal((await rewind(legacy)).profile, null);
+  assert.equal((await db.doc(`decisions/${legacy}_${oldTwo}`).get()).data().type, 'like');
   console.log('PASS migration is dry-run by default, idempotent and preserves the known legacy action order');
 
   const me = uid('owner'), one = uid('one'), two = uid('two');
@@ -48,14 +49,57 @@ try {
   assert.equal((await record(me, one, 'skip', first)).sequence, 1); // retry does not append history
   assert.equal((await record(me, two, 'like')).sequence, 2);
   const receipt = randomUUID();
-  assert.equal((await rewind(me, receipt)).profile.id, two);
-  assert.equal((await rewind(me, receipt)).profile.id, two); // retry does not undo the next action
-  assert.equal((await rewind(me)).profile.id, one);
+  assert.equal((await rewind(me, receipt)).profile.id, one);
+  assert.equal((await rewind(me, receipt)).profile.id, one); // retry does not undo the next action
   assert.equal((await rewind(me)).profile, null);
+  assert.equal((await db.doc(`decisions/${me}_${two}`).get()).data().type, 'like');
+  const remote = await access.getMyDecisionState(request(me));
+  assert.deepEqual(remote.rewoundProfiles.map(p => p.id), [one]);
+  assert.equal(remote.canRewind, false);
   assert.equal((await db.doc(`decisions/${me}_${one}`).get()).exists, false);
   await assert.rejects(rewind(one), { code: 'permission-denied' });
   await assert.rejects(actions.rewindDiscoveryAction({ auth: { uid: one }, data: { actionId: randomUUID(), plus: true, uid: me } }), { code: 'permission-denied' });
   console.log('PASS ordered rewind, retry receipts and forged Plus payload');
+
+  // Independent devices share the same history; simultaneous rewinds consume
+  // different skips, and every later reload receives the restored deck.
+  const shared = uid('shared'), older = uid('older'), newer = uid('newer'), liked = uid('liked');
+  await Promise.all([user(shared, true), user(older), user(newer), user(liked)]);
+  await record(shared, older, 'skip'); await record(shared, newer, 'skip'); await record(shared, liked, 'like');
+  const sharedResults = await Promise.all([rewind(shared), rewind(shared)]);
+  assert.deepEqual(sharedResults.map(r => r.profile.id).sort(), [older, newer].sort());
+  assert.equal((await db.doc(`decisions/${shared}_${liked}`).get()).data().type, 'like');
+  for (let device = 0; device < 2; device++) {
+    const snapshot = await access.getMyDecisionState(request(shared));
+    assert.deepEqual(snapshot.rewoundProfiles.map(p => p.id).sort(), [older, newer].sort());
+    assert.equal(snapshot.canRewind, false);
+  }
+  await record(shared, older, 'like');
+  assert.deepEqual((await access.getMyDecisionState(request(shared))).rewoundProfiles.map(p => p.id), [newer]);
+  await db.doc(`users/${newer}/blockedUsers/${shared}`).set({});
+  assert.deepEqual((await access.getMyDecisionState(request(shared))).rewoundProfiles, []);
+  console.log('PASS skip-only rewind across likes, concurrent devices and durable private restorations');
+
+  const longHistory = uid('long-history'), ancientSkip = uid('zzz-ancient-skip');
+  await Promise.all([user(longHistory, true), user(ancientSkip)]);
+  await record(longHistory, ancientSkip, 'skip');
+  const likesBatch = db.batch();
+  for (let index = 0; index < 320; index++) {
+    const target = uid('aaa-liked-' + String(index).padStart(3, '0'));
+    likesBatch.set(db.doc(`decisions/${longHistory}_${target}`), {
+      fromUserId: longHistory, toUserId: target, type: 'like', status: 'pending', createdAt: Timestamp.fromMillis(instant),
+    });
+  }
+  await likesBatch.commit();
+  const longState = await access.getMyDecisionState(request(longHistory));
+  assert.equal(longState.outgoingDecisions.length, 300);
+  assert.equal(longState.outgoingDecisions.some(d => d.type === 'skip'), false);
+  assert.equal(longState.canRewind, true);
+  assert.equal((await rewind(longHistory)).profile.id, ancientSkip);
+  assert.equal((await db.collection('decisions').where('fromUserId', '==', longHistory).count().get()).data().count, 320);
+  console.log('PASS skips beyond the 300-row app page remain rewindable without touching 320 likes');
+
+
 
   await record(me, one, 'skip'); await record(me, two, 'like');
   await db.doc(`users/${two}/blockedUsers/${me}`).set({});
@@ -72,6 +116,7 @@ try {
     await Promise.all([user(from, true), user(to)]); await record(from, to, 'like');
     const results = await Promise.allSettled([rewind(from), actions.respondToIncomingLike(request(to, { targetUserId: from, response: 'accept' }))]);
     const outgoing = await db.doc(`decisions/${from}_${to}`).get(), incoming = await db.doc(`decisions/${to}_${from}`).get();
+    assert.equal(results[1].status, 'fulfilled');
     if (results[1].status === 'fulfilled') {
       assert.equal(outgoing.data().status, 'accepted'); assert.equal(incoming.data().status, 'accepted');
       assert.equal(results[0].status, 'fulfilled'); assert.equal(results[0].value.profile, null);

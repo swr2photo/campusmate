@@ -28,13 +28,12 @@ test('image resize bounds portrait/landscape and does not upscale', () => {
   assert.equal(policy.imageResizeActions(300, 500, 1440).length, 0);
 });
 
-test('version URL survives prefetch and keeps signed URLs unchanged', () => {
+test('profile image requests keep the storage URL exact', () => {
   const url = 'https://cdn.example/avatar.jpg?foo=1&cmv=100#photo';
-  const versioned = policy.getRemoteImageRequestUrl(url, { seconds: 2, nanoseconds: 1000000 });
-  assert.equal(versioned, 'https://cdn.example/avatar.jpg?foo=1&cmv=2001#photo');
-  assert.equal(policy.getRemoteImageRequestUrl(versioned), versioned);
+  assert.equal(policy.getRemoteImageRequestUrl(url, { seconds: 2, nanoseconds: 1000000 }), url);
+  assert.equal(policy.getRemoteImageRequestUrl('https://cdn.example/plain.jpg', 9), 'https://cdn.example/plain.jpg');
   assert.equal(policy.getRemoteImageRequestUrl('https://cdn.example/photo.jpg?X-Amz-Signature=secret', 9), 'https://cdn.example/photo.jpg?X-Amz-Signature=secret');
-  assert.notEqual(policy.getRemoteImageRequestUrl(url, 1), policy.getRemoteImageRequestUrl(url, 2));
+  assert.equal(policy.getRemoteImageRequestUrl('not-a-url', 9), null);
 });
 
 test('avatar CDN mapping is opt in and limited to the verified legacy bucket', () => {
@@ -128,9 +127,30 @@ test('upload uses v2 signed headers and does not send plaintext after encryption
   assert.equal(failed.counters.uploads, 0);
   const unsafe = mediaFixture({ failModeration: true });
   await assert.rejects(unsafe.service.uploadChatMedia('file:///original.jpg', { conversationId: 'room', conversationKey: key }), /unsafe/);
-  assert.equal(unsafe.counters.encrypt, 0);
   assert.equal(unsafe.counters.uploads, 0);
+  assert.equal([...unsafe.files.keys()].some(uri => /\/enc_.*\.enc$/.test(uri)), false, 'failed moderation cleans temporary ciphertext');
   await assert.rejects(good.service.uploadChatMedia('file:///original.jpg', { conversationId: 'room' }), /กุญแจ/);
+});
+
+test('native upload bytes drive progress on the encrypted request', async () => {
+  const f = mediaFixture(); const updates = [];
+  f.dependencies.FileSystem.createUploadTask = (_url, uri, options, onProgress) => ({
+    uploadAsync: async () => {
+      assert.ok(uri.endsWith('.enc'));
+      assert.equal(options.headers['Content-Type'], 'application/octet-stream');
+      onProgress({ totalBytesSent: 50, totalBytesExpectedToSend: 100 });
+      return { status: 200 };
+    }, cancelAsync: async () => {},
+  });
+  await f.service.uploadChatMedia('file:///original.jpg', { conversationId: 'room', conversationKey: key, onProgress: value => updates.push(value) });
+  assert.ok(updates.some(update => update.stage === 'uploading' && update.progress === 0.5));
+  assert.equal(updates.at(-1).stage, 'uploaded'); assert.equal(updates.at(-1).progress, 1);
+});
+
+test('group image signer uses the group scope and cannot fall back to a direct-chat bucket', async () => {
+  const f = mediaFixture();
+  await f.service.uploadChatMedia('file:///original.jpg', { conversationId: 'group', groupChatId: 'group', conversationKey: key });
+  assert.equal(f.counters.request.groupChatId, 'group'); assert.equal(f.counters.request.conversationId, undefined);
 });
 
 test('iOS avatar prefetch deduplicates and reuses expo-image disk cache', async () => {
@@ -155,7 +175,7 @@ test('visible images get the CDN/version URL synchronously without a file downlo
     Image: new Proxy({}, { get() { throw new Error('visible image must not wait for native disk IO'); } }),
   });
   const url = 'https://pub-73287d4af57d4e788f89d95e71d2ea70.r2.dev/users/alice/avatar.jpg';
-  assert.equal(api.getImageRequestUri(url, 25), 'https://images.getcampusmate.app/users/alice/avatar.jpg?cmv=25');
+  assert.equal(api.getImageRequestUri(url, 25), 'https://images.getcampusmate.app/users/alice/avatar.jpg');
   assert.equal(api.getImageRequestUri('file:///picked.jpg', 25), 'file:///picked.jpg');
   assert.equal(api.getImageRequestUri('content://picked/1'), 'content://picked/1');
   assert.equal(api.getImageRequestUri(null), null);

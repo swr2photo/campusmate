@@ -44,7 +44,8 @@ export const startFaceVerificationSession = onCall(
   async (request) => {
     const { uid, authEmail, authEmailVerified } = requireAuth(request);
     try {
-      return await createFaceVerificationSession({ db: getFirestore(), uid, authEmail, authEmailVerified });
+      return await createFaceVerificationSession({ db: getFirestore(), uid, authEmail, authEmailVerified,
+        candidateAvatarUri: request.data?.candidateAvatarUri || null });
     } catch (err) {
       if (err instanceof FaceVerificationError && err.code === 'rate_limited') {
         throw new HttpsError('resource-exhausted', err.message, { reason: 'RATE_LIMITED' });

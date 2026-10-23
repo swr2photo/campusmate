@@ -161,6 +161,80 @@ test('a Firebase session is exchanged once and RPC results are unwrapped', async
   assert.equal(uid, 'legacy-uid');
 });
 
+const tick = () => new Promise(resolve => setImmediate(resolve));
+const stored = (uid, refreshToken = 'b'.repeat(64)) => ({ refreshToken, user: { uid, emailVerified: true } });
+function launch(handler, read) {
+  let saved = null, reads = 0;
+  const { client, calls } = fixture(handler, { storage: {
+    read: () => { reads++; return read(); }, write: async value => { saved = value; }, clear: async () => { saved = null; },
+  } });
+  return { client, calls, get saved() { return saved; }, get reads() { return reads; } };
+}
+
+test('requests made before the stored session is read wait for the launch restore', async () => {
+  const read = deferred();
+  const f = launch(req => req.path === '/v1/auth/refresh' ? reply(tokens('alice', 'd')) : reply({ result: { conversations: [] } }), () => read.promise);
+  // Subscriptions start before the auth provider asks for the restore.
+  const early = f.client.rpc('listConversations');
+  const token = f.client.accessToken();
+  const user = f.client.ready();
+  const restored = f.client.restore();
+  await tick(); read.resolve(stored('alice'));
+  assert.deepEqual(await early, { conversations: [] });
+  assert.equal((await token).uid, 'alice');
+  assert.equal((await user).uid, 'alice');
+  assert.equal((await restored).uid, 'alice');
+  assert.equal(f.reads, 1);
+  assert.deepEqual(f.calls.map(c => c.path), ['/v1/auth/refresh', '/v1/rpc/listConversations']);
+  assert.deepEqual(f.calls[0].json, { refreshToken: 'b'.repeat(64) });
+  assert.equal(f.calls[1].headers.Authorization, `Bearer ${'d'.repeat(64)}`);
+});
+
+test('without a stored session launch requests still reject as signed out', async () => {
+  const f = launch(() => reply({}), async () => null);
+  await assert.rejects(f.client.request('/v1/me/profile'), { code: 'unauthenticated' });
+  await assert.rejects(f.client.accessToken(), { code: 'unauthenticated' });
+  assert.equal(await f.client.ready(), null);
+  // Once storage has answered, signed-out calls do not read it again.
+  assert.equal(f.reads, 1); assert.equal(f.calls.length, 0);
+
+  const revoked = launch(() => reply({ error: { code: 'unauthenticated', message: 'revoked' } }, 401), async () => stored('alice'));
+  await assert.rejects(revoked.client.request('/v1/me/profile'), { code: 'unauthenticated', status: 401 });
+  await assert.rejects(revoked.client.request('/v1/me/profile'), { code: 'unauthenticated' });
+  assert.equal(revoked.client.user, null); assert.equal(revoked.reads, 1);
+  assert.deepEqual(revoked.calls.map(c => c.path), ['/v1/auth/refresh']);
+});
+
+test('sign-out or sign-in during the launch restore cannot revive the stored session', async () => {
+  // Sign-out while secure storage is still being read (the read returns the old value).
+  const read = deferred();
+  const out = launch(() => reply(tokens('alice', 'd')), () => read.promise);
+  const early = assert.rejects(out.client.request('/v1/me/profile'), { code: 'account-changed' });
+  await tick(); await out.client.signOut();
+  read.resolve(stored('alice')); await early;
+  assert.equal(out.client.user, null); assert.equal(out.saved, null);
+  await assert.rejects(out.client.request('/v1/me/profile'), { code: 'unauthenticated' });
+  assert.equal(await out.client.ready(), null);
+  assert.equal(out.reads, 1); assert.equal(out.calls.length, 0);
+
+  // Sign-in as another account while the stored session is being refreshed.
+  const gate = deferred();
+  const swap = launch(async req => {
+    if (req.path === '/v1/auth/refresh') { await gate.promise; return reply(tokens('alice', 'e')); }
+    if (req.path === '/v1/auth/login') return reply(tokens('bob', 'd'));
+    return reply({ ok: true });
+  }, async () => stored('alice'));
+  const stale = assert.rejects(swap.client.request('/v1/me/profile'), { code: 'account-changed' });
+  const staleUser = assert.rejects(swap.client.ready(), { code: 'account-changed' });
+  while (!swap.calls.some(c => c.path === '/v1/auth/refresh')) await tick();
+  await swap.client.signIn('bob', 'correct password');
+  gate.resolve(); await stale; await staleUser;
+  assert.equal(swap.client.user.uid, 'bob'); assert.equal(swap.saved.user.uid, 'bob');
+  await swap.client.request('/v1/me/profile');
+  assert.equal(swap.calls.at(-1).headers.Authorization, `Bearer ${'d'.repeat(64)}`);
+  assert.equal(swap.calls.filter(c => c.path === '/v1/me/profile').length, 1);
+});
+
 test('public RPC works signed out and never sends a stale token', async () => {
   const f = fixture(() => reply({ result: { sent: true } }));
   assert.deepEqual(await f.client.publicRpc('sendBrandedPasswordReset', { email: 'a@psu.ac.th' }), { sent: true });

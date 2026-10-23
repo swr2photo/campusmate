@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 // Verified against the published archives for the pinned dependency versions.
 // Keep this gate when upgrading: verify and update hashes from the new archives.
-const versions = { 'react-native-worklets': '0.13.0', 'react-native-reanimated': '4.7.0' };
+const versions = { 'react-native-worklets': '0.13.0', 'react-native-reanimated': '4.7.1' };
 const hashes = {
   'react-native-worklets/src/memory/shareable.native.ts': '73c5c5c0bc87287b4a1bf45fd2d8c044452f0c253e45090e8b16a9ec11c730ed',
   'react-native-worklets/lib/module/memory/shareable.native.js': '9c33c6a42fb0162dcc375017671ee01419982c24a6cdedb3fea7bcb69a7d45e5',

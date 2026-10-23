@@ -68,6 +68,7 @@ pub async fn save_profile(
         .ok_or_else(|| ApiError::invalid("ข้อมูลโปรไฟล์ไม่ถูกต้อง"))?
         .clone();
     let discoverable = data["isDiscoverable"].as_bool();
+    let notifications_changed = patch.contains_key("notificationsEnabled");
     let mut tx = state.db.begin().await?;
     auth::lock_business_session(&mut tx, headers, &user.uid).await?;
     let current: Value = sqlx::query_scalar("SELECT raw FROM profiles WHERE user_id=$1 FOR UPDATE")
@@ -119,6 +120,14 @@ pub async fn save_profile(
         }
     }
     let photo_changed = previous_avatar != next_avatar;
+    if previous_avatar.is_some()
+        && (photo_changed || current["avatarRevision"] != merged["avatarRevision"])
+    {
+        return Err(ApiError::new(
+            "failed-precondition",
+            "ต้องยืนยันรูปหลักใหม่ให้ผ่านก่อนเปลี่ยนรูปโปรไฟล์",
+        ));
+    }
     if photo_changed {
         crate::identity::revoke_in(
             &mut tx,
@@ -138,6 +147,18 @@ pub async fn save_profile(
     .fetch_one(&mut *tx)
     .await?;
     // Matched peers refresh the conversation card.
+    if let Some(enabled) = merged
+        .get("notificationsEnabled")
+        .and_then(Value::as_bool)
+        .filter(|_| notifications_changed)
+    {
+        sqlx::query("INSERT INTO user_app_settings(user_id,settings) VALUES($1,jsonb_build_object('notifications',jsonb_build_object('push',$2::boolean)))
+            ON CONFLICT(user_id) DO UPDATE SET settings=user_app_settings.settings || jsonb_build_object('notifications',
+            COALESCE(user_app_settings.settings->'notifications','{}'::jsonb) || jsonb_build_object('push',$2::boolean)),
+            revision=user_app_settings.revision+1,updated_at=now()")
+            .bind(&user.uid).bind(enabled).execute(&mut *tx).await?;
+        events::publish_one(&mut tx, &user.uid, "preferences", Some(&user.uid)).await?;
+    }
     let peers: Vec<String> = sqlx::query_scalar(
         "SELECT CASE WHEN member_a=$1 THEN member_b ELSE member_a END FROM conversations WHERE (member_a=$1 OR member_b=$1) AND active",
     )
@@ -205,6 +226,54 @@ pub async fn visibility_state(
 }
 
 const PAGE: i64 = 20;
+
+/// Pending likes whose profiles the viewer is allowed to open. A raw decision
+/// count includes unverified, hidden and blocked accounts, which the app then
+/// showed as a profile that never arrives.
+async fn viewable_pending_count(state: &AppState, uid: &str) -> Result<i64, ApiError> {
+    let now = Utc::now().timestamp_millis();
+    let rows = sqlx::query(
+        "SELECT p.user_id,p.discoverable,p.is_new,p.face_verified,p.visibility,e.record AS entitlement,
+           EXISTS(SELECT 1 FROM blocks b WHERE (b.actor_id=$1 AND b.target_id=p.user_id) OR (b.actor_id=p.user_id AND b.target_id=$1)) AS blocked,
+           ((EXISTS(SELECT 1 FROM decisions d2 WHERE ((d2.actor_id=$1 AND d2.target_id=p.user_id) OR (d2.actor_id=p.user_id AND d2.target_id=$1)) AND d2.kind='like' AND d2.status='accepted')
+             OR EXISTS(SELECT 1 FROM conversations c WHERE c.active AND ((c.member_a=$1 AND c.member_b=p.user_id) OR (c.member_a=p.user_id AND c.member_b=$1))))
+             AND NOT EXISTS(SELECT 1 FROM decisions d3 WHERE ((d3.actor_id=$1 AND d3.target_id=p.user_id) OR (d3.actor_id=p.user_id AND d3.target_id=$1)) AND d3.status IN ('removed','rejected'))) AS matched
+         FROM decisions d
+         JOIN accounts a ON a.id=d.actor_id
+         JOIN profiles p ON p.user_id=d.actor_id
+         LEFT JOIN entitlements e ON e.user_id=p.user_id
+         WHERE d.target_id=$1 AND d.kind='like' AND d.status='pending'
+           AND NOT a.suspended AND a.deleted_at IS NULL AND a.email_verified",
+    )
+    .bind(uid)
+    .fetch_all(&state.db)
+    .await?;
+    let count = rows
+        .iter()
+        .filter(|row| {
+            let owner_id: String = row.get("user_id");
+            let visibility: String = row.get("visibility");
+            let entitlement: Option<Value> = row.get("entitlement");
+            policy::can_view_profile(
+                uid,
+                &owner_id,
+                &policy::ViewCheck {
+                    owner_exists: true,
+                    owner_discoverable: row.get("discoverable"),
+                    owner_is_new: row.get("is_new"),
+                    owner_face_verified: row.get("face_verified"),
+                    blocked: row.get("blocked"),
+                    matched: row.get("matched"),
+                    owner_liked_viewer: true,
+                    visibility_mode: Some(visibility.as_str()),
+                    owner_entitlement: entitlement.as_ref(),
+                    now_ms: now,
+                },
+            )
+        })
+        .count();
+    Ok(count as i64)
+}
 
 /// Legacy `getIncomingLikeSummary`: free plans see a count only.
 pub async fn incoming_likes(
@@ -292,8 +361,15 @@ pub async fn incoming_likes(
     } else {
         None
     };
+    // A short first page already contains every pending like, after the
+    // visibility filter. Longer lists need the same filter over the whole set.
+    let pending_count = if before.is_none() && !has_more {
+        likes.len() as i64
+    } else {
+        viewable_pending_count(state, &user.uid).await?
+    };
     Ok(
-        json!({"pendingCount":pending,"identitiesAvailable":true,"pendingLikes":likes,"hasMore":has_more,"nextCursor":next}),
+        json!({"pendingCount":pending_count,"identitiesAvailable":true,"pendingLikes":likes,"hasMore":has_more,"nextCursor":next}),
     )
 }
 
@@ -332,18 +408,33 @@ pub async fn decision_state(
         .unwrap_or_default()
     {
         incoming.push(json!({"id":like["decisionId"],"decisionId":like["decisionId"],"fromUserId":like["profile"]["id"],
-            "toUserId":user.uid,"type":"like","status":"pending","likeMessage":like["likeMessage"],"createdAt":like["createdAt"]}));
+            "toUserId":user.uid,"type":"like","status":"pending","likeMessage":like["likeMessage"],"createdAt":like["createdAt"],
+            "profile":like["profile"]}));
     }
+    let pending_profiles: Vec<Value> = summary["pendingLikes"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|l| l.get("profile").cloned())
+                .collect()
+        })
+        .unwrap_or_default();
     let actions: i64 = sqlx::query_scalar(
         "SELECT COALESCE(max(sequence),0) FROM matching_history WHERE actor_id=$1",
     )
     .bind(&user.uid)
     .fetch_one(&state.db)
     .await?;
+    let mut connection = state.db.acquire().await?;
+    let rewound_profiles = crate::matching::restored_profiles(&mut connection, &user.uid).await?;
+    let can_rewind: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM matching_history h JOIN decisions d ON d.actor_id=h.actor_id AND d.target_id=h.target_id AND d.last_action_id=h.action_id WHERE h.actor_id=$1 AND h.undoable AND d.kind='skip' AND d.status='pending')")
+        .bind(&user.uid).fetch_one(&mut *connection).await?;
     Ok(json!({
         "incomingDecisions": incoming, "outgoingDecisions": outgoing.iter().map(decision_json).collect::<Vec<_>>(),
-        "pendingCount": summary["pendingCount"], "discoveryActionCount": actions,
+        "pendingCount": summary["pendingCount"], "pendingProfiles": pending_profiles, "discoveryActionCount": actions,
         "hasMorePending": summary["hasMore"], "nextPendingCursor": summary["nextCursor"],
+        "rewoundProfiles": rewound_profiles,
+        "canRewind": can_rewind,
     }))
 }
 

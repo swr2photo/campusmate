@@ -45,17 +45,22 @@
   "submit": {
     "production": {
       "android": {
-        "track": "internal"
+        "serviceAccountKeyPath": "./google-play-key.json",
+        "track": "beta",
+        "releaseStatus": "completed"
       }
     },
     "closed": {
       "android": {
+        "serviceAccountKeyPath": "./google-play-key.json",
         "track": "alpha"
       }
     },
     "open": {
       "android": {
-        "track": "beta"
+        "serviceAccountKeyPath": "./google-play-key.json",
+        "track": "beta",
+        "releaseStatus": "completed"
       }
     }
   }

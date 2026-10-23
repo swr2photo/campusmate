@@ -57,12 +57,26 @@ impl ApiError {
 
 impl From<sqlx::Error> for ApiError {
     fn from(error: sqlx::Error) -> Self {
-        // Parameter values and connection strings must never enter the public response or logs.
+        // Parameter values and connection strings must never enter the public
+        // response or logs: only the error variant and SQLSTATE are recorded.
+        let sqlstate = match &error {
+            sqlx::Error::Database(database) => database.code().map(|code| code.into_owned()),
+            _ => None,
+        };
         tracing::error!(
-            error_kind = match error {
+            error_kind = match &error {
                 sqlx::Error::Database(_) => "database",
+                sqlx::Error::PoolTimedOut => "pool_timeout",
+                sqlx::Error::PoolClosed => "pool_closed",
+                sqlx::Error::Io(_) => "io",
+                sqlx::Error::Tls(_) => "tls",
+                sqlx::Error::Protocol(_) => "protocol",
+                sqlx::Error::RowNotFound => "row_not_found",
+                sqlx::Error::ColumnDecode { .. } | sqlx::Error::Decode(_) => "decode",
                 _ => "connection",
             },
+            sqlstate = sqlstate.as_deref(),
+            error_message = %error,
             "database operation failed"
         );
         Self::internal()

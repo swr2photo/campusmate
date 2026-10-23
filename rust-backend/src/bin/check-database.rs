@@ -87,11 +87,13 @@ const IDENTITY_COLUMNS: [(&str, &[&str], &[&str]); 5] = [
             "reference_source",
             "reference_key",
             "reference_sha256",
+            "replacement_base",
             "consent_version",
             "consented_at",
             "policy_version",
             "state",
             "expires_at",
+            "gesture_sequence",
         ],
         &[
             "state",
@@ -104,6 +106,11 @@ const IDENTITY_COLUMNS: [(&str, &[&str], &[&str]); 5] = [
             "expires_at",
             "evidence_key",
             "evidence_stored",
+            "gesture_step",
+            "gesture_failures",
+            "gesture_turn_sign",
+            "gesture_lease_until",
+            "gestures_passed_at",
         ],
     ),
     (
@@ -281,6 +288,8 @@ async fn permissions(db: &mut PgConnection, kind: Kind) -> Result<(), Failure> {
                 "rate_limits",
                 "discovery_snapshots",
                 "matching_history",
+                "user_app_settings",
+                "user_presence",
             ] {
                 if !table(&mut *db, &format!("public.{name}"), "SELECT").await? {
                     return Err(Failure::Privileges);
@@ -305,6 +314,8 @@ async fn permissions(db: &mut PgConnection, kind: Kind) -> Result<(), Failure> {
                 "rate_limits",
                 "discovery_snapshots",
                 "matching_history",
+                "user_app_settings",
+                "user_presence",
             ] {
                 for privilege in ["INSERT", "UPDATE", "DELETE"] {
                     if !table(&mut *db, &format!("public.{name}"), privilege).await? {
@@ -651,6 +662,7 @@ mod tests {
         for statement in [
             "UPDATE face_verification_attempts SET reference_key='replacement'",
             "UPDATE face_verification_attempts SET reference_sha256=decode(repeat('00',32),'hex')",
+            "UPDATE face_verification_attempts SET replacement_base='{}'::jsonb",
             "UPDATE face_verification_attempts SET consent_version='replacement'",
             "UPDATE face_verification_attempts SET user_id='identity-fixture'",
             "UPDATE user_photo_verifications SET user_id='identity-fixture'",

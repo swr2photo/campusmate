@@ -89,6 +89,20 @@ async function bootstrap() {
     console.log(`[BootstrapAdmin] Updated Firestore discoveryProfiles/${user.uid}`);
   }
 
+  // 6. Update entitlements/{uid} with permanent super admin Plus
+  const entRef = db.collection('entitlements').doc(user.uid);
+  await entRef.set({
+    isAdmin: true,
+    isPlus: true,
+    role: 'admin',
+    source: 'revenuecat',
+    entitlementId: 'campusmate_plus',
+    activeUntil: 253402300799000,
+    verifiedAt: Date.now(),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  console.log(`[BootstrapAdmin] Updated Firestore entitlements/${user.uid} with permanent Plus`);
+
   console.log(`\n✅ Successfully verified ${TARGET_EMAIL} as Admin and Auto-Face-Verified!`);
   console.log(`Summary:`);
   console.log(`- Email: ${TARGET_EMAIL}`);

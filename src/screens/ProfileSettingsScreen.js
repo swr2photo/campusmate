@@ -40,7 +40,7 @@ export default function ProfileSettingsScreen({ onLogout, onToast }) {
   const currentAdmin = profile?.isAdmin === true || profile?.role === 'admin';
   const superAdmin = (user?.email || profile?.email || '').toLowerCase().trim() === '6710210317@psu.ac.th';
   const appBuild = getCurrentAppBuild();
-  const rawAppVersion = getCurrentAppVersion() || Constants.expoConfig?.version || '3.1.7';
+  const rawAppVersion = getCurrentAppVersion() || Constants.expoConfig?.version || '3.1.8';
   const version = appBuild ? `${rawAppVersion} (${appBuild})` : rawAppVersion;
 
   const requestLogout = () => confirm({

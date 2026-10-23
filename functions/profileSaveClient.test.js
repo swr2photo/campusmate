@@ -10,9 +10,9 @@ const saveStart = source.indexOf('  const saveProfile = async (profileData) => {
 const saveEnd = source.indexOf('\n  };', saveStart) + '\n  };'.length;
 const saveSource = source.slice(saveStart, saveEnd).replace('const saveProfile =', 'globalThis.saveProfile =');
 
-function fixture({ error, queued = false } = {}) {
+function fixture({ error, queued = false, initialAvatar = 'https://example.test/avatar.jpg' } = {}) {
   const calls = { uploaded: [], profiles: [], states: [], accounts: [] };
-  const initial = { id: 'owner', name: 'Before', avatarUri: 'https://example.test/avatar.jpg', avatarRevision: 123 };
+  const initial = { id: 'owner', name: 'Before', avatarUri: initialAvatar, avatarRevision: 123 };
   const context = vm.createContext({
     MAX_GALLERY_PHOTOS,
     profile: initial,
@@ -20,7 +20,7 @@ function fixture({ error, queued = false } = {}) {
     withProfileDefaults: (value) => value,
     setProfile: (value) => calls.states.push(value),
     saveAccount: async (value) => calls.accounts.push(value),
-    uploadImage: async () => 'https://example.test/new-avatar.jpg',
+    uploadImage: assert.fail,
     uploadGalleryImage: async (uri, uid) => { calls.uploaded.push({ uri, uid }); return `https://example.test/upload-${calls.uploaded.length}.jpg`; },
     createUserProfile: async (_, value) => calls.profiles.push(value),
     runOrQueue: async (_, __, execute) => {
@@ -42,19 +42,30 @@ test('a rejected profile save leaves profile state and account cache unchanged',
   assert.equal(f.calls.accounts.length, 0);
 });
 
-test('profile save publishes uploaded URLs and caps gallery uploads at eight', async () => {
-  const f = fixture();
+test('initial profile save uses immutable uploads and caps gallery uploads at eight', async () => {
+  const f = fixture({ initialAvatar: null });
   const saved = await f.save({ name: ' After ', avatarUri: 'file:///avatar.jpg', gallery: [null, {}, ...Array.from({ length: 12 }, (_, i) => `file:///photo-${i}.jpg`)] });
   assert.equal(saved.name, 'After');
-  assert.equal(saved.avatarUri, 'https://example.test/new-avatar.jpg');
+  assert.equal(saved.avatarUri, 'https://example.test/upload-1.jpg');
   assert.equal(saved.gallery.length, 8);
-  assert.equal(f.calls.uploaded.length, 8);
+  assert.equal(f.calls.uploaded.length, 9);
   assert.ok(f.calls.uploaded.every((call) => call.uid === 'owner'));
   assert.equal(f.calls.states[0], saved);
-  assert.equal(f.calls.profiles[0].gallery[0], 'https://example.test/upload-1.jpg');
+  assert.equal(f.calls.profiles[0].gallery[0], 'https://example.test/upload-2.jpg');
   assert.equal(f.calls.accounts[0].avatarUri, saved.avatarUri);
   assert.ok(Number.isSafeInteger(saved.avatarRevision) && saved.avatarRevision > f.initial.avatarRevision);
   assert.equal(f.calls.accounts[0].avatarRevision, saved.avatarRevision);
+});
+
+test('direct replacement cannot upload, queue or publish an unverified main photo', async () => {
+  for (const queued of [false, true]) {
+    const f = fixture({ queued });
+    await assert.rejects(f.save({ avatarUri: 'file:///replacement.jpg', isFaceVerified: true }));
+    assert.equal(f.calls.uploaded.length, 0);
+    assert.equal(f.calls.profiles.length, 0);
+    assert.equal(f.calls.states.length, 0);
+    assert.equal(f.calls.accounts.length, 0);
+  }
 });
 
 test('durably queued profile saves publish a local profile without attempting upload', async () => {

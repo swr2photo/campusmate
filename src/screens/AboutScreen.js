@@ -13,7 +13,7 @@ import { radius, spacing, type, useTheme } from '../theme';
 export default function AboutScreen() {
   const { colors } = useTheme();
   const build = getCurrentAppBuild();
-  const rawVersion = getCurrentAppVersion() || Constants.expoConfig?.version || '3.1.7';
+  const rawVersion = getCurrentAppVersion() || Constants.expoConfig?.version || '3.1.8';
   const version = `v${rawVersion}${build ? ` (${build})` : ''}`;
   return (
     <ScrollView

@@ -22,7 +22,11 @@ use crate::{auth, error::ApiError, AppState};
 
 pub const MAX_IMAGE_BYTES: usize = 6 * 1024 * 1024;
 const MAX_PIXELS: u64 = 40_000_000;
-const PROFILE_EDGE: u32 = 1440;
+const PROFILE_EDGE: u32 = 1080;
+/// Images decoded and re-encoded at once, and how long a request waits for
+/// a turn before it is told to retry.
+const IMAGE_JOBS: usize = 4;
+const IMAGE_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 const CHAT_MAX_BYTES: u64 = 25 * 1024 * 1024;
 
 pub struct MediaServices {
@@ -137,7 +141,7 @@ impl MediaServices {
             chat,
             worker,
             moderation,
-            jobs: Arc::new(Semaphore::new(2)),
+            jobs: Arc::new(Semaphore::new(IMAGE_JOBS)),
         }))
     }
 }
@@ -235,18 +239,20 @@ pub fn normalize_image(bytes: &[u8], edge: u32) -> Result<Vec<u8>, ApiError> {
     };
     let rgb = resized.to_rgb8();
     let mut out = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80)
         .encode_image(&rgb)
         .map_err(|_| ApiError::internal())?;
     Ok(out)
 }
 
 async fn prepared(services: &MediaServices, body: Bytes) -> Result<Vec<u8>, ApiError> {
-    let permit = services
-        .jobs
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ApiError::unavailable("ระบบรูปภาพกำลังทำงานหนัก กรุณาลองใหม่"))?;
+    // A short queue rather than an instant refusal: one person saving several
+    // photos at once is normal; only a sustained backlog is turned away.
+    let busy = || ApiError::unavailable("ระบบรูปภาพกำลังทำงานหนัก กรุณาลองใหม่");
+    let permit = tokio::time::timeout(IMAGE_QUEUE_WAIT, services.jobs.clone().acquire_owned())
+        .await
+        .map_err(|_| busy())?
+        .map_err(|_| busy())?;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         normalize_image(&body, PROFILE_EDGE)
@@ -290,7 +296,16 @@ async fn put_profile_object(
         .body(ByteStream::from(bytes))
         .send()
         .await
-        .map_err(|_| ApiError::unavailable("อัปโหลดรูปภาพไม่สำเร็จ กรุณาลองใหม่"))?;
+        .map_err(|error| {
+            use aws_sdk_s3::error::ProvideErrorMetadata;
+            // HTTP status and the S3 error code only: no keys, URLs or bodies.
+            let status = error
+                .raw_response()
+                .map(|response| response.status().as_u16());
+            let code = error.as_service_error().and_then(|service| service.code());
+            tracing::warn!(?status, ?code, "profile photo upload to R2 failed");
+            ApiError::unavailable("อัปโหลดรูปภาพไม่สำเร็จ กรุณาลองใหม่")
+        })?;
     Ok(())
 }
 
@@ -304,9 +319,22 @@ pub async fn avatar(
     crate::throttle(&state.db, "media-avatar", &user.uid, 10).await?;
     let services = services(&state)?;
     let jpeg = prepared(&services, body).await?;
-    require_allowed(&moderate(&services, &jpeg).await)?;
     let key = format!("users/{}/avatar.jpg", user.uid);
-    put_profile_object(&services, &key, jpeg, "public, max-age=60").await?;
+    let (mod_result, put_result) = tokio::join!(
+        moderate(&services, &jpeg),
+        put_profile_object(&services, &key, jpeg.clone(), "public, max-age=60")
+    );
+    if let Err(e) = require_allowed(&mod_result) {
+        let _ = services
+            .profile
+            .delete_object()
+            .bucket(&services.profile_bucket)
+            .key(&key)
+            .send()
+            .await;
+        return Err(e);
+    }
+    put_result?;
     let version = chrono::Utc::now().timestamp_millis();
     Ok(Json(
         json!({"url":format!("{}/{key}?v={version}", services.profile_origin)}),
@@ -323,9 +351,27 @@ pub async fn gallery(
     crate::throttle(&state.db, "media-gallery", &user.uid, 20).await?;
     let services = services(&state)?;
     let jpeg = prepared(&services, body).await?;
-    require_allowed(&moderate(&services, &jpeg).await)?;
     let key = format!("profile_gallery/{}/{}.jpg", user.uid, Uuid::new_v4());
-    put_profile_object(&services, &key, jpeg, "public, max-age=31536000, immutable").await?;
+    let (mod_result, put_result) = tokio::join!(
+        moderate(&services, &jpeg),
+        put_profile_object(
+            &services,
+            &key,
+            jpeg.clone(),
+            "public, max-age=31536000, immutable"
+        )
+    );
+    if let Err(e) = require_allowed(&mod_result) {
+        let _ = services
+            .profile
+            .delete_object()
+            .bucket(&services.profile_bucket)
+            .key(&key)
+            .send()
+            .await;
+        return Err(e);
+    }
+    put_result?;
     Ok(Json(
         json!({"userId":user.uid,"url":format!("{}/{key}", services.profile_origin)}),
     ))

@@ -162,6 +162,22 @@ trust: อนุญาตเฉพาะ role ของ backend (`"Principal":{"
 
 ---
 
+## Phase 2B — ท่าทางแบบ Face ID ก่อน AWS liveness (21 ต.ค. 2026)
+
+เจ้าของระบบเลือก "ท่าทาง + AWS" แทนการถ่ายรูปนิ่ง ท่าทางเป็น**ชั้นเพิ่ม** ไม่ได้แทน AWS Face Liveness ซึ่งยังเป็นตัวตัดสินเรื่องการปลอมแปลง (blueprint ข้อ 6 ห้ามใช้ liveness ที่ทำเองแทน AWS และเราไม่ได้ทำแบบนั้น)
+
+- **ลำดับ**: consent → `POST /photo-verifications` (server สุ่มลำดับ `CENTER` + `BLINK`/`TURN_LEFT`/`TURN_RIGHT`/`NOD_DOWN`) → ท่าทางทีละขั้น `POST /photo-verifications/{id}/gestures` → AWS liveness → `complete`
+- **Server** (`identity.rs`, migration `0012_face_gestures.sql`): ทุกเฟรมอ่านท่าทางศีรษะ/สถานะตาด้วย DetectFaces ก่อน (ไม่ตัดหน้าที่หันข้างทิ้งแบบ quality filter ของ CompareFaces ซึ่งเป็นสาเหตุที่หันแล้ว "จับได้บ้างไม่ได้บ้าง") แล้ว**เฉพาะเฟรมที่ทำท่าถูก**จึงอ่าน snapshot จาก R2 และเทียบกับรูปหลักที่ pin ไว้ด้วย CompareFaces (`QualityFilter::None`) ในหน่วยความจำ **ไม่เก็บเฟรม** ต้องเป็นใบหน้าเดียว, ตามลำดับ, ภายใน 120 วินาที, หันซ้ายและหันขวาต้องไปคนละทาง (เทียบกันเอง ไม่พึ่งเครื่องหมายของ SDK), พลาด 8 ครั้งแล้วรายการล้มเหลว (นับรวม cooldown) และ `complete` ปฏิเสธ `GESTURES_INCOMPLETE` จนกว่าจะผ่านครบ
+- **หลายเฟรมต่อคำขอ (23 ต.ค.)**: `frames` ได้ถึง 3 เฟรมล่าสุด (รวมกันไม่เกิน 700 KiB) เฟรมใดทำท่าถูกก็ผ่าน คำตอบที่ไม่ผ่านมี `hint` บอกสิ่งที่ต้องทำต่อ (`TOO_FAR`, `TOO_CLOSE`, `OFF_CENTER`, `TOO_DARK`, `LOOK_STRAIGHT`, `OPEN_EYES`, `CLOSE_EYES`, `TURN_MORE`, `OTHER_WAY`, `KEEP_LEVEL`, `NOD_MORE`, `HEAD_TILTED`, `HOLD_STILL`, `NO_FACE`, `MULTIPLE_FACES`) และ `progress` 0–0.9 ของมุมหัน/ก้ม (เป็นเรขาคณิตของศีรษะ ไม่ใช่คะแนนใบหน้า) Rekognition throttling ถูกจัดเป็น transient ไม่ใช่ "ไม่พบใบหน้า"
+- **แอปที่ไม่มี native tracking (Expo Go)**: ถ่ายเฟรม VGA ต่อเนื่องขณะคำขอก่อนหน้ายังไม่กลับ แล้วส่ง 3 เฟรมล่าสุดรวดเดียว (`src/utils/faceGestureRunner.mjs`) จอแสดงหน้าการ์ตูนทำท่าให้ดู + ป้ายคำแนะนำพร้อมไอคอน (`FaceGestureStage.js`)
+- **เกณฑ์มุมศีรษะ** เป็นค่าตั้งต้นที่ต้องปรับบนเครื่องจริง ส่วนความคล้ายของแต่ละเฟรมตั้งด้วย `FACE_GESTURE_SIMILARITY_MIN` (ค่าเริ่มต้นเท่ากับ `FACE_SIMILARITY_REVIEW_MIN`)
+- **แอป**: `modules/face-gesture-camera` (CameraX + ML Kit / AVFoundation + Vision) ให้ภาพกล้องและมุมศีรษะ/ตาแบบ real-time เพื่อเลื่อนวงแหวนแบบ Face ID (`src/components/FaceGestureStage.js`, `src/utils/faceGestureDetector.mjs`) เครื่องเป็นแค่ตัวบอกว่าควรส่งเฟรมเมื่อไร เซิร์ฟเวอร์เป็นคนตัดสินทุกขั้น
+- **AWS module** ย้ายจาก `native-spikes/face-liveness` ไป `modules/face-liveness` แล้ว (iOS ลิงก์ `AWSPluginsCore` เพิ่ม)
+- **IAM**: role `campusmate-backend` มี `rekognition:DetectFaces` แล้ว (อยู่ใน `iam/backend-permissions.json` และใช้กับ AWS แล้ว 22 ต.ค.)
+- **เทสต์**: Rust identity 34/34 (รวม 4 เทสต์ท่าทางใหม่) และ unit ของ `judge_gesture`; client `test-photo-verification-client` 16/16, `test-face-gesture-detector` 7/7 **อุปกรณ์จริง: NOT RUN**
+
+---
+
 ## Phase 3 — Privacy / production readiness • ส่วนที่เป็นโค้ดเสร็จแล้ว
 เสร็จ: D1–D9, audit การเปิดดูหลักฐาน, ลบข้อมูลเมื่อลบบัญชี, ลบข้อมูลตามคำขอ, ทางเลือกการเข้าถึง, ทดสอบทุก flow ด้วยสิทธิ์ `campusmate_api` จริง (`the_runtime_role_can_run_every_identity_flow`)
 ยังต้องทำโดยคน/องค์กร (โค้ดทำแทนไม่ได้):

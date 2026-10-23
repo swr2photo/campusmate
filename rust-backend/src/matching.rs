@@ -404,7 +404,7 @@ pub async fn record(
             .transpose()
             .map_err(|_| ApiError::internal())?;
         let sequence: i64 = sqlx::query_scalar("INSERT INTO matching_history(actor_id,action_id,target_id,previous,undoable) VALUES($1,$2,$3,$4,$5) RETURNING sequence")
-            .bind(&actor.uid).bind(input.action_id).bind(&input.target_user_id).bind(previous).bind(!accepted).fetch_one(&mut *tx).await?;
+            .bind(&actor.uid).bind(input.action_id).bind(&input.target_user_id).bind(previous).bind(input.kind == "skip" && !accepted).fetch_one(&mut *tx).await?;
         json!({"status":decision.status,"conversationId":if accepted {Some(current.conversation_id)} else {None},"sequence":sequence})
     };
     save_receipt(&mut tx, &actor.uid, input.action_id, request, &result).await?;
@@ -549,12 +549,40 @@ async fn rewind_profile(
     actor: &str,
     receipt: &Value,
 ) -> Result<Value, ApiError> {
-    let profile = if let Some(target) = receipt["targetId"].as_str() {
-        pair(connection, actor, target).await?.profile
+    let mut profile = if let Some(target) = receipt["targetId"].as_str() {
+        let current = pair(connection, actor, target).await?;
+        if current.outgoing.is_none() && !current.matched {
+            current.profile
+        } else {
+            Value::Null
+        }
     } else {
         Value::Null
     };
+    if profile.is_object() {
+        profile["rewindPriority"] = receipt["rewindPriority"].clone();
+    }
     Ok(json!({"profile":profile,"hasMore":receipt["hasMore"].as_bool().unwrap_or(false)}))
+}
+
+/// Durable deck restoration, reauthorized on every device rather than kept in
+/// the memory of the device that pressed Rewind.
+pub async fn restored_profiles(
+    connection: &mut PgConnection,
+    actor: &str,
+) -> Result<Vec<Value>, ApiError> {
+    let history = sqlx::query("SELECT target_id,(extract(epoch FROM max(undone_at))*1000)::bigint AS priority FROM matching_history h WHERE actor_id=$1 AND undo_reason='rewind' AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.actor_id=h.actor_id AND d.target_id=h.target_id) GROUP BY target_id ORDER BY max(undone_at) DESC,target_id LIMIT 30")
+        .bind(actor).fetch_all(&mut *connection).await?;
+    let mut profiles = Vec::new();
+    for entry in history {
+        let current = pair(connection, actor, entry.get("target_id")).await?;
+        if current.visible && !current.matched && current.outgoing.is_none() {
+            let mut profile = current.profile;
+            profile["rewindPriority"] = json!(entry.get::<i64, _>("priority"));
+            profiles.push(profile);
+        }
+    }
+    Ok(profiles)
 }
 pub async fn rewind(
     State(state): State<AppState>,
@@ -566,6 +594,11 @@ pub async fn rewind(
     let request = json!({"operation":"rewind"});
     let mut tx = state.db.begin().await?;
     receipt_lock(&mut tx, &actor.uid, input.action_id).await?;
+    lock(
+        &mut tx,
+        lock_key("campusmate-matching-rewind-v1", &[&actor.uid]),
+    )
+    .await?;
     active_actor(&mut tx, &actor, &headers).await?;
     // Share lock keeps an existing entitlement stable until commit. Missing or
     // expired membership fails closed, even when retrying an old receipt.
@@ -596,7 +629,9 @@ pub async fn rewind(
         tx.commit().await?;
         return Ok(Json(result));
     }
-    let history = sqlx::query("SELECT action_id,target_id FROM matching_history WHERE actor_id=$1 AND undoable ORDER BY sequence DESC LIMIT 20")
+    // Join the current decision so old like history (including records created
+    // before skip-only rewind) can never be selected or consume the scan limit.
+    let history = sqlx::query("SELECT h.action_id,h.target_id FROM matching_history h JOIN decisions d ON d.actor_id=h.actor_id AND d.target_id=h.target_id AND d.last_action_id=h.action_id WHERE h.actor_id=$1 AND h.undoable AND d.kind='skip' AND d.status='pending' ORDER BY h.sequence DESC LIMIT 20")
         .bind(&actor.uid).fetch_all(&mut *tx).await?;
     let mut keys: Vec<i64> = history
         .iter()
@@ -608,48 +643,43 @@ pub async fn rewind(
         lock(&mut tx, key).await?;
     }
     let mut selected = None;
+    let mut priority = None;
     for entry in &history {
         let action: Uuid = entry.get("action_id");
         let target: String = entry.get("target_id");
         // An acceptance waiting on the same pair either committed before these
         // fresh reads or will see the restored/deleted pending decision later.
         let stored = sqlx::query(
-            "SELECT previous FROM matching_history WHERE actor_id=$1 AND action_id=$2 AND undoable",
+            "SELECT action_id FROM matching_history WHERE actor_id=$1 AND action_id=$2 AND undoable",
         )
         .bind(&actor.uid)
         .bind(action)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(stored) = stored else { continue };
+        let Some(_) = stored else { continue };
         let current = pair(&mut tx, &actor.uid, &target).await?;
         let eligible = current.visible
             && !current.matched
             && current.outgoing.as_ref().is_some_and(|d| {
-                d.last_action_id == Some(action)
-                    && d.status == "pending"
-                    && ["like", "skip"].contains(&d.kind.as_str())
+                d.last_action_id == Some(action) && d.status == "pending" && d.kind == "skip"
             });
-        sqlx::query("UPDATE matching_history SET undoable=false,undone_at=now(),undo_reason=$3 WHERE actor_id=$1 AND action_id=$2")
-            .bind(&actor.uid).bind(action).bind(if eligible {"rewind"} else {"unavailable"}).execute(&mut *tx).await?;
+        let restored_at: i64 = sqlx::query_scalar("UPDATE matching_history SET undoable=false,undone_at=clock_timestamp(),undo_reason=$3 WHERE actor_id=$1 AND action_id=$2 RETURNING (extract(epoch FROM undone_at)*1000)::bigint")
+            .bind(&actor.uid).bind(action).bind(if eligible {"rewind"} else {"unavailable"}).fetch_one(&mut *tx).await?;
         if !eligible {
             continue;
         }
-        let previous: Option<Value> = stored.get("previous");
-        if let Some(previous) = previous {
-            let previous: Decision =
-                serde_json::from_value(previous).map_err(|_| ApiError::internal())?;
-            put_decision(&mut tx, &actor.uid, &target, &previous).await?;
-        } else {
-            sqlx::query("DELETE FROM decisions WHERE actor_id=$1 AND target_id=$2")
-                .bind(&actor.uid)
-                .bind(&target)
-                .execute(&mut *tx)
-                .await?;
-        }
+        // Clear only the current skip. Restoring an older skip/like would hide
+        // the same card again or resurrect a superseded relationship.
+        sqlx::query("DELETE FROM decisions WHERE actor_id=$1 AND target_id=$2")
+            .bind(&actor.uid)
+            .bind(&target)
+            .execute(&mut *tx)
+            .await?;
         selected = Some(target);
+        priority = Some(restored_at);
         break;
     }
-    let stored = json!({"targetId":selected,"hasMore":selected.is_none() && history.len()==20});
+    let stored = json!({"targetId":selected,"rewindPriority":priority,"hasMore":selected.is_none() && history.len()==20});
     save_receipt(&mut tx, &actor.uid, input.action_id, request, &stored).await?;
     let result = rewind_profile(&mut tx, &actor.uid, &stored).await?;
     if let Some(target) = stored["targetId"].as_str() {

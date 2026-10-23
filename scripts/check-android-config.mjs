@@ -25,7 +25,7 @@ const actual = {
   package: capture(gradle, /\bapplicationId\s+['"]([^'"]+)['"]/, 'android.package'),
   version: capture(gradle, /\bversionName\s+['"]([^'"]+)['"]/, 'version'),
   versionCode: Number(capture(gradle, /\bversionCode\s+(\d+)/, 'android.versionCode')),
-  runtimeVersion: capture(strings, /<string name="expo_runtime_version">([^<]+)<\/string>/, 'runtimeVersion'),
+  runtimeVersion: capture(strings, /<string name="expo_runtime_version"[^>]*>([^<]+)<\/string>/, 'runtimeVersion'),
   scheme: capture(manifest, /<activity\b[^>]*android:name="\.MainActivity"[\s\S]*?<data android:scheme="([^"]+)"\s*\/>/, 'scheme'),
   orientation: capture(manifest, /android:screenOrientation="([^"]+)"/, 'orientation'),
   userInterfaceStyle: capture(strings, /<string name="expo_system_ui_user_interface_style"[^>]*>([^<]+)<\/string>/, 'userInterfaceStyle'),

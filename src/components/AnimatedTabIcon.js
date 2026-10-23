@@ -6,13 +6,7 @@ import { motion as motionTokens } from '../theme';
 
 // Material 3 navigation bar item: the active indicator pill grows out from
 // the icon and the icon plays a short gesture of its own when selected.
-const GESTURES = {
-  bounce: (v) => ({ transform: [{ translateY: -4 * v }, { scale: 1 + v * 0.08 }] }),
-  beat: (v) => ({ transform: [{ scale: 1 + v * 0.22 }] }),
-  wiggle: (v) => ({ transform: [{ rotate: `${v * 14}deg` }] }),
-  flip: (v) => ({ transform: [{ perspective: 200 }, { rotateY: `${v * 180}deg` }] }),
-  none: () => ({}),
-};
+// Gestures: bounce, beat, wiggle, flip, none.
 
 export default function AnimatedTabIcon({ focused, color, indicatorColor, iconName, size = 22, gesture = 'bounce', children }) {
   const reduceMotion = useReducedMotion();
@@ -37,7 +31,16 @@ export default function AnimatedTabIcon({ focused, color, indicatorColor, iconNa
   }, [focused, gesture, indicator, kick, reduceMotion]);
 
   const pillStyle = useAnimatedStyle(() => ({ opacity: indicator.get(), transform: [{ scaleX: 0.4 + indicator.get() * 0.6 }] }));
-  const iconStyle = useAnimatedStyle(() => (GESTURES[gesture] || GESTURES.none)(kick.get()));
+  // All logic stays inside this worklet: calling a plain JS helper from the
+  // UI runtime aborts the app in release builds (Worklets "remote function").
+  const iconStyle = useAnimatedStyle(() => {
+    const v = kick.get();
+    if (gesture === 'bounce') return { transform: [{ translateY: -4 * v }, { scale: 1 + v * 0.08 }] };
+    if (gesture === 'beat') return { transform: [{ scale: 1 + v * 0.22 }] };
+    if (gesture === 'wiggle') return { transform: [{ rotate: `${v * 14}deg` }] };
+    if (gesture === 'flip') return { transform: [{ perspective: 200 }, { rotateY: `${v * 180}deg` }] };
+    return { transform: [{ scale: 1 }] };
+  });
 
   return (
     <View style={styles.slot}>

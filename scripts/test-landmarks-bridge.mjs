@@ -110,7 +110,7 @@ test('Android and web entry never import Expo SwiftUI or register a native view'
 });
 
 test('account changes remount native state and close handles normal navigation and direct entry', () => {
-  let user = { id: 'a' }, canGoBack = true, backCalls = 0, replacement;
+  let user = { id: 'a' }, canGoBack = true, backCalls = 0, replacement, toast;
   const screen = load('src/screens/LandmarksScreen.js', {
     'react-native': { View: 'View', StyleSheet: { create: value => value } },
     'expo-router': { Stack: { Screen: 'StackScreen' }, useRouter: () => ({
@@ -118,11 +118,14 @@ test('account changes remount native state and close handles normal navigation a
     }) },
     '../../modules/campus-landmarks': { CampusLandmarksView: 'Places' },
     '../context/AuthContext': { useAuth: () => ({ user }) },
+    '../context/ToastContext': { useToast: () => ({ showToast: message => { toast = message; } }) },
     '../theme': { useTheme: () => ({ colors: { canvas: '#fff', primary: '#06f' }, isDark: false }) },
   }, { process: { env: {} } });
   const first = screen.default().props.children[1];
   assert.equal(first.props.storageScope, 'user:a');
   assert.equal(first.props.syncEnabled, false);
+  first.props.onSelectPlace({ name: 'Test place', latitude: 13.7563, longitude: 100.5018 });
+  assert.equal(toast, 'Test place · พิกัด: 13.7563, 100.5018');
   first.props.onClose();
   assert.equal(backCalls, 1);
   user = { id: 'b' };

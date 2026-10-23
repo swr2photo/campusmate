@@ -43,8 +43,7 @@ android/app/build/
 modules/*/android/build/
 modules/*/android/.cxx/
 modules/*/ios/build/
-ios/build/
-ios/Pods/
+ios/
 
 # Editor / tooling local state
 .idea/

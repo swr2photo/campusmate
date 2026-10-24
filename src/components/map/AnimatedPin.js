@@ -19,6 +19,7 @@ import { motion } from '../../theme';
 
 export const PIN_SIZE = 46;
 export const PIN_SELECTED_SIZE = 60;
+const CALLOUT_MAX = 200;
 
 export const PIN_KINDS = {
   cafe: { icon: 'cup.and.saucer.fill', color: '#C77B4A', label: 'คาเฟ่' },
@@ -96,8 +97,11 @@ export default function AnimatedPin({ x, y, kind = 'chill', label, count = 1, av
   return (
     <View pointerEvents="box-none" style={[styles.anchor, { left: x - PIN_SIZE / 2, top: y - PIN_SIZE - 8, zIndex: selected ? 20 : 2 }]}>
       {selected && label ? (
-        <View style={[styles.callout, { backgroundColor: dark ? '#1F2433' : '#FFFFFF' }]}>
-          <Text numberOfLines={1} style={[styles.calloutText, { color: dark ? '#FFFFFF' : '#1C1C22' }]}>{label}</Text>
+        <View pointerEvents="none" style={styles.callout}>
+          <View style={[styles.calloutBubble, { backgroundColor: dark ? '#1F2433' : '#FFFFFF', borderColor: dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)' }]}>
+            {/* Long Thai place names wrap instead of being cut off. */}
+            <Text numberOfLines={2} style={[styles.calloutText, { color: dark ? '#FFFFFF' : '#1C1C22' }]}>{label}</Text>
+          </View>
         </View>
       ) : null}
       <Pressable
@@ -138,8 +142,10 @@ const styles = StyleSheet.create({
   pulse: { position: 'absolute', width: PIN_SIZE, height: PIN_SIZE, borderRadius: PIN_SIZE / 2, borderWidth: 3 },
   count: { position: 'absolute', top: -4, right: -6, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#FFFFFF' },
   countText: { color: '#FFFFFF', fontSize: 10, fontWeight: '800' },
-  callout: { position: 'absolute', bottom: PIN_SELECTED_SIZE + 14, alignSelf: 'center', maxWidth: 200, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
-  calloutText: { fontSize: 12, fontWeight: '700' },
+  // A fixed-width, transparent wrapper centres the bubble over the pin.
+  callout: { position: 'absolute', bottom: PIN_SELECTED_SIZE + 14, left: (PIN_SIZE - CALLOUT_MAX) / 2, width: CALLOUT_MAX, alignItems: 'center' },
+  calloutBubble: { maxWidth: CALLOUT_MAX, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 4 },
+  calloutText: { fontSize: 12, fontWeight: '700', textAlign: 'center' },
   glyphBox: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
   steamRow: { position: 'absolute', top: -6, flexDirection: 'row', gap: 3 },
   steam: { width: 2, height: 5, borderRadius: 1, opacity: 0.6 },

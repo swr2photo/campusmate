@@ -4,6 +4,8 @@ import Animated, { useAnimatedStyle, useSharedValue, withDecay, withSpring } fro
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
+import { StatusBar } from 'expo-status-bar';
 import * as Haptics from 'expo-haptics';
 import { Pressable } from '../components/NativePressable';
 import Text from '../components/AppText';
@@ -24,6 +26,11 @@ import { motion, useTheme } from '../theme';
 // map reads in depth without a map SDK, works offline and follows the weather.
 
 const PAD = 70;
+// Top bar: 44 pt controls this far below the status bar.
+const TOP_BAR_HEIGHT = 44;
+const TOP_BAR_GAP = 12;
+// How much of the map the collapsed bottom panel covers.
+const PANEL_OVERLAP = 28;
 const SPOT_BY_ID = Object.fromEntries(CAMPUS_SPOTS.map((spot) => [spot.id, spot]));
 const LATS = CAMPUS_SPOTS.map((spot) => spot.latitude).filter(Number.isFinite);
 const LONS = CAMPUS_SPOTS.map((spot) => spot.longitude).filter(Number.isFinite);
@@ -69,6 +76,78 @@ const GROUND = {
   rainy: { grass: '#B4CBB6', water: '#6C9CC6', road: '#DCE1E4', top: '#EEF2F6', tree: '#5E9A72' },
   night: { grass: '#1C2A2C', water: '#22405D', road: '#334043', top: '#2C3446', tree: '#244A36' },
 };
+// The same weather in the app's dark theme: a dim campus that still shows
+// whether it is sunny or raining.
+const GROUND_DARK = {
+  sunny: { grass: '#182A20', water: '#1E3D59', road: '#30363B', top: '#283040', tree: '#23452F' },
+  cloudy: { grass: '#1B2824', water: '#213C53', road: '#31373B', top: '#283040', tree: '#284637' },
+  rainy: { grass: '#16221F', water: '#1A3248', road: '#2B3135', top: '#262D3A', tree: '#1F3C2E' },
+  night: GROUND.night,
+};
+
+// Name tags: at most two lines this wide, never stacked on one another.
+const LABEL_MAX = 132;
+const LABEL_GAP = 4;
+// Pins closer than this would cover each other's icons.
+const PIN_GAP = 50;
+
+/** `hex` mixed toward the dark ground by `amount` (0..1). */
+function shade(hex, amount) {
+  const match = /^#([0-9a-f]{6})$/i.exec(String(hex || ''));
+  if (!match) return hex;
+  const value = parseInt(match[1], 16);
+  const mix = (channel, target) => Math.round(channel + (target - channel) * amount);
+  const r = mix((value >> 16) & 255, 0x1A);
+  const g = mix((value >> 8) & 255, 0x20);
+  const b = mix(value & 255, 0x2E);
+  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+}
+
+/** Rough tag size; Thai combining marks make this an overestimate, which is safe. */
+function labelSize(label) {
+  const natural = 18 + label.length * 6.4;
+  return { width: Math.min(LABEL_MAX, natural), height: natural > LABEL_MAX ? 40 : 24 };
+}
+
+/** Places each tag below its landmark, moving it down past any tag already placed. */
+function placeLabels(items) {
+  const placed = [];
+  return items.map((item) => {
+    const { width, height } = labelSize(item.label);
+    let top = item.y;
+    for (let moved = true; moved;) {
+      moved = false;
+      for (const other of placed) {
+        const overlaps = item.x - width / 2 < other.right && other.left < item.x + width / 2 && top < other.bottom && other.top < top + height;
+        if (overlaps) { top = other.bottom + LABEL_GAP; moved = true; }
+      }
+    }
+    const rect = { left: item.x - width / 2, right: item.x + width / 2, top, bottom: top + height };
+    placed.push(rect);
+    return { ...item, top };
+  });
+}
+
+/** Nudges pins apart until none covers another, keeping each near its place. */
+function spreadPins(pins) {
+  const out = pins.map((pin) => ({ ...pin }));
+  for (let pass = 0; pass < 4; pass += 1) {
+    for (let i = 0; i < out.length; i += 1) {
+      for (let j = i + 1; j < out.length; j += 1) {
+        const dx = out[j].x - out[i].x;
+        const dy = out[j].y - out[i].y;
+        const distance = Math.hypot(dx, dy);
+        if (distance >= PIN_GAP) continue;
+        // Coincident pins separate sideways.
+        const [ux, uy] = distance ? [dx / distance, dy / distance] : [1, 0];
+        const push = (PIN_GAP - distance) / 2;
+        out[i].x -= ux * push; out[i].y -= uy * push;
+        out[j].x += ux * push; out[j].y += uy * push;
+      }
+    }
+  }
+  return out;
+}
 
 function pinKind(category) {
   if (category === 'cafe' || category === 'study' || category === 'running' || category === 'gym') return category;
@@ -81,21 +160,38 @@ function seeded(index, salt) {
   return x - Math.floor(x);
 }
 
-function Block({ x, y, w, h, color, night, label }) {
-  const depth = Math.round(h * 0.38);
+/** Block height below the roof, shared with the tag placement. */
+const blockDepth = (h) => Math.round(h * 0.38);
+
+// Names are drawn separately (MapLabel) so they can wrap and avoid each other.
+function Block({ x, y, w, h, color, dark, lit }) {
+  const depth = blockDepth(h);
+  const roof = dark ? shade(color, 0.62) : color;
+  // Lit windows are a night detail; the dark theme by day keeps them dim.
+  const windowColor = (index) => (lit ? (seeded(index, w) > 0.35 ? '#FFD66B' : '#3B4458') : dark ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.7)');
   return (
     <View pointerEvents="none" style={[styles.abs, { left: x - w / 2, top: y - h / 2 }]}>
       <View style={[styles.blockShadow, { width: w * 1.05, height: h * 0.5, top: h * 0.7 + depth * 0.6, left: w * 0.06 }]} />
-      <View style={{ width: w, height: h, borderRadius: 10, backgroundColor: night ? '#2C3446' : color, borderWidth: 1.5, borderColor: 'rgba(0,0,0,0.12)' }}>
-        <View style={[styles.roofLine, { backgroundColor: night ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.55)' }]} />
+      <View style={{ width: w, height: h, borderRadius: 10, backgroundColor: roof, borderWidth: 1.5, borderColor: dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.12)' }}>
+        <View style={[styles.roofLine, { backgroundColor: dark ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.55)' }]} />
       </View>
       {/* Front face: a darker band below the roof gives the block its height. */}
-      <View style={{ width: w, height: depth, marginTop: -8, borderBottomLeftRadius: 8, borderBottomRightRadius: 8, backgroundColor: night ? '#1A2030' : withAlpha(color, 1), opacity: night ? 1 : 0.62, flexDirection: 'row', flexWrap: 'wrap', gap: 4, padding: 5, paddingTop: 10, overflow: 'hidden' }}>
+      <View style={{ width: w, height: depth, marginTop: -8, borderBottomLeftRadius: 8, borderBottomRightRadius: 8, backgroundColor: dark ? shade(color, 0.8) : withAlpha(color, 1), opacity: dark ? 1 : 0.62, flexDirection: 'row', flexWrap: 'wrap', gap: 4, padding: 5, paddingTop: 10, overflow: 'hidden' }}>
         {Array.from({ length: Math.max(3, Math.round(w / 14)) }, (_, index) => (
-          <View key={index} style={{ width: 6, height: 5, borderRadius: 1, backgroundColor: night ? (seeded(index, w) > 0.35 ? '#FFD66B' : '#3B4458') : 'rgba(255,255,255,0.7)' }} />
+          <View key={index} style={{ width: 6, height: 5, borderRadius: 1, backgroundColor: windowColor(index) }} />
         ))}
       </View>
-      <Text numberOfLines={1} style={[styles.blockLabel, { color: night ? '#E8ECF8' : '#1F2A37', maxWidth: w + 40, left: -20, width: w + 40 }]}>{label}</Text>
+    </View>
+  );
+}
+
+/** A landmark's name on its own backing, readable over grass, roads and trees. */
+function MapLabel({ x, top, label, dark }) {
+  return (
+    <View pointerEvents="none" style={[styles.labelAnchor, { left: x - LABEL_MAX / 2, top }]}>
+      <View style={[styles.labelPill, dark ? styles.labelPillDark : styles.labelPillLight]}>
+        <Text numberOfLines={2} style={[styles.labelText, { color: dark ? '#EEF2FA' : '#1F2A37' }]}>{label}</Text>
+      </View>
     </View>
   );
 }
@@ -113,7 +209,10 @@ export default function PSUCampusMapScreen() {
   const [filter, setFilter] = useState('all');
   const [selectedId, setSelectedId] = useState(typeof params.spot === 'string' ? params.spot : null);
   const night = condition === 'night';
-  const ground = GROUND[condition] || GROUND.sunny;
+  // The map follows the app's dark theme as well as the weather's night.
+  const dark = isDark || night;
+  const sky = (isDark ? theme.gradientDark : theme.gradient)[0];
+  const ground = (isDark ? GROUND_DARK : GROUND)[condition] || (isDark ? GROUND_DARK.sunny : GROUND.sunny);
 
   const contentW = Math.round(width * 1.9);
   const contentH = Math.round(mapHeight * 1.7);
@@ -159,17 +258,35 @@ export default function PSUCampusMapScreen() {
       });
   }, [appointments, conversations, profile?.id, project]);
 
+  // Every pin's on-map position, spread so neighbours never cover each other.
+  const placedPins = useMemo(() => spreadPins([...spotPins, ...appointmentPins]), [appointmentPins, spotPins]);
+  const placedById = useMemo(() => new Map(placedPins.map((pin) => [pin.id, pin])), [placedPins]);
+
   const visiblePins = useMemo(() => {
-    if (filter === 'appointment') return appointmentPins;
-    const pins = filter === 'all' ? spotPins : spotPins.filter((pin) => pin.kind === filter || (filter === 'sports' && ['sports', 'gym', 'running'].includes(pin.kind)));
-    return [...pins, ...(filter === 'all' ? appointmentPins : [])];
-  }, [appointmentPins, filter, spotPins]);
+    const pins = filter === 'appointment' ? appointmentPins
+      : [...(filter === 'all' ? spotPins : spotPins.filter((pin) => pin.kind === filter || (filter === 'sports' && ['sports', 'gym', 'running'].includes(pin.kind)))),
+        ...(filter === 'all' ? appointmentPins : [])];
+    return pins.map((pin) => placedById.get(pin.id) || pin);
+  }, [appointmentPins, filter, placedById, spotPins]);
+
+  // Landmark names sit under their building or ground shape.
+  const labels = useMemo(() => placeLabels(LANDMARKS.map((landmark) => {
+    const spot = SPOT_BY_ID[landmark.spotId];
+    const { x, y } = project(spot.latitude, spot.longitude);
+    const bottom = landmark.kind ? landmark.h / 2 : landmark.h / 2 + blockDepth(landmark.h) - 8;
+    return { id: landmark.spotId, label: landmark.label, x, y: y + bottom + 6 };
+  })), [project]);
 
   // ---- Map panning -------------------------------------------------------
+  // The top bar and the bottom panel float over the map; the map can be
+  // dragged until its edges clear them, so no pin is stuck underneath.
+  const topReserve = insets.top + TOP_BAR_GAP + TOP_BAR_HEIGHT + 8;
+  const visibleBottom = mapHeight - PANEL_OVERLAP;
   const minX = width - contentW;
-  const minY = mapHeight - contentH;
+  const minY = visibleBottom - contentH;
+  const maxY = topReserve;
   const clampX = (value) => Math.min(0, Math.max(minX, value));
-  const clampY = (value) => Math.min(0, Math.max(minY, value));
+  const clampY = (value) => Math.min(maxY, Math.max(minY, value));
   const tx = useSharedValue(clampX(width / 2 - contentW / 2));
   const ty = useSharedValue(clampY(mapHeight / 2 - contentH / 2));
   const startX = useSharedValue(0);
@@ -178,25 +295,24 @@ export default function PSUCampusMapScreen() {
   const centerOn = useCallback((pin) => {
     if (!pin) return;
     tx.set(withSpring(Math.min(0, Math.max(width - contentW, width / 2 - pin.x)), motion.spring.gentle));
-    ty.set(withSpring(Math.min(0, Math.max(mapHeight - contentH, mapHeight * 0.45 - pin.y)), motion.spring.gentle));
-  }, [contentH, contentW, mapHeight, tx, ty, width]);
+    ty.set(withSpring(Math.min(maxY, Math.max(minY, (topReserve + visibleBottom) / 2 - pin.y)), motion.spring.gentle));
+  }, [contentW, maxY, minY, topReserve, tx, ty, visibleBottom, width]);
 
   const pan = useMemo(() => Gesture.Pan()
     .onStart(() => { startX.set(tx.get()); startY.set(ty.get()); })
     .onUpdate((event) => {
       tx.set(Math.min(0, Math.max(minX, startX.get() + event.translationX)));
-      ty.set(Math.min(0, Math.max(minY, startY.get() + event.translationY)));
+      ty.set(Math.min(maxY, Math.max(minY, startY.get() + event.translationY)));
     })
     .onEnd((event) => {
       tx.set(withDecay({ velocity: event.velocityX, clamp: [minX, 0] }));
-      ty.set(withDecay({ velocity: event.velocityY, clamp: [minY, 0] }));
-    }), [minX, minY, startX, startY, tx, ty]);
+      ty.set(withDecay({ velocity: event.velocityY, clamp: [minY, maxY] }));
+    }), [maxY, minX, minY, startX, startY, tx, ty]);
   const mapStyle = useAnimatedStyle(() => ({ transform: [{ translateX: tx.get() }, { translateY: ty.get() }] }));
 
-  const allPins = useMemo(() => [...spotPins, ...appointmentPins], [appointmentPins, spotPins]);
   useEffect(() => {
     if (!selectedId) return;
-    centerOn(allPins.find((pin) => pin.id === selectedId || pin.spots.some((spot) => spot.id === selectedId)));
+    centerOn(placedPins.find((pin) => pin.id === selectedId || pin.spots.some((spot) => spot.id === selectedId)));
     // Center only when the selection changes, not when pins are recomputed.
   }, [selectedId]);
 
@@ -206,7 +322,7 @@ export default function PSUCampusMapScreen() {
   };
 
   // ---- Bottom panel ------------------------------------------------------
-  const collapsedTop = mapHeight - 28;
+  const collapsedTop = mapHeight - PANEL_OVERLAP;
   const expandedTop = Math.max(insets.top + 72, height * 0.2);
   const panelTop = useSharedValue(collapsedTop);
   const panelStart = useSharedValue(collapsedTop);
@@ -231,6 +347,8 @@ export default function PSUCampusMapScreen() {
 
   return (
     <View style={[styles.screen, { backgroundColor: colors.canvas }]}>
+      {/* Light icons over a night or dark-theme sky, dark ones over a bright sky. */}
+      <StatusBar style={dark ? 'light' : 'dark'} />
       {/* ---- Map ---- */}
       <View style={[styles.mapViewport, { height: mapHeight + 30 }]}>
         <WeatherBackdrop condition={condition} dark={isDark} density="map" />
@@ -253,27 +371,26 @@ export default function PSUCampusMapScreen() {
               const { x, y } = project(spot.latitude, spot.longitude);
               if (landmark.kind === 'water') {
                 return (
-                  <View key={landmark.spotId} style={[styles.abs, { left: x - landmark.w / 2, top: y - landmark.h / 2 }]}>
-                    <View style={{ width: landmark.w, height: landmark.h, borderRadius: landmark.h, backgroundColor: ground.water, borderWidth: 3, borderColor: withAlpha('#FFFFFF', night ? 0.15 : 0.6) }}>
-                      <View style={[styles.wave, { top: '30%', left: '22%' }]} />
-                      <View style={[styles.wave, { top: '55%', left: '45%' }]} />
+                  <View key={landmark.spotId} pointerEvents="none" style={[styles.abs, { left: x - landmark.w / 2, top: y - landmark.h / 2 }]}>
+                    <View style={{ width: landmark.w, height: landmark.h, borderRadius: landmark.h, backgroundColor: ground.water, borderWidth: 3, borderColor: withAlpha('#FFFFFF', dark ? 0.15 : 0.6) }}>
+                      <View style={[styles.wave, { top: '30%', left: '22%' }, dark && styles.waveDark]} />
+                      <View style={[styles.wave, { top: '55%', left: '45%' }, dark && styles.waveDark]} />
                     </View>
-                    <Text style={[styles.blockLabel, { color: night ? '#E8ECF8' : '#1F3B5A', width: landmark.w }]}>{landmark.label}</Text>
                   </View>
                 );
               }
               if (landmark.kind === 'track') {
                 return (
-                  <View key={landmark.spotId} style={[styles.abs, { left: x - landmark.w / 2, top: y - landmark.h / 2 }]}>
-                    <View style={{ width: landmark.w, height: landmark.h, borderRadius: landmark.h, backgroundColor: night ? '#5A2E2A' : '#E7806B', padding: 9 }}>
-                      <View style={{ flex: 1, borderRadius: landmark.h, backgroundColor: night ? '#24402B' : '#8FD18F' }} />
+                  <View key={landmark.spotId} pointerEvents="none" style={[styles.abs, { left: x - landmark.w / 2, top: y - landmark.h / 2 }]}>
+                    <View style={{ width: landmark.w, height: landmark.h, borderRadius: landmark.h, backgroundColor: dark ? '#5A2E2A' : '#E7806B', padding: 9 }}>
+                      <View style={{ flex: 1, borderRadius: landmark.h, backgroundColor: dark ? '#24402B' : '#8FD18F' }} />
                     </View>
-                    <Text style={[styles.blockLabel, { color: night ? '#E8ECF8' : '#1F2A37', width: landmark.w }]}>{landmark.label}</Text>
                   </View>
                 );
               }
-              return <Block key={landmark.spotId} x={x} y={y} w={landmark.w} h={landmark.h} color={landmark.color} night={night} label={landmark.label} />;
+              return <Block key={landmark.spotId} x={x} y={y} w={landmark.w} h={landmark.h} color={landmark.color} dark={dark} lit={night} />;
             })}
+            {labels.map((item) => <MapLabel key={`label-${item.id}`} x={item.x} top={item.top} label={item.label} dark={dark} />)}
             {visiblePins.map((pin) => (
               <AnimatedPin
                 key={pin.id}
@@ -283,7 +400,7 @@ export default function PSUCampusMapScreen() {
                 label={pin.label}
                 count={pin.count}
                 avatarUri={pin.avatarUri}
-                dark={night}
+                dark={dark}
                 selected={selectedId === pin.id || pin.spots.some((spot) => spot.id === selectedId)}
                 onPress={() => select(pin.id)}
               />
@@ -293,7 +410,10 @@ export default function PSUCampusMapScreen() {
         {/* Rain, leaves and stars drift over the map too. */}
         {condition !== 'sunny' ? <WeatherBackdrop condition={condition} style={styles.overlay} transparent /> : null}
 
-        <View pointerEvents="box-none" style={[styles.topBar, { top: insets.top + 8, paddingHorizontal: gutter }]}>
+        {/* The status bar and top bar sit on the sky colour, not on the map. */}
+        <LinearGradient pointerEvents="none" colors={[withAlpha(sky, 0.96), withAlpha(sky, 0.7), withAlpha(sky, 0)]} locations={[0, 0.6, 1]}
+          style={[styles.topScrim, { height: topReserve + 28 }]} />
+        <View pointerEvents="box-none" style={[styles.topBar, { top: insets.top + TOP_BAR_GAP, paddingHorizontal: gutter }]}>
           <GlassIconButton accessibilityLabel="ย้อนกลับ" icon="chevron.left" iconColor={colors.ink} iconSize={18} onPress={() => (router.canGoBack() ? router.back() : router.replace('/home'))} size={44} fallbackBackgroundColor={surface} />
           <View style={[styles.titlePill, { backgroundColor: glass ? 'transparent' : surface }]}>
             <GlassBackground style={{ borderRadius: 22 }} />
@@ -364,10 +484,19 @@ const styles = StyleSheet.create({
   road: { position: 'absolute', height: 14, borderRadius: 7 },
   tree: { position: 'absolute', width: 14, height: 14, borderRadius: 7, opacity: 0.9 },
   wave: { position: 'absolute', width: 26, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.55)' },
+  waveDark: { backgroundColor: 'rgba(255,255,255,0.18)' },
   blockShadow: { position: 'absolute', borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.16)' },
   roofLine: { position: 'absolute', top: 5, left: 6, right: 6, height: 3, borderRadius: 2 },
-  blockLabel: { fontSize: 11, lineHeight: 15, fontWeight: '800', textAlign: 'center', marginTop: 3 },
+  labelAnchor: { position: 'absolute', width: LABEL_MAX, alignItems: 'center' },
+  labelPill: {
+    maxWidth: LABEL_MAX, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, borderCurve: 'continuous', borderWidth: StyleSheet.hairlineWidth,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowRadius: 4, elevation: 2,
+  },
+  labelPillLight: { backgroundColor: 'rgba(255,255,255,0.94)', borderColor: 'rgba(0,0,0,0.06)', shadowOpacity: 0.12 },
+  labelPillDark: { backgroundColor: 'rgba(20,24,36,0.9)', borderColor: 'rgba(255,255,255,0.1)', shadowOpacity: 0.3 },
+  labelText: { fontSize: 11.5, fontWeight: '800', textAlign: 'center' },
   topBar: { position: 'absolute', left: 0, right: 0, flexDirection: 'row', alignItems: 'center', gap: 8, zIndex: 5 },
+  topScrim: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 4 },
   titlePill: { flex: 1, minHeight: 44, borderRadius: 22, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, overflow: 'hidden' },
   title: { fontSize: 16, fontWeight: '800' },
   weatherChip: { flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, flexShrink: 1 },

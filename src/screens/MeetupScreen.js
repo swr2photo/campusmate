@@ -483,6 +483,11 @@ export default function MeetupScreen({ onToast, partyOnly = false, targetPartyId
       <MapModal
         mapTargetSpot={mapTargetSpot}
         onClose={() => setMapModal(false)}
+        // When Google Maps cannot draw, the illustrated campus map still can.
+        onOpenCampusMap={(spot) => {
+          setMapModal(false);
+          router.push(spot?.id ? { pathname: '/campus-map', params: { spot: spot.id } } : '/campus-map');
+        }}
         onQuickChoose={(spot) => {
           void handleQuickChoose(spot);
           setMapModal(false);
@@ -679,7 +684,7 @@ function SpotSeparator() {
   return <View style={{ height: spacing.md }} />;
 }
 
-function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedMeetup, spots, visible }) {
+function MapModal({ mapTargetSpot, onClose, onOpenCampusMap, onQuickChoose, onSchedule, selectedMeetup, spots, visible }) {
   const { colors } = useTheme();
   const translateY = useSharedValue(600);
   const fadeAnim = useSharedValue(0);
@@ -785,6 +790,7 @@ function MapModal({ mapTargetSpot, onClose, onQuickChoose, onSchedule, selectedM
               selectedSpot={mapTargetSpot || selectedMeetup}
               onSelectSpot={onQuickChoose}
               onScheduleSpot={onSchedule}
+              onOpenCampusMap={onOpenCampusMap}
               height="100%"
             />
           </View>
@@ -1103,7 +1109,7 @@ const styles = StyleSheet.create({
   actionButton: { alignItems: 'center', borderRadius: radius.pill, borderWidth: 1, flex: 1, flexDirection: 'row', gap: 4, justifyContent: 'center', minHeight: 48, paddingHorizontal: spacing.sm, paddingVertical: 10 },
   actionText: { fontSize: type.caption2, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
   modalOverlay: { flex: 1, justifyContent: 'flex-end' },
-  mapModalContent: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, height: '84%', padding: spacing.lg },
+  mapModalContent: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, height: '88%', paddingHorizontal: spacing.sm, paddingTop: spacing.sm, paddingBottom: spacing.md },
   scheduleKeyboardAvoiding: { flex: 1, justifyContent: 'flex-end', width: '100%' },
   scheduleModalContent: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, maxHeight: '92%', padding: spacing.lg },
   modalHandle: { alignSelf: 'center', borderRadius: radius.pill, height: 5, marginBottom: spacing.sm, opacity: 0.5, width: 44 },

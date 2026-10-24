@@ -103,10 +103,15 @@ android {
     defaultConfig {
         applicationId 'com.campusmate.app'
         manifestPlaceholders['googleMapsApiKey'] = System.getenv('CAMPUSMATE_ANDROID_MAPS_SDK_KEY') ?: ''
+        // Without the key Google Maps fails authorization and shows a blank grey
+        // map, so a release build must not be made without it.
+        if (!System.getenv('CAMPUSMATE_ANDROID_MAPS_SDK_KEY') && gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }) {
+            throw new GradleException('CAMPUSMATE_ANDROID_MAPS_SDK_KEY is not set: this release build would show a blank Google map. Build with scripts/build-release-aab.cjs, which reads it from .env.')
+        }
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 98
-        versionName "3.1.8"
+        versionCode 101
+        versionName "3.1.9"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }

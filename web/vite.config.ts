@@ -23,6 +23,7 @@ export default defineConfig({
         reset: path.resolve(__dirname, 'reset.html'),
         'email-verified': path.resolve(__dirname, 'email-verified.html'),
         index: path.resolve(__dirname, 'index.html'),
+        'auth-action': path.resolve(__dirname, 'auth-action.html'),
       },
     },
   },

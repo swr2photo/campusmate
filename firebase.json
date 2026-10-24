@@ -53,6 +53,14 @@
       {
         "source": "/email-verified",
         "destination": "/email-verified.html"
+      },
+      {
+        "source": "/auth/verify-email",
+        "destination": "/auth-action.html"
+      },
+      {
+        "source": "/auth/reset-password",
+        "destination": "/auth-action.html"
       }
     ],
     "ignore": [
@@ -71,11 +79,24 @@
         ]
       },
       {
-        "source": "/@(reset|email-verified|admin)?(.html)",
+        "source": "/@(reset|email-verified|admin|auth-action)?(.html)",
         "headers": [
           {
             "key": "X-Robots-Tag",
             "value": "noindex, nofollow"
+          }
+        ]
+      },
+      {
+        "source": "/auth/**",
+        "headers": [
+          {
+            "key": "X-Robots-Tag",
+            "value": "noindex, nofollow"
+          },
+          {
+            "key": "Cache-Control",
+            "value": "no-store"
           }
         ]
       },
@@ -113,7 +134,7 @@
           },
           {
             "key": "Content-Security-Policy",
-            "value": "default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https://photos.getcampusmate.app https://pub-50c04ae03d1b4222b7402a2b1ff02c62.r2.dev https://pub-73287d4af57d4e788f89d95e71d2ea70.r2.dev https://firebasestorage.googleapis.com https://storage.googleapis.com https://media.getcampusmate.app https://cdn.getcampusmate.app https://lh3.googleusercontent.com https://lh4.googleusercontent.com https://lh5.googleusercontent.com https://lh6.googleusercontent.com https://*.psu.ac.th https://*.wikimedia.org https://img.wongnai.com https://icchatyai.com; connect-src 'self' https://www.googleapis.com https://*.googleapis.com https://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://*.cloudfunctions.net https://*.run.app; frame-src 'self' https://*.firebaseapp.com https://accounts.google.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+            "value": "default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https://photos.getcampusmate.app https://pub-50c04ae03d1b4222b7402a2b1ff02c62.r2.dev https://pub-73287d4af57d4e788f89d95e71d2ea70.r2.dev https://firebasestorage.googleapis.com https://storage.googleapis.com https://media.getcampusmate.app https://cdn.getcampusmate.app https://lh3.googleusercontent.com https://lh4.googleusercontent.com https://lh5.googleusercontent.com https://lh6.googleusercontent.com https://*.psu.ac.th https://*.wikimedia.org https://img.wongnai.com https://icchatyai.com; connect-src 'self' https://campusmate-backend-502731779521.fly.dev https://www.googleapis.com https://*.googleapis.com https://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://*.cloudfunctions.net https://*.run.app; frame-src 'self' https://*.firebaseapp.com https://accounts.google.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
           },
           {
             "key": "Cross-Origin-Opener-Policy",

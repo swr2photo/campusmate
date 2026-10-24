@@ -125,6 +125,7 @@ async fn track_activity(
 ) -> axum::response::Response {
     let path = request.uri().path();
     let probe = path == "/healthz" || path == "/livez";
+    let mail = activity::may_queue_mail(path);
     let write = !matches!(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
@@ -135,6 +136,9 @@ async fn track_activity(
     let response = next.run(request).await;
     if write && !probe && response.status().is_success() {
         activity::wake_push();
+        if mail {
+            activity::wake_mail();
+        }
     }
     response
 }

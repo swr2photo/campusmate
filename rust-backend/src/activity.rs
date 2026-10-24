@@ -51,6 +51,51 @@ pub async fn push_woken() {
     push_signal().notified().await;
 }
 
+/// True for requests that can queue an account email (verification, reset,
+/// email change, deletion code) for the separate mail worker.
+pub fn may_queue_mail(path: &str) -> bool {
+    path.starts_with("/v1/auth/")
+        || matches!(
+            path,
+            "/v1/rpc/sendBrandedEmailVerification"
+                | "/v1/rpc/sendBrandedPasswordReset"
+                | "/v1/rpc/sendCampusEmailChange"
+                | "/v1/rpc/sendAccountDeletionOtp"
+                | "/v1/rpc/adminConsole"
+        )
+}
+
+/// Tells the mail worker (another Fly app, reached over the private network
+/// at `MAIL_WORKER_WAKE_URL`) to send queued account email now, so it can
+/// sleep instead of polling the database. Best effort: the worker also
+/// rechecks on its own.
+pub fn wake_mail() {
+    static URL: OnceLock<Option<String>> = OnceLock::new();
+    let Some(url) = URL
+        .get_or_init(|| {
+            std::env::var("MAIL_WORKER_WAKE_URL")
+                .ok()
+                .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+        })
+        .clone()
+    else {
+        return;
+    };
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let client = CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_default()
+        })
+        .clone();
+    tokio::spawn(async move {
+        let _ = client.get(url).send().await;
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

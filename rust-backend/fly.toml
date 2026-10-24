@@ -43,7 +43,11 @@ primary_region = "sin"
   FACE_DECISION_MODE = "manual"
   FIREBASE_IDENTITY_ENABLED = "true"
   FIREBASE_PROJECT_ID = "campusmate-7f1ab"
-  ADMIN_CONSOLE_ORIGINS = "https://campusmate-7f1ab.web.app,https://campusmate-7f1ab.firebaseapp.com"
+  # getcampusmate.app hosts the email action pages (verify email, reset
+  # password) and the admin console; they call this API from the browser.
+  ADMIN_CONSOLE_ORIGINS = "https://getcampusmate.app,https://campusmate-7f1ab.web.app,https://campusmate-7f1ab.firebaseapp.com,https://campusmate-7f1ab--rust-staging-gojamb6b.web.app"
+  # The mail worker sleeps until the API pings it after queueing an email.
+  MAIL_WORKER_WAKE_URL = "http://campusmate-mail-staging-502731779521.internal:8081/wake"
   # Public OAuth client IDs (web, iOS, Android); ID tokens must name one as audience.
   GOOGLE_OAUTH_CLIENT_IDS = "865275661439-fvhsudae20viohqniq13iufb7b97p7h4.apps.googleusercontent.com,865275661439-88thtqomehff31taquhc4srga14fbvav.apps.googleusercontent.com,865275661439-1md7lkrhld462jgfn7s1dnmbjrnl2ve4.apps.googleusercontent.com"
 

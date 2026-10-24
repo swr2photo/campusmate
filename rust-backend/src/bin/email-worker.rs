@@ -13,7 +13,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
-use std::{env, time::Duration};
+use std::{env, sync::Arc, time::Duration};
+use tokio::{sync::Notify, time::Instant};
 use uuid::Uuid;
 
 const MAX_ATTEMPTS: i32 = 8;
@@ -243,6 +244,115 @@ CampusMate"
     format!("สวัสดี\n\n{introduction}\n\nเปิดลิงก์นี้: {action}\n\nลิงก์ใช้ได้ครั้งเดียวและมีวันหมดอายุ หากไม่ได้เป็นผู้ดำเนินการ สามารถละเว้นอีเมลนี้ได้\n\nCampusMate")
 }
 
+/// Logo for the HTML email, served by the website (public/email/).
+const LOGO_URL: &str = "https://getcampusmate.app/email/campusmate-logo.png";
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+/// Branded HTML version of `message_text`: table layout and inline styles,
+/// which is what email clients render reliably. The plain-text part stays
+/// alongside it for clients that block HTML.
+fn message_html(kind: ActionKind, action: &str) -> String {
+    let action = escape_html(action);
+    let (preheader, title, introduction, body) = match kind {
+        ActionKind::VerifyEmail => (
+            "ยืนยันอีเมลเพื่อเริ่มใช้ CampusMate",
+            "ยืนยันอีเมลของคุณ",
+            "กดปุ่มด้านล่างเพื่อยืนยันว่าคุณเป็นเจ้าของอีเมลนี้ แล้วกลับไปเข้าสู่ระบบในแอป CampusMate ได้เลย",
+            button(&action, "ยืนยันอีเมล"),
+        ),
+        ActionKind::ResetPassword => (
+            "ลิงก์ตั้งรหัสผ่านใหม่สำหรับบัญชี CampusMate",
+            "ตั้งรหัสผ่านใหม่",
+            "เราได้รับคำขอตั้งรหัสผ่านบัญชี CampusMate ของคุณใหม่ กดปุ่มด้านล่างเพื่อตั้งรหัสผ่าน",
+            button(&action, "ตั้งรหัสผ่านใหม่"),
+        ),
+        ActionKind::ChangeEmail => (
+            "ยืนยันอีเมลมหาวิทยาลัยสำหรับบัญชี CampusMate",
+            "ยืนยันอีเมลมหาวิทยาลัย",
+            "กดปุ่มด้านล่างเพื่อใช้อีเมลมหาวิทยาลัยนี้กับบัญชี CampusMate ของคุณ",
+            button(&action, "ยืนยันอีเมลนี้"),
+        ),
+        ActionKind::DeleteAccountOtp => (
+            "รหัสยืนยันการลบบัญชี CampusMate",
+            "รหัสยืนยันการลบบัญชี",
+            "ใช้รหัสนี้ในแอปเพื่อยืนยันการลบบัญชี CampusMate อย่างถาวร รหัสมีอายุ 10 นาที",
+            format!(
+                r#"<div style="margin:24px 0 8px;padding:18px 0;border-radius:16px;background:#eef3fb;text-align:center;font-size:34px;line-height:40px;font-weight:700;letter-spacing:10px;color:#14213a;font-family:'SFMono-Regular',Menlo,Consolas,monospace">{action}</div>"#
+            ),
+        ),
+    };
+    let notice = if kind == ActionKind::DeleteAccountOtp {
+        "หากคุณไม่ได้เป็นผู้ขอลบบัญชี กรุณาเปลี่ยนรหัสผ่านทันที และอย่าบอกรหัสนี้กับใคร ทีมงานจะไม่ขอรหัสนี้จากคุณ"
+    } else {
+        "ลิงก์ใช้ได้ครั้งเดียวและมีวันหมดอายุ หากคุณไม่ได้เป็นผู้ดำเนินการ ละเว้นอีเมลนี้ได้เลย บัญชีของคุณจะไม่ถูกเปลี่ยนแปลง"
+    };
+    let fallback = if kind == ActionKind::DeleteAccountOtp {
+        String::new()
+    } else {
+        format!(
+            r#"<p style="margin:20px 0 0;font-size:13px;line-height:20px;color:#5d6b82">ถ้าปุ่มกดไม่ได้ คัดลอกลิงก์นี้ไปเปิดในเบราว์เซอร์<br><a href="{action}" style="color:#2869c7;word-break:break-all">{action}</a></p>"#
+        )
+    };
+    format!(
+        r#"<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>{title}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;-webkit-text-size-adjust:100%">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0">{preheader}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6fb">
+<tr><td align="center" style="padding:32px 16px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;font-family:'Leelawadee UI','Sarabun','Noto Sans Thai',Tahoma,Arial,sans-serif">
+<tr><td style="padding:0 4px 18px">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+<td style="vertical-align:middle"><img src="{LOGO_URL}" width="44" height="44" alt="CampusMate" style="display:block;border:0;border-radius:11px"></td>
+<td style="vertical-align:middle;padding-left:12px;font-size:18px;font-weight:700;color:#14213a">CampusMate</td>
+</tr></table>
+</td></tr>
+<tr><td style="background:#ffffff;border:1px solid #e5e9f0;border-radius:24px;padding:32px 28px">
+<h1 style="margin:0 0 12px;font-size:24px;line-height:32px;font-weight:700;color:#14213a">{title}</h1>
+<p style="margin:0;font-size:16px;line-height:26px;color:#33405a">{introduction}</p>
+{body}
+{fallback}
+<p style="margin:24px 0 0;padding:14px 16px;border-radius:14px;background:#f4f6fb;font-size:13px;line-height:20px;color:#5d6b82">{notice}</p>
+</td></tr>
+<tr><td style="padding:20px 8px 0;text-align:center;font-size:12px;line-height:19px;color:#8a95a8">
+อีเมลอัตโนมัติจาก CampusMate กรุณาอย่าตอบกลับ<br>
+<a href="https://getcampusmate.app/" style="color:#8a95a8">getcampusmate.app</a> · <a href="https://getcampusmate.app/privacy" style="color:#8a95a8">นโยบายความเป็นส่วนตัว</a>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>"#
+    )
+}
+
+fn button(action: &str, label: &str) -> String {
+    format!(
+        r#"<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:26px 0 0"><tr><td style="border-radius:999px;background:#2869c7"><a href="{action}" style="display:inline-block;padding:14px 30px;border-radius:999px;font-size:16px;font-weight:700;color:#ffffff;text-decoration:none">{label}</a></td></tr></table>"#
+    )
+}
+
 fn http_failure(status: u16, retry_after: Option<&str>) -> DeliveryFailure {
     DeliveryFailure {
         code: "email-provider-rejected",
@@ -279,6 +389,7 @@ impl Configuration {
             retry_after: 0,
         })?;
         let text = message_text(kind, &action);
+        let html = message_html(kind, &action);
         let future = async {
             match &self.sender {
                 Sender::Resend { client, api_key } => {
@@ -290,6 +401,7 @@ impl Configuration {
                             "from": self.from.to_string(), "to": [payload.email],
                             "reply_to": self.from.email.to_string(), "subject": kind.subject(),
                             "text": text,
+                            "html": html,
                             "headers": { "X-Auto-Response-Suppress": "OOF, AutoReply" }
                         }))
                         .send()
@@ -324,7 +436,11 @@ impl Configuration {
                             job.id,
                             self.from.email.domain()
                         )))
-                        .multipart(MultiPart::alternative().singlepart(SinglePart::plain(text)))
+                        .multipart(
+                            MultiPart::alternative()
+                                .singlepart(SinglePart::plain(text))
+                                .singlepart(SinglePart::html(html)),
+                        )
                         .map_err(|_| DeliveryFailure {
                             code: "invalid-mail-message",
                             retry: false,
@@ -490,20 +606,90 @@ async fn run() -> Result<(), WorkerError> {
     let once = args.len() == 2;
     // Deliberately do not initialize a tracing subscriber: RUST_LOG must never
     // enable SMTP protocol/HTTP header/database parameter logging here.
+    if once {
+        process_one(&pool, &config).await?;
+        pool.close().await;
+        return Ok(());
+    }
+    let wake = Arc::new(Notify::new());
+    if let Some(port) = configured("WAKE_PORT").and_then(|value| value.parse::<u16>().ok()) {
+        tokio::spawn(listen_for_wakes(port, wake.clone()));
+    }
+    // Poll briskly while mail is flowing. Otherwise sleep until the API wakes
+    // the worker, a retry falls due or the safety recheck, so an idle
+    // database can scale to zero. Database errors never end the process: the
+    // platform stops restarting a worker that keeps exiting, which silently
+    // stopped all account email during an outage.
+    let mut busy_until = Instant::now() + BUSY_WINDOW;
+    let mut failures = 0_u32;
     loop {
-        let work = process_one(&pool, &config).await?;
-        if once {
-            break;
-        }
-        let delay = if work {
-            Duration::from_millis(250)
-        } else {
-            Duration::from_secs(3)
+        let delay = match process_one(&pool, &config).await {
+            Ok(true) => {
+                failures = 0;
+                busy_until = Instant::now() + BUSY_WINDOW;
+                Duration::from_millis(250)
+            }
+            Ok(false) if Instant::now() < busy_until => {
+                failures = 0;
+                Duration::from_secs(3)
+            }
+            Ok(false) => {
+                failures = 0;
+                match next_due(&pool).await {
+                    Ok(Some(due)) => due.min(IDLE_RECHECK),
+                    Ok(None) => IDLE_RECHECK,
+                    Err(_) => Duration::from_secs(60),
+                }
+            }
+            Err(_) => {
+                failures = failures.saturating_add(1);
+                eprintln!("campusmate-email-worker: database-operation-failed; retrying");
+                Duration::from_secs(5 << failures.min(7)).min(Duration::from_secs(600))
+            }
         };
-        tokio::select! { _=tokio::signal::ctrl_c()=>break, _=tokio::time::sleep(delay)=>{} }
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = wake.notified() => busy_until = Instant::now() + BUSY_WINDOW,
+            _ = tokio::time::sleep(delay) => {}
+        }
     }
     pool.close().await;
     Ok(())
+}
+
+/// How long the worker keeps polling every few seconds after mail activity.
+const BUSY_WINDOW: Duration = Duration::from_secs(120);
+/// Longest sleep with nothing queued; the API normally wakes the worker first.
+const IDLE_RECHECK: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Time until the earliest queued account email may be sent or retried.
+async fn next_due(pool: &PgPool) -> Result<Option<Duration>, WorkerError> {
+    let seconds: Option<f64> = sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM min(GREATEST(next_attempt_at,COALESCE(locked_until,next_attempt_at)))-now())::float8 FROM outbox WHERE kind IN ('verify_email','reset_password','change_email','delete_account_otp') AND finished_at IS NULL AND delivered_at IS NULL AND attempts<$1")
+        .bind(MAX_ATTEMPTS)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| WorkerError::Database)?;
+    Ok(seconds.map(|seconds| Duration::from_secs_f64(seconds.clamp(1.0, 86_400.0))))
+}
+
+const NO_CONTENT: &[u8] =
+    b"HTTP/1.1 204 No Content\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+
+/// Private-network wake endpoint (`WAKE_PORT`). Any connection means "mail
+/// was queued"; nothing is read, so a caller learns nothing and can only
+/// trigger one outbox check.
+async fn listen_for_wakes(port: u16, wake: Arc<Notify>) {
+    let Ok(listener) = tokio::net::TcpListener::bind(("::", port)).await else {
+        eprintln!("campusmate-email-worker: wake-listener-unavailable");
+        return;
+    };
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            continue;
+        };
+        wake.notify_one();
+        let _ = stream.try_write(NO_CONTENT);
+    }
 }
 
 #[tokio::main]
@@ -547,6 +733,19 @@ mod tests {
         assert!(result.query().is_none());
         assert_eq!(result.fragment(), Some(format!("token={token}").as_str()));
         assert!(link(&origin, ActionKind::VerifyEmail, "not-a-token").is_err());
+    }
+
+    #[test]
+    fn html_email_escapes_the_action_and_shows_the_logo() {
+        let html = message_html(
+            ActionKind::ResetPassword,
+            "https://getcampusmate.app/auth/reset-password#token=a&b<c",
+        );
+        assert!(html.contains("token=a&amp;b&lt;c"));
+        assert!(!html.contains("a&b<c"));
+        assert!(html.contains(LOGO_URL));
+        let otp = message_html(ActionKind::DeleteAccountOtp, "123456");
+        assert!(otp.contains(">123456<") && !otp.contains("href=\"123456\""));
     }
 
     #[test]

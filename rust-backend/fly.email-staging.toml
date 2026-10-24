@@ -11,7 +11,10 @@ primary_region = "sin"
   DB_POOL_MODE = "transaction"
   DB_MAX_CONNECTIONS = "2"
   DB_MIN_CONNECTIONS = "0"
-  NATIVE_AUTH_EMAIL_ORIGIN = "https://campusmate-backend-502731779521.fly.dev"
+  # Links in account emails open the website's action pages.
+  NATIVE_AUTH_EMAIL_ORIGIN = "https://getcampusmate.app"
+  # Private-network port the API pings after queueing an email.
+  WAKE_PORT = "8081"
 
 [processes]
   worker = "/usr/local/bin/email-worker --send"

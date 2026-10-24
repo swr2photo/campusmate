@@ -1,16 +1,33 @@
 import { Pressable } from './NativePressable';
 import Text from './AppText';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, Image, Modal, Platform, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, Modal, Platform, ScrollView, StyleSheet, View } from 'react-native';
+import Animated, { FadeInDown, useReducedMotion, ZoomIn } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image } from 'expo-image';
 import FeatureIcon from './FeatureIcon';
+import SlideUpSheet from './sheets/SlideUpSheet';
 import { useOverlayGate } from '../utils/overlayGate';
 import { checkAppUpdate, openAppStore, snoozeUpdate, subscribeAppUpdate } from '../services/versionCheckService';
+import { useTheme } from '../theme';
 
-const heroImage = require('../../assets/login-campus-hero.png');
 const appIcon = require('../../assets/icon.png');
+const MAX_NOTES = 8;
 
+/** Release notes as list items: one per line, bullet marks removed. */
+function noteLines(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(?:[-*•·]|\d+[.)])\s*/, '').trim())
+    .filter(Boolean)
+    .slice(0, MAX_NOTES);
+}
+
+/**
+ * New-version prompt from app_config/version. An optional update slides up
+ * as a sheet that can wait; a forced one covers the app until it is updated.
+ */
 export default function AppUpdateModal() {
   const [updateInfo, setUpdateInfo] = useState(null);
   const [visible, setVisible] = useState(false);
@@ -82,246 +99,146 @@ export default function AppUpdateModal() {
     await snoozeUpdate(updateInfo?.updateKey);
   };
 
-  const styles = useMemo(() => getStyles(Boolean(updateInfo?.isForce)), [updateInfo?.isForce]);
   // Lets the first-run tour and the Plus upsell wait while the update prompt is open.
   useOverlayGate('appUpdate', visible && Boolean(updateInfo));
 
-  if (!visible || !updateInfo) {
-    return null;
-  }
-
+  if (!updateInfo) return null;
   const isForce = Boolean(updateInfo.isForce);
-  const storeLabel = Platform.OS === 'ios' ? 'App Store' : 'Google Play';
-  const releaseNotes = String(updateInfo.releaseNotes || '').trim();
+  const content = <UpdateContent forced={isForce} info={updateInfo} onLater={handleLater} onUpdate={handleUpdate} />;
 
+  if (!isForce) {
+    return (
+      <SlideUpSheet accessibilityLabel="มีเวอร์ชันใหม่ของ CampusMate" onClose={handleLater} visible={visible}>
+        <ScrollView bounces={false} contentContainerStyle={styles.sheetScroll} showsVerticalScrollIndicator={false}>{content}</ScrollView>
+      </SlideUpSheet>
+    );
+  }
+  return <ForcedUpdate visible={visible}>{content}</ForcedUpdate>;
+}
+
+function ForcedUpdate({ visible, children }) {
+  const { isDark } = useTheme();
   return (
-    <Modal
-      animationType="fade"
-      presentationStyle="fullScreen"
-      statusBarTranslucent
-      transparent={false}
-      visible={visible}
-      onRequestClose={isForce ? () => {} : handleLater}
-    >
-      <View style={styles.screen}>
-        <Image
-          pointerEvents="none"
-          resizeMode="cover"
-          source={heroImage}
-          style={[StyleSheet.absoluteFill, styles.backgroundImage]}
-        />
-        <LinearGradient
-          colors={['rgba(9,12,18,0.42)', 'rgba(9,12,18,0.78)', 'rgba(9,12,18,0.98)']}
-          locations={[0, 0.48, 1]}
-          style={styles.gradient}
-        >
-          <SafeAreaView style={styles.safeArea}>
-            <View style={styles.topBar}>
-              {!isForce ? (
-                <Pressable
-                  accessibilityLabel="ปิดหน้าต่างอัปเดต"
-                  accessibilityRole="button"
-                  hitSlop={10}
-                  onPress={handleLater}
-                  style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}
-                >
-                  <FeatureIcon color="#FFFFFF" name="xmark" size={17} />
-                </Pressable>
-              ) : null}
-            </View>
-
-            <View style={styles.content}>
-              <View style={styles.logoShadow}>
-                <Image accessibilityLabel="โลโก้ CampusMate" source={appIcon} style={styles.appLogo} />
-              </View>
-
-              <Text style={styles.title}>{updateInfo.title || 'ถึงเวลาอัปเดต CampusMate'}</Text>
-              <Text style={styles.versionText}>
-                เวอร์ชัน {updateInfo.latestVersion}{updateInfo.latestBuild ? ` (${updateInfo.latestBuild})` : ''} พร้อมใช้งานแล้ว
-              </Text>
-              <Text style={styles.message}>
-                {updateInfo.message || `อัปเดต CampusMate ผ่าน ${storeLabel} เพื่อใช้งานฟีเจอร์ล่าสุด`}
-              </Text>
-
-              {releaseNotes ? (
-                <View style={styles.notesBox}>
-                  <Text style={styles.notesLabel}>สิ่งที่ปรับปรุง</Text>
-                  <Text style={styles.notesText}>{releaseNotes}</Text>
-                </View>
-              ) : null}
-            </View>
-
-            <View style={styles.footer}>
-              <Pressable
-                accessibilityLabel={`อัปเดตแอปผ่าน ${storeLabel}`}
-                accessibilityRole="button"
-                onPress={handleUpdate}
-                style={({ pressed }) => [styles.updateButton, pressed && styles.pressed]}
-              >
-                <Text style={styles.updateButtonText}>อัปเดต CampusMate</Text>
-                <FeatureIcon color="#1A1D25" name="arrow.right" size={16} />
-              </Pressable>
-
-              <Text style={styles.currentVersion}>ติดตั้งอยู่: v{updateInfo.currentVersion}{updateInfo.currentBuild ? ` (${updateInfo.currentBuild})` : ''}</Text>
-
-              {!isForce ? (
-                <Pressable
-                  accessibilityLabel="เตือนฉันภายหลัง"
-                  accessibilityRole="button"
-                  onPress={handleLater}
-                  style={({ pressed }) => [styles.laterButton, pressed && styles.pressed]}
-                >
-                  <Text style={styles.laterText}>ไว้คราวหลัง</Text>
-                </Pressable>
-              ) : (
-                <Text style={styles.forceText}>จำเป็นต้องอัปเดตเพื่อใช้งานต่อ</Text>
-              )}
-            </View>
-          </SafeAreaView>
-        </LinearGradient>
-      </View>
+    <Modal animationType="fade" onRequestClose={() => {}} presentationStyle="fullScreen" statusBarTranslucent visible={visible}>
+      <LinearGradient colors={isDark ? ['#0B1020', '#111A30', '#15121C'] : ['#F5FAFF', '#EAF2FF', '#F6F1FF']} style={styles.fill}>
+        <SafeAreaView style={styles.fill}>
+          <ScrollView contentContainerStyle={styles.forcedScroll} showsVerticalScrollIndicator={false}>{children}</ScrollView>
+        </SafeAreaView>
+      </LinearGradient>
     </Modal>
   );
 }
 
-const getStyles = (isForce) => StyleSheet.create({
-  screen: {
-    backgroundColor: '#0B0D14',
-    flex: 1,
+function UpdateContent({ info, forced, onUpdate, onLater }) {
+  const { colors, isDark } = useTheme();
+  const reduceMotion = useReducedMotion();
+  const notes = noteLines(info.releaseNotes);
+  const storeLabel = Platform.OS === 'ios' ? 'App Store' : 'Google Play';
+  const enter = (delay) => (reduceMotion ? undefined : FadeInDown.delay(delay).duration(320));
+  return (
+    <View style={styles.body}>
+      <Animated.View entering={reduceMotion ? undefined : ZoomIn.springify().damping(12)} style={styles.iconWrap}>
+        <View style={[styles.iconGlow, { shadowColor: isDark ? '#3D7BFF' : '#2F6FE4' }]} />
+        <Image accessibilityLabel="โลโก้ CampusMate" contentFit="contain" source={appIcon} style={styles.icon} />
+        <View style={styles.newBadge}>
+          <FeatureIcon color="#FFFFFF" name="sparkles" size={11} />
+          <Text style={styles.newBadgeText}>ใหม่</Text>
+        </View>
+      </Animated.View>
+
+      <Animated.View entering={enter(80)} style={styles.copy}>
+        <Text accessibilityRole="header" style={[styles.title, { color: colors.ink }]}>{info.title || 'อัปเดตใหม่พร้อมแล้ว'}</Text>
+        <View
+          accessibilityLabel={`จากเวอร์ชัน ${info.currentVersion || 'ปัจจุบัน'} เป็นเวอร์ชัน ${info.latestVersion}`}
+          accessible
+          style={styles.versions}
+        >
+          <View style={[styles.chip, { backgroundColor: colors.surfaceRaised }]}>
+            <Text style={[styles.chipText, { color: colors.inkMuted }]}>v{info.currentVersion || '—'}</Text>
+          </View>
+          <FeatureIcon color={colors.inkMuted} name="arrow.right" size={14} />
+          <View style={[styles.chip, { backgroundColor: colors.primary }]}>
+            <Text style={[styles.chipText, { color: '#FFFFFF' }]}>v{info.latestVersion}{info.latestBuild ? ` (${info.latestBuild})` : ''}</Text>
+          </View>
+        </View>
+        <Text style={[styles.message, { color: colors.inkMuted }]}>
+          {info.message || `อัปเดตผ่าน ${storeLabel} เพื่อใช้ฟีเจอร์ล่าสุดและการแก้ไขปัญหา`}
+        </Text>
+      </Animated.View>
+
+      {notes.length ? (
+        <View style={[styles.notes, { backgroundColor: isDark ? 'rgba(255,255,255,0.05)' : colors.canvas, borderColor: colors.line }]}>
+          <Text style={[styles.notesLabel, { color: colors.ink }]}>มีอะไรใหม่</Text>
+          {notes.map((line, index) => (
+            <Animated.View entering={enter(160 + index * 60)} key={`${index}:${line}`} style={styles.noteRow}>
+              <View style={[styles.noteCheck, { backgroundColor: '#0B7A55' }]}>
+                <FeatureIcon color="#FFFFFF" name="checkmark" size={10} />
+              </View>
+              <Text style={[styles.noteText, { color: colors.ink }]}>{line}</Text>
+            </Animated.View>
+          ))}
+        </View>
+      ) : null}
+
+      {forced ? (
+        <View style={[styles.force, { backgroundColor: isDark ? 'rgba(255,200,89,0.12)' : '#FFF6E5' }]}>
+          <FeatureIcon color={isDark ? '#FFC859' : '#9A5B00'} name="lock.fill" size={14} />
+          <Text style={[styles.forceText, { color: isDark ? '#FFC859' : '#7A4800' }]}>เวอร์ชันที่ติดตั้งอยู่ใช้งานต่อไม่ได้ กรุณาอัปเดตเพื่อใช้งานต่อ</Text>
+        </View>
+      ) : null}
+
+      <Animated.View entering={enter(240)} style={styles.actions}>
+        <Pressable
+          accessibilityLabel={`อัปเดตแอปผ่าน ${storeLabel}`}
+          accessibilityRole="button"
+          onPress={onUpdate}
+          style={({ pressed }) => [styles.update, { backgroundColor: colors.primary, opacity: pressed ? 0.85 : 1 }]}
+        >
+          <FeatureIcon color="#FFFFFF" name="arrow.down.app.fill" size={17} />
+          <Text style={styles.updateText}>อัปเดตผ่าน {storeLabel}</Text>
+        </Pressable>
+        {!forced ? (
+          <Pressable accessibilityLabel="เตือนฉันภายหลัง" accessibilityRole="button" onPress={onLater} style={({ pressed }) => [styles.later, pressed && { opacity: 0.7 }]}>
+            <Text style={[styles.laterText, { color: colors.inkMuted }]}>ไว้ทีหลัง</Text>
+          </Pressable>
+        ) : null}
+      </Animated.View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  fill: { flex: 1 },
+  sheetScroll: { paddingBottom: 4 },
+  forcedScroll: { flexGrow: 1, justifyContent: 'center', paddingVertical: 32 },
+  body: { alignItems: 'center', paddingHorizontal: 22, gap: 16, width: '100%', maxWidth: 520, alignSelf: 'center' },
+  iconWrap: { width: 96, height: 96, marginTop: 4 },
+  iconGlow: {
+    position: 'absolute', top: 10, left: 10, right: 10, bottom: 10, borderRadius: 24, backgroundColor: '#2F6FE4',
+    shadowOffset: { width: 0, height: 12 }, shadowOpacity: 0.4, shadowRadius: 20, elevation: 12,
   },
-  backgroundImage: {
-    opacity: 0.38,
+  icon: { width: 96, height: 96 },
+  newBadge: {
+    position: 'absolute', top: -4, right: -10, flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: '#E5484D', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3, borderWidth: 2, borderColor: '#FFFFFF',
   },
-  gradient: {
-    flex: 1,
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-  },
-  topBar: {
-    alignItems: 'flex-end',
-    height: 44,
-    justifyContent: 'center',
-  },
-  closeButton: {
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.42)',
-    borderColor: 'rgba(255,255,255,0.18)',
-    borderRadius: 20,
-    borderWidth: 1,
-    height: 40,
-    justifyContent: 'center',
-    width: 40,
-  },
-  content: {
-    alignItems: 'center',
-    flex: 1,
-    justifyContent: 'center',
-    marginTop: -28,
-    paddingHorizontal: 8,
-  },
-  logoShadow: {
-    borderRadius: 30,
-    elevation: 12,
-    shadowColor: '#5B5CE2',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.55,
-    shadowRadius: 22,
-  },
-  appLogo: {
-    borderRadius: 28,
-    height: 112,
-    width: 112,
-  },
-  title: {
-    color: '#FFFFFF',
-    fontSize: 28,
-    fontWeight: '800',
-    lineHeight: 36,
-    marginTop: 24,
-    textAlign: 'center',
-  },
-  versionText: {
-    color: 'rgba(255,255,255,0.94)',
-    fontSize: 17,
-    fontWeight: '600',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  message: {
-    color: 'rgba(255,255,255,0.82)',
-    fontSize: 14,
-    lineHeight: 22,
-    marginTop: 20,
-    maxWidth: 360,
-    textAlign: 'center',
-  },
-  notesBox: {
-    backgroundColor: 'rgba(0,0,0,0.28)',
-    borderColor: 'rgba(255,255,255,0.16)',
-    borderRadius: 14,
-    borderWidth: 1,
-    marginTop: 24,
-    maxWidth: 370,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    width: '100%',
-  },
-  notesLabel: {
-    color: 'rgba(255,255,255,0.72)',
-    fontSize: 12,
-    fontWeight: '700',
-    marginBottom: 4,
-  },
-  notesText: {
-    color: 'rgba(255,255,255,0.88)',
-    fontSize: 12,
-    lineHeight: 19,
-  },
-  footer: {
-    alignItems: 'center',
-    paddingTop: 20,
-  },
-  updateButton: {
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 30,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    minHeight: 58,
-    paddingHorizontal: 22,
-    width: '100%',
-  },
-  updateButtonText: {
-    color: '#1A1D25',
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  currentVersion: {
-    color: 'rgba(255,255,255,0.58)',
-    fontSize: 11,
-    marginTop: 11,
-  },
-  laterButton: {
-    marginTop: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  laterText: {
-    color: 'rgba(255,255,255,0.82)',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  forceText: {
-    color: isForce ? 'rgba(255,255,255,0.72)' : 'transparent',
-    fontSize: 12,
-    marginTop: 10,
-  },
-  pressed: {
-    opacity: 0.82,
-  },
+  newBadgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  copy: { alignItems: 'center', gap: 10, width: '100%' },
+  title: { fontSize: 24, fontWeight: '800', textAlign: 'center' },
+  versions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  chip: { borderRadius: 999, paddingHorizontal: 12, paddingVertical: 4 },
+  chipText: { fontSize: 13, fontWeight: '800' },
+  message: { fontSize: 15, lineHeight: 22, textAlign: 'center' },
+  notes: { alignSelf: 'stretch', borderRadius: 20, borderCurve: 'continuous', borderWidth: StyleSheet.hairlineWidth, padding: 16, gap: 10 },
+  notesLabel: { fontSize: 14, fontWeight: '800' },
+  noteRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  noteCheck: { width: 18, height: 18, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+  noteText: { flex: 1, fontSize: 14, lineHeight: 21 },
+  force: { alignSelf: 'stretch', flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 10 },
+  forceText: { flex: 1, fontSize: 13, fontWeight: '700', lineHeight: 19 },
+  actions: { alignSelf: 'stretch', gap: 4 },
+  update: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 54, borderRadius: 27 },
+  updateText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
+  later: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  laterText: { fontSize: 15, fontWeight: '700' },
 });

@@ -5,11 +5,22 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { SymbolView } from 'expo-symbols';
 
 const ANDROID_ICON_MAP = {
+  // Feedback sheet, maintenance screen and update prompt.
+  'wrench.and.screwdriver.fill': 'construct',
+  'icloud.slash.fill': 'cloud-offline',
+  'ladybug.fill': 'bug',
+  'iphone.radiowaves.left.and.right': 'phone-portrait',
+  'arrow.down.app.fill': 'download',
+  photo: 'image',
   at: 'at',
   'basketball.fill': 'basketball',
   'cloud.fill': 'cloud',
   'cloud.rain.fill': 'rainy',
   'cloud.sun.fill': 'partly-sunny',
+  'cloud.bolt.rain.fill': 'thunderstorm',
+  'cloud.fog.fill': 'cloudy',
+  'cloud.moon.fill': 'cloudy-night',
+  'sun.haze.fill': 'partly-sunny',
   mappin: 'location',
   scope: 'locate',
   sparkle: 'sparkles',

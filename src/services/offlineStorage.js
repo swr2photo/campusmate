@@ -173,12 +173,23 @@ async function archiveFailedOperation(userId, operation, error) {
   });
 }
 
+/** The backend (or its database) failed, as opposed to the device being offline. */
+export function isServerTroubleError(error) {
+  const code = String(error?.code || '').toLowerCase().replace(/^(firestore|functions)\//, '');
+  const status = Number(error?.status ?? error?.cause?.status);
+  if (Number.isFinite(status) && (status >= 500 || status === 408)) return true;
+  return code === 'internal' || code === 'unavailable' || code.includes('deadline-exceeded');
+}
+
 export function isRetryableNetworkError(error) {
   const code = String(error?.code || '').toLowerCase().replace(/^(firestore|functions)\//, '');
   const message = String(error?.message || '').toLowerCase();
   if (['permission-denied', 'unauthenticated', 'invalid-argument', 'not-found', 'already-exists', 'failed-precondition'].includes(code)) {
     return false;
   }
+  // A server-side failure (HTTP 5xx, `internal`) is an outage, not a problem
+  // with this account or request: keep cached data on screen and retry.
+  if (isServerTroubleError(error)) return true;
   if (['unavailable', 'deadline-exceeded', 'cancelled', 'canceled', 'resource-exhausted', 'aborted', 'network-request-failed'].includes(code)
     || code.includes('deadline-exceeded')
     || code.includes('timeout')

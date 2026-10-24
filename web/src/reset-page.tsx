@@ -125,6 +125,11 @@ function resetErrorMessage(code: string) {
 
 export function ResetPage() {
   const actionCode = useMemo(() => new URLSearchParams(window.location.search).get('oobCode') || '', []);
+  // The one-time code is read once; drop it from the address bar so it is not
+  // kept in history, bookmarks or a Referer header.
+  useEffect(() => {
+    if (window.location.search) window.history.replaceState(null, '', window.location.pathname);
+  }, []);
   const [status, setStatus] = useState<'loading' | 'ready' | 'invalid' | 'success'>(
     actionCode ? 'loading' : 'invalid'
   );

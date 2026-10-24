@@ -17,9 +17,10 @@ export default function OfflineBanner() {
     isSyncing,
     lastSyncError,
     pendingSyncCount,
+    serverTrouble,
   } = useAppSync();
 
-  if (isOnline && (!isSyncing || pendingSyncCount === 0) && pendingSyncCount === 0 && !lastSyncError) return null;
+  if (isOnline && (!isSyncing || pendingSyncCount === 0) && pendingSyncCount === 0 && !lastSyncError && !serverTrouble) return null;
 
   let icon = 'wifi.slash';
   let label = 'ออฟไลน์ · กำลังแสดงข้อมูลล่าสุดในเครื่อง';
@@ -42,6 +43,12 @@ export default function OfflineBanner() {
     canRetry = true;
   } else if (pendingSyncCount > 0) {
     label = `ออฟไลน์ · เก็บไว้รอส่ง ${pendingSyncCount} รายการ`;
+  } else if (serverTrouble) {
+    // The device is online but the backend is failing: cached data stays on
+    // screen and every subscription keeps retrying by itself.
+    icon = 'arrow.triangle.2.circlepath';
+    label = 'ระบบขัดข้องชั่วคราว · กำลังเชื่อมต่อใหม่ให้อัตโนมัติ';
+    glassTint = isDark ? 'rgba(98, 108, 128, 0.5)' : 'rgba(80, 90, 110, 0.42)';
   }
 
   const content = (

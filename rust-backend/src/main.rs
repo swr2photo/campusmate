@@ -1,6 +1,22 @@
 use anyhow::Context;
+use campusmate_backend::activity::{recently_active, ACTIVE_WINDOW};
 use std::time::Duration;
-use tokio::time::MissedTickBehavior;
+use tokio::time::{Instant, MissedTickBehavior};
+
+/// Longest gap between expiry sweeps while nobody uses the app (retention
+/// purges and stale calls only need to happen eventually).
+const IDLE_SWEEP: Duration = Duration::from_secs(6 * 60 * 60);
+/// Longest gap between row clean-ups while idle.
+const IDLE_CLEANUP: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A periodic job runs on its first tick, on every tick while the app is in
+/// use, and otherwise once `idle_gap` has passed since its last run.
+fn due(last_run: Option<Instant>, idle_gap: Duration) -> bool {
+    match last_run {
+        None => true,
+        Some(at) => recently_active(ACTIVE_WINDOW) || at.elapsed() >= idle_gap,
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -45,43 +61,43 @@ async fn main() -> anyhow::Result<()> {
     // Push delivery runs in the API process; PUSH_WORKER=off moves it elsewhere.
     if std::env::var("PUSH_WORKER").as_deref() != Ok("off") {
         let sender = std::sync::Arc::new(campusmate_backend::notify::PushSender::from_env()?);
-        let pool = pool.clone();
-        tokio::spawn(async move {
-            let mut receipts = tokio::time::Instant::now();
-            loop {
-                match campusmate_backend::notify::deliver_once(&pool, &sender).await {
-                    Ok(true) => continue,
-                    Ok(false) => tokio::time::sleep(Duration::from_millis(500)).await,
-                    Err(_) => {
-                        tracing::warn!("push delivery failed");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    }
-                }
-                if receipts.elapsed() > Duration::from_secs(15 * 60) {
-                    receipts = tokio::time::Instant::now();
-                    if campusmate_backend::notify::check_receipts(&pool, &sender)
-                        .await
-                        .is_err()
-                    {
-                        tracing::warn!("push receipt sweep failed");
-                    }
-                }
-            }
-        });
+        tokio::spawn(campusmate_backend::notify::run_worker(pool.clone(), sender));
     }
+    // Background jobs query the database only while the app is in use (or on
+    // a long idle timer), so Neon can suspend an idle compute. See `activity`.
     {
         let pool = pool.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut last_run: Option<Instant> = None;
+            // Open parties expire at their start time even while nobody is
+            // online; the next start is remembered so the idle check needs no
+            // query.
+            let mut next_party: Option<Instant> = None;
             loop {
                 interval.tick().await;
+                let party_due = next_party.is_some_and(|at| at <= Instant::now());
+                if !(party_due || due(last_run, IDLE_SWEEP)) {
+                    continue;
+                }
+                last_run = Some(Instant::now());
                 if campusmate_backend::parties::expire(&pool).await.is_err() {
                     tracing::warn!("party expiry sweep failed");
                 }
                 if campusmate_backend::calls::sweep(&pool).await.is_err() {
                     tracing::warn!("call sweep failed");
                 }
+                next_party = sqlx::query_scalar::<_, Option<f64>>(
+                    "SELECT EXTRACT(EPOCH FROM min(starts_at)-now())::float8 FROM parties WHERE status='open'",
+                )
+                .fetch_one(&pool)
+                .await
+                .ok()
+                .flatten()
+                .map(|seconds| Instant::now() + Duration::from_secs_f64(seconds.clamp(60.0, 86_400.0)));
+                // Expiry notices are queued by the sweep itself.
+                campusmate_backend::activity::wake_push();
             }
         });
     }
@@ -94,8 +110,13 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            let mut last_run: Option<Instant> = None;
             loop {
                 interval.tick().await;
+                if !due(last_run, IDLE_SWEEP) {
+                    continue;
+                }
+                last_run = Some(Instant::now());
                 if campusmate_backend::identity::sweep(&pool, &services)
                     .await
                     .is_err()
@@ -108,8 +129,13 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut last_run: Option<Instant> = None;
         loop {
             interval.tick().await;
+            if !due(last_run, IDLE_CLEANUP) {
+                continue;
+            }
+            last_run = Some(Instant::now());
             let _ = campusmate_backend::auth::scrub_auth_outbox(&pool).await;
             for sql in [
                 "DELETE FROM discovery_snapshots WHERE expires_at < now()",

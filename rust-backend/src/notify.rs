@@ -753,6 +753,80 @@ impl PushSender {
     }
 }
 
+/// Longest sleep with nothing queued. Requests wake the worker sooner; this is
+/// the safety net for a row queued outside the API middleware.
+const IDLE_RECHECK: Duration = Duration::from_secs(6 * 60 * 60);
+/// Expo receipts are ready about 15 minutes after a send.
+const RECEIPT_DELAY: Duration = Duration::from_secs(16 * 60);
+
+/// Push delivery loop. It sleeps until a request queues something
+/// (`activity::wake_push`), a retry falls due or receipts are ready, so an idle
+/// backend sends the database no queries and it can scale to zero.
+pub async fn run_worker(pool: PgPool, sender: std::sync::Arc<PushSender>) {
+    use tokio::time::Instant;
+    let mut receipts_at: Option<Instant> = None;
+    let mut last_sent: Option<Instant> = None;
+    let mut failures: u32 = 0;
+    loop {
+        let drained = loop {
+            match deliver_once(&pool, &sender).await {
+                Ok(true) => {
+                    let now = Instant::now();
+                    last_sent = Some(now);
+                    receipts_at.get_or_insert(now + RECEIPT_DELAY);
+                }
+                Ok(false) => break true,
+                Err(_) => break false,
+            }
+        };
+        let mut wait = if drained {
+            failures = 0;
+            match next_due(&pool).await {
+                Ok(Some(due)) => due.min(IDLE_RECHECK),
+                Ok(None) => IDLE_RECHECK,
+                Err(_) => Duration::from_secs(60),
+            }
+        } else {
+            failures = failures.saturating_add(1);
+            tracing::warn!("push delivery failed");
+            Duration::from_secs(5 << failures.min(7)).min(Duration::from_secs(600))
+        };
+        if let Some(at) = receipts_at {
+            let now = Instant::now();
+            if at <= now {
+                if check_receipts(&pool, &sender).await.is_err() {
+                    tracing::warn!("push receipt sweep failed");
+                }
+                // Sends younger than the delay were not checked yet.
+                receipts_at = last_sent
+                    .filter(|sent| now.duration_since(*sent) < RECEIPT_DELAY)
+                    .map(|sent| sent + RECEIPT_DELAY);
+            }
+            if let Some(at) = receipts_at {
+                wait = wait.min(at.saturating_duration_since(now));
+            }
+        }
+        tokio::select! {
+            _ = crate::activity::push_woken() => {
+                // Let writes from the same burst of requests land first.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            _ = tokio::time::sleep(wait) => {}
+        }
+    }
+}
+
+/// Time until the earliest queued notification may be sent or retried.
+async fn next_due(pool: &PgPool) -> Result<Option<Duration>, sqlx::Error> {
+    let seconds: Option<f64> = sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM min(GREATEST(next_attempt_at,COALESCE(locked_until,next_attempt_at)))-now())::float8
+           FROM push_outbox WHERE finished_at IS NULL AND sent_at IS NULL AND attempts<6",
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(seconds.map(|seconds| Duration::from_secs_f64(seconds.clamp(1.0, 86_400.0))))
+}
+
 pub async fn deliver_once(pool: &PgPool, sender: &PushSender) -> Result<bool, sqlx::Error> {
     let lease = Uuid::new_v4();
     sqlx::query("UPDATE push_outbox SET finished_at=now(),last_error_code='attempt-limit',lease_id=NULL,locked_until=NULL WHERE finished_at IS NULL AND sent_at IS NULL AND attempts>=6 AND (locked_until IS NULL OR locked_until<now())")

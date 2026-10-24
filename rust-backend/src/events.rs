@@ -160,12 +160,13 @@ pub async fn listen(pool: PgPool, hub: Arc<Hub>) {
         match PgListener::connect_with(&pool).await {
             Ok(mut listener) => {
                 let direct = match behind_pooler(&mut listener).await {
-                    Ok(pooled) => {
-                        if pooled {
-                            tracing::warn!("event listener refused a transaction-pooled connection; set DATABASE_LISTEN_URL to a direct endpoint");
-                        }
-                        !pooled
+                    Ok(true) => {
+                        // Retrying cannot change the endpoint, and each attempt
+                        // would wake a suspended database. Clients poll instead.
+                        tracing::warn!("event listener refused a transaction-pooled connection; set DATABASE_LISTEN_URL to a direct endpoint");
+                        return;
                     }
+                    Ok(false) => true,
                     Err(_) => false,
                 };
                 if direct && listener.listen(CHANNEL).await.is_ok() {
@@ -188,7 +189,9 @@ pub async fn listen(pool: PgPool, hub: Arc<Hub>) {
             Err(_) => tracing::warn!("event listener connection failed"),
         }
         tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(30));
+        // Capped at ten minutes so an unreachable database is not woken twice
+        // a minute forever.
+        backoff = (backoff * 2).min(Duration::from_secs(600));
     }
 }
 

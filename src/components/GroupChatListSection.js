@@ -66,8 +66,8 @@ export function GroupChatRow({ group, onPress }) {
 export function GroupChatInboxStatus({ inbox }) {
   const { colors } = useTheme();
   if (inbox.loading || inbox.loadingMore) return <ActivityIndicator style={styles.status} color={colors.primary} />;
-  if (inbox.error) return <View style={styles.status}><Text style={{ color: colors.danger }}>โหลดแชตกลุ่มไม่สำเร็จ</Text>
-    <Pressable accessibilityRole="button" onPress={inbox.retry}><Text style={{ color: colors.primary }}>ลองใหม่</Text></Pressable></View>;
+  // Errors are shown once, with the direct-chat status (ConversationInboxStatus).
+  if (inbox.error) return null;
   if (inbox.hasMore) return <Pressable accessibilityRole="button" style={styles.status} onPress={inbox.loadMore}><Text style={{ color: colors.primary }}>โหลดแชตกลุ่มเพิ่มเติม</Text></Pressable>;
   return null;
 }

@@ -136,7 +136,8 @@ test('conversation loading waits for a server snapshot or completed hydration; e
     setConversationInbox: next => { state = typeof next === 'function' ? next(state) : next; },
     runAfterInteractionsHelper: fn => { fn(); return { cancel() {} }; },
     subscribeToConversations: (_id, onData, onError) => { data = onData; error = onError; return () => {}; },
-    isRetryableNetworkError: () => false, setDataError() {}, pendingSyncCountRef: { current: 0 },
+    isRetryableNetworkError: () => false, isAuthActionRequiredError: () => false, setDataError() {}, noteServerTrouble() {},
+    pendingSyncCountRef: { current: 0 },
     setConversations: fn => { rows = fn(rows); }, mergeConversationSnapshots: (_old, next) => next,
     retainLoadingConversations: (_old, next) => next,
   });
@@ -174,18 +175,25 @@ test('loading save button retains its accessible name and busy/disabled state', 
   assert.equal(button.props.accessibilityState.busy, true); assert.equal(button.props.disabled, true);
 });
 test('chat status distinguishes loading, offline cache, errors/retry and confirmed empty', () => {
-  const render = renderFunction('src/components/ConversationInboxStatus.js', 'ConversationInboxStatus');
+  const render = renderFunction('src/components/ConversationInboxStatus.js', 'ConversationInboxStatus', { SyncNotice: 'SyncNotice' });
   const inbox = { conversationsNetworkReady: true, conversationsOnline: true, isConversationsLoading: true };
   assert.equal(render({ inbox, empty: true }).props.accessibilityRole, 'progressbar');
-  const retry = () => {};
-  const failed = render({ inbox: { ...inbox, conversationsError: new Error('failed') }, retry });
-  assert.equal(failed.children.at(-1).props.onPress, retry);
+  const retried = [];
+  const retry = () => retried.push('direct');
+  const groupRetry = () => retried.push('group');
+  const failed = render({ inbox: { ...inbox, conversationsError: new Error('failed') }, retry, groupRetry });
+  // One notice covers both lists and its retry reloads both.
+  assert.equal(failed.type, 'SyncNotice');
+  failed.props.retry();
+  assert.deepEqual(retried, ['direct', 'group']);
   const offline = render({ inbox: { ...inbox, conversationsOnline: false }, empty: false });
   assert.match(JSON.stringify(offline), /แสดงแชตที่บันทึกไว้/);
   const empty = render({ inbox: { ...inbox, isConversationsLoading: false }, empty: true });
   assert.match(JSON.stringify(empty), /ยังไม่มีแชต/);
   assert.equal(render({ inbox: { ...inbox, isConversationsLoading: false } }), null);
-  assert.equal(render({ inbox: { ...inbox, isConversationsLoading: false }, empty: true, groupError: new Error('failed') }), null);
+  const groupFailed = render({ inbox: { ...inbox, isConversationsLoading: false }, empty: true, groupError: new Error('failed') });
+  assert.equal(groupFailed.type, 'SyncNotice');
+  assert.equal(groupFailed.props.empty, true);
 });
 
 for (const path of ['src/context/AppContext.js', 'src/services/firestoreService.js', 'src/screens/MeetupScreen.js',

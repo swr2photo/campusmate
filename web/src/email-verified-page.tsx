@@ -35,6 +35,13 @@ export function EmailVerifiedPage() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const actionCode = params.get('oobCode') || '';
   const mode = params.get('mode') || '';
+  // The one-time code is read once; drop it from the address bar so it is not
+  // kept in history, bookmarks or a Referer header.
+  useEffect(() => {
+    // A reset link is forwarded to /reset.html with its code, below.
+    if (mode === 'resetPassword' || !window.location.search) return;
+    window.history.replaceState(null, '', window.location.pathname);
+  }, [mode]);
   const [status, setStatus] = useState<'loading' | 'success' | 'invalid' | 'continue'>(
     actionCode ? 'loading' : 'continue'
   );

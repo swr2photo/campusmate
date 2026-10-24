@@ -1,4 +1,5 @@
 pub mod account;
+pub mod activity;
 pub mod admin;
 pub mod auth;
 pub mod auth_pages;
@@ -107,6 +108,35 @@ pub async fn throttle(
     Ok(())
 }
 
+/// Liveness for the platform health check. It never touches the database:
+/// a probe every 30 seconds would keep a scale-to-zero database awake all
+/// month. `/healthz` still reports database readiness for deploy checks.
+async fn live() -> (StatusCode, Json<Value>) {
+    (StatusCode::OK, Json(json!({"live":true})))
+}
+
+/// Marks API traffic for the background jobs and, after a successful write,
+/// wakes the push worker: its outbox only grows inside requests like this one.
+async fn track_activity(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = request.uri().path();
+    let probe = path == "/healthz" || path == "/livez";
+    let write = !matches!(
+        *request.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    );
+    if !probe {
+        activity::touch();
+    }
+    let response = next.run(request).await;
+    if write && !probe && response.status().is_success() {
+        activity::wake_push();
+    }
+    response
+}
+
 async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     let ready = sqlx::query_scalar::<_, i32>("SELECT 1")
         .fetch_one(&state.db)
@@ -166,6 +196,7 @@ pub fn router(state: AppState) -> Router {
         .layer(RequestBodyLimitLayer::new(256 * 1024));
     Router::new()
         .route("/healthz", get(health))
+        .route("/livez", get(live))
         .route("/auth/verify-email", get(auth_pages::verify))
         .route("/auth/reset-password", get(auth_pages::reset))
         .route("/auth/assets/action.js", get(auth_pages::script))
@@ -262,6 +293,7 @@ pub fn router(state: AppState) -> Router {
             error::ApiError::new("unimplemented", "บริการนี้ยังไม่พร้อมสำหรับ backend ใหม่")
         })
         .with_state(state)
+        .layer(axum::middleware::from_fn(track_activity))
         .layer(admin_cors())
         .layer(ConcurrencyLimitLayer::new(128))
         .layer(TimeoutLayer::with_status_code(

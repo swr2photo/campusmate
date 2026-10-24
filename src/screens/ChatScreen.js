@@ -204,12 +204,12 @@ export default function ChatScreen() {
             </View>
           </TourTarget>
         )}
-        ListEmptyComponent={<ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} empty filtered={Boolean(query || unreadOnly)} groupLoading={groupInbox.loading} groupError={groupInbox.error} />}
+        ListEmptyComponent={<ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} groupRetry={groupInbox.retry} empty filtered={Boolean(query || unreadOnly)} groupLoading={groupInbox.loading} groupError={groupInbox.error} />}
         renderItem={renderConversation}
         ListFooterComponent={(
           <>
             {groupInbox.items.length + visibleConversations.length > 0 ? (
-              <ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} />
+              <ConversationInboxStatus inbox={conversationInbox} retry={retryConversations} groupRetry={groupInbox.retry} groupError={groupInbox.error} />
             ) : null}
             {groupInbox.items.length + visibleConversations.length > 0 || groupInbox.error ? (
               <GroupChatInboxStatus inbox={groupInbox} />

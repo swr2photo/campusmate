@@ -89,6 +89,7 @@ import {
   getFailedOfflineOperations,
   retryFailedOfflineOperation,
   isRetryableNetworkError,
+  isServerTroubleError,
   loadOfflineSnapshot,
   saveOfflineSnapshot,
 } from '../services/offlineStorage';
@@ -130,6 +131,10 @@ import {
 const loginHeroPhoto = require('../../assets/login-campus-hero.png');
 
 const OFFLINE_SNAPSHOT_DEBOUNCE_MS = 2500;
+// How long the "server trouble" banner outlives the last backend failure.
+const SERVER_TROUBLE_TTL_MS = 45000;
+// Automatic retry for a load error that blocks the whole app.
+const BLOCKING_RETRY_MS = 20000;
 
 const AppContext = createContext(null);
 
@@ -874,6 +879,12 @@ export function AppProvider({ children }) {
   const [appointments, setAppointments] = useState([]);
   const [selectedMeetup, setSelectedMeetup] = useState(null);
   const [dataError, setDataError] = useState(null);
+  // Last time the backend itself failed (5xx/timeout) while the device was online.
+  const [serverTroubleAt, setServerTroubleAt] = useState(0);
+  const [serverTrouble, setServerTrouble] = useState(false);
+  const noteServerTrouble = (error) => {
+    if (isServerTroubleError(error)) setServerTroubleAt(Date.now());
+  };
   const [decisionsError, setDecisionsError] = useState(null);
   const [retryKey, setRetryKey] = useState(0);
   const [conversationRetryKey, setConversationRetryKey] = useState(0);
@@ -1229,6 +1240,7 @@ export function AppProvider({ children }) {
       })
       .catch((error) => {
         if (!active) return;
+        noteServerTrouble(error);
         if (!profile && !isAuthActionRequiredError(error)) setDataError(error);
         else if (!isRetryableNetworkError(error)) console.warn('[AppContext] Profile refresh failed:', error);
       })
@@ -1437,6 +1449,7 @@ export function AppProvider({ children }) {
       }) : new Error('discovery unavailable');
       // Only a failed feed request counts; side listeners (revision/entitlement signals) do not.
       if (active && meta?.feed) setDiscoveryError(cleanError);
+      noteServerTrouble(error);
       if (!isRetryableNetworkError(error) && !isAuthActionRequiredError(error)) setDataError(cleanError);
     };
     discoveryAutoLoadRef.current = 0;
@@ -1492,6 +1505,7 @@ export function AppProvider({ children }) {
         code: error?.code || 'unknown',
         message: error?.message || String(error),
       });
+      noteServerTrouble(error);
       if (blocking && !isRetryableNetworkError(error) && !isAuthActionRequiredError(error)) setDataError(error);
     };
     const interactionTask = runAfterInteractionsHelper(() => {
@@ -1523,6 +1537,7 @@ export function AppProvider({ children }) {
     const handleSubscriptionError = (error) => {
       if (!active) return;
       setConversationInbox((current) => ({ ...current, userId: user.id, error }));
+      noteServerTrouble(error);
       console.error('[AppContext] conversations subscription error:', {
         code: error?.code || 'unknown',
         message: error?.message || String(error),
@@ -1617,6 +1632,7 @@ export function AppProvider({ children }) {
     const handleError = (error) => {
       console.error('[AppContext] Decisions subscription error:', error);
       setDecisionsError(error);
+      noteServerTrouble(error);
       if (!isRetryableNetworkError(error) && !isAuthActionRequiredError(error)) setDataError(error);
     };
     const unsubscribe = subscribeToUserDecisions(user.id, (next) => {
@@ -3711,6 +3727,27 @@ export function AppProvider({ children }) {
     [combinedAppointments],
   );
 
+  // Subscriptions keep retrying every few seconds during an outage, so the
+  // banner stays while errors keep arriving and clears soon after they stop.
+  useEffect(() => {
+    if (!serverTroubleAt) return undefined;
+    setServerTrouble(true);
+    const timer = setTimeout(() => setServerTrouble(false), SERVER_TROUBLE_TTL_MS);
+    return () => clearTimeout(timer);
+  }, [serverTroubleAt]);
+
+  // A blocking load error retries on its own while online; nobody should
+  // have to keep tapping through a server outage.
+  useEffect(() => {
+    if (!dataError || !isOnline) return undefined;
+    const timer = setTimeout(() => {
+      setDataError(null);
+      setRetryKey((current) => current + 1);
+      void syncNow();
+    }, BLOCKING_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [dataError, isOnline, syncNow]);
+
   const syncSlice = useMemo(() => ({
     isOnline,
     isSyncing,
@@ -3718,7 +3755,8 @@ export function AppProvider({ children }) {
     lastSyncedAt,
     networkReady,
     pendingSyncCount,
-  }), [isOnline, isSyncing, lastSyncError, lastSyncedAt, networkReady, pendingSyncCount]);
+    serverTrouble: isOnline && serverTrouble,
+  }), [isOnline, isSyncing, lastSyncError, lastSyncedAt, networkReady, pendingSyncCount, serverTrouble]);
 
   const value = useMemo(() => ({
     ...actions,
@@ -3804,10 +3842,13 @@ export function AppProvider({ children }) {
               <FeatureIcon color="#FF4B4B" name="exclamationmark.triangle.fill" size={26} />
             </View>
             <Text style={{ color: '#FFFFFF', fontSize: 18, fontWeight: '800', textAlign: 'center' }}>
-              {!isOnline ? 'ยังไม่มีข้อมูลออฟไลน์' : 'โหลดข้อมูลไม่สำเร็จ'}
+              {!isOnline ? 'ยังไม่มีข้อมูลออฟไลน์' : isServerTroubleError(blockingError) ? 'ระบบขัดข้องชั่วคราว' : 'โหลดข้อมูลไม่สำเร็จ'}
             </Text>
             <Text style={{ color: '#B6BDC8', marginTop: 8, textAlign: 'center', fontSize: 13, lineHeight: 18 }}>
               {(() => {
+                if (isOnline && isServerTroubleError(blockingError)) {
+                  return 'ข้อมูลของคุณปลอดภัย แอปจะลองเชื่อมต่อใหม่ให้อัตโนมัติ';
+                }
                 const msg = String(blockingError.message || '');
                 if (/deadline[-_ ]?exceeded|timed?[-_ ]?out|timeout/i.test(msg)) {
                   return 'การเชื่อมต่อใช้เวลานานเกินไป กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่อีกครั้ง';

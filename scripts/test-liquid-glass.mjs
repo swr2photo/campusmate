@@ -34,7 +34,8 @@ const SHEETS = [
   'src/screens/MatchingFiltersScreen.js',
   'src/screens/AccountSecurityScreen.js',
   'src/screens/GroupChatRoomScreen.js',
-  'src/screens/ChatRoomScreen.ios.js',
+  // Chat settings moved out of the chat screen into a shared sheet.
+  'src/components/ChatSettingsSheet.js',
   'src/screens/ProfileScreen.js',
 ];
 

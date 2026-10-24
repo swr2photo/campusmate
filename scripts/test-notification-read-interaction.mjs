@@ -22,7 +22,8 @@ assert.ok(received && open, 'Exercise the actual foreground receipt and tap hand
 
 function handlers(chatId = '') {
   const reads = [], banners = [], routes = [];
-  const context = vm.createContext({ RUST_BACKEND: false,
+  // Team announcements are on unless the person switched them off in settings.
+  const context = vm.createContext({ RUST_BACKEND: false, teamNotificationsEnabled: true,
     markPushInboxRead: async id => { if (id) reads.push(id); },
     routeRef: { current: { chatId } },
     showInAppNotification: banner => banners.push(banner),

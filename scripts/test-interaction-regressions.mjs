@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import { dailyPick, pickDailyProfile } from '../src/utils/dailyPick.js';
 import { createPhotoVerification } from '../src/services/photoVerificationProtocol.mjs';
+import { isCommittedProfilePhoto } from '../src/utils/profilePhoto.js';
 const require = createRequire(import.meta.url), babel = require('@babel/core');
 function extract(file, predicate, mocks) {
   const source = readFileSync(file, 'utf8');
@@ -43,6 +44,9 @@ test('rewind serializes taps and retains each returned profile outside the paged
     rewindSecureDiscoveryAction: () => { calls++; return new Promise(resolve => { release = resolve; }); },
     setRewoundProfiles: fn => { restored = fn(restored); }, setAvailableProfiles: fn => { available = fn(available); },
     setOptimisticHiddenIds: fn => { hidden = fn(hidden); }, setCachedOutgoingDecisions() {},
+    // The restored card merges with whatever the client already knew about it.
+    sharedProfiles: [], availableProfiles: [], mergeDiscoveryPhoto: (known, profile) => ({ ...known, ...profile }),
+    setDiscoveryRecycledProfileIds() {},
   });
   const first = run(); assert.equal((await run()).busy, true); assert.equal(calls, 1);
   release({ profile: { id: 'b', rewindPriority: 10 } }); await first;
@@ -52,7 +56,8 @@ test('rewind serializes taps and retains each returned profile outside the paged
   const late = run(); owner.current = 'another'; release({ profile: { id: 'foreign' } }); await late;
   assert.equal(restored.some(p => p.id === 'foreign'), false);
 
-  assert.equal(restored[0].rewindPriority, 20);
+  // Priority is the restore time, so the latest rewind stays in front.
+  assert.ok(restored[0].rewindPriority >= restored[1].rewindPriority);
   const serverDenied = action('src/context/AppContext.js', 'rewindProfileAction', {
     canRewind: false, lastDiscoveryAction: 'like', rewindBusyRef: { current: false }, user: { id: 'owner' }, activeUserIdRef: owner,
     rewindSecureDiscoveryAction: () => { throw Object.assign(Error('server denied'), { code: 'permission-denied' }); },
@@ -105,12 +110,16 @@ test('starting main-photo verification stages a candidate without calling profil
   const run = action('src/screens/ProfilePhotosScreen.js', 'verifyMainPhoto', {
     savingRef: { current: false }, processingRef: { current: false }, profile: { id: 'owner' },
     profileIdRef: { current: 'owner' }, mountedRef: { current: true }, draft: { gallery: [] },
+    candidateRef: { current: null }, trackUpload: (_uri, upload) => upload,
     setProcessing() {}, uploadGalleryImage: async () => 'https://candidate.test/photo', savePhotos: assert.fail,
     setVerificationCandidate: value => { candidate = value; }, verificationPassedRef: { current: false },
     setVerificationVisible: value => { shown = value; }, reportSaveError: assert.fail,
   });
   await run('file:///candidate.jpg', ['gallery']);
-  assert.equal(candidate.uri, 'https://candidate.test/photo'); assert.equal(shown, true);
+  // The new photo previews at once; verification starts from its moderated upload.
+  assert.equal(candidate.uri, 'file:///candidate.jpg');
+  assert.equal(await candidate.upload, 'https://candidate.test/photo');
+  assert.equal(shown, true);
 });
 
 for (const [file, picker] of [
@@ -131,6 +140,8 @@ for (const [file, picker] of [
       verificationPassedRef: { current: false }, setShowFaceVerificationModal: value => { shown = value; },
       markFaceVerified: async () => committed, setAvatarUri: uri => { avatar = uri; },
       setFaceVerification: value => { passed = value; }, showToast() {}, onToast() {},
+      busyWithPhoto: false, setUploadingSlot() {}, setProcessingPhotoIndex() {}, setLocalPhotoPreview() {}, setSaving() {},
+      requestPhotoPermission: async () => true, isCommittedProfilePhoto,
     };
     await action(file, picker, mocks)();
     assert.equal(avatar, 'https://old.test/main'); assert.equal(shown, true);
@@ -208,6 +219,7 @@ for (const file of ['HomeScreen.js', 'HomeScreen.ios.js', 'DiscoverProfileScreen
       lastDiscoveryAction: 'like', rewind: { guard: assert.fail }, setActionInProgress() {},
       recycleSkippedProfiles: async () => { calls++; return { profile: { id: 'older-skip', name: 'Skipped' } }; },
       showToast() {}, onToast() {}, router: { push: assert.fail },
+      rewindPending: { current: false }, rewindEntering: { current: false }, setSessionExcludedIds() {},
     });
     await fn(); assert.equal(calls, 1);
   });
@@ -215,9 +227,12 @@ for (const file of ['HomeScreen.js', 'HomeScreen.ios.js', 'DiscoverProfileScreen
 test('a server snapshot replaces restored cards and clears only their local hidden IDs', () => {
   let restored = [{ id: 'stale' }], hidden = ['restored-on-another-device', 'other'];
   const sync = extract('src/context/AppContext.js', (node, source) => node.type === 'ArrowFunctionExpression'
-    && source.slice(node.start, node.end).includes('setRewoundProfiles(decisionSnapshots.rewoundProfiles)'), {
+    && source.slice(node.start, node.end).startsWith('() => {')
+    && source.slice(node.start, node.end).includes('const incoming = decisionSnapshots.rewoundProfiles;'), {
     decisionSnapshots: { rewoundProfiles: [{ id: 'restored-on-another-device', rewindPriority: 123 }] },
-    Set, setRewoundProfiles: value => { restored = value; }, setOptimisticHiddenIds: fn => { hidden = fn(hidden); },
+    Set, Date, mergeDiscoveryPhoto: (local, item) => ({ ...local, ...item }),
+    setRewoundProfiles: fn => { restored = typeof fn === 'function' ? fn(restored) : fn; },
+    setOptimisticHiddenIds: fn => { hidden = fn(hidden); },
   });
   sync(); assert.equal(restored[0].id, 'restored-on-another-device');
   assert.equal(restored[0].rewindPriority, 123); assert.equal(hidden.join(','), 'other');

@@ -66,7 +66,8 @@ test('focused song is rendered above one root-sized backdrop, without a duplicat
   assert.equal(all(backdrop, 'BlurView').length, 1);
   const card = all(touchLayer, 'TrackShareCard')[0];
   assert.ok(card);
-  assert.equal(card.props.size, 220);
+  // Music cards use the phone-size width (210/240/260), not the bubble layout.
+  assert.equal(card.props.size, chatTrackWidth(360));
   assert.equal(card.props.name, 'Song');
   const focusedBubble = all(touchLayer, 'AnimatedView').find(n => all(n, 'TrackShareCard').length && n.props.style?.some?.(style => style?.paddingHorizontal === 0));
   assert.ok(focusedBubble, 'the copied card clears the text bubble horizontal/vertical padding');
@@ -322,9 +323,13 @@ test('send button is inset within composer capsule and chat preview mounts Swift
   assert.match(iosChat, /buttonBorderShape\('circle'\)/, 'send button has a circular shape to match input capsule');
   assert.match(iosChat, /controlSize\('small'\)/, 'send button uses small control size to prevent overflow');
   assert.match(iosChat, /hasText \? 36 : composerAccessoryWidth/, 'slot shrinks to 36pt while typing to stay within pill boundary');
-  assert.match(iosChat, /MaskedView[\s\S]*?LinearGradient[\s\S]*?BlurView/, 'top header has progressive gradient blur from top edge');
-  assert.match(iosChat, /การตั้งค่านี้จะมีผลเฉพาะการสนทนากับเพื่อนคนนี้/);
-  assert.doesNotMatch(iosChat, /บันทึกการตั้งค่าเฉพาะบัญชีนี้ในฐานข้อมูล/);
+  // The header floats on the content; no blurred slab sits under the status bar.
+  assert.doesNotMatch(iosChat, /MaskedView/, 'no blur slab under the status bar');
+  // Per-chat settings live in the shared sheet, in plain language.
+  assert.match(iosChat, /<ChatSettingsSheet/);
+  const settingsSheet = readFileSync('src/components/ChatSettingsSheet.js', 'utf8');
+  assert.match(settingsSheet, /ใช้เฉพาะแชตกับ/);
+  assert.doesNotMatch(settingsSheet + iosChat, /บันทึกการตั้งค่าเฉพาะบัญชีนี้ในฐานข้อมูล/);
 
   const sharedChat = readFileSync('src/screens/ChatRoomScreen.js', 'utf8');
   assert.match(sharedChat, /capsuleSendButton:\s*\{[\s\S]*?height:\s*36[\s\S]*?width:\s*36/, 'capsuleSendButton is 36x36 on shared platform fallback');
@@ -332,7 +337,7 @@ test('send button is inset within composer capsule and chat preview mounts Swift
   assert.match(sharedChat, /backgroundColor:\s*'#2563EB'/, 'send button uses #2563EB');
   assert.match(sharedChat, /inputCapsule:\s*\{[\s\S]*?minHeight:\s*46[\s\S]*?maxHeight:\s*110[\s\S]*?borderRadius:\s*23[\s\S]*?flexDirection:\s*'row'[\s\S]*?alignItems:\s*'center'/);
   assert.match(sharedChat, /contentContainerStyle=\{\[styles\.messageList,\s*\{\s*paddingTop:\s*16,\s*paddingBottom:\s*16,\s*paddingHorizontal:\s*16\s*\}\]\}/);
-  assert.match(sharedChat, /การตั้งค่านี้จะมีผลเฉพาะการสนทนากับเพื่อนคนนี้/);
+  assert.match(sharedChat, /<ChatSettingsSheet/);
   assert.doesNotMatch(sharedChat, /บันทึกการตั้งค่าเฉพาะบัญชีนี้ในฐานข้อมูล/);
   assert.match(sharedChat, /e2eeBanner:\s*\{[\s\S]*?paddingHorizontal:\s*12[\s\S]*?paddingVertical:\s*6[\s\S]*?borderRadius:\s*14/);
   assert.match(sharedChat, /e2eeText:\s*\{[\s\S]*?color:\s*'#9CA3AF'[\s\S]*?fontSize:\s*12/);
@@ -347,16 +352,20 @@ test('send button is inset within composer capsule and chat preview mounts Swift
   assert.doesNotMatch(previewModal, /ChatPreviewNativeMenu/, 'redundant ChatPreviewNativeMenu is removed');
   assert.doesNotMatch(previewModal, /previewTopFade/, 'top fade gradient creating dark artifact is removed');
   assert.match(previewModal, /testID="PreviewHeader"[\s\S]*?เพื่อนใหม่/, 'header displays avatar and partner name');
-  assert.match(previewModal, /iosContextActions:\s*\{[\s\S]*?width:\s*250[\s\S]*?borderRadius:\s*20/);
-  assert.match(previewModal, /actionRowIos:\s*\{[\s\S]*?height:\s*48[\s\S]*?justifyContent:\s*'space-between'/);
-  assert.match(previewModal, /androidContextActions:\s*\{[\s\S]*?width:\s*'90%'[\s\S]*?borderRadius:\s*24/);
-  assert.match(previewModal, /androidDangerDivider:\s*\{[\s\S]*?height:\s*1[\s\S]*?backgroundColor:\s*'rgba\(255,255,255,0\.08\)'/);
+  // One action list on both platforms: 48pt rows, a divider before the
+  // destructive item, and red text/icon only for that item.
+  assert.match(previewModal, /contextActions:\s*\{[\s\S]*?width:\s*'90%'[\s\S]*?maxWidth:\s*360[\s\S]*?borderRadius:\s*20/);
+  assert.match(previewModal, /actionRow:\s*\{[\s\S]*?height:\s*48/);
+  assert.match(previewModal, /actionDivider:\s*\{[\s\S]*?height:\s*1/);
   assert.match(previewModal, /actionLabel:\s*\{[\s\S]*?fontSize:\s*15/);
   assert.match(previewModal, /numberOfLines=\{1\}/);
-  assert.match(previewModal, /color:\s*isDanger\s*\?\s*'#EF4444'[\s\S]*?FeatureIcon\s+color=\{isDanger\s*\?\s*'#EF4444'/);
-  assert.match(previewModal, /paddingHorizontal:\s*14/);
+  assert.match(previewModal, /item\.danger\s*\?\s*'#EF4444'/);
+  assert.match(previewModal, /paddingHorizontal:\s*16/);
 
-  assert.match(trackCard, /isPreview\s*\?\s*Math\.min\(screenWidth\s*\*\s*0\.60,\s*230\)/, 'track card width in preview is capped at Math.min(screenWidth * 0.60, 230)');
+  // Preview cards: 60% of the screen, at most 225pt (shared helper).
+  assert.match(trackCard, /chatTrackWidth\(/);
+  assert.equal(chatTrackWidth(360, true), 216);
+  assert.equal(chatTrackWidth(430, true), 225);
 
   const chatScreen = readFileSync('src/screens/ChatScreen.js', 'utf8');
   assert.match(chatScreen, /onMarkUnread=\{\(conversation\) => handleInboxSetting\(conversation, \{ markedUnread: true \}\)\}/);

@@ -37,9 +37,11 @@ const processor = load('src/services/videoProcessingService.js', {
   '../utils/chatVideoPolicy': policy, '../utils/videoEdit': edits,
 });
 await processor.exportChatVideo({ uri: 'file://original.mov', duration: 120000 }, { startMs: 45000, endMs: 105000, muted: true });
-assert.deepEqual(nativeCalls[0], ['file://original.mov', 45000, 105000, true, 'preview']);
+// The first export is the medium rendition; the queue below upgrades it to high.
+assert.deepEqual(nativeCalls[0], ['file://original.mov', 45000, 105000, true, 'medium']);
 
-// Durable upgrade queue: medium first; failed high upload resumes after reload.
+// Durable upgrade queue: the medium rendition goes out with the message, the
+// queue only adds the high one, and a failed high upload resumes after reload.
 const files = new Map(), records = new Map(), exports = [], uploads = [];
 let uid = 'alice', failHigh = true;
 const fsMock = {
@@ -55,6 +57,8 @@ const deps = {
   'expo-file-system/legacy': fsMock,
   'firebase/auth': { getAuth: () => ({ currentUser: { uid } }) },
   './dbService': { requireFirebase: () => ({ app: {}, db: 'db' }) },
+  // This suite covers the Firebase path; the Rust path is the same queue over RPC.
+  './rust/backend': { RUST_BACKEND: false, rpc: async () => { throw Error('unused'); }, rustUid: () => null },
   'firebase/firestore': {
     doc: (...parts) => parts.join('/'), collection: (...parts) => parts.join('/'), Timestamp: { now: () => 1 },
     getDoc: async path => ({ exists: () => !path.includes('videoRenditions') || records.has(path), data: () => ({ senderId: 'alice' }) }),
@@ -75,14 +79,14 @@ const deps = {
 let queue = load('src/services/videoUpgradeService.js', deps);
 await queue.stageVideoUpgrade({ userId: 'alice', conversationId: 'room', messageId: 'video', asset: { uri: 'original', duration: 120000 }, edit: { startMs: 45000, endMs: 105000, muted: true }, mode: 'once' });
 await queue.resumeVideoUpgrades('alice');
-assert.deepEqual(uploads, ['medium', 'high']);
-assert.equal(records.size, 1);
+assert.deepEqual(uploads, ['high']);
+assert.equal(records.size, 0);
 assert.ok([...files.keys()].some(path => path.endsWith('job.json')));
 queue = load('src/services/videoUpgradeService.js', deps);
-uid = 'bob'; await queue.resumeVideoUpgrades('alice'); assert.equal(uploads.length, 2);
+uid = 'bob'; await queue.resumeVideoUpgrades('alice'); assert.equal(uploads.length, 1);
 uid = 'alice'; failHigh = false; await queue.resumeVideoUpgrades('alice');
-assert.deepEqual(uploads, ['medium', 'high', 'high']);
-assert.equal(records.size, 2);
+assert.deepEqual(uploads, ['high', 'high']);
+assert.equal(records.size, 1);
 assert.equal([...files.keys()].some(path => path.endsWith('job.json')), false);
 for (const file of ['src/components/ChatVideoComposer.js', 'src/components/ChatMediaComposer.js', 'src/components/ChatVideoBubble.js', 'src/services/videoUpgradeService.js', 'src/context/AppContext.js']) {
   babel.parseSync(readFileSync(file, 'utf8'), { babelrc: false, configFile: false, parserOpts: { sourceType: 'module', plugins: ['jsx'] } });

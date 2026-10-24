@@ -30,6 +30,16 @@ function harness(file, name, mocks) {
   return { context, render(props) { cursor = 0; const tree = context.component(props); const run = pending; pending = []; run.forEach(fn => fn()); return tree; }, close() { slots.forEach(slot => slot?.cleanup?.()); } };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
+// Android safety menu: choose in the sheet, then the sheet finishes closing.
+function pickSafetyAction(h, props, action) {
+  let tree = h.render(props);
+  assert.equal(findType(tree, 'SlideUpSheet').props.visible, true);
+  findType(tree, 'ProfileActionsSheet').props.onChoose(action);
+  tree = h.render(props);
+  const sheet = findType(tree, 'SlideUpSheet');
+  assert.equal(sheet.props.visible, false, 'the sheet closes before the action starts');
+  sheet.props.onDismissed();
+}
 function find(tree, label) {
   if (!tree || typeof tree !== 'object') return null;
   if (tree.props?.accessibilityLabel === label) return tree;
@@ -62,16 +72,15 @@ test('floating iOS controls use native glass with a finite 48-point frame and an
 });
 
 test('a custom native safety trigger opens the same report flow', () => {
-  let buttons;
   const h = harness('src/components/ProfileSafetyActions.js', 'ProfileSafetyActions', {
     useAppActions: () => ({ reportContent() {}, blockUser() {} }), useConfirm: () => ({ confirm() {} }), useToast: () => ({ showToast() {} }), useTheme: () => ({ colors: {} }),
-    Platform: { OS: 'android' }, Alert: { alert: (_title, _message, options) => { buttons = options; } }, Pressable: 'Pressable', FeatureIcon: 'Icon', ReportModal: 'ReportModal',
+    Platform: { OS: 'android' }, Pressable: 'Pressable', FeatureIcon: 'Icon', ReportModal: 'ReportModal', SlideUpSheet: 'SlideUpSheet', ProfileActionsSheet: 'ProfileActionsSheet',
   });
   const props = { profile: { id: 'target', name: 'Test' }, renderTrigger: trigger => React.createElement('NativeTrigger', trigger) };
   let tree = h.render(props);
   const trigger = findType(tree, 'NativeTrigger');
   assert.equal(trigger.props.disabled, false); assert.match(trigger.props.label, /Test/);
-  trigger.props.onPress(); buttons.find(button => button.text === 'รายงานโปรไฟล์').onPress();
+  trigger.props.onPress(); pickSafetyAction(h, props, 'report');
   tree = h.render(props); assert.equal(findType(tree, 'ReportModal').props.isOpen, true);
   h.close();
 });
@@ -103,6 +112,9 @@ test('returning from a profile recreates the iOS photo host while keeping the sa
     RNHostView: 'RNHostView', ProfilePhotoCarousel: 'Carousel', View: 'View', MaskedView: 'Mask', LinearGradient: 'Gradient', BlurView: 'Blur',
     Pressable: 'Pressable', RNText: 'RNText', FeatureIcon: 'Icon', StyleSheet: { absoluteFill: {} },
     font: () => ({}), getActivityLabel: () => '', formatDistance: () => '',
+    // Live status badge, real match score and Spotify card added to the card.
+    statusBadgeFor: () => null, AnimatedStatusBadge: 'StatusBadge', SpotifyMiniPlayer: 'MiniPlayer',
+    getDiscoverySummary: () => ({ score: null }),
   });
   const candidate = { id: 'same-profile', name: 'Test', gallery: ['https://cdn.example/gallery.jpg'] };
   let opened = 0, rewound = 0;
@@ -125,7 +137,8 @@ test('returning from a profile recreates the iOS photo host while keeping the sa
   const carousel = findType(returned, 'Carousel');
   assert.equal(carousel.props.tapToChangePhotos, false);
   assert.equal(carousel.props.swipePhotos, true);
-  assert.equal(carousel.props.footerBlurHeight, 239);
+  // Half the card (clamped 200-300) leaves room for status, chips and music.
+  assert.equal(carousel.props.footerBlurHeight, 260);
   const content = carousel.props.children[0];
   assert.equal(content.props.pointerEvents, 'box-none');
   assert.equal(content.props.children[0].props.pointerEvents, 'none'); // Name/summary allow taps through.
@@ -202,7 +215,7 @@ test('photo carousel supports invisible tap zones and accessibility actions, kee
 });
 test('a measured photo offers retry above its navigation target and a successful load removes the error overlay', () => {
   let revealSpinner;
-  const h = harness('src/components/ProfilePhotoCarousel.js', 'Photo', { View: 'View', Pressable: 'Pressable', Text: 'Text', CachedImage: 'CachedImage', FeatureIcon: 'Icon', ActivityIndicator: 'Spinner', styles: {}, StyleSheet: { absoluteFill: {} }, setTimeout: callback => { revealSpinner = callback; return 1; }, clearTimeout() {} });
+  const h = harness('src/components/ProfilePhotoCarousel.js', 'Photo', { View: 'View', Pressable: 'Pressable', Text: 'Text', CachedImage: 'CachedImage', FeatureIcon: 'Icon', EmptyPhotoScene: 'EmptyPhotoScene', ActivityIndicator: 'Spinner', styles: {}, StyleSheet: { absoluteFill: {} }, setTimeout: callback => { revealSpinner = callback; return 1; }, clearTimeout() {} });
   let opened = 0, stopped = false;
   const props = { uri: 'https://example.test/photo', identity: 'profile:0:1', width: 390, height: 520, onPress: () => opened++ };
   let tree = h.render(props);
@@ -242,6 +255,7 @@ test('each photo keeps one noninteractive blurred footer using the same image an
     const h = harness('src/components/ProfilePhotoCarousel.js', 'Photo', {
       View: 'View', Pressable: 'Pressable', Text: 'Text', CachedImage: 'CachedImage',
       MaskedView: 'Mask', LinearGradient: 'Gradient', FeatureIcon: 'Icon', ActivityIndicator: 'Spinner', styles: {}, StyleSheet: { absoluteFill: {} },
+      EmptyPhotoScene: 'EmptyPhotoScene',
     });
     const props = { uri, width: 390, height: 680, footerBlurHeight: 163 };
     let tree = h.render(props);
@@ -427,23 +441,42 @@ test('discovery banner distinguishes loading, error, waiting and actual candidat
 
 test('profile safety can report before matching and blocks only after confirmation and server completion', async () => {
   for (const accepted of [false, true]) {
-    let buttons, complete, blockCalls = 0, closed = 0;
+    let complete, blockCalls = 0, closed = 0;
     const h = harness('src/components/ProfileSafetyActions.js', 'ProfileSafetyActions', {
       useAppActions: () => ({ reportContent() {}, blockUser: () => { blockCalls++; return new Promise(resolve => { complete = resolve; }); } }),
       useConfirm: () => ({ confirm: async () => accepted }), useToast: () => ({ showToast() {} }), useTheme: () => ({ colors: {} }),
-      Platform: { OS: 'android' }, Alert: { alert: (_title, _body, options) => { buttons = options; } },
-      Pressable: 'Pressable', FeatureIcon: 'Icon', ReportModal: 'ReportModal',
+      Platform: { OS: 'android' }, Pressable: 'Pressable', FeatureIcon: 'Icon', ReportModal: 'ReportModal', SlideUpSheet: 'SlideUpSheet', ProfileActionsSheet: 'ProfileActionsSheet',
     });
     const props = { profile: { id: 'target', name: 'Test' }, onBlocked: () => closed++ };
     let tree = h.render(props);
     find(tree, 'รายงานหรือบล็อก Test').props.onPress();
-    buttons.find(button => button.text === 'รายงานโปรไฟล์').onPress();
-    tree = h.render(props); assert.equal(tree.props.children[1].props.isOpen, true); assert.equal(blockCalls, 0);
-    buttons.find(button => button.text === 'บล็อกผู้ใช้').onPress(); await tick();
+    pickSafetyAction(h, props, 'report');
+    tree = h.render(props); assert.equal(findType(tree, 'ReportModal').props.isOpen, true); assert.equal(blockCalls, 0);
+    find(tree, 'รายงานหรือบล็อก Test').props.onPress();
+    pickSafetyAction(h, props, 'block'); await tick();
     assert.equal(blockCalls, accepted ? 1 : 0); assert.equal(closed, 0);
     if (accepted) { complete(); await tick(); assert.equal(closed, 1); }
     h.close();
   }
+});
+
+test('the Android safety sheet lists report and block as labelled 48dp+ actions and can be cancelled', () => {
+  const chosen = [];
+  let cancelled = 0;
+  const h = harness('src/components/ProfileSafetyActions.js', 'ProfileActionsSheet', {
+    View: 'View', Text: 'Text', Pressable: 'Pressable', FeatureIcon: 'Icon', Image: 'Image', StyleSheet: { absoluteFill: {}, hairlineWidth: 1 },
+    styles: { item: { minHeight: 72 }, cancel: { minHeight: 48 } }, getImageRequestUri: () => null,
+  });
+  const tree = h.render({ colors: { ink: '#111', inkSoft: '#666', danger: '#D65454' }, name: 'Test', profile: { id: 'target' }, onChoose: key => chosen.push(key), onCancel: () => cancelled++ });
+  const report = find(tree, 'รายงานโปรไฟล์'), block = find(tree, 'บล็อกผู้ใช้');
+  for (const item of [report, block]) { assert.equal(item.props.accessibilityRole, 'button'); assert.ok(item.props.accessibilityHint); assert.ok(item.props.style.minHeight >= 48); }
+  report.props.onPress(); block.props.onPress();
+  assert.deepEqual(chosen, ['report', 'block']);
+  const cancel = tree.props.children.flat(Infinity).find(c => c?.type === 'Pressable' && findType(c, 'Text')?.props.children.includes('ยกเลิก'));
+  assert.ok(cancel.props.style.some?.(s => s?.minHeight >= 48) ?? cancel.props.style.minHeight >= 48);
+  cancel.props.onPress();
+  assert.equal(cancelled, 1);
+  h.close();
 });
 
 test('music errors remain available to the row without a blocking alert', async () => {

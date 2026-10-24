@@ -302,6 +302,15 @@ async fn permissions(db: &mut PgConnection, kind: Kind) -> Result<(), Failure> {
                     }
                 }
             }
+            // In-app feedback: file and triage, never delete.
+            if !table(&mut *db, "public.app_feedback", "SELECT").await?
+                || !table(&mut *db, "public.app_feedback", "INSERT").await?
+                || !column(&mut *db, "public.app_feedback", "status", "UPDATE").await?
+                || !column(&mut *db, "public.app_feedback", "screenshot", "UPDATE").await?
+                || table(&mut *db, "public.app_feedback", "DELETE").await?
+            {
+                return Err(Failure::Privileges);
+            }
             for name in [
                 "sessions",
                 "auth_challenges",

@@ -34,6 +34,11 @@ GRANT SELECT(id,kind,user_id,created_at) ON public.outbox TO campusmate_api;
 GRANT EXECUTE ON FUNCTION public.scrub_auth_outbox() TO campusmate_api;
 GRANT SELECT,INSERT,UPDATE,DELETE ON public.user_app_settings,public.user_presence TO campusmate_api;
 REVOKE ALL ON public.user_app_settings,public.user_presence FROM campusmate_mail;
+-- In-app feedback: users file reports, admins triage them. Never deleted by
+-- the API; account deletion cascades.
+GRANT SELECT,INSERT ON public.app_feedback TO campusmate_api;
+GRANT UPDATE(status,admin_note,screenshot,updated_at) ON public.app_feedback TO campusmate_api;
+REVOKE ALL ON public.app_feedback FROM campusmate_mail;
 
 -- Photo verification is processed by the API/sweeper. Lifecycle identifiers,
 -- consent and reference pins are immutable after insert. The mail worker has

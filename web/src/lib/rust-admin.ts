@@ -55,6 +55,10 @@ export const rustAdmin = {
   async signIn(email: string, password: string) {
     accept(await call('/v1/auth/login', { email, password }));
   },
+  /** Exchanges a Google ID token (from the Google sign-in popup) for a session. */
+  async signInWithGoogle(idToken: string) {
+    accept(await call('/v1/auth/google', { idToken }));
+  },
   async signOut() {
     const current = session;
     session = null;

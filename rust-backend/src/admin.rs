@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
-use crate::{auth, error::ApiError, events, notify, AppState};
+use crate::{auth, error::ApiError, events, feedback, notify, service_status, AppState};
 
 pub const SUPER_ADMIN_EMAILS: &[&str] = &["6710210317@psu.ac.th"];
 
@@ -770,6 +770,134 @@ pub async fn console(
                 "cancelParty",
                 Some(&party),
                 json!({"before":{"status":status},"note":reason}),
+            )
+            .await?;
+            tx.commit().await?;
+            Ok(json!({"success":true}))
+        }
+        "serviceStatus" => {
+            let (maintenance, revision) = config(state, service_status::CONFIG_ID).await?;
+            Ok(json!({
+                "status": service_status::snapshot(state).await,
+                "maintenance": maintenance.unwrap_or(json!({})),
+                "revision": revision,
+                "feedback": {
+                    "new": count(state, "SELECT count(*) FROM app_feedback WHERE status='new'").await?,
+                    "bugsLastHour": count(state, "SELECT count(*) FROM app_feedback WHERE kind='bug' AND created_at>now()-interval '1 hour'").await?,
+                },
+            }))
+        }
+        "saveMaintenance" => {
+            let saved = save_config(
+                state,
+                &actor.uid,
+                service_status::CONFIG_ID,
+                &data["revision"],
+                service_status::validate(&data["maintenance"])?,
+                false,
+            )
+            .await?;
+            // Takes effect on the next request, not after the cache expires.
+            service_status::invalidate();
+            Ok(saved)
+        }
+        "resetAutoProtect" => {
+            let mut tx = state.db.begin().await?;
+            audit(&mut tx, &actor.uid, "resetAutoProtect", None, json!({})).await?;
+            tx.commit().await?;
+            service_status::reset_breaker();
+            Ok(json!({"success":true}))
+        }
+        "feedback" => {
+            let status = data["status"]
+                .as_str()
+                .filter(|s| feedback::STATUSES.contains(s))
+                .unwrap_or("all");
+            let kind = data["kind"]
+                .as_str()
+                .filter(|k| matches!(*k, "bug" | "feedback"))
+                .unwrap_or("all");
+            // Cursor: `<created ms>:<id>` of the last row already shown.
+            let cursor = data["cursor"]
+                .as_str()
+                .and_then(|c| c.split_once(':'))
+                .and_then(|(ms, id)| {
+                    Some((
+                        chrono::DateTime::<Utc>::from_timestamp_millis(ms.parse().ok()?)?,
+                        Uuid::parse_str(id).ok()?,
+                    ))
+                });
+            let rows = sqlx::query(
+                "SELECT id,user_id,kind,message,app_version,app_build,platform,os_version,screen,status,admin_note,
+                   created_at,updated_at,screenshot IS NOT NULL AS has_screenshot
+                 FROM app_feedback WHERE ($1='all' OR status=$1) AND ($2='all' OR kind=$2)
+                   AND ($3::timestamptz IS NULL OR (created_at,id)<($3,$4))
+                 ORDER BY created_at DESC,id DESC LIMIT 31",
+            )
+            .bind(status)
+            .bind(kind)
+            .bind(cursor.map(|(at, _)| at))
+            .bind(cursor.map(|(_, id)| id).unwrap_or_default())
+            .fetch_all(&state.db)
+            .await?;
+            let next = (rows.len() > 30).then(|| {
+                let last = &rows[29];
+                format!(
+                    "{}:{}",
+                    last.get::<chrono::DateTime<Utc>, _>("created_at")
+                        .timestamp_millis(),
+                    last.get::<Uuid, _>("id")
+                )
+            });
+            Ok(
+                json!({"rows": rows.iter().take(30).map(|row| feedback::row_json(row, false)).collect::<Vec<_>>(), "cursor": next}),
+            )
+        }
+        "feedbackDetail" => {
+            let id = Uuid::parse_str(data["id"].as_str().unwrap_or_default())
+                .map_err(|_| ApiError::invalid("รหัสไม่ถูกต้อง"))?;
+            let row = sqlx::query(
+                "SELECT *,screenshot IS NOT NULL AS has_screenshot FROM app_feedback WHERE id=$1",
+            )
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| ApiError::new("not-found", "ไม่พบรายงานนี้"))?;
+            let reporter = person(state, Some(row.get::<String, _>("user_id"))).await?;
+            Ok(json!({"feedback": feedback::row_json(&row, true), "reporter": reporter}))
+        }
+        "updateFeedback" => {
+            let id = Uuid::parse_str(data["id"].as_str().unwrap_or_default())
+                .map_err(|_| ApiError::invalid("รหัสไม่ถูกต้อง"))?;
+            let status = data["status"]
+                .as_str()
+                .filter(|s| feedback::STATUSES.contains(s))
+                .ok_or_else(|| ApiError::invalid("สถานะไม่ถูกต้อง"))?;
+            let note = note(&data);
+            let mut tx = state.db.begin().await?;
+            let before: Option<String> =
+                sqlx::query_scalar("SELECT status FROM app_feedback WHERE id=$1 FOR UPDATE")
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            let before = before.ok_or_else(|| ApiError::new("not-found", "ไม่พบรายงานนี้"))?;
+            // A closed report no longer needs its screenshot.
+            sqlx::query(
+                "UPDATE app_feedback SET status=$2,admin_note=$3,updated_at=now(),
+                   screenshot=CASE WHEN $2 IN ('resolved','dismissed') THEN NULL ELSE screenshot END
+                 WHERE id=$1",
+            )
+            .bind(id)
+            .bind(status)
+            .bind(&note)
+            .execute(&mut *tx)
+            .await?;
+            audit(
+                &mut tx,
+                &actor.uid,
+                "updateFeedback",
+                Some(&id.to_string()),
+                json!({"before":{"status":before},"after":{"status":status},"note":note}),
             )
             .await?;
             tx.commit().await?;

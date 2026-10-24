@@ -40,7 +40,12 @@ pub async fn call(
     }
     let data = object(body.get("data").cloned().unwrap_or(Value::Null));
     tracing::info!(rpc_name = %name, "RPC call dispatch");
-    let result = dispatch(&state, &headers, &name, data).await.inspect_err(|err| {
+    // Maintenance and incident protection refuse before any work is done.
+    crate::service_status::gate(&state, &headers, &name).await?;
+    let started = std::time::Instant::now();
+    let outcome = dispatch(&state, &headers, &name, data).await;
+    crate::service_status::record(outcome.as_ref().err(), started.elapsed());
+    let result = outcome.inspect_err(|err| {
         tracing::error!(rpc_name = %name, error_code = %err.code, error_msg = %err.message, "RPC call failed");
     })?;
     Ok(Json(json!({ "result": result })))
@@ -55,6 +60,8 @@ pub async fn dispatch(
     let s = || State(state.clone());
     let h = || headers.clone();
     Ok(match name {
+        "submitAppFeedback" => crate::feedback::submit(state, headers, data).await?,
+        "getServiceStatus" => crate::service_status::public_status(state, headers).await,
         "getAppPreferences" => crate::settings::get(state, headers).await?,
         "saveAppPreferences" => crate::settings::save(state, headers, data).await?,
         "presenceHeartbeat" => crate::settings::heartbeat(state, headers, data).await?,

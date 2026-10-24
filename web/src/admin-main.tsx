@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, type User } from 'firebase/auth';
 import { getFunctions, httpsCallable } from 'firebase/functions';
-import { LayoutDashboard, Flag, Users, Settings, History, ShieldCheck, LogOut, RefreshCw, Search, ChevronRight, Mail, CheckCircle2, Bell, PanelLeftClose, PanelLeftOpen, MapPin, Sparkles, Activity, Menu, X, AlertTriangle, User as UserIcon } from 'lucide-react';
+import { LayoutDashboard, Flag, Users, Settings, History, ShieldCheck, LogOut, RefreshCw, Search, ChevronRight, Mail, CheckCircle2, Bell, PanelLeftClose, PanelLeftOpen, MapPin, Sparkles, Activity, Menu, X, AlertTriangle, User as UserIcon, Gauge, MessageSquareWarning } from 'lucide-react';
 import { auth } from './lib/firebase';
 import { RUST_ADMIN, rustAdmin } from './lib/rust-admin';
 import './admin.css';
@@ -16,6 +16,8 @@ import { ReportMedia } from './report-media';
 import { AdminSpots } from './admin-spots';
 import { AdminParties } from './admin-parties';
 import { AdminMetrics } from './admin-metrics';
+import { AdminServiceStatus } from './admin-service-status';
+import { AdminFeedback } from './admin-feedback';
 
 type Row = Record<string, any>;
 const invoke=httpsCallable(getFunctions(auth.app,'asia-southeast1'),'adminConsole');
@@ -23,16 +25,19 @@ const api=async(op:string,data:Row={})=>RUST_ADMIN?(await rustAdmin.console(op,d
 // Native backend: the same sign-in/out calls go to the Rust session.
 const signInAdmin=(email:string,password:string)=>RUST_ADMIN?rustAdmin.signIn(email,password):signInWithEmailAndPassword(auth,email,password).then(()=>undefined);
 const signOutAdmin=():Promise<void>=>RUST_ADMIN?rustAdmin.signOut():signOut(auth);
+// Google sign-in works on both backends: the native one takes the Google ID
+// token from the same popup and the Firebase session is dropped right away.
+const signInAdminWithGoogle=async()=>{const provider=new GoogleAuthProvider();provider.setCustomParameters({prompt:'select_account'});const result=await signInWithPopup(auth,provider);if(!RUST_ADMIN)return;const idToken=GoogleAuthProvider.credentialFromResult(result)?.idToken;await signOut(auth).catch(()=>{});if(!idToken)throw new Error('Google ไม่ได้ส่งข้อมูลยืนยันตัวตนกลับมา กรุณาลองใหม่');await rustAdmin.signInWithGoogle(idToken);};
 const date=(value:any)=>value?new Date(value).toLocaleString('th-TH',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Bangkok'}):'—';
 const statuses:Row={pending:'รอตรวจสอบ',reviewing:'กำลังตรวจสอบ',resolved:'ดำเนินการแล้ว',dismissed:'ปิดโดยไม่ดำเนินการ'};
-const nav=[{id:'overview',label:'ภาพรวม',icon:LayoutDashboard},{id:'metrics',label:'แดชบอร์ด & ประสิทธิภาพ',icon:Activity},{id:'reports',label:'รายงานจากผู้ใช้',icon:Flag},{id:'users',label:'ผู้ใช้และอีเมล',icon:Users},{id:'spots',label:'สถานที่และรูปภาพ',icon:MapPin},{id:'parties',label:'ระบบตี้ / นัดพบ',icon:Sparkles},{id:'notifications',label:'ส่งแจ้งเตือน',icon:Bell},{id:'settings',label:'การตั้งค่าระบบ',icon:Settings},{id:'audit',label:'ประวัติการจัดการ',icon:History}];
+const nav=[{id:'overview',label:'ภาพรวม',icon:LayoutDashboard},{id:'metrics',label:'แดชบอร์ด & ประสิทธิภาพ',icon:Activity},{id:'status',label:'สถานะระบบ & ปิดปรับปรุง',icon:Gauge},{id:'feedback',label:'บัคและข้อเสนอแนะจากแอป',icon:MessageSquareWarning},{id:'reports',label:'รายงานจากผู้ใช้',icon:Flag},{id:'users',label:'ผู้ใช้และอีเมล',icon:Users},{id:'spots',label:'สถานที่และรูปภาพ',icon:MapPin},{id:'parties',label:'ระบบตี้ / นัดพบ',icon:Sparkles},{id:'notifications',label:'ส่งแจ้งเตือน',icon:Bell},{id:'settings',label:'การตั้งค่าระบบ',icon:Settings},{id:'audit',label:'ประวัติการจัดการ',icon:History}];
 function App(){
  const [user,setUser]=useState<User|null>(null),[ready,setReady]=useState(false),[admin,setAdmin]=useState(false),[page,setPage]=useState('overview');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState(''),[email,setEmail]=useState(''),[password,setPassword]=useState('');
  const [mobileMenuOpen,setMobileMenuOpen]=useState(false);
  useEffect(()=>{if(notice){const t=setTimeout(()=>setNotice(''),4500);return()=>clearTimeout(t);}},[notice]);
  const [overview,setOverview]=useState<Row>({}),[reports,setReports]=useState<Row[]>([]),[cursor,setCursor]=useState<string|null>(null),[filter,setFilter]=useState('all'),[selected,setSelected]=useState<Row|null>(null),[status,setStatus]=useState('reviewing'),[note,setNote]=useState('');
- const [collapsed,setCollapsed]=useState(()=>{try{return localStorage.getItem('campusmate_admin_sidebar')==='collapsed';}catch{return false;}}),[directoryRefresh,setDirectoryRefresh]=useState(0),[notificationUid,setNotificationUid]=useState(''),[notificationRefresh,setNotificationRefresh]=useState(0),[metricsRefresh,setMetricsRefresh]=useState(0);
+ const [collapsed,setCollapsed]=useState(()=>{try{return localStorage.getItem('campusmate_admin_sidebar')==='collapsed';}catch{return false;}}),[directoryRefresh,setDirectoryRefresh]=useState(0),[notificationUid,setNotificationUid]=useState(''),[notificationRefresh,setNotificationRefresh]=useState(0),[metricsRefresh,setMetricsRefresh]=useState(0),[statusRefresh,setStatusRefresh]=useState(0),[feedbackRefresh,setFeedbackRefresh]=useState(0);
  useEffect(()=>{try{localStorage.setItem('campusmate_admin_sidebar',collapsed?'collapsed':'expanded');}catch{}},[collapsed]);
  const [detail,setDetail]=useState<Row|null>(null);
  const [query,setQuery]=useState(''),[account,setAccount]=useState<Row|null>(null),[accountNote,setAccountNote]=useState('');
@@ -87,6 +92,8 @@ function App(){
   async function load() {
     await run(async () => {
       if (page === 'metrics') setMetricsRefresh(v => v + 1);
+      if (page === 'status') setStatusRefresh(v => v + 1);
+      if (page === 'feedback') setFeedbackRefresh(v => v + 1);
       if (page === 'users') setDirectoryRefresh(v => v + 1);
       if (page === 'users' && account?.uid) setAccount(await api('user', { query: account.uid }));
       if (page === 'notifications') setNotificationRefresh(v => v + 1);
@@ -128,11 +135,11 @@ function App(){
       }
     });
   };
-  useEffect(()=>{if(admin&&!['users','notifications','spots','parties','metrics'].includes(page))void load();},[admin,page]);
+  useEffect(()=>{if(admin&&!['users','notifications','spots','parties','metrics','status','feedback'].includes(page))void load();},[admin,page]);
   const field=(key:string,label:string,type='text')=><label key={key}>{label}<input type={type} value={version[key]??''} onChange={e=>setVersion({...version,[key]:type==='number'?Number(e.target.value):e.target.value})}/></label>;
   const toggle=(key:string,label:string)=><label className="toggle" key={key}><span>{label}</span><input type="checkbox" checked={version[key]===true} onChange={e=>setVersion({...version,[key]:e.target.checked})}/></label>;
   if(!ready)return <main className="login"><div className="login-card">กำลังตรวจสอบสิทธิ์…</div></main>;
-  if(!user)return <main className="login"><div className="login-card"><div className="brand-mark">C</div><p className="eyebrow">CAMPUSMATE ADMIN</p><h1>พื้นที่สำหรับผู้ดูแล</h1><p className="muted">ตรวจสอบรายงานและดูแลระบบ CampusMate</p><form onSubmit={e=>{e.preventDefault();void run(async()=>{await signInAdmin(email,password);});}}><label>อีเมล<input type="email" autoComplete="username" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label>รหัสผ่าน<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button disabled={busy} className="primary">เข้าสู่ระบบ</button></form><div className="divider">หรือ</div>{!RUST_ADMIN&&<button disabled={busy} onClick={()=>void run(async()=>{await signInWithPopup(auth,new GoogleAuthProvider());})}>เข้าสู่ระบบด้วย Google</button>}{error&&<p role="alert" className="error">{error}</p>}<p className="small muted">เฉพาะบัญชีที่ได้รับสิทธิ์ผู้ดูแลระบบ</p></div></main>;
+  if(!user)return <main className="login"><div className="login-card"><img className="brand-mark" src="/brand-icon.png" alt="" aria-hidden="true"/><p className="eyebrow">CAMPUSMATE ADMIN</p><h1>พื้นที่สำหรับผู้ดูแล</h1><p className="muted">ตรวจสอบรายงานและดูแลระบบ CampusMate</p><form onSubmit={e=>{e.preventDefault();void run(async()=>{await signInAdmin(email,password);});}}><label>อีเมล<input type="email" autoComplete="username" required value={email} onChange={e=>setEmail(e.target.value)}/></label><label>รหัสผ่าน<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button disabled={busy} className="primary">เข้าสู่ระบบ</button></form><div className="divider">หรือ</div><button disabled={busy} onClick={()=>void run(signInAdminWithGoogle)}>เข้าสู่ระบบด้วย Google</button>{error&&<p role="alert" className="error">{error}</p>}<p className="small muted">เฉพาะบัญชีที่ได้รับสิทธิ์ผู้ดูแลระบบ</p></div></main>;
   if(!admin)return <main className="login"><div className="login-card"><ShieldCheck size={38}/><h1>ยังไม่มีสิทธิ์เข้าถึง</h1><p>{user.email}</p><p className="muted">ต้องเป็นบัญชีที่ยืนยันอีเมลและได้รับสิทธิ์ผู้ดูแลระบบ</p><button onClick={()=>void signOutAdmin()}>ออกจากระบบ</button></div></main>;
   return <div className={'shell '+(collapsed?'sidebar-collapsed':'')}>
     {/* Floating Toast Notification Center */}
@@ -169,7 +176,7 @@ function App(){
         <div className="mobile-drawer" onClick={e => e.stopPropagation()}>
           <div className="mobile-drawer-header">
             <div className="brand" style={{ margin: 0 }}>
-              <div className="brand-mark">C</div>
+              <img className="brand-mark" src="/brand-icon.png" alt="" aria-hidden="true"/>
               <div className="brand-label">
                 <strong>CampusMate</strong>
                 <span>ADMIN CONSOLE</span>
@@ -231,7 +238,7 @@ function App(){
         {collapsed ? <PanelLeftOpen size={20} /> : <PanelLeftClose size={20} />}
       </button>
       <div className="brand">
-        <div className="brand-mark">C</div>
+        <img className="brand-mark" src="/brand-icon.png" alt="" aria-hidden="true"/>
         <div className="brand-label">
           <strong>CampusMate</strong>
           <span>ADMIN CONSOLE</span>
@@ -299,7 +306,11 @@ function App(){
             <p className="eyebrow">CAMPUSMATE OPERATIONS</p>
             <h1>{nav.find(n => n.id === page)?.label}</h1>
             <p className="muted">
-              {page === 'metrics'
+              {page === 'status'
+                ? 'ดูสุขภาพระบบแบบสด ปิดปรับปรุง และตั้งการปิดรับผู้ใช้อัตโนมัติเมื่อระบบขัดข้อง'
+                : page === 'feedback'
+                ? 'บัคและข้อเสนอแนะที่ผู้ใช้ส่งจากแอป พร้อมอุปกรณ์และภาพหน้าจอที่ผู้ใช้เลือกแนบ'
+                : page === 'metrics'
                 ? 'ตรวจสอบค่าใช้จ่ายคลาวด์ งบประมาณ และเวลาตอบสนองของระบบ'
                 : page === 'spots'
                 ? 'ตรวจพิกัดและอัปเดตรูปภาพสถานที่ทั้ง 31 จุดทั่วมหาวิทยาลัย'
@@ -357,6 +368,8 @@ function App(){
     </div>
     <div className="stats"><div className="stat"><span>โปรไฟล์ในระบบ</span><strong>{overview.userCount??'—'}</strong><small>จำนวนเอกสารโปรไฟล์ผู้ใช้</small></div><div className="stat"><span>สถานที่ ม.อ.</span><strong>{overview.spotCount??'31'}</strong><small>จุดพิกัดทั้งหมด</small></div><div className="stat"><span>ตี้เปิดรับสมัคร</span><strong>{overview.openPartiesCount??'0'}</strong><small>กิจกรรมนัดพบ</small></div>{['pending','reviewing'].map(s=><div className="stat" key={s}><span>{statuses[s]}</span><strong>{Array.isArray(overview.counts) ? (overview.counts.find((r:Row)=>r.status===s)?.count??'0') : '—'}</strong><small>รายงานจากผู้ใช้</small></div>)}</div><section className="panel welcome"><div><p className="eyebrow">COMMUNITY SAFETY & CAMPUS</p><h2>ดูแลชุมชนและสถานที่ใน ม.อ.</h2><p className="muted">ตรวจสอบรายงานผู้ใช้ จัดการรูปภาพสถานที่ และตรวจความเรียบร้อยของกิจกรรมนัดพบ</p><div style={{display:'flex',gap:12,flexWrap:'wrap',marginTop:14}}><button className="primary" onClick={()=>setPage('metrics')}>ดูประสิทธิภาพ & ค่าใช้จ่าย<ChevronRight size={16}/></button><button onClick={()=>setPage('spots')}>จัดการสถานที่<ChevronRight size={16}/></button><button onClick={()=>setPage('parties')}>ตรวจระบบตี้<ChevronRight size={16}/></button><button onClick={()=>setPage('reports')}>เปิดรายงานผู้ใช้<ChevronRight size={16}/></button></div></div><ShieldCheck size={80} strokeWidth={1}/></section><div className="two-columns"><section className="panel"><Activity size={24} color="#2563eb"/><h2>แดชบอร์ด & ประสิทธิภาพระบบ</h2><p className="muted">ตรวจค่าใช้จ่ายคลาวด์ งบประมาณ และความเร็วการเชื่อมต่อแต่ละบริการ</p><button className="primary" onClick={()=>setPage('metrics')}>เปิดแดชบอร์ดระบบ</button></section><section className="panel"><MapPin size={24}/><h2>จัดการสถานที่และรูปภาพ</h2><p className="muted">ตรวจพิกัดและเปลี่ยนรูปสถานที่ ม.อ. ทั้ง 31 จุด</p><button onClick={()=>setPage('spots')}>เปิดหน้ารายการสถานที่</button></section><section className="panel"><Sparkles size={24}/><h2>จัดการระบบตี้</h2><p className="muted">ตรวจกิจกรรมนัดพบและดูแลความปลอดภัย</p><button onClick={()=>setPage('parties')}>เปิดหน้ารายการตี้</button></section><section className="panel"><Mail size={24}/><h2>ตรวจสถานะอีเมล</h2><p className="muted">ตรวจการยืนยันบัญชีและเวลาที่ระบบบันทึกการส่ง โดยไม่เปิดเผยลิงก์ยืนยันหรือรหัสลับ</p><button onClick={()=>setPage('users')}>ค้นหาบัญชี</button></section></div></>}
   {page==='metrics'&&<AdminMetrics refreshKey={metricsRefresh} api={api} busy={busy} onNotice={setNotice} onError={setError}/>}
+ {page==='status'&&<AdminServiceStatus api={api} refreshKey={statusRefresh} onNotice={setNotice} onError={setError} onOpenFeedback={()=>setPage('feedback')}/>}
+ {page==='feedback'&&<AdminFeedback api={api} busy={busy} refreshKey={feedbackRefresh} onNotice={setNotice} onError={setError} onSelectUser={uid=>{setAccount(null);setAccountNote('');setQuery(uid);setPage('users');void run(async()=>{setAccount(await api('user',{query:uid}));});}}/>}
  {page==='spots'&&<AdminSpots api={api} busy={busy} onNotice={setNotice} onError={setError}/>}
  {page==='parties'&&<AdminParties api={api} busy={busy} onNotice={setNotice} onError={setError} onSelectUser={uid=>{setAccount(null);setAccountNote('');setQuery(uid);setPage('users');void run(async()=>{setAccount(await api('user',{query:uid}));});}}/>}
  {page==='reports'&&<div className="reports-layout"><section className="panel"><div className="panel-heading"><h2>รายการรายงาน <span className="count">{reports.length}</span></h2><select aria-label="กรองสถานะในรายการที่โหลด" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">ทุกสถานะที่โหลด</option>{Object.entries(statuses).map(([k,v])=><option value={k} key={k}>{v}</option>)}</select></div><p className="small muted">โหลดครั้งละ 30 รายการ เรียงตามรหัสรายงาน · ตัวกรองใช้กับรายการที่โหลดแล้ว</p>{reports.filter(r=>filter==='all'||r.status===filter).map(r=><button className={'report-row '+(selected?.id===r.id?'selected':'')} key={r.id} disabled={busy} onClick={()=>void run(async()=>{setSelected(null);setDetail(null);const d=await api('reportDetail',{id:r.id});setDetail(d);setSelected(d.report);setStatus(d.report.status||'pending');setNote(d.report.reviewNote||'');})}><div className="report-symbol"><Flag size={18}/></div><div><strong>{r.reason||'ไม่ระบุเหตุผล'}</strong><span>{r.details||'ไม่มีรายละเอียดเพิ่มเติม'}</span><small>{date(r.createdAt)}</small></div><span className={'badge '+r.status}>{statuses[r.status]||r.status}</span></button>)}{reports.length===0&&!busy&&<div className="empty"><Flag/><h3>ยังไม่มีรายงาน</h3><p>รายงานจากแอปจะปรากฏที่นี่</p></div>}{cursor&&<button disabled={busy} onClick={()=>void run(async()=>{const r=await api('reports',{cursor});setReports([...reports,...r.rows]);setCursor(r.cursor);})}>โหลดรายการเพิ่มเติม</button>}</section><section className="panel detail">{selected?<><p className="eyebrow">REPORT DETAILS</p><h2>{selected.reason}</h2><dl>{[['รหัสรายงาน',selected.id],['ผู้รายงาน',selected.reporterId],['ผู้ถูกรายงาน',selected.reportedUserId],['ห้องสนทนา',selected.conversationId],['ข้อความ',selected.messageText],['รายละเอียด',selected.details],['สร้างเมื่อ',date(selected.createdAt)],['อัปเดตเมื่อ',date(selected.updatedAt)]].map(([k,v])=><React.Fragment key={k}><dt>{k}</dt><dd>{v||'—'}</dd></React.Fragment>)}</dl>{selected.moderation?.mediaState==='deleted'?<div className="info">ไฟล์สื่อที่แนบในรายงานถูกลบโดยผู้ดูแลแล้ว</div>:<ReportMedia key={selected.id} url={selected.mediaUrl}/>}<label>สถานะ<select value={status} onChange={e=>setStatus(e.target.value)}>{Object.entries(statuses).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label><label>ผลการตรวจสอบ<textarea maxLength={2000} value={note} onChange={e=>setNote(e.target.value)} placeholder="บันทึกเหตุผลและผลการดำเนินการ"/></label><button className="primary" disabled={busy} onClick={()=>void run(async()=>{await api('review',{id:selected.id,revision:selected.revision,status,note});const r=await api('reports');setReports(r.rows);setCursor(r.cursor);setSelected(null);setNotice('บันทึกผลการตรวจสอบแล้ว');})}>บันทึกผลการตรวจสอบ</button>{detail&&<AdminReportDetails detail={detail} busy={busy} note={note} onAccount={uid=>{setAccount(null);setAccountNote('');setQuery(uid);setPage('users');void run(async()=>{setAccount(await api('user',{query:uid}));});}} onModerate={action=>void run(async()=>{if(!note.trim())throw new Error('กรุณากรอกผลการตรวจสอบเพื่อใช้เป็นข้อความเตือนก่อนดำเนินการ');const result=await api('moderateReport',{id:selected.id,revision:selected.revision,action,note});const d=await api('reportDetail',{id:selected.id});setSelected(d.report);setDetail(d);setStatus(d.report.status);const list=await api('reports');setReports(list.rows);setCursor(list.cursor);if(!result.success)throw new Error('บันทึกคำเตือนแล้ว แต่ลบไฟล์สื่อไม่สำเร็จ กรุณาลองลบสื่ออีกครั้ง');setNotice('ดำเนินการแล้วและบันทึกคำเตือนผู้ใช้ · '+(result.notification?.state==='accepted'?'ระบบ Push รับคำเตือนแล้ว':result.notification?.state==='no-device'?'ไม่มีอุปกรณ์รับ Push ที่ลงทะเบียน':'ส่ง Push ไม่สำเร็จ คำเตือนยังถูกบันทึกในบัญชี'));})}/>}</>:<div className="empty"><Flag/><h3>เลือกรายงานเพื่อดูรายละเอียด</h3><p>ตรวจข้อมูลก่อนบันทึกผลการดำเนินการ</p></div>}</section></div>}

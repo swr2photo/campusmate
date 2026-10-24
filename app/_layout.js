@@ -22,6 +22,9 @@ import OfflineBanner from '../src/components/OfflineBanner';
 import NotificationManager from '../src/components/NotificationManager';
 import AppUpdateModal from '../src/components/AppUpdateModal';
 import AppSplashScreen from '../src/components/AppSplashScreen';
+import LaunchOverlay from '../src/components/launch/LaunchOverlay';
+import FeedbackHost from '../src/components/feedback/FeedbackHost';
+import MaintenanceGate from '../src/components/MaintenanceGate';
 import AppErrorBoundary from '../src/components/AppErrorBoundary';
 import AppAlertHost from '../src/components/AppAlertHost';
 import InAppNotificationHost from '../src/components/InAppNotificationBanner';
@@ -185,6 +188,11 @@ function RootNavigator() {
 
               <InAppNotificationHost />
               <AppAlertHost />
+              <FeedbackHost />
+              {/* Above the app, below the launch moment: maintenance or an outage. */}
+              <MaintenanceGate />
+              {/* Last, so the cold-start brand moment covers everything. */}
+              <LaunchOverlay />
               </ThemeProvider>
               </AppTourProvider>
             </SafeAreaProvider>

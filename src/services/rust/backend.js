@@ -1,6 +1,7 @@
 // Native (Rust + PostgreSQL) backend. `EXPO_PUBLIC_BACKEND=rust` switches the
 // whole app; the Firebase code paths stay available for the legacy build.
 import { getRustBackendClient } from '../rustBackendClient';
+import { noteOutcome, noteRefusal } from '../serviceStatusService';
 
 export const RUST_BACKEND = process.env.EXPO_PUBLIC_BACKEND === 'rust';
 
@@ -56,19 +57,33 @@ function callableError(error) {
   });
 }
 
+// Every outcome feeds the service status: a maintenance refusal shows its
+// notice at once, and repeated server faults count as an outage.
+function settled(result) {
+  noteOutcome(null);
+  return result;
+}
+
+function failed(error) {
+  const wrapped = callableError(error);
+  noteRefusal(wrapped);
+  noteOutcome(wrapped);
+  return wrapped;
+}
+
 export async function rpc(name, data = {}) {
   try {
-    return await rustClient().rpc(name, data || {});
+    return settled(await rustClient().rpc(name, data || {}));
   } catch (error) {
-    throw callableError(error);
+    throw failed(error);
   }
 }
 
 export async function publicRpc(name, data = {}) {
   try {
-    return await rustClient().publicRpc(name, data || {});
+    return settled(await rustClient().publicRpc(name, data || {}));
   } catch (error) {
-    throw callableError(error);
+    throw failed(error);
   }
 }
 

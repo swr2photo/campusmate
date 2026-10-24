@@ -8,6 +8,7 @@ import { usePreferences } from '../context/PreferencesContext';
 import { useAuth } from '../context/AuthContext';
 import { useConfirm } from '../context/ConfirmContext';
 import { LEGAL_CONTACT } from '../content/legalDocuments';
+import { openFeedbackSheet } from '../services/feedbackService';
 import { getPushPermissionStatusAsync, registerForPushNotificationsAsync, unregisterPushNotificationsAsync } from '../services/notificationService';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { useAppActions, useAppProfile } from '../context/AppContext';
@@ -107,6 +108,7 @@ export default function SettingsDetailScreen() {
           <SettingsRow label="ดูการแนะนำแอปอีกครั้ง" onPress={() => { router.navigate('/home'); startTour({ replay: true }); }} last />
         </SettingsGroup></SettingsSection>
         <SettingsSection title="ติดต่อและข้อมูล"><SettingsGroup>
+          <SettingsRow label="รายงานปัญหาหรือส่งข้อเสนอแนะ" description="หรือเขย่าเครื่องเพื่อเปิดเมนูนี้ได้ทุกหน้า" onPress={() => openFeedbackSheet()} />
           <SettingsRow label="ติดต่อทีมงาน" onPress={() => run('contact', () => Linking.openURL(`mailto:${LEGAL_CONTACT.supportEmail}`))} />
           <SettingsRow label="หลักปฏิบัติของชุมชน" onPress={() => router.push('/community-guidelines')} />
           <SettingsRow label="ข้อกำหนดการให้บริการ" onPress={() => router.push('/terms')} />

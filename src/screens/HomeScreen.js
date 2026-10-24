@@ -9,6 +9,7 @@ import { ActivityIndicator, Animated, Easing, Platform, ScrollView, StyleSheet, 
 import Image from '../components/CachedImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
+import { resendEmailVerification } from '../services/authService';
 import {
   MATCHING_ACTIVITY_OPTIONS,
   MATCHING_AGE_MIN,
@@ -417,7 +418,9 @@ export default function HomeScreen({ onOpenLikes }) {
             </TourTarget>
           </>
         ) : deck.state === 'error' ? (
-          <DiscoveryErrorState offline={deck.offline} stalled={deck.stalled} onRetry={deck.retry} />
+          deck.gate
+            ? <EmailGateState gate={deck.gate} onRetry={deck.retry} />
+            : <DiscoveryErrorState offline={deck.offline} stalled={deck.stalled} onRetry={deck.retry} />
         ) : deck.state === 'loading' ? (
           <TourTarget id="home.deck" scrollRef={tourScrollRef}>
             <HomeCardSkeleton />
@@ -838,6 +841,62 @@ function DiscoveryErrorState({ offline = false, stalled = false, onRetry }) {
           <FeatureIcon color={colors.ink} name="slider.horizontal.3" size={16} />
           <Text style={[styles.filterConfigButtonText, { color: colors.ink }]}>ปรับตัวกรอง</Text>
         </Pressable>
+      </View>
+    </View>
+  );
+}
+
+// Discovery (and face verification) open once the account's campus email is
+// confirmed; say so instead of "no profiles" or a network error.
+function EmailGateState({ gate, onRetry }) {
+  const { colors } = useTheme();
+  const [sending, setSending] = useState(false);
+  const [note, setNote] = useState('');
+  const campus = gate === 'CAMPUS_EMAIL_REQUIRED';
+  const resend = async () => {
+    if (sending) return;
+    setSending(true);
+    try {
+      const sent = await resendEmailVerification();
+      setNote(sent?.alreadyVerified ? 'อีเมลยืนยันแล้ว กด "ยืนยันแล้ว" เพื่อเริ่มหาเพื่อน' : 'ส่งอีเมลแล้ว เปิดลิงก์ในอีเมล แล้วกลับมากด "ยืนยันแล้ว"');
+    } catch (error) {
+      setNote(error?.message || 'ส่งอีเมลไม่สำเร็จ กรุณาลองใหม่');
+    } finally {
+      setSending(false);
+    }
+  };
+  return (
+    <View accessibilityRole="alert" style={[styles.emptyState, { backgroundColor: colors.surfaceRaised }]}>
+      <View style={[styles.emptyIcon, { backgroundColor: colors.primarySoft }]}>
+        <FeatureIcon color={colors.accentText} name="envelope.fill" size={28} />
+      </View>
+      <Text style={[styles.emptyTitle, { color: colors.ink }]}>{campus ? 'ยืนยันอีเมลมหาวิทยาลัยก่อนนะ' : 'ยืนยันอีเมลก่อนเริ่มหาเพื่อน'}</Text>
+      <Text style={[styles.emptyText, { color: colors.inkMuted }]}>
+        {campus
+          ? 'หาเพื่อนและยืนยันใบหน้าได้เมื่อยืนยันอีเมล @psu.ac.th แล้ว'
+          : 'เปิดลิงก์ในอีเมลที่เราส่งให้ แล้วกลับมากด "ยืนยันแล้ว" จากนั้นจะหาเพื่อนและยืนยันใบหน้าได้'}
+      </Text>
+      {note ? <Text accessibilityLiveRegion="polite" style={[styles.emptyText, { color: colors.ink }]}>{note}</Text> : null}
+      <View style={styles.emptyActionRow}>
+        <Pressable
+          accessibilityRole="button"
+          onPress={campus ? () => router.push('/verify-campus-email') : onRetry}
+          style={({ pressed }) => [styles.resetButton, { backgroundColor: colors.primary }, pressed && styles.pressed]}
+        >
+          <FeatureIcon color={colors.onPrimary} name={campus ? 'envelope.fill' : 'checkmark.circle.fill'} size={16} />
+          <Text style={[styles.resetButtonText, { color: colors.onPrimary }]}>{campus ? 'ยืนยันอีเมล' : 'ยืนยันแล้ว'}</Text>
+        </Pressable>
+        {!campus ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={sending}
+            onPress={resend}
+            style={({ pressed }) => [styles.filterConfigButton, { borderColor: colors.line, backgroundColor: colors.surface }, pressed && styles.pressed]}
+          >
+            <FeatureIcon color={colors.ink} name="paperplane.fill" size={16} />
+            <Text style={[styles.filterConfigButtonText, { color: colors.ink }]}>{sending ? 'กำลังส่ง…' : 'ส่งอีเมลอีกครั้ง'}</Text>
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );

@@ -43,8 +43,11 @@ export function useDiscoveryDeckState({
   if (hasCandidate) state = 'card';
   else if (discoveryError || (loading && stalled)) state = 'error';
   else if (loading) state = 'loading';
+  const reason = discoveryError?.details?.reason;
   return {
     state,
+    // The account must act first (confirm its email); retrying alone won't help.
+    gate: reason === 'EMAIL_NOT_VERIFIED' || reason === 'CAMPUS_EMAIL_REQUIRED' ? reason : null,
     offline: discoveryError?.code === 'offline',
     stalled: !discoveryError && loading && stalled,
     retry,

@@ -120,6 +120,10 @@ function changes(uid, refresh, onError, options = {}) {
   const intervalMs = Number(options.intervalMs) || (RUST_BACKEND ? 60000 : 30000);
   const topics = options.topics || ['decisions', 'membership', 'blocks', 'profile', 'config'];
   if (RUST_BACKEND) {
+    // A polling round signals every topic at once; refetch once, not per topic.
+    const direct = refresh;
+    let queued = false;
+    refresh = () => { if (queued) return; queued = true; Promise.resolve().then(() => { queued = false; direct(); }); };
     const active = AppState.addEventListener('change', (state) => { if (state === 'active') refresh(); });
     const timer = setInterval(() => { if (AppState.currentState === 'active') refresh(); }, intervalMs);
     const stops = uid ? topics.map((topic) => onBackendChange(topic, refresh)) : [];
@@ -226,6 +230,9 @@ export function subscribeSecureDecisions(uid, callback, onError) {
   unsubscribe.loadMore = () => refresh(true);
   return unsubscribe;
 }
+// Account states the person must resolve before discovery answers.
+const ACCOUNT_GATES = ['EMAIL_NOT_VERIFIED', 'CAMPUS_EMAIL_REQUIRED'];
+
 export function createSecureProfilesSubscription(onProfiles, onError, options = {}) {
   const auth = RUST_BACKEND ? { get currentUser() { const id = rustUid(); return id ? { uid: id } : null; } } : getAuth(requireFirebase().app);
   let uid = auth.currentUser?.uid;
@@ -236,6 +243,10 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
     topics: ['membership', 'blocks', 'profile', 'config'],
   };
   let disposed = false, busy = false, again = false, pageCount = 1, cursor = null, hasMore = false, profiles = [], nextRecycleAt = null;
+  // Set when the server says the account must act first (verify its email).
+  // Polling cannot change that, so background refreshes stop until a retry
+  // creates a new subscription.
+  let gated = false;
   let recycledProfileIds = [];
   const info = (loading) => options.onPageInfo?.({ source: 'discovery', hasMore, loading, nextRecycleAt, recycledProfileIds });
   const fetchPage = async (append) => {
@@ -295,6 +306,7 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
           }
         } catch (_) {}
       }
+      if (ACCOUNT_GATES.includes(reason?.details?.reason)) gated = true;
       if (!disposed) {
         // A background refresh must not blank a deck the person is already looking at.
         if (!profiles.length) {
@@ -313,7 +325,8 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
       }
     }
   };
-  let offChanges = changes(uid, () => { void fetchPage(false); }, onError, deckWatch);
+  const refreshDeck = () => { if (!gated) void fetchPage(false); };
+  let offChanges = changes(uid, refreshDeck, onError, deckWatch);
   const watchAccount = (listener) => (RUST_BACKEND
     ? rustClient().subscribe((user) => listener(user ? { uid: user.uid } : null))
     : onAuthStateChanged(auth, listener));
@@ -323,7 +336,8 @@ export function createSecureProfilesSubscription(onProfiles, onError, options = 
     if (nextUid !== uid) {
       uid = nextUid;
       offChanges();
-      offChanges = changes(uid, () => { void fetchPage(false); }, onError, deckWatch);
+      gated = false;
+      offChanges = changes(uid, refreshDeck, onError, deckWatch);
       void fetchPage(false);
     }
   });

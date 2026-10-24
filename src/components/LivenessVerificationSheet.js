@@ -8,6 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import FeatureIcon from './FeatureIcon';
 import FaceGestureStage from './FaceGestureStage';
 import { getPhotoVerification } from '../services/photoVerificationService';
+import { resendEmailVerification } from '../services/authService';
 import { messageFor } from '../services/photoVerificationProtocol.mjs';
 import { GlassIconButton } from './LiquidGlassSurface';
 import NativeButton from './NativeButton';
@@ -43,6 +44,14 @@ const ALTERNATIVES = [
 
 // Reasons where a person may reasonably believe the check got it wrong.
 const APPEALABLE = ['FACE_NOT_MATCHED', 'LIVENESS_NOT_CONFIRMED', 'REFERENCE_IMAGE_MISSING'];
+// The check stopped before any face was looked at, so "didn't pass" would be
+// wrong: say it could not start, and why.
+const NOT_STARTED = new Set([
+  'EMAIL_NOT_VERIFIED', 'CAMPUS_EMAIL_REQUIRED', 'unauthenticated', 'resource-exhausted', 'CONSENT_REQUIRED',
+  'NATIVE_UNAVAILABLE', 'SERVICE_UNAVAILABLE', 'IDENTITY_UNAVAILABLE', 'CAMERA_UNAVAILABLE', 'PHOTO_UPLOAD_FAILED',
+]);
+// The server only verifies faces for accounts with a confirmed campus email.
+const EMAIL_GATES = ['EMAIL_NOT_VERIFIED', 'CAMPUS_EMAIL_REQUIRED'];
 
 function formatDate(iso) {
   const date = iso ? new Date(iso) : null;
@@ -187,6 +196,21 @@ export default function LivenessVerificationSheet({ visible, onClose, onSuccess,
     }
   };
 
+  const resendEmail = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const sent = await resendEmailVerification();
+      setNotice(sent?.alreadyVerified
+        ? 'อีเมลของคุณยืนยันแล้ว กด "ยืนยันอีเมลแล้ว ลองอีกครั้ง" ได้เลย'
+        : 'ส่งอีเมลยืนยันแล้ว เปิดลิงก์ในอีเมลแล้วกลับมาลองอีกครั้ง');
+    } catch (error) {
+      setNotice(error?.message || 'ส่งอีเมลไม่สำเร็จ กรุณาลองใหม่');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const appeal = async () => {
     if (busy || !result?.verificationId) return;
     setBusy(true);
@@ -234,10 +258,13 @@ export default function LivenessVerificationSheet({ visible, onClose, onSuccess,
   const verified = outcome === 'VERIFIED';
   const review = outcome === 'REVIEW_REQUIRED';
   const failed = step === 'result' && !verified && !review;
+  const notStarted = failed && NOT_STARTED.has(result?.reason);
+  const emailGate = failed && EMAIL_GATES.includes(result?.reason);
   const stageCopy = STAGES[stage] || STAGES.creating;
   const title = step === 'alternative' ? 'ขอวิธียืนยันอื่น'
     : step === 'running' ? stageCopy[0]
-      : step === 'result' ? (verified ? 'ยืนยันใบหน้าสำเร็จแล้ว!' : review ? 'ส่งให้เจ้าหน้าที่ช่วยดูแล้ว' : 'ยังไม่ผ่าน ไม่เป็นไรนะ')
+      : step === 'result' ? (verified ? 'ยืนยันใบหน้าสำเร็จแล้ว!' : review ? 'ส่งให้เจ้าหน้าที่ช่วยดูแล้ว'
+        : emailGate ? 'ยืนยันอีเมลก่อนนะ' : notStarted ? 'ยังเริ่มตรวจใบหน้าไม่ได้' : 'ยังไม่ผ่าน ไม่เป็นไรนะ')
         : 'ยืนยันว่าเป็นคุณจริง';
   const description = step === 'running' ? stageCopy[1]
     : step === 'result' ? (verified ? result?.message : messageFor(result?.reason || outcome))
@@ -442,9 +469,14 @@ export default function LivenessVerificationSheet({ visible, onClose, onSuccess,
                 onPress={verified || review ? close : () => { setNotice(''); setStep('consent'); }}
                 style={({ pressed }) => [styles.primary, { backgroundColor: colors.primary, opacity: pressed ? 0.8 : 1 }]}
               >
-                <Text style={styles.primaryText}>{verified || review ? 'กลับไปที่โปรไฟล์' : 'ลองอีกครั้ง'}</Text>
+                <Text style={styles.primaryText}>{verified || review ? 'กลับไปที่โปรไฟล์' : emailGate ? 'ยืนยันอีเมลแล้ว ลองอีกครั้ง' : 'ลองอีกครั้ง'}</Text>
               </Pressable>
-              {!verified && !review ? (
+              {result?.reason === 'EMAIL_NOT_VERIFIED' ? (
+                <Pressable accessibilityRole="button" disabled={busy} onPress={resendEmail} style={styles.link}>
+                  <Text style={[styles.secondaryText, { color: colors.accentText }]}>{busy ? 'กำลังส่งอีเมล…' : 'ส่งอีเมลยืนยันอีกครั้ง'}</Text>
+                </Pressable>
+              ) : null}
+              {!verified && !review && !emailGate ? (
                 <View style={styles.links}>
                   <Pressable accessibilityRole="button" onPress={goAlternative} style={styles.link}>
                     <Text style={[styles.secondaryText, { color: colors.accentText }]}>ใช้วิธีอื่น</Text>

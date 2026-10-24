@@ -529,7 +529,7 @@ export default function HomeScreen() {
                       multilineTextAlignment('center'),
                     ]}
                   >
-                    {deck.state === 'error' ? 'โหลดโปรไฟล์ไม่สำเร็จ' : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
+                    {deck.gate ? 'ยืนยันอีเมลก่อนเริ่มหาเพื่อน' : deck.state === 'error' ? 'โหลดโปรไฟล์ไม่สำเร็จ' : isWaitingForProfiles ? 'กำลังค้นหาเพื่อนที่ตรงกัน…' : 'ยังไม่มีโปรไฟล์ที่ตรงกัน'}
                   </Text>
                   <Text
                     modifiers={[
@@ -538,13 +538,13 @@ export default function HomeScreen() {
                       multilineTextAlignment('center'),
                     ]}
                   >
-                    {deck.state === 'error' ? 'ตรวจสอบการเชื่อมต่อ แล้วลองโหลดโปรไฟล์อีกครั้ง' : isWaitingForProfiles
+                    {deck.gate === 'CAMPUS_EMAIL_REQUIRED' ? 'หาเพื่อนและยืนยันใบหน้าได้เมื่อยืนยันอีเมล @psu.ac.th แล้ว' : deck.gate ? 'เปิดลิงก์ในอีเมลที่เราส่งให้ แล้วกลับมากด "ยืนยันแล้ว" จากนั้นจะหาเพื่อนและยืนยันใบหน้าได้' : deck.state === 'error' ? 'ตรวจสอบการเชื่อมต่อ แล้วลองโหลดโปรไฟล์อีกครั้ง' : isWaitingForProfiles
                       ? 'กำลังโหลดโปรไฟล์และตรวจสอบระยะทาง โปรไฟล์จะแสดงเองเมื่อพร้อม'
                       : 'ไม่พบโปรไฟล์ที่ตรงกับตัวกรองในขณะนี้ สามารถปรับตัวกรองการค้นหาได้จากปุ่มด้านล่างหรือมุมขวาบน'}
                   </Text>
                 {!isWaitingForProfiles ? (
                   <HStack spacing={12} modifiers={[frame({ maxWidth: Infinity })]}>
-                    {deck.state === 'error' ? <Button label="ลองอีกครั้ง" onPress={deck.retry} modifiers={[buttonStyle('glassProminent'), tint(palette.purple)]} /> : null}
+                    {deck.state === 'error' ? <Button label={deck.gate ? 'ยืนยันแล้ว' : 'ลองอีกครั้ง'} onPress={deck.retry} modifiers={[buttonStyle('glassProminent'), tint(palette.purple)]} /> : null}
                     {canRewindSkippedProfiles ? (
                       <Button
                         onPress={handleRewind}

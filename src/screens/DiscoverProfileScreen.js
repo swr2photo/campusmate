@@ -362,7 +362,10 @@ export function ProfileCardView({
             topInset={fullScreen ? (insets?.top || 0) + 64 : 0}
             footerBlurHeight={Math.min(190, Math.max(100, Math.round(heroHeight * 0.24)))}
             interactive={!isUnderCard}
-            swipePhotos={!isUnderCard}
+            // A horizontal photo pager inside the like/skip swipe made Android
+            // pick one at random (the native pager usually won). On a card you
+            // can decide on, photos change with a tap on either half instead.
+            swipePhotos={!isUnderCard && isViewOnly}
           />
           <LinearGradient
             colors={['transparent', 'rgba(10,18,32,0.22)', 'rgba(10,18,32,0.78)']}
@@ -1007,7 +1010,9 @@ export default function DiscoverProfileScreen({ isViewOnlyParam, profileId, onCl
   const panGesture = useMemo(() => Gesture.Pan()
     .enabled(!isViewOnly && !processing && !detailsExpanded)
     .activeOffsetX([-18, 18])
-    .failOffsetY([-24, 24])
+    // Thumbs swipe in an arc; the card does not scroll until details open,
+    // so only a clearly vertical drag should cancel the swipe.
+    .failOffsetY([-48, 48])
     .onUpdate((event) => {
       if (swipeLock.get()) return;
       translateX.set(event.translationX);

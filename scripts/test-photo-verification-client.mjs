@@ -350,3 +350,15 @@ test('without the AWS module only a development preview runs the gestures, and i
   assert.equal(preview.calls.includes(completePath), false);
   assert.equal(preview.calls.filter((path) => path === gesturePath).length, 5);
 });
+
+test('an account that must confirm its email gets that reason before any camera opens', async () => {
+  for (const reason of ['EMAIL_NOT_VERIFIED', 'CAMPUS_EMAIL_REQUIRED']) {
+    const refused = Object.assign(new Error('Verify your email address to continue'), { code: 'permission-denied', details: { reason } });
+    const { flow, presented } = harness({ responses: { [createPath]: refused } });
+    const result = await flow.run({ consent: true });
+    assert.equal(result.status, 'FAILED');
+    assert.equal(result.reason, reason, 'the server reason survives, so the sheet can say "confirm your email" instead of "did not pass"');
+    assert.match(result.message, /อีเมล/);
+    assert.equal(presented.length, 0, 'no face check ran');
+  }
+});
